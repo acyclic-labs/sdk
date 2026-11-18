@@ -61,7 +61,8 @@ fn duplicate_merge_parents_and_unknown_features_fail_closed()
         )?,
         54 + root().file_table.encoded_len() as u64 + 66
     );
-    value.parents[1] = value.parents[0];
+    let first = *value.parents.first().ok_or("missing first parent")?;
+    *value.parents.get_mut(1).ok_or("missing second parent")? = first;
     assert!(
         encode_generation_root(
             &value,
@@ -96,8 +97,14 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
     let parents_offset = 8 + 2 + 16 + 16 + two_parents.file_table.encoded_len() + 4;
-    let first_parent = encoded[parents_offset..parents_offset + 33].to_vec();
-    encoded[parents_offset + 33..parents_offset + 66].copy_from_slice(&first_parent);
+    let first_parent = encoded
+        .get(parents_offset..parents_offset + 33)
+        .ok_or("missing encoded first parent")?
+        .to_vec();
+    encoded
+        .get_mut(parents_offset + 33..parents_offset + 66)
+        .ok_or("missing encoded second parent")?
+        .copy_from_slice(&first_parent);
     assert!(matches!(
         decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
             _,
@@ -112,7 +119,10 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
     let features_offset = unsupported.len() - 8;
-    unsupported[features_offset..].copy_from_slice(&2_u64.to_le_bytes());
+    unsupported
+        .get_mut(features_offset..)
+        .ok_or("missing feature flags")?
+        .copy_from_slice(&2_u64.to_le_bytes());
     assert!(matches!(
         decode_generation_root(&unsupported, DecodeLimits::default(), |_| Ok::<
             _,
@@ -145,7 +155,7 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
         |_| Ok::<_, CanonicalDecodeError>(()),
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
-    wrong_domain[0] ^= 1;
+    *wrong_domain.first_mut().ok_or("missing domain")? ^= 1;
     assert!(
         decode_generation_root(&wrong_domain, DecodeLimits::default(), |_| Ok::<
             _,
@@ -164,7 +174,10 @@ fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
         .rev()
         .map(|index| {
             let mut digest = [0; 32];
-            digest[..8].copy_from_slice(&index.to_le_bytes());
+            digest
+                .split_at_mut(8)
+                .0
+                .copy_from_slice(&index.to_le_bytes());
             GenerationId::from_root(ObjectId {
                 kind: ObjectKind::GenerationRoot,
                 digest: Digest::from_bytes(digest),
@@ -190,22 +203,26 @@ fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
     );
     let mut corrupted = encoded;
     let parents_offset = b"ACYFSGEN".len() + 2 + 16 + 16 + value.file_table.encoded_len() + 4;
+    let (last_parent, preceding) = value.parents.split_last().ok_or("missing last parent")?;
     let last = parents_offset
-        + value.parents[..value.parents.len() - 1]
+        + preceding
             .iter()
             .map(|parent| parent.object_id().encoded_len())
             .sum::<usize>();
-    let first = value.parents[0].object_id().to_bytes();
+    let first = value
+        .parents
+        .first()
+        .ok_or("missing first parent")?
+        .object_id()
+        .to_bytes();
     assert_eq!(
         first.as_slice().len(),
-        value
-            .parents
-            .last()
-            .ok_or("missing last parent")?
-            .object_id()
-            .encoded_len()
+        last_parent.object_id().encoded_len()
     );
-    corrupted[last..last + first.as_slice().len()].copy_from_slice(first.as_slice());
+    corrupted
+        .get_mut(last..last + first.as_slice().len())
+        .ok_or("missing encoded last parent")?
+        .copy_from_slice(first.as_slice());
     assert!(matches!(
         decode_generation_root(&corrupted, DecodeLimits::default(), |_| Ok::<
             _,
@@ -213,8 +230,9 @@ fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
         >(())),
         Err(CanonicalDecodeError::Invariant(_))
     ));
-    let last = value.parents.len() - 1;
-    value.parents[last] = value.parents[0];
+
+    let first = *value.parents.first().ok_or("missing first parent")?;
+    *value.parents.last_mut().ok_or("missing last parent")? = first;
     assert!(matches!(
         encode_generation_root(
             &value,
@@ -234,7 +252,10 @@ fn forged_parent_count_is_rejected_before_allocating() -> Result<(), Box<dyn std
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
     let count_offset = b"ACYFSGEN".len() + 2 + 16 + 16 + root().file_table.encoded_len();
-    encoded[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    encoded
+        .get_mut(count_offset..count_offset + 4)
+        .ok_or("missing encoded parent count")?
+        .copy_from_slice(&u32::MAX.to_le_bytes());
     let mut allocations = 0;
     let result = decode_generation_root(&encoded, DecodeLimits::default(), |step| {
         if matches!(step, ReadAllocationStep::Allocate { .. }) {

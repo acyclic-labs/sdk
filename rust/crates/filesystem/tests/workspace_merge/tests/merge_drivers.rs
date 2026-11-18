@@ -559,11 +559,11 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         ));
     }
     let conflict = acyclic_fs::MergeConflict::File(unbounded!(main, stat("/sparse"))?.file_id);
-    let mut crossing = vec![0; 4102];
-    crossing[..2].copy_from_slice(b"BB");
-    crossing[4098..].copy_from_slice(b"TAIL");
-    let mut stored = vec![b'B'; 128];
-    stored[0] = b'M';
+    let mut crossing = b"BB".to_vec();
+    crossing.resize(4098, 0);
+    crossing.extend_from_slice(b"TAIL");
+    let mut stored = vec![b'M'];
+    stored.resize(128, b'B');
     for native in [false, true] {
         let cancellation = CancellationToken::new();
         let original =
