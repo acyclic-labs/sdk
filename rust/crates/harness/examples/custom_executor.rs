@@ -1,6 +1,6 @@
 //! A custom control loop reuses public durable model admission and recovery.
 
-use acyclic_harness::{
+use acyclic_harness_core::{
     Error, Result,
     context::ContextPipeline,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
@@ -64,7 +64,7 @@ fn main() -> Result<()> {
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled),
+        .with_compaction_policy(acyclic_harness_core::context::CompactionPolicy::Disabled),
     ));
     Ok(())
 }

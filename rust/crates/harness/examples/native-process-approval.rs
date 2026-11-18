@@ -1,6 +1,6 @@
 //! Public-contract consumer for comparing native and WASM approval identities.
 
-use acyclic_harness::{OperationId, TaskId, filesystem::NativeProcessRequest};
+use acyclic_harness_core::{OperationId, TaskId, filesystem::NativeProcessRequest};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
