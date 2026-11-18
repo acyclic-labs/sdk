@@ -17,6 +17,21 @@ proptest! {
     }
 
     #[test]
+    fn fractional_projection_preserves_javascript_spacing(
+        base in 0.0_f64..1.0e12,
+        maximum in 0.0_f64..1.0e16,
+        doublings in 0..=65_i32,
+        draw in 0.0_f64..=1.0,
+    ) {
+        let upper = (base * 2.0_f64.powi(doublings.min(52))).min(maximum);
+        let expected = (upper * (0.5 + draw / 2.0)).ceil();
+        prop_assert_eq!(
+            Backoff::fractional_delay_ms_at(base, maximum, doublings.unsigned_abs(), draw),
+            expected,
+        );
+    }
+
+    #[test]
     fn owner_draw_uses_the_full_equal_jitter_interval(
         base in any::<u32>(),
         maximum in any::<u32>(),

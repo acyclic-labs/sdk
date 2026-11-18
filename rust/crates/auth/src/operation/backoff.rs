@@ -87,7 +87,7 @@ impl Backoff {
             u64::from(self.maximum_ms),
             1,
         ))
-        .expect("backoff ceiling stays within its u32 maximum");
+        .unwrap_or(self.maximum_ms);
         let lower = ceiling.div_ceil(2);
         let choices = ceiling - lower + 1;
         lower + draw(choices) % choices
