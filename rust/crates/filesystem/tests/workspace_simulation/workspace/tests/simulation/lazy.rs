@@ -3,6 +3,7 @@ use super::*;
 use acyclic_fs::{
     CancellationToken, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore, VolumeConfig,
 };
+use acyclic_fs_format::identity::OperationId;
 use acyclic_fs_work::performance::WorkBudget;
 use std::sync::Arc;
 
@@ -33,7 +34,7 @@ pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             access_policy: None,
         },
-        acyclic_fs::OperationId::new(),
+        OperationId::new(),
         &mut ctx,
     )
     .await?;

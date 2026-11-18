@@ -9,6 +9,10 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(test)]
+#[path = "../../tests/support/allow_publication.rs"]
+pub(crate) mod allow_publication;
+
 #[cfg(any(target_os = "linux", windows))]
 pub(crate) fn mount_test_compiler() -> std::io::Result<std::path::PathBuf> {
     let compiler = std::path::PathBuf::from(acyclic_test_support::host_tool!("rustc"));

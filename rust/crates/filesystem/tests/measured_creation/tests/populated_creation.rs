@@ -1,6 +1,5 @@
-use acyclic_fs::{
-    CancellationToken, Fs, FsError, Lifecycle, OperationId, VolumeConfig, WorkspaceError,
-};
+use acyclic_fs::{CancellationToken, Fs, FsError, Lifecycle, VolumeConfig, WorkspaceError};
+use acyclic_fs_format::identity::OperationId;
 use acyclic_fs_work::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;

@@ -2,8 +2,13 @@ use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
 use crate::model::{CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy};
 use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
+use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[path = "../../../tests/support/checkout_fixture.rs"]
+mod checkout_fixture;
+use checkout_fixture::{path, writable_pinned};
 
 fn config() -> VolumeConfig {
     VolumeConfig::portable(Lifecycle::Ephemeral)
@@ -24,19 +29,7 @@ fn exclusive_config() -> VolumeConfig {
 }
 
 fn pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::None,
-    }
-}
-
-fn writable_pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::PrivateOverlay,
-    }
+    CheckoutMode::read_only_pinned()
 }
 
 fn manual() -> CheckoutMode {
@@ -77,16 +70,6 @@ fn writable_live() -> CheckoutMode {
         consistency: ConsistencyMode::Live,
         mutations: MutationMode::DirectLive,
     }
-}
-
-fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    Ok(NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            value.as_bytes().to_vec(),
-        )?],
-        config().limits,
-    )?)
 }
 
 fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
@@ -636,14 +619,7 @@ mod tracking;
 mod transactions;
 mod transfer;
 use protocol_helpers::*;
+#[path = "../../../tests/support/volume_fixture.rs"]
 mod fixtures;
 use fixtures::*;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<Result<OperationReceipt<()>, OperationFailure<E>>> {
-    std::future::ready(Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    }))
-}
