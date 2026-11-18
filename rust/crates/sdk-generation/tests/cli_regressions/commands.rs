@@ -174,11 +174,13 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     if command.get_args().next() != Some(OsStr::new("rustdoc")) {
         return Ok(None);
     }
-    let args = command.get_args().collect::<Vec<_>>();
-    if !args.iter().any(|arg| *arg == "--lib" || *arg == "--bin") {
+    if !command
+        .get_args()
+        .any(|arg| arg == "--lib" || arg == "--bin")
+    {
         return Ok(None);
     }
-    let value = |name: &str| argument_value(args.iter().copied(), name);
+    let value = |name: &str| argument_value(command.get_args(), name);
     let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
         return Ok(None);
     };
@@ -274,12 +276,10 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             expected_args.extend(["--config", config.as_str()]);
         }
         expected_args.extend(["--", "-Z", "unstable-options", "--output-format", "json"]);
-        if args
-            .iter()
-            .map(|arg| arg.to_str())
-            .collect::<Option<Vec<_>>>()
-            .as_deref()
-            != Some(expected_args.as_slice())
+        if !command
+            .get_args()
+            .map(OsStr::to_str)
+            .eq(expected_args.into_iter().map(Some))
         {
             continue;
         }
