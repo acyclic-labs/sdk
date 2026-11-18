@@ -197,7 +197,12 @@ impl ProfileSpec {
         } else {
             ";d0;f"
         };
-        let mut id = String::from("p");
+        let name_bytes = self.package.len()
+            + self.target.len()
+            + self.features.iter().map(String::len).sum::<usize>();
+        let separators = self.features.len().saturating_sub(1);
+        let mut id = String::with_capacity("p;t;d0;f".len() + 2 * name_bytes + separators);
+        id.push('p');
         push_hex(&mut id, self.package.as_bytes());
         id.push_str(";t");
         push_hex(&mut id, self.target.as_bytes());
