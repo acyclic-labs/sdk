@@ -583,19 +583,7 @@ fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
 }
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(
-        Command::new(runtime::binary("sdk-generation"))
-            .args([
-                "drift",
-                "--root",
-                fixture.root.to_str().unwrap(),
-                "--output",
-                fixture.output.to_str().unwrap(),
-                "--rustdoc-dir",
-                fixture.rustdoc.to_str().unwrap(),
-            ])
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
-    )
+    invoke(drift_command(fixture).env("CARGO_HOME", fixture_cargo_home(fixture)))
 }
 
 fn output_message(result: &std::process::Output) -> String {
