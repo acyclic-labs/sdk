@@ -206,6 +206,7 @@ rust_test(
         "tests/guest_activation.rs",
         "tests/guest_contract.rs",
         "tests/guest_loom.rs",
+        "tests/guest_manifest.rs",
         "tests/guest_metadata.rs",
         "tests/live_update.rs",
         "tests/main.rs",
