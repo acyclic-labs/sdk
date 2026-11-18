@@ -33,7 +33,7 @@ pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
         let entry = entry.unwrap();
         let target = destination.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
-            copy_git_objects(&path, &target);
+            copy_git_objects(&entry.path(), &target);
         } else if target.exists() {
             assert_eq!(fs::read(entry.path()).unwrap(), fs::read(target).unwrap());
         } else {
