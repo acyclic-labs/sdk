@@ -214,10 +214,12 @@ impl ProfileSpec {
     }
 }
 
-fn order_profiles(mut profiles: Vec<ProfileSpec>) -> Vec<ProfileSpec> {
-    profiles.sort_by_cached_key(ProfileSpec::id);
-    profiles.dedup();
-    profiles
+fn order_profiles(profiles: Vec<ProfileSpec>) -> Vec<ProfileSpec> {
+    let mut ordered = BTreeMap::new();
+    for profile in profiles {
+        ordered.entry(profile.id()).or_insert(profile);
+    }
+    ordered.into_values().collect()
 }
 
 /// Derive the bounded profile matrix from the package's actual Cargo feature
