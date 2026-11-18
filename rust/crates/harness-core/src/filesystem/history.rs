@@ -204,7 +204,9 @@ where
             .map(|((_, head), source)| RestoreSpec {
                 expected: head,
                 source,
-                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                    operation.into_bytes(),
+                ),
                 permit: acyclic_fs::PublicationPermit::Unrestricted,
             })
             .collect::<Vec<_>>();

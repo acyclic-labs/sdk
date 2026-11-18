@@ -104,23 +104,6 @@ use acyclic_fs::model::{
 };
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, ConflictSide,
-    DependencyRegion, DependencyState, DependencyUse, DirectoryPage, FileCloneRequest, FileId,
-    ForkOptions, Generation, GenerationExportManifest, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, JoinPlan, LiveMutationOutcome, LivePublicationObservation, LocalAuthorityBackend,
-    LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions, LocalVolume, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions,
-    ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency, OperationId,
-    PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions, RebaseConflict,
-    ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
-    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
-    TransactionCommit, TransactionRebase, VolumeId, WatchBatch, WatchChange,
-    WatchInvalidationReason, Workspace, WorkspaceDelete, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceRebase,
-    WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
-    native_watch_capabilities as sdk_native_watch_capabilities,
-};
-use acyclic_fs::{
     CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
     NativeMountSession, SharedCheckout, WatchCaptureReceipt, capture_baseline, capture_paths,
     capture_root_identity, capture_watch_batch, materialize_checkout, mount_native,
@@ -133,3 +116,25 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, ConflictSide,
+        DependencyRegion, DependencyState, DependencyUse, DirectoryPage, FileCloneRequest,
+        ForkOptions, Generation, GenerationExportManifest, GenerationId, IdempotencyKey,
+        JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome, LivePublicationObservation,
+        LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
+        LocalVolume, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+        NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions, ObjectReadRequest,
+        ObjectResidency, PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions,
+        RebaseConflict, ResidencyAdmission, ResidencyHint, ResidencyReason,
+        ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
+        StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionRebase,
+        WatchBatch, WatchChange, WatchInvalidationReason, Workspace, WorkspaceDelete,
+        WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
+        WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceRebase, WorkspaceStat,
+        decode_generation_export_manifest, encode_generation_export_manifest,
+        native_watch_capabilities as sdk_native_watch_capabilities,
+    },
+    acyclic_fs_format::identity::{FileId, OperationId, VolumeId},
+    acyclic_fs_format::object_reference::ObjectId,
+};

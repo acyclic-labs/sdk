@@ -258,7 +258,7 @@ async fn open_fixture_shared(
                 scratch: &private,
                 shared: None,
                 directory: state.path(),
-                operation: acyclic_fs::OperationId::new(),
+                operation: acyclic_fs_format::identity::OperationId::new(),
                 native_mounts: false,
                 mounting: crate::local::WorkspaceMounting::Native,
                 native_mount_probe: &Default::default(),
@@ -653,7 +653,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
                 .is_none()
         );
         let owed = (
-            acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+            acyclic_fs_format::identity::OperationId::from_bytes(operation.into_bytes()),
             acyclic_fs::GitGenerationRef {
                 workspace_id: view.workspace().id(),
                 generation: before.id(),
@@ -1206,7 +1206,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         .map_err(storage)?;
     checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,

@@ -1,9 +1,9 @@
 //! Evidence projection preserves original facts; it grants no storage custody.
-use acyclic_fs::{
-    AuthorityId, Digest, DurableCommit, Epoch, OperationId, Sequence, authority_commit_digest,
-    kernel::*,
-};
 use sha2::{Digest as _, Sha256};
+use {
+    acyclic_fs::{DurableCommit, Epoch, Sequence, authority_commit_digest, kernel::*},
+    acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
+};
 mod original;
 
 pub(super) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {

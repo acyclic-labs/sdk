@@ -114,13 +114,13 @@ pub struct LocalWorkspace {
     pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
-pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
+pub(super) fn attach_operation(task: TaskId) -> acyclic_fs_format::identity::OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.checkout-attach/v1\0");
     hash.update(&task.into_bytes());
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationId::from_bytes(bytes)
+    acyclic_fs_format::identity::OperationId::from_bytes(bytes)
 }
 
 impl LocalWorkspace {
@@ -401,7 +401,7 @@ pub(super) struct Attach<'a> {
     pub(super) scratch: &'a VolumeRef,
     pub(super) shared: Option<&'a VolumeRef>,
     pub(super) directory: &'a Path,
-    pub(super) operation: acyclic_fs::OperationId,
+    pub(super) operation: acyclic_fs_format::identity::OperationId,
     pub(super) native_mounts: bool,
     pub(super) mounting: WorkspaceMounting,
     pub(super) native_mount_probe: &'a acyclic_fs::NativeMountProbe,

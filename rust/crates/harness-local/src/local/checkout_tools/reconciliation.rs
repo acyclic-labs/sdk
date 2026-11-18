@@ -5,11 +5,11 @@ use acyclic_fs::{GitCompatState, GitCompatStore, GitGenerationRef};
 // Lock order: the existing checkout guard is outermost. Git-state CAS
 // returns owned data and releases its leaf record lock before any native
 // publication or owner callback. Open completes recovery before exposing tools.
-pub(in crate::local) type Pending = (acyclic_fs::OperationId, GitGenerationRef);
+pub(in crate::local) type Pending = (acyclic_fs_format::identity::OperationId, GitGenerationRef);
 
 pub(in crate::local) async fn prepare(
     workspace: &LocalWorkspace,
-    operation: acyclic_fs::OperationId,
+    operation: acyclic_fs_format::identity::OperationId,
     from: GitGenerationRef,
 ) -> Result<()> {
     replace(workspace, None, Some((operation, from))).await
@@ -196,7 +196,7 @@ where
 }
 
 /// A file publication's owed capture: its operation and staged generation.
-pub(in crate::local) type OwedWrite = (acyclic_fs::OperationId, GitGenerationRef);
+pub(in crate::local) type OwedWrite = (acyclic_fs_format::identity::OperationId, GitGenerationRef);
 
 /// The capture this checkout owes a file publication's physical write.
 pub(in crate::local) async fn owed_write(workspace: &LocalWorkspace) -> Result<Option<OwedWrite>> {
@@ -369,16 +369,16 @@ mod tests {
             sealed in any::<bool>(),
         ) {
             let root = acyclic_fs::WorkspaceId::from_bytes([1; 16]);
-            let association = acyclic_fs::ObjectStorage {
-                locator: acyclic_fs::Digest::from_bytes(generation),
-                root_file_id: acyclic_fs::FileId::from_bytes(operation),
-                origin_generation: acyclic_fs::Digest::from_bytes(generation),
+            let association = acyclic_fs_format::object_reference::ObjectStorage {
+                locator: acyclic_fs_format::identity::Digest::from_bytes(generation),
+                root_file_id: acyclic_fs_format::identity::FileId::from_bytes(operation),
+                origin_generation: acyclic_fs_format::identity::Digest::from_bytes(generation),
             };
-            let pending = (acyclic_fs::OperationId::from_bytes(operation), GitGenerationRef {
+            let pending = (acyclic_fs_format::identity::OperationId::from_bytes(operation), GitGenerationRef {
                 workspace_id: root,
-                generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
-                    kind: acyclic_fs::ObjectKind::GenerationRoot,
-                    digest: acyclic_fs::Digest::from_bytes(generation),
+                generation: acyclic_fs::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
+                    kind: acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
+                    digest: acyclic_fs_format::identity::Digest::from_bytes(generation),
                     storage: sealed.then_some(association),
                 }),
             });
@@ -389,7 +389,7 @@ mod tests {
             let mut expected = pending;
             if !matched {
                 let mut bytes = operation; bytes[0] ^= 1;
-                expected.0 = acyclic_fs::OperationId::from_bytes(bytes);
+                expected.0 = acyclic_fs_format::identity::OperationId::from_bytes(bytes);
             }
             let result = update(&mut state, Some(expected), None);
             prop_assert_eq!(result.is_ok(), matched && !overflow);
@@ -407,9 +407,9 @@ mod tests {
                 let mut bytes = generation; bytes[0] ^= 1;
                 match field {
                     0 => object.storage = if sealed { None } else { Some(association) },
-                    1 => { changed.locator = acyclic_fs::Digest::from_bytes(bytes); object.storage = Some(changed); }
-                    2 => { let mut bytes = operation; bytes[0] ^= 1; changed.root_file_id = acyclic_fs::FileId::from_bytes(bytes); object.storage = Some(changed); }
-                    _ => { changed.origin_generation = acyclic_fs::Digest::from_bytes(bytes); object.storage = Some(changed); }
+                    1 => { changed.locator = acyclic_fs_format::identity::Digest::from_bytes(bytes); object.storage = Some(changed); }
+                    2 => { let mut bytes = operation; bytes[0] ^= 1; changed.root_file_id = acyclic_fs_format::identity::FileId::from_bytes(bytes); object.storage = Some(changed); }
+                    _ => { changed.origin_generation = acyclic_fs_format::identity::Digest::from_bytes(bytes); object.storage = Some(changed); }
                 }
                 wrong.1.generation = acyclic_fs::GenerationId::from_root(object);
                 prop_assert_eq!(wrong.1.generation.digest(), pending.1.generation.digest());

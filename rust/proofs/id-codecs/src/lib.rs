@@ -274,7 +274,11 @@ mod version {
 
 #[cfg(kani)]
 mod proofs {
-    use acyclic_fs::{Digest, GenerationId, ObjectId, ObjectKind, ObjectStorage};
+    use {
+        acyclic_fs::GenerationId,
+        acyclic_fs_format::identity::Digest,
+        acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
+    };
 
     fn object() -> ObjectId {
         let tag: u8 = kani::any();
@@ -285,7 +289,7 @@ mod proofs {
             storage: if kani::any() {
                 Some(ObjectStorage {
                     locator: Digest::from_bytes(kani::any()),
-                    root_file_id: acyclic_fs::FileId::from_bytes(kani::any()),
+                    root_file_id: acyclic_fs_format::identity::FileId::from_bytes(kani::any()),
                     origin_generation: Digest::from_bytes(kani::any()),
                 })
             } else {
@@ -399,7 +403,7 @@ mod proofs {
         };
         let storage = ObjectStorage {
             locator: Digest::from_bytes(kani::any()),
-            root_file_id: acyclic_fs::FileId::from_bytes(kani::any()),
+            root_file_id: acyclic_fs_format::identity::FileId::from_bytes(kani::any()),
             origin_generation: Digest::from_bytes(kani::any()),
         };
         root.storage = Some(storage);
@@ -419,7 +423,7 @@ mod proofs {
                 kani::assume(byte < 16);
                 let mut bytes = storage.root_file_id.into_bytes();
                 bytes[usize::from(byte)] ^= 1 << bit;
-                changed.root_file_id = acyclic_fs::FileId::from_bytes(bytes);
+                changed.root_file_id = acyclic_fs_format::identity::FileId::from_bytes(bytes);
             }
             _ => {
                 let mut bytes = *storage.origin_generation.as_bytes();
@@ -455,21 +459,33 @@ mod proofs {
     fn uuid_codecs_preserve_every_bit() {
         let bytes: [u8; 16] = kani::any();
         assert_eq!(
-            acyclic_fs::AuthorityId::from_bytes(bytes).into_bytes(),
+            acyclic_fs_format::identity::AuthorityId::from_bytes(bytes).into_bytes(),
             bytes
         );
         assert_eq!(
-            acyclic_fs::OperationId::from_bytes(bytes).into_bytes(),
+            acyclic_fs_format::identity::OperationId::from_bytes(bytes).into_bytes(),
             bytes
         );
-        assert_eq!(acyclic_fs::VolumeId::from_bytes(bytes).into_bytes(), bytes);
         assert_eq!(
-            acyclic_fs::CheckoutId::from_bytes(bytes).into_bytes(),
+            acyclic_fs_format::identity::VolumeId::from_bytes(bytes).into_bytes(),
             bytes
         );
-        assert_eq!(acyclic_fs::MountId::from_bytes(bytes).into_bytes(), bytes);
-        assert_eq!(acyclic_fs::WatchId::from_bytes(bytes).into_bytes(), bytes);
-        assert_eq!(acyclic_fs::FileId::from_bytes(bytes).into_bytes(), bytes);
+        assert_eq!(
+            acyclic_fs_format::identity::CheckoutId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
+        assert_eq!(
+            acyclic_fs_format::identity::MountId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
+        assert_eq!(
+            acyclic_fs_format::identity::WatchId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
+        assert_eq!(
+            acyclic_fs_format::identity::FileId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
     }
 }
 

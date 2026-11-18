@@ -65,7 +65,7 @@ fn scratch_mount_owner() -> TestResult {
                     config,
                     Some(acyclic_fs::access::INITIAL_POLICY),
                 ),
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 None,
@@ -99,7 +99,7 @@ fn scratch_mount_owner() -> TestResult {
         );
         let _mount = acyclic_fs::mount_native_over_existing(
             acyclic_fs::NativeMountRequest {
-                mount_id: acyclic_fs::MountId::new(),
+                mount_id: acyclic_fs_format::identity::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: PathBuf::from(root).join(HOME_PATH),
                 writable: true,

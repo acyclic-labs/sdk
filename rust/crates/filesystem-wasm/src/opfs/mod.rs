@@ -12,9 +12,10 @@ use web_sys::{
 };
 use {
     acyclic_fs::{
-        AsyncObjectStore, CancellationToken, ObjectFailure, ObjectId, ObjectRead,
-        ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, object_digest,
+        AsyncObjectStore, CancellationToken, ObjectFailure, ObjectRead, ObjectReadRequest,
+        ObjectReadRetention, ObjectResult, ObjectStoreError, object_digest,
     },
+    acyclic_fs_format::object_reference::ObjectId,
     acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 

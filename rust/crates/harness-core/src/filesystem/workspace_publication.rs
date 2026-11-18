@@ -4,9 +4,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 use {
     acyclic_fs::{
         CancellationToken, Generation, GenerationId, LocalAuthorityBackend, LocalCoreStateStore,
-        LocalFs, LocalObjectBackend, MaterializeOptions, MultiRootMaterializer, OperationId,
-        Workspace, WorkspaceId, WorkspaceRootId,
+        LocalFs, LocalObjectBackend, MaterializeOptions, MultiRootMaterializer, Workspace,
+        WorkspaceId, WorkspaceRootId,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_native_contract::NativeRootIdentity,
     acyclic_fs_work::performance::WorkBudget,
 };

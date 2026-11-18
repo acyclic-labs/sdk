@@ -53,7 +53,7 @@ async fn config(root: &Path) -> Result<(PathBuf, serde_json::Value)> {
             config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
             access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
         },
-        acyclic_fs::OperationId::new(),
+        acyclic_fs_format::identity::OperationId::new(),
         budget,
         &CancellationToken::new(),
         None,

@@ -125,7 +125,7 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
                     candidate: &candidate,
                     permissions: &policy,
                     now: 0,
-                    operation: acyclic_fs::OperationId::from_bytes([scenario; 16]),
+                    operation: acyclic_fs_format::identity::OperationId::from_bytes([scenario; 16]),
                     permit: PublicationPermit::Unrestricted,
                 },
                 &mut commit,
@@ -402,7 +402,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
                     config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 None,
@@ -439,7 +439,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
             .await?;
         let committed = checkout
             .commit(
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 None,
                 None,
                 None,

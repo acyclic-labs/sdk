@@ -1039,7 +1039,7 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
         workspace.store.clone(),
     );
     let saved = repository.load().await.map_err(storage)?;
-    let identity = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
+    let identity = acyclic_fs_format::identity::OperationId::from_bytes(operation.into_bytes());
     assert_eq!(
         serde_json::to_value(saved.request(identity)).map_err(storage)?,
         committed

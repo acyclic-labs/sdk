@@ -11,9 +11,10 @@ use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 use {
     acyclic_fs::{
         CancellationToken, Fs, IdempotencyKey, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore,
-        NativeMaterializationWork, OperationId, PublicationPermit, VolumeConfig,
-        VolumeInitialization, VolumeLimits,
+        NativeMaterializationWork, PublicationPermit, VolumeConfig, VolumeInitialization,
+        VolumeLimits,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::WorkBudget,
 };
 

@@ -171,7 +171,7 @@ impl LocalWorkspace {
                 // The cursor is the durable withdrawal. Recover a crash
                 // after acknowledging debt but before releasing its reply.
                 repository
-                    .acknowledge_request(acyclic_fs::OperationId::from_bytes(
+                    .acknowledge_request(acyclic_fs_format::identity::OperationId::from_bytes(
                         cursor.completed.into_bytes(),
                     ))
                     .await
@@ -222,7 +222,9 @@ impl LocalWorkspace {
         )
         .await?;
         repository
-            .acknowledge_request(acyclic_fs::OperationId::from_bytes(completed.into_bytes()))
+            .acknowledge_request(acyclic_fs_format::identity::OperationId::from_bytes(
+                completed.into_bytes(),
+            ))
             .await
             .map_err(storage)
     }
@@ -426,9 +428,9 @@ mod tests {
             acyclic_fs::GitCompatRepository::new(id, workspace.store.clone())
                 .for_request(acyclic_fs::GitRequest {
                     operation: if own {
-                        acyclic_fs::OperationId::from_bytes(completed.into_bytes())
+                        acyclic_fs_format::identity::OperationId::from_bytes(completed.into_bytes())
                     } else {
-                        acyclic_fs::OperationId::new()
+                        acyclic_fs_format::identity::OperationId::new()
                     },
                     merge_source: own.then_some(source),
                     unanswered: Arc::new(|_| true),
@@ -671,9 +673,9 @@ mod tests {
                 "missing".into(),
                 acyclic_fs::GitGenerationRef {
                     workspace_id: acyclic_fs::WorkspaceId::from_bytes([0; 16]),
-                    generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
-                        [0; 32],
-                    )),
+                    generation: acyclic_fs::GenerationId::new(
+                        acyclic_fs_format::identity::Digest::from_bytes([0; 32]),
+                    ),
                 },
             )
             .await?;
@@ -712,11 +714,11 @@ mod tests {
             .map_err(storage)?
             .value;
         let completed = OperationId::new();
-        let retained = acyclic_fs::OperationId::new();
+        let retained = acyclic_fs_format::identity::OperationId::new();
         let repository = acyclic_fs::GitCompatRepository::new(id, workspace.store.clone());
         for (operation, branch) in [
             (
-                acyclic_fs::OperationId::from_bytes(completed.into_bytes()),
+                acyclic_fs_format::identity::OperationId::from_bytes(completed.into_bytes()),
                 "completed",
             ),
             (retained, "retained"),

@@ -667,7 +667,7 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
 pub(super) fn recover_volume_after_crash(
     root: &Path,
     relative: &Path,
-    volume: acyclic_fs::VolumeId,
+    volume: acyclic_fs_format::identity::VolumeId,
 ) -> Result<()> {
     let destination = root.join(relative);
     let [fence, ..] = acyclic_fs::native_mount_control_paths(&destination)?;
@@ -689,7 +689,8 @@ pub(super) fn recover_volume_after_crash(
         .join(uuid::Uuid::from_bytes(volume.into_bytes()).to_string());
     create_mount_directory(root, &recovery)?;
     let (recovery, _) = work.open_root_directory(&root.join(recovery))?;
-    let name = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes()).to_string();
+    let name = uuid::Uuid::from_bytes(acyclic_fs_format::identity::OperationId::new().into_bytes())
+        .to_string();
     owner.preserve_crashed_in_directory(&recovery, Path::new(&name), volume, &work)?;
     Ok(())
 }

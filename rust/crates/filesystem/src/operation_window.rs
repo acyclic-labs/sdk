@@ -29,7 +29,7 @@ pub(crate) mod lease_path;
 
 const STATE_VERSION: u32 = 1;
 
-uuid_identity!(OperationLeaseId, "Stable identity of one tool lease.");
+acyclic_fs_format::uuid_identity!(OperationLeaseId, "Stable identity of one tool lease.");
 
 /// One active durable tool lease.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

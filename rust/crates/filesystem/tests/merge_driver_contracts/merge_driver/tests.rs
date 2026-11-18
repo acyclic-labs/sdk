@@ -1,5 +1,9 @@
+use acyclic_fs::GenerationId;
 use acyclic_fs::merge_driver::*;
-use acyclic_fs::{Digest, FileId, GenerationId, ObjectStorage};
+use acyclic_fs_format::{
+    identity::{Digest, FileId},
+    object_reference::ObjectStorage,
+};
 use std::sync::Arc;
 
 struct MarkerDriver(&'static [u8]);

@@ -35,7 +35,7 @@ impl crate::filesystem::VolumeResources for BeforeCut {
         &'a self,
         source: &'a str,
         destination: &'a str,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
         generation: Option<acyclic_fs::GenerationId>,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,

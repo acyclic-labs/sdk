@@ -18,11 +18,11 @@ use uuid::Uuid;
 
 const WORKSPACE_CONTEXT_VERSION: u32 = 1;
 
-uuid_identity!(
+acyclic_fs_format::uuid_identity!(
     WorkspaceContextId,
     "Stable opaque identity of one multi-root workspace context."
 );
-uuid_identity!(
+acyclic_fs_format::uuid_identity!(
     WorkspaceRootId,
     "Stable identity of one physical root across recursively forked contexts."
 );

@@ -76,7 +76,7 @@ impl CoreLog {
             file,
             length,
             flushed: 0,
-            epoch: crate::identity::fresh_time_uuid(),
+            epoch: acyclic_fs_format::identity::fresh_time_uuid(),
             sequence: 0,
             residents: replay_residents,
             dirty: Vec::new(),

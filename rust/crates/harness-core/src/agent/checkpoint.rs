@@ -481,13 +481,13 @@ mod tests {
                                 ),
                                 volume(),
                             ),
-                            generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
-                                kind: acyclic_fs::ObjectKind::GenerationRoot,
-                                digest: acyclic_fs::Digest::from_bytes([255; 32]),
-                                storage: Some(acyclic_fs::ObjectStorage {
-                                    locator: acyclic_fs::Digest::from_bytes([255; 32]),
-                                    root_file_id: acyclic_fs::FileId::from_bytes([255; 16]),
-                                    origin_generation: acyclic_fs::Digest::from_bytes([255; 32]),
+                            generation: acyclic_fs::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
+                                kind: acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
+                                digest: acyclic_fs_format::identity::Digest::from_bytes([255; 32]),
+                                storage: Some(acyclic_fs_format::object_reference::ObjectStorage {
+                                    locator: acyclic_fs_format::identity::Digest::from_bytes([255; 32]),
+                                    root_file_id: acyclic_fs_format::identity::FileId::from_bytes([255; 16]),
+                                    origin_generation: acyclic_fs_format::identity::Digest::from_bytes([255; 32]),
                                 }),
                             }),
                         })

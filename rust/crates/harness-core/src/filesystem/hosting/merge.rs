@@ -191,7 +191,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                     .unwrap_or(i64::MAX),
                 request: Some(acyclic_fs::GitRequest {
                     merge_source: None,
-                    operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                    operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                        operation.into_bytes(),
+                    ),
                     unanswered: Arc::new(|_| true),
                 }),
             },

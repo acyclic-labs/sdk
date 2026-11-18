@@ -1,5 +1,9 @@
 use super::*;
-use acyclic_fs::{Digest, GenerationId, ObjectId, ObjectKind, kernel::MetadataField};
+use {
+    acyclic_fs::{GenerationId, kernel::MetadataField},
+    acyclic_fs_format::identity::Digest,
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+};
 
 #[test]
 fn clock_rollback_invalidates_reused_reads_and_publication_authority() -> Result<(), InvalidPolicy>

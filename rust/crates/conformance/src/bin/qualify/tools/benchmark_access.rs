@@ -20,7 +20,10 @@ where
 mod tests {
     use super::*;
     use acyclic_fs::access::{Action, ActionSet};
-    use acyclic_fs::{CancellationToken, Lifecycle, MaterializeOptions, OperationId, VolumeConfig};
+    use {
+        acyclic_fs::{CancellationToken, Lifecycle, MaterializeOptions, VolumeConfig},
+        acyclic_fs_format::identity::OperationId,
+    };
 
     #[tokio::test]
     async fn benchmark_mounts_bind_real_volume_policy() -> Result<(), Failure> {

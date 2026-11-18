@@ -266,7 +266,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &'a PreparationIo,
         publication: FilePublication<'a>,
         context: Option<(
-            acyclic_fs::Digest,
+            acyclic_fs_format::identity::Digest,
             acyclic_stream::OwnedBytes,
             acyclic_fs::PublicationPermit,
         )>,
@@ -403,7 +403,7 @@ pub(in crate::filesystem::host) fn publication_context(
     evidence: acyclic_stream::OwnedBytes,
     io: &PreparationIo,
 ) -> Result<(
-    acyclic_fs::Digest,
+    acyclic_fs_format::identity::Digest,
     acyclic_stream::OwnedBytes,
     acyclic_fs::PublicationPermit,
 )> {
@@ -412,7 +412,8 @@ pub(in crate::filesystem::host) fn publication_context(
         ..Default::default()
     };
     io.preflight(work)?;
-    let fingerprint = acyclic_fs::Digest::from_bytes(*blake3::hash(&evidence).as_bytes());
+    let fingerprint =
+        acyclic_fs_format::identity::Digest::from_bytes(*blake3::hash(&evidence).as_bytes());
     io.charge(work)?;
     Ok((
         fingerprint,

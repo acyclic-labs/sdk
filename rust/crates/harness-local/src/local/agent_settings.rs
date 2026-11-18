@@ -675,7 +675,7 @@ mod tests {
             .map_err(|failure| storage(failure.error))?;
         let publication = writer
             .commit::<acyclic_fs::FsError, _, _>(
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 None,
                 None,
                 None,

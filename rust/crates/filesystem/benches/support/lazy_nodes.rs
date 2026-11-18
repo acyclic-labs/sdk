@@ -138,7 +138,7 @@ fn shadow(size: usize) -> LazyShadow {
     )
     .unwrap_or_else(fail);
     LazyShadow::Node {
-        file_id: acyclic_fs::FileId::from_bytes([7; 16]),
+        file_id: acyclic_fs_format::identity::FileId::from_bytes([7; 16]),
         priority: 1,
         authored: Some(acyclic_fs::LazyStoredRecord {
             record: vec![7; size],

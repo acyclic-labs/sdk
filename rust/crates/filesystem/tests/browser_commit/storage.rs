@@ -1,8 +1,5 @@
 use super::*;
 use acyclic_fs::storage::ObjectWrite;
-use acyclic_fs::{
-    AuthorityStoreError, ObjectId, ObjectReadRetention, ObjectStoreError, object_digest,
-};
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::StreamProviderExt as _;
 use bytes::Bytes;
@@ -12,12 +9,18 @@ use std::mem::size_of;
 use wasm_bindgen::JsCast;
 use {
     acyclic_fs::{
-        AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CreateAuthorityOutcome,
-        Digest, DurableCommit, Epoch, FenceOutcome, GuardedAppend, Head, ObjectKind, OperationId,
-        ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
-        Sequence, WorkspaceForkCommit, WorkspaceForkOutcome,
+        AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CreateAuthorityOutcome,
+        DurableCommit, Epoch, FenceOutcome, GuardedAppend, Head, ProposedCommit, PublicationPermit,
+        PublicationReservation, ReplayLimit, ReservationOutcome, Sequence, WorkspaceForkCommit,
+        WorkspaceForkOutcome,
     },
+    acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
+    acyclic_fs_format::object_reference::ObjectKind,
     acyclic_fs_work::performance::WorkError,
+};
+use {
+    acyclic_fs::{AuthorityStoreError, ObjectReadRetention, ObjectStoreError, object_digest},
+    acyclic_fs_format::object_reference::ObjectId,
 };
 type BrowserAuthority = acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>;
 async fn open_authority(
@@ -146,9 +149,9 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
     let read_peak = work.spent().unwrap().peak_allocation_bytes;
     assert_eq!(read.bytes, bytes);
     let associated = ObjectId {
-        storage: Some(acyclic_fs::ObjectStorage {
+        storage: Some(acyclic_fs_format::object_reference::ObjectStorage {
             locator: Digest::from_bytes([31; 32]),
-            root_file_id: acyclic_fs::FileId::from_bytes([32; 16]),
+            root_file_id: acyclic_fs_format::identity::FileId::from_bytes([32; 16]),
             origin_generation: Digest::from_bytes([33; 32]),
         }),
         ..object_id

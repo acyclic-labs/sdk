@@ -19,14 +19,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use {
     acyclic_fs::{
-        AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, AuthorityId,
-        CachedMergeResolution, CancellationToken, ConflictKey, ConflictKind, ConflictSide,
-        ConflictValue, Digest, DrivenJoinError, Epoch, FenceOutcome, FileId, ForkOptions, Fs,
-        GenerationId, Head, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache, MergeDriver,
-        MergeDriverMode, MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
-        MergeResolutionCache, OperationId, ProposedCommit, ResolutionKey, StreamAuthorityStore,
-        StreamGitCompatStore, WorkspaceGraph, WorkspaceLineageError, resolve_merge_plan,
+        AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, CachedMergeResolution,
+        CancellationToken, ConflictKey, ConflictKind, ConflictSide, ConflictValue, DrivenJoinError,
+        Epoch, FenceOutcome, ForkOptions, Fs, GenerationId, Head, IdempotencyKey, JoinOutcome,
+        MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergePlan,
+        MergePlanResolutionError, MergeResolution, MergeResolutionCache, ProposedCommit,
+        ResolutionKey, StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph,
+        WorkspaceLineageError, resolve_merge_plan,
     },
+    acyclic_fs_format::identity::{AuthorityId, Digest, FileId, OperationId},
     acyclic_fs_work::performance::WorkBudget,
 };
 

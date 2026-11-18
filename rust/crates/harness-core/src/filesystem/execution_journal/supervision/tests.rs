@@ -299,7 +299,7 @@ async fn native_capture_receipts_keep_original_identity_and_refuse_unavailable_p
     let mut context = ToolContext::new(task.clone(), effect, "shell")?;
     context.model_turn = (execution, 0);
     let evidence = NativeCaptureEvidence::Unavailable {
-        operation: acyclic_fs::OperationId::new(),
+        operation: acyclic_fs_format::identity::OperationId::new(),
     };
     assert!(
         context

@@ -134,7 +134,7 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
             }),
             access_policy: None,
         },
-        acyclic_fs::OperationId::new(),
+        acyclic_fs_format::identity::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )
     .await
@@ -459,7 +459,7 @@ async fn attach_ntfs(
             }),
             access_policy: None,
         },
-        acyclic_fs::OperationId::new(),
+        acyclic_fs_format::identity::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )
     .await
@@ -644,7 +644,7 @@ async fn native_lazy_workspace_lists_windows_source_directories()
         demand,
         MemoryLazyWorkspaceStore::default(),
         acyclic_fs::VolumeInitialization::new(VolumeConfig::native(Lifecycle::Durable), None),
-        acyclic_fs::OperationId::new(),
+        acyclic_fs_format::identity::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )
     .await

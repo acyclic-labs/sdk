@@ -2,15 +2,16 @@ use acyclic_fs::kernel::{
     CanonicalDecodeError, DecodeLimits, FileKind, FilePayload, FileRecord, FileTablePage,
     decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record,
 };
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, CancellationToken, FileId, LogicalObjectStore, ObjectId,
-    ObjectKind,
-};
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use {
+    acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, LogicalObjectStore},
+    acyclic_fs_format::identity::FileId,
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("file-table benchmark failed: {error:?}");
@@ -39,7 +40,7 @@ fn page(count: u8) -> FileTablePage {
                 metadata: ObjectId {
                     storage: None,
                     kind: ObjectKind::Metadata,
-                    digest: acyclic_fs::Digest::from_bytes([key; 32]),
+                    digest: acyclic_fs_format::identity::Digest::from_bytes([key; 32]),
                 },
                 payload: FilePayload::Empty,
             })

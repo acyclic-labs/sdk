@@ -86,7 +86,7 @@ cases! {
     authority_epoch: authority(AuthorityStoreError::EpochExhausted) => ResourceExhausted;
     authority_sequence: authority(AuthorityStoreError::SequenceExhausted) => ResourceExhausted;
     authority_reservation: authority(AuthorityStoreError::ReservationOriginalHeadUnavailable {
-        authority_id: acyclic_fs::AuthorityId::from_bytes([1;16]), operation_id: acyclic_fs::OperationId::from_bytes([2;16]), gate_tail: 1
+        authority_id: acyclic_fs_format::identity::AuthorityId::from_bytes([1;16]), operation_id: acyclic_fs_format::identity::OperationId::from_bytes([2;16]), gate_tail: 1
     }) => FailedPrecondition;
     authority_corrupt: authority(AuthorityStoreError::Corrupt("invalid durable state".into())) => DataLoss;
     authority_io: authority(AuthorityStoreError::Io(io(std::io::ErrorKind::ConnectionRefused))) => Unavailable;

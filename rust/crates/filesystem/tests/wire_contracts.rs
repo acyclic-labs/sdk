@@ -7,11 +7,11 @@ mod compat_wire {
     mod tests {
         use acyclic_fs::compat_wire::*;
         use acyclic_fs::{
-            Digest, GenerationId, MergePlan, MultiRootFence, MultiRootMergeCandidate,
-            MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication,
-            MultiRootPublicationPhase, OperationId, Publication, WorkspaceContextId, WorkspaceId,
-            WorkspaceRootId,
+            GenerationId, MergePlan, MultiRootFence, MultiRootMergeCandidate, MultiRootMergePlan,
+            MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationPhase, Publication,
+            WorkspaceContextId, WorkspaceId, WorkspaceRootId,
         };
+        use acyclic_fs_format::identity::{Digest, OperationId};
         use std::collections::{BTreeMap, BTreeSet};
 
         fn generation(byte: u8) -> GenerationId {
@@ -158,6 +158,7 @@ mod workspace_context_wire {
             WorkspaceContext, WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState,
             WorkspaceId, WorkspaceRootId,
         };
+        use acyclic_fs_format::identity::{Digest, OperationId};
         use acyclic_fs_wire::wire::filesystem::v2 as wire;
         use prost::Message;
         use std::collections::BTreeMap;

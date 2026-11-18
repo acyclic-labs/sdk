@@ -73,6 +73,7 @@ rust_library(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -167,6 +168,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -221,6 +223,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -275,6 +278,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -329,6 +333,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -383,6 +388,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -437,6 +443,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -491,6 +498,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -545,6 +553,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -599,6 +608,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -653,6 +663,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -707,6 +718,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -761,6 +773,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -815,6 +828,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -869,6 +883,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -923,6 +938,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -977,6 +993,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1031,6 +1048,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1085,6 +1103,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1139,6 +1158,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1199,6 +1219,7 @@ rust_binary(
         "//compatibility:acyclic_proto_build",
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1255,6 +1276,7 @@ rust_binary(
         "//compatibility:acyclic_proto_build",
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1311,6 +1333,7 @@ rust_binary(
         "//compatibility:acyclic_proto_build",
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",

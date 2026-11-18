@@ -16,8 +16,9 @@ use std::sync::{
 use {
     acyclic_fs::{
         AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
-        MemoryAuthorityBackend, MemoryObjectBackend, ObjectId, ObjectReadRequest, WorkspaceError,
+        MemoryAuthorityBackend, MemoryObjectBackend, ObjectReadRequest, WorkspaceError,
     },
+    acyclic_fs_format::object_reference::ObjectId,
     acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 

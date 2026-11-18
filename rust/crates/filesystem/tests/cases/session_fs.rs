@@ -28,7 +28,7 @@ async fn fixture() -> Result<(
                 acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
                 Some(access::INITIAL_POLICY),
             ),
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,
@@ -69,7 +69,7 @@ async fn policy(workspace: &Space) -> Result {
         .await?;
     checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,
@@ -177,7 +177,7 @@ impl Connection {
     async fn open(
         fs: acyclic_fs::MemoryFs,
         streams: Arc<acyclic_stream::MemoryStream>,
-        volume: acyclic_fs::VolumeId,
+        volume: acyclic_fs_format::identity::VolumeId,
         from: u64,
         anchor: Bytes,
         credit: bool,
@@ -200,7 +200,7 @@ impl Connection {
     async fn open_filtered(
         fs: acyclic_fs::MemoryFs,
         streams: Arc<acyclic_stream::MemoryStream>,
-        volume: acyclic_fs::VolumeId,
+        volume: acyclic_fs_format::identity::VolumeId,
         from: u64,
         anchor: Bytes,
         spec: FollowSpec<'_>,
@@ -215,7 +215,7 @@ impl Connection {
     async fn start_filtered(
         fs: acyclic_fs::MemoryFs,
         streams: Arc<acyclic_stream::MemoryStream>,
-        volume: acyclic_fs::VolumeId,
+        volume: acyclic_fs_format::identity::VolumeId,
         from: u64,
         anchor: Bytes,
         spec: FollowSpec<'_>,

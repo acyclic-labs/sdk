@@ -140,6 +140,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", features = ["test-support"] }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }

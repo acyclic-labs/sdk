@@ -104,7 +104,7 @@ pub(in crate::bindings) struct PendingWatchBatch {
 #[napi]
 pub struct NativeMount {
     pub(in crate::bindings) inner: std::sync::Mutex<Option<NativeMountSession>>,
-    pub(in crate::bindings) mount_id: acyclic_fs::MountId,
+    pub(in crate::bindings) mount_id: acyclic_fs_format::identity::MountId,
     pub(in crate::bindings) destination: String,
 }
 
@@ -115,7 +115,7 @@ impl NativeCheckout {
         let source = Arc::new(
             CheckoutMountSource::new(Arc::clone(&self.inner), self.config).map_err(napi_error)?,
         );
-        let mount_id = acyclic_fs::MountId::new();
+        let mount_id = acyclic_fs_format::identity::MountId::new();
         let session = mount_native(
             NativeMountRequest {
                 mount_id,

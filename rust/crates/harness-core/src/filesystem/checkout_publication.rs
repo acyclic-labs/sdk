@@ -8,8 +8,9 @@ use {
     acyclic_fs::{
         Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
         MaterializationJournal, MaterializeOptions, NativeAllocation, NativeMaterializationWork,
-        NativeWorkspacePublication, OperationId,
+        NativeWorkspacePublication,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_native_contract::NativeRootIdentity,
 };
 

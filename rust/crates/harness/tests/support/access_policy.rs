@@ -29,7 +29,7 @@ pub async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await?;
     checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,

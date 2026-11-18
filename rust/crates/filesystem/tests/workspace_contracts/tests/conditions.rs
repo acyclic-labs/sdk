@@ -1,8 +1,9 @@
 //! Conditional writes and removals.
 use acyclic_fs::{
-    FileCondition, FileId, Fs, IdempotencyKey, MemoryAuthorityBackend, MemoryObjectBackend,
+    FileCondition, Fs, IdempotencyKey, MemoryAuthorityBackend, MemoryObjectBackend,
     TransactionCommit, Workspace, WorkspaceError,
 };
+use acyclic_fs_format::identity::FileId;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 

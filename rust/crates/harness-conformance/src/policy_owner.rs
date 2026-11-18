@@ -131,7 +131,7 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
                 config: acyclic_fs::VolumeConfig::portable(lifecycle),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             WorkBudget::UNBOUNDED,
             &cancellation,
             None,
@@ -159,7 +159,7 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         .await?;
     checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,

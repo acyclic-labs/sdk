@@ -6,8 +6,9 @@ use tokio::runtime::Runtime;
 use {
     acyclic_fs::{
         AsyncObjectStore, AuthorityWork, CancellationToken, HashedObject, LogicalObjectStore,
-        NativeMaterializationWork, ObjectKind, storage::ObjectWrite,
+        NativeMaterializationWork, storage::ObjectWrite,
     },
+    acyclic_fs_format::object_reference::ObjectKind,
     acyclic_fs_work::performance::WorkCounters,
 };
 

@@ -10,10 +10,10 @@ use {
     acyclic_fs::{
         AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs,
         HostPathReplacement, Lifecycle, MaterializeOptions, NativeMaterializationWork,
-        VolumeConfig, VolumeId, capture_baseline, capture_paths, capture_root_identity,
-        capture_subtree, materialize_checkout, materialize_checkout_paths,
-        restore_checkout_host_path,
+        VolumeConfig, capture_baseline, capture_paths, capture_root_identity, capture_subtree,
+        materialize_checkout, materialize_checkout_paths, restore_checkout_host_path,
     },
+    acyclic_fs_format::identity::VolumeId,
     acyclic_fs_work::performance::WorkBudget,
 };
 

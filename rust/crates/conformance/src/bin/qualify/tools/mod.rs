@@ -25,8 +25,8 @@ use acyclic_stream::LocalDurability as StreamDurability;
 use {
     acyclic_fs::{
         CancellationToken, GenerationId, LivePublicationObservation, LocalFs, LocalOptions,
-        OperationId, VolumeId,
     },
+    acyclic_fs_format::identity::{OperationId, VolumeId},
     acyclic_fs_work::performance::WorkCounters,
 };
 

@@ -2,12 +2,15 @@
 
 use super::*;
 use crate::executor::PreparationIo;
-use acyclic_fs::{PublicationContext, PublicationEntry, VolumeConfig, VolumeId};
 use acyclic_stream::session::{ResourceRevalidation, ResourceSubscription};
 use acyclic_stream::{CommitId, FollowStream, FollowUpdate, Record, StreamError, StreamPath};
 use futures::{
     StreamExt as _,
     future::{Either, select},
+};
+use {
+    acyclic_fs::{PublicationContext, PublicationEntry, VolumeConfig},
+    acyclic_fs_format::identity::VolumeId,
 };
 
 /// Original exclusive follow position. It conveys no read authority.

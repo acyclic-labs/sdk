@@ -414,19 +414,24 @@ impl HostWorkspaceOwner {
             .clone()
             .map(|requests| acyclic_fs::GitRequest {
                 merge_source: None,
-                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-                unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
-                    let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
-                    match requests.open_file(Path::new(&file), false) {
-                        Err(acyclic_fs::DemandError::Absent) => false,
-                        Err(acyclic_fs::DemandError::Io(cause))
-                            if cause.kind() == std::io::ErrorKind::NotFound =>
-                        {
-                            false
+                operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                    operation.into_bytes(),
+                ),
+                unanswered: std::sync::Arc::new(
+                    move |request: acyclic_fs_format::identity::OperationId| {
+                        let file =
+                            format!("{}.json", OperationId::from_bytes(request.into_bytes()));
+                        match requests.open_file(Path::new(&file), false) {
+                            Err(acyclic_fs::DemandError::Absent) => false,
+                            Err(acyclic_fs::DemandError::Io(cause))
+                                if cause.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                false
+                            }
+                            _ => true,
                         }
-                        _ => true,
-                    }
-                }),
+                    },
+                ),
             });
         serde_json::to_value(view.fs(operation, parsed, request).await?).map_err(storage)
     }

@@ -30,7 +30,7 @@ pub(crate) async fn replace_policy<
         .map_err(|failure| Error::from(failure.error))?;
     let result = checkout
         .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,

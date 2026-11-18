@@ -1,7 +1,7 @@
 //! Projects opaque reference admission from the canonical decoder into bindings.
 
-use acyclic_fs::{Digest, ObjectId};
 use serde_json::json;
+use {acyclic_fs_format::identity::Digest, acyclic_fs_format::object_reference::ObjectId};
 
 fn main() -> Result<(), serde_json::Error> {
     let mut layouts = Vec::new();

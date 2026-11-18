@@ -385,7 +385,9 @@ async fn child_commands_retain_authority_through_slow_preparation_and_replay() -
             operation,
             scope: &scope,
             request: Some(acyclic_fs::GitRequest {
-                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                    operation.into_bytes(),
+                ),
                 merge_source: None,
                 unanswered: Arc::new(|_| true),
             }),
@@ -459,13 +461,13 @@ proptest! {
         origin in any::<[u8; 32]>(),
     ) {
         let operation = OperationId::from_bytes(operation);
-        let mut object = acyclic_fs::ObjectId {
-            kind: acyclic_fs::ObjectKind::GenerationRoot,
-            digest: acyclic_fs::Digest::from_bytes(digest),
-            storage: Some(acyclic_fs::ObjectStorage {
-                locator: acyclic_fs::Digest::from_bytes(locator),
-                root_file_id: acyclic_fs::FileId::from_bytes(root),
-                origin_generation: acyclic_fs::Digest::from_bytes(origin),
+        let mut object = acyclic_fs_format::object_reference::ObjectId {
+            kind: acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
+            digest: acyclic_fs_format::identity::Digest::from_bytes(digest),
+            storage: Some(acyclic_fs_format::object_reference::ObjectStorage {
+                locator: acyclic_fs_format::identity::Digest::from_bytes(locator),
+                root_file_id: acyclic_fs_format::identity::FileId::from_bytes(root),
+                origin_generation: acyclic_fs_format::identity::Digest::from_bytes(origin),
             }),
         };
         let sealed = acyclic_fs::GenerationId::from_root(object);
@@ -475,7 +477,7 @@ proptest! {
         // Keep the canonical tag and mutate every digest, locator, root and
         // origin byte. Equal plaintext digests must not share replay custody.
         for index in 1..original.len() {
-            let mut changed = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+            let mut changed = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
             changed.copy_from_slice(original.as_slice());
             changed[index] ^= 1;
             let changed = acyclic_fs::GenerationId::from_bytes(&changed)

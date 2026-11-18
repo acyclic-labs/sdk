@@ -86,7 +86,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ..Default::default()
             };
             io.preflight(work)?;
-            let fingerprint = acyclic_fs::Digest::from_bytes(*blake3::hash(&encoded).as_bytes());
+            let fingerprint =
+                acyclic_fs_format::identity::Digest::from_bytes(*blake3::hash(&encoded).as_bytes());
             io.charge(work)?;
             let mut transaction = io.sdk(
                 root.begin_transaction(operation, io, io.cancellation())

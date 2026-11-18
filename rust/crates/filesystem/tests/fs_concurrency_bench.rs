@@ -16,8 +16,9 @@ use std::time::Instant;
 use {
     acyclic_fs::{
         AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, Fs, FsError,
-        LivePublicationObservation, OperationId, PublicationPermit,
+        LivePublicationObservation, PublicationPermit,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters},
 };
 

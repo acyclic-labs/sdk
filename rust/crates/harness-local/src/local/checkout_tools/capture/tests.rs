@@ -548,7 +548,7 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     .await?;
     let outcome = checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,

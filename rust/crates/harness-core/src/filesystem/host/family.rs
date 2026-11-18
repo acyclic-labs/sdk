@@ -284,8 +284,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_fs::{Digest, MemoryWorkspaceLineageStore, WorkspaceLineageRecord};
     use proptest::prelude::*;
+    use {
+        acyclic_fs::{MemoryWorkspaceLineageStore, WorkspaceLineageRecord},
+        acyclic_fs_format::identity::Digest,
+    };
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]

@@ -366,9 +366,9 @@ pub mod markers {
 }
 
 copy_layouts!(
-    acyclic_fs::OperationId,
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs::GenerationId,
-    acyclic_fs::VolumeId,
+    acyclic_fs_format::identity::VolumeId,
     acyclic_fs::MaterializationPhase,
     acyclic_fs::MaterializationPreparationIdentity,
     acyclic_fs::MaterializationPreparationProgress,
@@ -429,8 +429,9 @@ mod materializer {
             GenerationId, MaterializationEdit, MaterializationIntent, MaterializationJournal,
             MaterializationPhase, MaterializationPlan, MaterializationPreimage,
             MaterializationPreparationIdentity, MaterializationPreparationProgress,
-            MaterializationPreparationSelection, OperationId, VolumeId,
+            MaterializationPreparationSelection,
         },
+        acyclic_fs_format::identity::{OperationId, VolumeId},
         acyclic_fs_work::performance::WorkCounters,
     };
 

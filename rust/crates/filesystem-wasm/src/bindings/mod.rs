@@ -95,22 +95,6 @@ use acyclic_fs::model::{
     VolumeLimits,
 };
 use acyclic_fs::workspace_context_wire;
-use acyclic_fs::{
-    ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
-    Checkout, DependencyRegion, DependencyState, DependencyUse, DirectoryPage,
-    EmbeddedCapabilities, FileCloneRequest, FileId, ForkOptions, Fs, Generation,
-    GenerationExportManifest, IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan,
-    LiveMutationOutcome, LivePublicationObservation, LogicalObjectStore,
-    MemoryWorkspaceContextStore, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency, OperationId,
-    PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions, RebaseConflict,
-    ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
-    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
-    StreamAuthorityStore, Transaction, TransactionCommit, TransactionRebase, Volume, VolumeId,
-    Workspace, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceExtentKind,
-    WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase, WorkspaceRootId,
-    WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
-};
 use backend::{BrowserAuthority, BrowserObjects};
 pub use operation_windows::BrowserOperationWindowCoordinator;
 use operation_windows::browser_publication_permit;
@@ -118,3 +102,23 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
+use {
+    acyclic_fs::{
+        ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
+        Checkout, DependencyRegion, DependencyState, DependencyUse, DirectoryPage,
+        EmbeddedCapabilities, FileCloneRequest, ForkOptions, Fs, Generation,
+        GenerationExportManifest, IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan,
+        LiveMutationOutcome, LivePublicationObservation, LogicalObjectStore,
+        MemoryWorkspaceContextStore, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+        ObjectCacheOptions, ObjectReadRequest, ObjectResidency, PromotionAdmission,
+        PromotionDestination, PromotionSpeculatorOptions, RebaseConflict, ResidencyAdmission,
+        ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
+        SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
+        StreamAuthorityStore, Transaction, TransactionCommit, TransactionRebase, Volume, Workspace,
+        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceExtentKind,
+        WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase, WorkspaceRootId,
+        WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
+    },
+    acyclic_fs_format::identity::{FileId, OperationId, VolumeId},
+    acyclic_fs_format::object_reference::ObjectId,
+};

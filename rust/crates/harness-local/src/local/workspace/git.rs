@@ -285,7 +285,7 @@ impl Commands<'_> {
                         scope: context.scope,
                         request: Some(acyclic_fs::GitRequest {
                             merge_source: Some(publication.source),
-                            operation: acyclic_fs::OperationId::from_bytes(
+                            operation: acyclic_fs_format::identity::OperationId::from_bytes(
                                 publication.operation.into_bytes(),
                             ),
                             unanswered: Arc::new(|_| true),
@@ -312,7 +312,7 @@ impl Commands<'_> {
                     if !matches!(*error, Error::MergeConflict { .. })
                         || !pending.is_some_and(|pending| {
                             pending.request
-                                == Some(acyclic_fs::OperationId::from_bytes(
+                                == Some(acyclic_fs_format::identity::OperationId::from_bytes(
                                     publication.operation.into_bytes(),
                                 ))
                                 && matches!(
@@ -630,7 +630,7 @@ fn reconciliation_operation(
     phase: &[u8],
     from: acyclic_fs::GenerationId,
     to: acyclic_fs::GenerationId,
-) -> acyclic_fs::OperationId {
+) -> acyclic_fs_format::identity::OperationId {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.git-reconciliation/v2");
     hash.update(&operation.into_bytes());
     hash.update(phase);
@@ -638,7 +638,7 @@ fn reconciliation_operation(
     hash.update(to.to_bytes().as_slice());
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationId::from_bytes(bytes)
+    acyclic_fs_format::identity::OperationId::from_bytes(bytes)
 }
 
 async fn head(

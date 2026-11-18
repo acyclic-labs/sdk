@@ -93,7 +93,6 @@ pub mod distributed;
 mod logical_objects;
 pub use logical_objects::{LogicalObjectStore, ObjectSealer, PlainObjects};
 pub mod facade;
-#[macro_use]
 pub mod foundation;
 mod publication_changes;
 pub use publication_changes::PublicationEntry;
@@ -197,6 +196,10 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
+use acyclic_fs_format::identity::{
+    AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
+};
+use acyclic_fs_format::object_reference::{ObjectId, ObjectIdBytes, ObjectKind, ObjectStorage};
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(not(target_arch = "wasm32"))]
@@ -246,9 +249,8 @@ pub use facade::{
 };
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
-    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
-    FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
-    authority_commit_digest,
+    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Epoch, GenerationId, Head,
+    ProposedCommit, Sequence, authority_commit_digest,
 };
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
@@ -407,10 +409,9 @@ pub use speculation::{
 };
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, ByteRange,
-    CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectId,
-    ObjectIdBytes, ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
-    ObjectStorage, ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit,
-    ReservationOutcome, object_digest,
+    CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectRead,
+    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationPermit,
+    PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,

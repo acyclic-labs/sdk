@@ -58,7 +58,7 @@ pub struct FileDescription {
 /// ```compile_fail,E0616
 /// use acyclic_fs::ResolvedFile;
 /// fn transplant<A, O>(file: &mut ResolvedFile<A, O>) {
-///     file.record.file_id = acyclic_fs::FileId::new();
+///     file.record.file_id = acyclic_fs_format::identity::FileId::new();
 /// }
 /// ```
 pub struct ResolvedFile<A: 'static, O: 'static> {
