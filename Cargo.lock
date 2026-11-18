@@ -518,7 +518,7 @@ dependencies = [
  "acyclic-stream",
  "blake3",
  "serde",
- "thiserror 2.0.18",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
