@@ -1,3 +1,4 @@
+use acyclic_fs::CancellationToken;
 use acyclic_fs::kernel::LogicalName;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::mount::{MountError, MountedCheckout, MountedView};
@@ -190,10 +191,11 @@ async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume
 }
 
 async fn same_volume_checkouts(count: usize) -> fixture::TestResult<Vec<fixture::TestCheckout>> {
-    let volume = volume(fixture::config()).await?;
+    let cancel = CancellationToken::new();
+    let volume = volume(fixture::config(), &cancel).await?;
     let mut checkouts = Vec::with_capacity(count);
     for _ in 0..count {
-        checkouts.push(open_checkout(&volume).await?);
+        checkouts.push(open_checkout(&volume, fixture::writable_pinned(), &cancel).await?);
     }
     Ok(checkouts)
 }
