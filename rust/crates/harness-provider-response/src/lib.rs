@@ -4,6 +4,13 @@ use acyclic_harness_provider_protocol::refusal::is_context_overflow;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
+/// Stateful decoding of provider events.
+pub mod stream;
+
+fn invalid(reason: impl Into<String>) -> Error {
+    Error::Invalid(reason.into())
+}
+
 /// No remote string or container survives the classification.
 struct Refusal(bool);
 

@@ -1,8 +1,9 @@
-use crate::{Adapter, invalid, stream::family};
+use crate::{Adapter, invalid};
 use acyclic_harness_core::{
     Result,
     model::{ModelContentPart, ModelRequest},
 };
+use acyclic_harness_provider_response::stream::family;
 use std::{
     borrow::Cow,
     collections::{HashMap, hash_map::Entry},

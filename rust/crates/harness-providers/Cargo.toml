@@ -63,6 +63,7 @@ wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0", features = ["test-support"] }
 harness-mock-model = { path = "../harness-mock-model" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["conformance"] }
 acyclic-actors = { path = "../actors", version = "=0.2.0" }

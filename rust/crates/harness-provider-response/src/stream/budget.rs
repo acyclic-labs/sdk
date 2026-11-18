@@ -37,8 +37,7 @@ impl<'work> Budget<'work> {
         }
         Ok(self.used)
     }
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     pub fn used(&self) -> usize {
         self.used
     }
@@ -171,7 +170,7 @@ impl<'work> Budget<'work> {
         Ok(())
     }
     pub fn encoded<T: serde::Serialize>(&mut self, target: &mut String, value: &T) -> Result<()> {
-        let length = acyclic_harness_provider_response::encoded_json_len(value)?;
+        let length = crate::encoded_json_len(value)?;
         self.replace(target.capacity(), length)?;
         let mut bytes = Vec::new();
         bytes
@@ -188,7 +187,7 @@ fn size(value: &Value, cloned: bool) -> Result<usize> {
     match value {
         // Also bounds Number's owned digits when arbitrary_precision is enabled
         // elsewhere in a workspace build; that representation is private to serde.
-        Value::Number(_) => result = acyclic_harness_provider_response::encoded_json_len(value)?,
+        Value::Number(_) => result = crate::encoded_json_len(value)?,
         Value::String(text) => result = if cloned { text.len() } else { text.capacity() },
         Value::Array(values) => {
             result = if cloned {

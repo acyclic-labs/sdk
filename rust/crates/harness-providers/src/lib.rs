@@ -59,6 +59,7 @@ mod resolved;
 mod retry;
 mod spec;
 mod sse;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod stream;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

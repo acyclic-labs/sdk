@@ -1,6 +1,5 @@
-use super::{State, finish, parse};
-use crate::Adapter;
-use acyclic_harness::model::ModelEvent;
+use super::{Adapter, State, finish, parse};
+use acyclic_harness_core::model::ModelEvent;
 use serde_json::{Value, json};
 
 fn done(position: u64, parts: Value) -> Value {

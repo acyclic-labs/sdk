@@ -147,7 +147,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
                         json!({"value":1})
                     )
                     .with_metadata(
-                        json!({"provider_call":{"provider":stream::family(adapter),"id":"call"}})
+                        json!({"provider_call":{"provider":acyclic_harness_provider_response::stream::family(adapter),"id":"call"}})
                     )
                 )
             );

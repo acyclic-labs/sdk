@@ -1049,8 +1049,11 @@ name = "acyclic-harness-provider-response"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness-core",
  "acyclic-harness-provider-protocol",
+ "acyclic-model-render",
+ "proptest",
  "serde",
  "serde_json",
 ]

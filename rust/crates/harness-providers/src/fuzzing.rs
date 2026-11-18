@@ -1,5 +1,5 @@
 //! The cargo-fuzz entry point uses the same streaming path as model dispatch.
-use crate::{Adapter, stream};
+use crate::Adapter;
 use acyclic_harness_core::{
     OperationId,
     model::{ModelDispatch, ModelEvent},

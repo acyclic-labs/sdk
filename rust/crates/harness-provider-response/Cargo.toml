@@ -7,15 +7,20 @@ license.workspace = true
 repository.workspace = true
 description = "Bounded response decoding for harness providers"
 
-[lib]
-test = false
+[features]
+test-support = []
 
 [dependencies]
+acyclic-fs-work = { path = "../filesystem-work", version = "=0.2.0" }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", version = "=0.2.0" }
+acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

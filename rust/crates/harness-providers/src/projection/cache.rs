@@ -126,7 +126,7 @@ pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
 // building or parsing a second URL. Length framing separates every component.
 fn identity(provider: &ResolvedModel) -> [&[u8]; 3] {
     [
-        crate::stream::family(provider.config.adapter).as_bytes(),
+        acyclic_harness_provider_response::stream::family(provider.config.adapter).as_bytes(),
         provider.config.base_url.as_bytes(),
         provider.model.name.as_bytes(),
     ]

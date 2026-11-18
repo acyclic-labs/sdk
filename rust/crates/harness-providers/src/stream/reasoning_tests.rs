@@ -1,9 +1,7 @@
 use super::{parser_dispatch, provider, request};
-use crate::{
-    Adapter, Result,
-    stream::{State, finish, parse},
-};
+use crate::{Adapter, Result};
 use acyclic_harness_core::{conversation::Limits, model::*};
+use acyclic_harness_provider_response::stream::{State, finish, parse};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -56,7 +54,11 @@ fn scenario(
             )?;
         }
     }
-    state.terminal = true;
+    let terminal = match adapter {
+        Adapter::Responses => r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        _ => r#"{"type":"message_stop"}"#,
+    };
+    parse(&mut state, adapter, terminal)?;
     Ok((finish(state, adapter, parser_dispatch())?, native, provider))
 }
 

@@ -1,13 +1,11 @@
 //! Drives admitted response frames through the provider event parser.
 
-use crate::{
-    Adapter, sse,
-    stream::{State, finish, parse},
-};
+use crate::{Adapter, sse};
 use acyclic_harness_core::{
     Result,
     model::{ModelDispatch, ModelEvent},
 };
+use acyclic_harness_provider_response::stream::{State, finish, parse};
 use acyclic_stream::BoxProviderStream;
 use bytes::Bytes;
 use futures::StreamExt as _;
@@ -45,7 +43,7 @@ pub(crate) fn events_named<'a>(
             let data = data.data();
             let deltas = parse(&mut state, adapter, data)?;
             for event in deltas { yield event; }
-            if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
+            if state.is_terminal() && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
         if let Some(names) = names { state.restore_names(|wire| names.canonical(wire), |_| Ok(()))?; }
         let events = finish(state, adapter, dispatch)?;
