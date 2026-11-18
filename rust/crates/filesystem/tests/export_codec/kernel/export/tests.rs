@@ -11,9 +11,7 @@ use acyclic_fs_format::{
 
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
-#[path = "../../../support/memory_objects.rs"]
-mod memory;
-use memory::memory_objects;
+use super::super::memory::memory_objects;
 
 #[path = "../../../support/export_manifest.rs"]
 mod fixture;
