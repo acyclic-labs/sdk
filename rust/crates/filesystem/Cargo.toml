@@ -73,6 +73,7 @@ rustc = "//:rustc"
 memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "bytes", "tokio"]
 mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
 checkout_cancellation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
+checkout_transactions = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_content = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_live = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
@@ -232,6 +233,10 @@ path = "tests/memory_authority.rs"
 [[test]]
 name = "checkout_cancellation"
 path = "tests/checkout_cancellation.rs"
+
+[[test]]
+name = "checkout_transactions"
+path = "tests/checkout_transactions.rs"
 
 [[test]]
 name = "checkout_reconciliation"
