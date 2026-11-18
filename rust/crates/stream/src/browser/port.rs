@@ -70,7 +70,8 @@ impl CommandJournal for BrowserPort<'_> {
         self.head = head;
         self.bytes = bytes;
         let end = head.min(from.saturating_add(page as u64));
-        let mut entries = Vec::with_capacity((end - from) as usize);
+        let capacity = usize::try_from(end - from).map_err(|_| StreamError::InvalidResponse)?;
+        let mut entries = Vec::with_capacity(capacity);
         for index in from..end {
             let key = format!("{index:016x}");
             let value = store
