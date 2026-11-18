@@ -187,7 +187,7 @@ fn invalid_requests_fail_before_cargo_runs() {
     let directory = tempfile::tempdir().unwrap();
     let target_dir = directory.path().join("target");
     let execute = |target: RustdocTarget| {
-        execute_profile(
+        let error = execute_profile(
             directory.path().join("Cargo.toml"),
             metadata(),
             &profile,
@@ -197,7 +197,9 @@ fn invalid_requests_fail_before_cargo_runs() {
             CargoExecutionContext::default(),
             &target,
         )
-        .unwrap_err()
+        .unwrap_err();
+        assert!(!target_dir.exists());
+        error
     };
     assert!(matches!(execute(RustdocTarget::Binary("absent".into())),
         ProfileError::InvalidRustdoc(message) if message.contains("absent from Cargo")));
@@ -208,7 +210,6 @@ fn invalid_requests_fail_before_cargo_runs() {
             feature: "missing".into(),
         }
     );
-    assert!(!target_dir.exists());
 }
 
 #[test]
