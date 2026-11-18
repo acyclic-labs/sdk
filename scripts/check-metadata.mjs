@@ -29,17 +29,17 @@ for (const [documentPath, schemaPath] of documents) {
 }
 const retiredFindings = retiredRuntimeFindings(checkedDocuments);
 if (retiredFindings.length) throw new Error(retiredFindings.join("\nerror: "));
-const provenance = await load("provenance/manifest.json");
+const provenance = checkedDocuments.get("provenance/manifest.json");
 for (const item of provenance.imports) if (item.auditResult !== "approved") throw new Error(`unapproved import: ${item.destinationPath}`);
 
-const compatibility = await load("compatibility/manifest.json");
+const compatibility = checkedDocuments.get("compatibility/manifest.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
 for (const path of ["plugin/plugin.json", "plugin/.codex-plugin/plugin.json"]) {
   if ((await load(path)).version !== sdkPackage.version) {
     throw new Error(`host plugin manifest version mismatch: ${path}`);
   }
 }
-for (const item of await load("release/npm-packages.json")) {
+for (const item of checkedDocuments.get("release/npm-packages.json")) {
   const directory = item.source === "plugin"
     ? "plugin"
     : `typescript/packages/${item.directory}`;
