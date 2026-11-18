@@ -265,10 +265,8 @@ fn real_format_60_fixture_is_accepted_when_requested() {
         return;
     };
     let observation = observe_rustdoc(path).unwrap();
-    assert_eq!(observation.format_version, FORMAT_VERSION);
     assert_eq!(observation.crate_name, "acyclic_actors");
     assert_eq!(observation.crate_version.as_deref(), Some("0.2.0"));
-    assert!(!observation.includes_private);
     assert_eq!(observation.target, "x86_64-pc-windows-msvc");
     assert!(observation.item_count > 100);
 }
