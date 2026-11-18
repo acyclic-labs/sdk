@@ -56,15 +56,6 @@ fn copy_tree_inner(source: &Path, destination: &Path, mode: CopyMode) {
     }
 }
 
-pub(super) fn copy_historical_fixture(template: &(Fixture, PathBuf)) -> (Fixture, PathBuf) {
-    let fixture = copy_fixture(&template.0);
-    copy_tree(&template.0.output, &fixture.output);
-    let support = fixture
-        .output
-        .join(template.1.strip_prefix(&template.0.output).unwrap());
-    (fixture, support)
-}
-
 pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {

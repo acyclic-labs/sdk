@@ -383,7 +383,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
                     true,
                     name,
                     Some(owner_example),
-                    Some(super::replay::copy_historical_fixture(template)),
+                    Some(packaging::copy_source_fixture(&template.0)),
                 )
             })
         });
