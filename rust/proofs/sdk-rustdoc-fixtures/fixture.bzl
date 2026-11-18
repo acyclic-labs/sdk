@@ -151,4 +151,4 @@ def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = 
             retain_artifacts = retain_artifacts,
             cargo_flags = flags,
         )
-    return srcs + mapped_sources.keys() + [":" + name for name in profiles]
+    return [":" + name for name in profiles]
