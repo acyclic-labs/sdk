@@ -21,8 +21,10 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = [
+        "proto/stream/v1/session.proto",
+        "proto/stream/v1/stream.proto",
+    ],
     pkg_name = "acyclic-stream-wire",
     edition = "2024",
     version = "0.2.0",
@@ -149,8 +151,10 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = [
+        "proto/stream/v1/session.proto",
+        "proto/stream/v1/stream.proto",
+    ],
     pkg_name = "acyclic-stream-wire",
     edition = "2024",
     version = "0.2.0",

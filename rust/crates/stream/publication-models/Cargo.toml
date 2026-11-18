@@ -5,6 +5,9 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[package.metadata.bazel]
+build-script-inputs = []
+
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../../auth" }
 acyclic-collections = { version = "=0.2.0", path = "../../collections" }

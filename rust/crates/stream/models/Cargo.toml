@@ -5,6 +5,9 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[package.metadata.bazel]
+build-script-inputs = []
+
 [dependencies]
 acyclic-stream = { path = "..", default-features = false, features = ["model-checking"] }
 acyclic-stream-wire = { path = "../../stream-wire" }
