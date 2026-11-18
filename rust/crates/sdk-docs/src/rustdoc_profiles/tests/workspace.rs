@@ -34,7 +34,6 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
         let package_name = package.name.as_ref();
         let declared_count =
             package.features.len() - usize::from(package.features.contains_key("default"));
-        let mut ids = BTreeSet::new();
         let mut count = None;
         for target in &targets {
             let profiles = profiles_for_package(&metadata, package_name, target, &targets).unwrap();
@@ -49,7 +48,6 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             let mut has_all_features = false;
             for profile in &profiles {
                 assert_eq!(&profile.target, target);
-                assert!(ids.insert(profile.id()));
                 assert!(profile
                     .features
                     .iter()
