@@ -267,11 +267,10 @@ fn current_package_profiles<'a>(
     if !package_metadata.features.is_empty() {
         add(false, BTreeSet::new());
     }
-    let declared = declared_features(package_metadata)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    for feature in &declared {
+    let mut declared = BTreeSet::new();
+    for feature in declared_features(package_metadata) {
         add(false, feature_closure(&package_metadata.features, feature));
+        declared.insert(feature.clone());
     }
     if !declared.is_empty() {
         add(true, declared);
