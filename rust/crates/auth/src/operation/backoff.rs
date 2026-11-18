@@ -63,6 +63,23 @@ impl Backoff {
         base_ms.saturating_mul(factor).min(maximum_ms)
     }
 
+    /// Project indexed equal jitter for a caller carrying fractional offsets
+    /// and a unit-interval draw. The caller retains its timer and draw source.
+    /// Bounds are nonnegative milliseconds and the draw is in `0.0..=1.0`.
+    #[must_use]
+    pub fn fractional_delay_ms_at(
+        base_ms: f64,
+        maximum_ms: f64,
+        doublings: u32,
+        unit_sample: f64,
+    ) -> f64 {
+        let factor = Self::ceiling_ms_at(1, 1 << 52, doublings);
+        // A power of two is exact in binary64. Encode its biased exponent
+        // directly to preserve fractional millisecond bounds.
+        let factor = f64::from_bits((1023 + u64::from(factor.trailing_zeros())) << 52);
+        ((base_ms * factor).min(maximum_ms) * (0.5 + unit_sample / 2.0)).ceil()
+    }
+
     fn advance(&mut self, draw: impl FnOnce(u32) -> u32) -> u32 {
         let ceiling = self.ceiling_ms;
         self.ceiling_ms = u32::try_from(Self::ceiling_ms_at(
