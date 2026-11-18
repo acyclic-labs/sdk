@@ -189,11 +189,13 @@ async fn read_http_failure(
     // Only context classification consumes a body; it emits a typed result.
     if matches!(status, 400 | 413) {
         return match http::bounded::read(body, maximum, work).await {
-            Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
-                Ok(true) => Error::ModelContextOverflow,
-                Ok(false) => http_error(status),
-                Err(error) => error,
-            },
+            Ok(body) => {
+                match acyclic_harness_provider_response::context_overflow_bytes(&body.bytes, work) {
+                    Ok(true) => Error::ModelContextOverflow,
+                    Ok(false) => http_error(status),
+                    Err(error) => error,
+                }
+            }
             Err(error) => error,
         };
     }

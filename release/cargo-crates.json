@@ -43,6 +43,8 @@
   "acyclic-harness-local",
   "acyclic-harness-suite",
   "acyclic-harness",
+  "acyclic-harness-provider-protocol",
+  "acyclic-harness-provider-response",
   "acyclic-harness-providers",
   "acyclic-plugin-identity",
   "acyclic-plugin"

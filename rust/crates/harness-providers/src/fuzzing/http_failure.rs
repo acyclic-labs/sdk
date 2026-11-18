@@ -241,7 +241,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         let bytes = serde_json::to_vec(&mutation).unwrap();
         for spelling in [&bytes, &escaped_strings(&bytes)] {
             assert_eq!(
-                crate::stream::context_overflow_bytes(spelling, None).unwrap(),
+                acyclic_harness_provider_response::context_overflow_bytes(spelling, None).unwrap(),
                 expected
             );
         }
@@ -254,10 +254,14 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         )
         .unwrap();
         let baseline = work.live_allocation_bytes();
-        assert!(crate::stream::context_overflow_bytes(bytes, Some(&work)).unwrap());
+        assert!(
+            acyclic_harness_provider_response::context_overflow_bytes(bytes, Some(&work)).unwrap()
+        );
         assert_eq!(work.live_allocation_bytes(), baseline);
         cancellation.cancel();
-        assert!(crate::stream::context_overflow_bytes(bytes, Some(&work)).is_err());
+        assert!(
+            acyclic_harness_provider_response::context_overflow_bytes(bytes, Some(&work)).is_err()
+        );
         assert_eq!(work.live_allocation_bytes(), baseline);
 
         let denied = acyclic_fs::NativeMaterializationWork::new(
@@ -269,7 +273,10 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         )
         .unwrap();
         let baseline = denied.live_allocation_bytes();
-        assert!(crate::stream::context_overflow_bytes(bytes, Some(&denied)).is_err());
+        assert!(
+            acyclic_harness_provider_response::context_overflow_bytes(bytes, Some(&denied))
+                .is_err()
+        );
         assert_eq!(denied.live_allocation_bytes(), baseline);
     }
 }

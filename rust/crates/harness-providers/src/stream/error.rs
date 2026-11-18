@@ -10,9 +10,6 @@ pub(super) fn classify(adapter: Adapter, event: &Value) -> Error {
     }
 }
 
-mod http;
-pub(crate) use http::context_overflow_bytes;
-
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "error_tests.rs"]

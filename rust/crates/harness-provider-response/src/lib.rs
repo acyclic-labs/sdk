@@ -188,10 +188,8 @@ impl acyclic_harness_core::filesystem::UploadRecord for Refusal {
     }
 }
 
-pub(crate) fn context_overflow_bytes(
-    bytes: &[u8],
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<bool> {
+/// Detects a context-window refusal without retaining remote strings or containers.
+pub fn context_overflow_bytes(bytes: &[u8], work: acyclic_fs::NativeWork<'_>) -> Result<bool> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         use acyclic_harness_core::{Error, filesystem::PreparationIo};

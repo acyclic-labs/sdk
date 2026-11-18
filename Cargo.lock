@@ -1045,6 +1045,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-provider-response"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-harness-provider-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "acyclic-harness-providers"
 version = "0.2.0"
 dependencies = [
@@ -1055,6 +1066,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-harness-provider-protocol",
+ "acyclic-harness-provider-response",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",

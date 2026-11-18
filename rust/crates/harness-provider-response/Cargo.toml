@@ -1,0 +1,21 @@
+[package]
+name = "acyclic-harness-provider-response"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded response decoding for harness providers"
+
+[lib]
+test = false
+
+[dependencies]
+acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
+acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", version = "=0.2.0" }
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+
+[lints]
+workspace = true
