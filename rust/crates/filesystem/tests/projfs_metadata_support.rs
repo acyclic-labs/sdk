@@ -95,7 +95,7 @@ pub fn mount_source(
     let destination = root.path().join("projection");
     std::fs::create_dir(&destination)?;
     let session = acyclic_fs::mount_native(
-        acyclic_fs::NativeMountRequest {
+        acyclic_fs_native_contract::NativeMountRequest {
             mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.clone(),

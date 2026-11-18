@@ -38,7 +38,7 @@ pub(in crate::local) fn held_directories(
 }
 
 pub(in crate::local) fn require_available(
-    capabilities: acyclic_fs::NativeMountCapabilities,
+    capabilities: acyclic_fs_native_contract::NativeMountCapabilities,
 ) -> Result<()> {
     let Some(reason) = capabilities.unavailable_reason else {
         return Ok(());
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn absent_fuse_device_has_a_typed_tool_admission_error() {
-        let error = require_available(acyclic_fs::NativeMountCapabilities {
+        let error = require_available(acyclic_fs_native_contract::NativeMountCapabilities {
             kind: Some(acyclic_fs_native_contract::NativeMountKind::LinuxFuse),
             unavailable_reason: Some("missing device"),
         })

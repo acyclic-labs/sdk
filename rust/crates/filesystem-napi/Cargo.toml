@@ -12,6 +12,7 @@ description = "N-API embedded engine for @acyclic-labs/fs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }

@@ -514,6 +514,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-fs-base",
  "acyclic-fs-format",
+ "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-native-runtime",
@@ -530,6 +531,7 @@ dependencies = [
 name = "acyclic-fs-native-contract"
 version = "0.2.0"
 dependencies = [
+ "acyclic-fs-format",
  "cap-primitives",
  "cap-std",
  "libc",
