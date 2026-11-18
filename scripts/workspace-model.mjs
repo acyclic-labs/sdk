@@ -428,7 +428,7 @@ function registryPackages(lock, universe, triple, {bazelTargets = [], sourceRoot
     }
     if (resolved) bazelRules.set(`${p.source}#${p.name}@${p.version}`, resolved);
     return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: manifest?.manifest_path ?? '', dependencies: [], metadata: manifest?.metadata ?? null,
-      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
+      features: manifest?.features ?? Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
       targets};
   });
 }

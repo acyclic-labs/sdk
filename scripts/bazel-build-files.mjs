@@ -28,13 +28,24 @@ if (rootAt >= 0) args.splice(rootAt, 2);
 const runnerAt = args.indexOf("--test-runner");
 const testRunner = runnerAt < 0 ? "//rust/crates/test-runner:isolated_test.bzl" : args[runnerAt + 1];
 if (runnerAt >= 0) args.splice(runnerAt, 2);
+const sourceAt = args.indexOf("--source-repository");
+const sourceRepository = sourceAt < 0 ? null : args.splice(sourceAt, 4).slice(1);
+const [gitSource, sourceRoot, repositoryName] = sourceRepository ?? [];
+if (sourceRepository && (!gitSource?.startsWith("git+") || !sourceRoot || !/^@[A-Za-z_][A-Za-z0-9_.-]*$/.test(repositoryName ?? ""))) {
+  throw new Error("STEP_FAILED bazel-build-files: expected --source-repository GIT_SOURCE DIRECTORY @REPOSITORY");
+}
+if (sourceRepository && !toml(root, "Cargo.lock").package?.some(pkg => pkg.source === gitSource)) {
+  throw new Error("STEP_FAILED bazel-build-files: --source-repository must name an exact locked Git source");
+}
+const sourceDirectory = sourceRoot ? path.resolve(sourceRoot) : null;
+const sourceRoots = sourceDirectory ? {[gitSource]: sourceDirectory} : {};
 // A generation job declares one output manifest instead of changing its source checkout.
 const outputAt = args.indexOf("--output");
 const output = outputAt < 0 ? null : path.resolve(args[outputAt + 1]);
 if (outputAt >= 0) args.splice(outputAt, 2);
 const mode = args[0];
 if (args.length !== 1 || (mode !== "write" && mode !== "check") || (output && mode !== "write")) {
-  throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] write [--output FILE]|check; recovery: node scripts/bazel-build-files.mjs write");
+  throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] [--source-repository GIT_SOURCE DIRECTORY @REPOSITORY] write [--output FILE]|check; recovery: node scripts/bazel-build-files.mjs write");
 }
 assertRegistryPinsCurrent(root);
 
@@ -47,7 +58,9 @@ const WINDOWS_TRIPLE = "x86_64-pc-windows-msvc";
 const LINUX_MUSL_TRIPLE = "x86_64-unknown-linux-musl";
 const WASM_TRIPLE = "wasm32-unknown-unknown";
 // The crate universe hub. Its own name keeps it apart from a consumer module's hub.
-const HUB = "sdk_crates";
+const cargo = toml(root, "Cargo.toml");
+const bazelWorkspace = cargo.workspace?.metadata?.bazel;
+const HUB = bazelWorkspace?.["crate-hub"] ?? "sdk_crates";
 const TRIPLES = [LINUX_GNU_TRIPLE, "aarch64-apple-darwin", WINDOWS_TRIPLE];
 const NOT_LIB = ["tests/**", "benches/**", "examples/**"];
 // Each libtest case runs in its own process and fails past this limit, as under cargo-nextest.
@@ -114,7 +127,7 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
-const runs = TRIPLES.map(triple => workspaceGraph(root, triple));
+const runs = TRIPLES.map(triple => workspaceGraph(root, triple, {sourceRoots}));
 // Published browser modules use a selected production feature closure.
 async function wasmResolution() {
   const producer = path.join(root, "scripts/wasm-packages.mjs");
@@ -564,7 +577,6 @@ function profileWrapper(profile, settings, filter, refuse) {
   for (const file of siblings) if (!trackedSet.has(file)) refuse(`run-wrapper ${name} runs ${file}, which is not tracked; recovery: track it or stop running it`);
   return { wrapper: line, wrapperData: [...new Set(siblings)].sort() };
 }
-const cargo = toml(root, "Cargo.toml");
 const dev = cargo.profile?.dev ?? {};
 // rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks
 // on at every opt-level, and opt as its release profile, with both off: Cargo's defaults. A profile that changes
@@ -619,6 +631,15 @@ const transitiveSpokes = new Set(runs.flatMap(run => run.resolve.nodes)
 // The hub names a crate by a splicing dependency key, with dashes as underscores, and its version.
 const hubLabel = id => {
   const p = packages.get(id), { name, version } = p;
+  if (sourceDirectory && p.source === gitSource) {
+    const lib = libOf(p);
+    if (!p.manifest_path || !lib) throw new Error(`Missing pinned source library ${name}@${version} in ${repositoryName}`);
+    const pkg = path.relative(sourceDirectory, path.dirname(p.manifest_path));
+    if (path.isAbsolute(pkg) || pkg === ".." || pkg.startsWith(`..${path.sep}`)) {
+      throw new Error(`Pinned source library ${name}@${version} is outside ${repositoryName}`);
+    }
+    return `${repositoryName}//${pkg.replaceAll(path.sep, "/")}:${crateName(lib)}`;
+  }
   if (!universeIds.has(id)) return `@${spokeRepo(p)}//:${crateName(libOf(p))}`;
   return `@${HUB}//${spliceKey.has(id) ? spliceKey.get(id).replaceAll("-", "_") : name}-${version}`;
 };
@@ -1171,9 +1192,8 @@ function moduleFile() {
     rule("crate.from_specs", [
       ["name", q(HUB)],
       ["lockfile", q("//:cargo-bazel-lock.json")],
-      // The splice's own Cargo.lock, which a repin writes; it was first seeded from the workspace
-      // Cargo.lock, so the universe resolves Cargo's versions.
-      ["cargo_lockfile", q("//:cargo-bazel.Cargo.lock")],
+      // A consumer may seed its own splice with workspace registry pins.
+      ["cargo_lockfile", q(bazelWorkspace?.["crate-lockfile"] ?? "//:cargo-bazel.Cargo.lock")],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
     ...(wasm ? [
