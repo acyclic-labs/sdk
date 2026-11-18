@@ -141,7 +141,7 @@ fn portable_and_native_miss_search_do_not_multiply_file_and_needle_lengths() -> 
     let mut custody = allocation(Some(&work), 0)?;
     let native = closest(&source, &needle, &mut custody)?;
     assert_eq!(closest(&source, &needle, &mut None)?, native);
-    assert!(work.receipt().items_examined < budget.items_examined);
+    assert!(work.receipt()?.items_examined < budget.items_examined);
     drop(custody);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())

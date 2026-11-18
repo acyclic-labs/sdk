@@ -105,14 +105,14 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
         if copies == 0 {
             assert!(result.is_err());
             assert_eq!(policy.evaluations.load(Ordering::SeqCst), 0);
-            assert_eq!(work.receipt().bytes_copied, 0);
+            assert_eq!(work.receipt()?.bytes_copied, 0);
             // The actual former comparison still clones and admits the same
             // identity on this exhausted ledger without recording any work.
             let old = acyclic_test_support::measure(|| {
                 assert!(stock.policy_identity.as_ref() == Some(&policy.identity()));
             });
             assert!(old.count_total > 0);
-            assert_eq!(work.receipt().bytes_copied, 0);
+            assert_eq!(work.receipt()?.bytes_copied, 0);
         } else {
             let checks = if changed_before { 1 } else { 2 };
             assert_eq!(policy.native.load(Ordering::SeqCst), checks);
@@ -121,7 +121,7 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
                 usize::from(!changed_before)
             );
             let bytes = policy.fixed.identity.name.len() + policy.fixed.identity.version.len();
-            assert_eq!(work.receipt().bytes_copied, (checks * bytes) as u64);
+            assert_eq!(work.receipt()?.bytes_copied, (checks * bytes) as u64);
             if changed_before {
                 assert!(
                     matches!(result, Err(Error::Conflict(ref reason)) if reason == "stock policy changed after binding")

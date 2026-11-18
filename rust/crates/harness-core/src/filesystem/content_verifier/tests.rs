@@ -514,24 +514,24 @@ fn native_reader_reuses_immutable_authentication_and_refuses_revocation() -> Res
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, Some(&io))?;
-    let before = work.receipt().bytes_hashed;
-    let examined = work.receipt().items_examined;
+    let before = work.receipt()?.bytes_hashed;
+    let examined = work.receipt()?.items_examined;
     for _ in 0..4 {
         reader.require_native_work(&work)?;
     }
     assert_eq!(
-        work.receipt().bytes_hashed,
+        work.receipt()?.bytes_hashed,
         before,
         "immutable reader reauthenticated its workload"
     );
     assert_eq!(
-        work.receipt().items_examined,
+        work.receipt()?.items_examined,
         examined,
         "immutable reader reexamined its workload"
     );
     // The former physical path compares even a retained, unmodified scope.
     verifier.verify(&scope, &mut Some(&mut io.history_io()))?;
-    assert!(work.receipt().items_examined > examined);
+    assert!(work.receipt()?.items_examined > examined);
     let mut forged =
         serde_json::to_value(&scope).map_err(|error| Error::Invalid(error.to_string()))?;
     forged["id"] = "other".into();

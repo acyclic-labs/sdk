@@ -112,7 +112,7 @@ fn original_ledgers_enforce_hash_cuts_and_release_sequence_scratch() -> Result<(
                         Some(*blake3::hash(&prefix).as_bytes())
                     )
                 );
-                assert_eq!(io.receipt().bytes_hashed, hash);
+                assert_eq!(io.receipt()?.bytes_hashed, hash);
             }
             // A native failure may carry its diagnostic custody until dropped.
             assert_eq!(io.owned_bytes()?, baseline, "native={native} hash={hash}");
@@ -180,7 +180,7 @@ fn original_ledger_peak_is_independent_of_message_count() -> Result<()> {
                     &mut None
                 )?)
             );
-            let peak = io.receipt().peak_allocation_bytes;
+            let peak = io.receipt()?.peak_allocation_bytes;
             let first = *maximum.get_or_insert(peak);
             assert_eq!(peak, first, "native={native} count={count}");
             assert_eq!(io.owned_bytes()?, baseline);

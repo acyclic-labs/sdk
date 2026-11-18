@@ -135,7 +135,7 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
         drop(cut);
     }
     assert_eq!(decode_io.owned_bytes()?, 0);
-    budget.bytes_copied = decode_io.receipt().bytes_copied;
+    budget.bytes_copied = decode_io.receipt()?.bytes_copied;
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let execution = StockExecution {
         io: Some(&io),
@@ -144,7 +144,7 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
     let retained = execution
         .load_working_cut(journal.as_ref(), &fixture.reference)
         .await?;
-    assert_eq!(io.receipt().bytes_copied, budget.bytes_copied);
+    assert_eq!(io.receipt()?.bytes_copied, budget.bytes_copied);
     // Restoring the old reconstruction exceeds the independently inventoried
     // allowance, even though all retained bytes have already been admitted.
     assert!(crate::context::copy_context(&expected, Some(&io)).is_err());

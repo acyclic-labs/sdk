@@ -516,8 +516,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
                 reference.definition.validate_projection(&projected.0, limits, None)?;
                 assert!(projected.0["value"].get("text").is_none());
             }
-            assert!(work.receipt().source_bytes_read < 64 * 1024);
-            assert!(work.receipt().bytes_copied < 64 * 1024);
+            assert!(work.receipt()?.source_bytes_read < 64 * 1024);
+            assert!(work.receipt()?.bytes_copied < 64 * 1024);
             // The shared object adapter retains decoded pages on the original
             // ledger. Reusing the pinned selection must not retain more pages
             // or result storage; the cache owner is dropped below.
