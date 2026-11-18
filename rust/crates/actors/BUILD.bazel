@@ -68,6 +68,7 @@ rust_library(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -125,6 +126,7 @@ rust_test(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract_socket_test_support",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -230,6 +232,7 @@ rust_test(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -322,6 +325,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -391,6 +395,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -459,6 +464,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -527,6 +533,7 @@ rust_binary(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -619,6 +626,7 @@ rust_library(
     ] + [
         "//rust/crates/actors-call:acyclic_actors_call_wasm",
         "//rust/crates/actors-contract:acyclic_actors_contract_wasm",
+        "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics_wasm",
         "//rust/crates/actors-inventory:acyclic_actors_inventory_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/observability:acyclic_observability_wasm",

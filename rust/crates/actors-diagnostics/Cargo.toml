@@ -1,0 +1,17 @@
+[package]
+name = "acyclic-actors-diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Actors wire and TypeScript diagnostics"
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+serde.workspace = true
+serde_bytes.workspace = true
+ts-rs = "=12.0.1"
+
+[lints]
+workspace = true

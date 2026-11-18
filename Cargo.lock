@@ -20,6 +20,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors-call",
  "acyclic-actors-contract",
+ "acyclic-actors-diagnostics",
  "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-grpc-observability",
@@ -107,6 +108,16 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
+ "ts-rs",
+]
+
+[[package]]
+name = "acyclic-actors-diagnostics"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "serde",
+ "serde_bytes",
  "ts-rs",
 ]
 
