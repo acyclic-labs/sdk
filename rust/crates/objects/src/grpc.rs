@@ -229,16 +229,18 @@ fn error_from_status(status: &tonic::Status) -> Error {
     {
         return (*stopped).into();
     }
-    let mut error = Error::decode_status(status.code() as i32, status.details());
-    error.refusal = acyclic_auth::refusal::Refusal::capture(
-        status.code() as i32,
-        status.message(),
-        status.details(),
-        status.metadata().as_ref(),
-        error.canonical_status(&wire::ErrorDetail::from(&error).encode_to_vec()),
-        error.cause().cloned(),
-    );
-    error
+    Error::decode_status(status.code() as i32, status.details()).with_status_refusal(
+        |canonical, cause| {
+            acyclic_auth::refusal::Refusal::capture(
+                status.code() as i32,
+                status.message(),
+                status.details(),
+                status.metadata().as_ref(),
+                canonical,
+                cause,
+            )
+        },
+    )
 }
 
 fn status(error: &Error) -> tonic::Status {

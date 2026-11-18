@@ -1,5 +1,6 @@
 //! The shared Objects category, attribution and status conversion.
 use crate::wire;
+use acyclic_auth::refusal::{Canonical, Cause, Refusal};
 use prost::Message as _;
 
 /// Request metadata carrying the shared minimum revision.
@@ -15,7 +16,7 @@ pub(crate) fn unavailable() -> Error {
 /// Semantic service failure or the original local operation stop.
 ///
 /// Its `source` is the local stop or, for a remote failure, the server's
-/// [`Cause`](acyclic_auth::refusal::Cause).
+/// [`Cause`](Cause).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
@@ -28,7 +29,7 @@ pub struct Error {
     /// What the server said beyond `code`: its cause, and the member's
     /// original status when that said more than `code`'s canonical status.
     /// A diagnostic only; recovery follows `code`.
-    pub refusal: Option<acyclic_auth::refusal::Refusal>,
+    pub refusal: Option<Refusal>,
 }
 impl Error {
     /// Retain a concrete local cause without changing the semantic category or
@@ -45,15 +46,19 @@ impl Error {
     /// bytes remain owned by the refusal, including unknown fields.
     #[must_use]
     pub fn from_status_parts(parts: acyclic_auth::refusal::Parts) -> Self {
-        let mut error = Self::decode_status(parts.code, &parts.details);
-        let detail = wire::ErrorDetail::from(&error).encode_to_vec();
-        let canonical = error.canonical_status(&detail);
-        let cause = error
-            .refusal
-            .take()
-            .and_then(acyclic_auth::refusal::Refusal::into_cause);
-        error.refusal = acyclic_auth::refusal::Refusal::capture_owned(parts, canonical, cause);
-        error
+        Self::decode_status(parts.code, &parts.details)
+            .with_status_refusal(|canonical, cause| Refusal::capture_owned(parts, canonical, cause))
+    }
+
+    pub(crate) fn with_status_refusal(
+        mut self,
+        capture: impl FnOnce(Canonical<'_>, Option<Cause>) -> Option<Refusal>,
+    ) -> Self {
+        let detail = wire::ErrorDetail::from(&self).encode_to_vec();
+        let canonical = self.canonical_status(&detail);
+        let cause = self.refusal.take().and_then(Refusal::into_cause);
+        self.refusal = capture(canonical, cause);
+        self
     }
 
     /// Encodes the member's original status, or the canonical status carrying
@@ -61,10 +66,7 @@ impl Error {
     #[must_use]
     pub fn status_parts(&self) -> acyclic_auth::refusal::Parts {
         let detail = wire::ErrorDetail::from(self).encode_to_vec();
-        acyclic_auth::refusal::Refusal::encode_embedded(
-            self.refusal.as_ref(),
-            self.canonical_status(&detail),
-        )
+        Refusal::encode_embedded(self.refusal.as_ref(), self.canonical_status(&detail))
     }
 
     /// Classifies an HTTP failure when the response carries no usable detail.
@@ -86,27 +88,25 @@ impl Error {
     /// Classifies a gRPC status when no usable typed detail is present.
     #[must_use]
     pub fn from_grpc_status_code(code: i32) -> Self {
-        Self::decode_status(code, &[])
+        match code {
+            3 => wire::ErrorCode::InvalidArgument,
+            4 => wire::ErrorCode::DeadlineElapsed,
+            5 => wire::ErrorCode::NotFound,
+            7 | 16 => wire::ErrorCode::AccessDenied,
+            8 => wire::ErrorCode::QuotaExceeded,
+            11 => wire::ErrorCode::RangeNotSatisfiable,
+            12 => wire::ErrorCode::Unsupported,
+            15 => wire::ErrorCode::Corrupt,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
     }
 
     pub(crate) fn decode_status(code: i32, details: &[u8]) -> Self {
         wire::ErrorDetail::decode(details)
             .ok()
             .and_then(Self::from_detail)
-            .unwrap_or_else(|| {
-                match code {
-                    3 => wire::ErrorCode::InvalidArgument,
-                    5 => wire::ErrorCode::NotFound,
-                    7 | 16 => wire::ErrorCode::AccessDenied,
-                    8 => wire::ErrorCode::QuotaExceeded,
-                    11 => wire::ErrorCode::RangeNotSatisfiable,
-                    12 => wire::ErrorCode::Unsupported,
-                    15 => wire::ErrorCode::Corrupt,
-                    4 => wire::ErrorCode::DeadlineElapsed,
-                    _ => wire::ErrorCode::Unavailable,
-                }
-                .into()
-            })
+            .unwrap_or_else(|| Self::from_grpc_status_code(code))
     }
 
     /// Canonical gRPC status code, independent of retained refusal diagnostics.
@@ -132,11 +132,8 @@ impl Error {
         }
     }
 
-    pub(crate) fn canonical_status<'a>(
-        &self,
-        details: &'a [u8],
-    ) -> acyclic_auth::refusal::Canonical<'a> {
-        acyclic_auth::refusal::Canonical {
+    pub(crate) fn canonical_status<'a>(&self, details: &'a [u8]) -> Canonical<'a> {
+        Canonical {
             code: self.status_code(),
             message: "objects operation failed",
             details,
@@ -147,12 +144,12 @@ impl Error {
 
     /// A failure of `code` the server attributes to `cause`.
     #[must_use]
-    pub fn caused(code: wire::ErrorCode, cause: acyclic_auth::refusal::Cause) -> Self {
+    pub fn caused(code: wire::ErrorCode, cause: Cause) -> Self {
         Self {
             code,
             source: None,
             stopped: None,
-            refusal: Some(acyclic_auth::refusal::Refusal::caused(cause)),
+            refusal: Some(Refusal::caused(cause)),
         }
     }
     /// The failure a transport detail reports, unless it names no canonical
@@ -164,17 +161,13 @@ impl Error {
             code,
             source: None,
             stopped: None,
-            refusal: acyclic_auth::refusal::Cause::reported(
-                detail.component,
-                detail.reason,
-                detail.request_id,
-            )
-            .map(acyclic_auth::refusal::Refusal::caused),
+            refusal: Cause::reported(detail.component, detail.reason, detail.request_id)
+                .map(Refusal::caused),
         })
     }
     /// The server's attribution, when it reported one.
     #[must_use]
-    pub fn cause(&self) -> Option<&acyclic_auth::refusal::Cause> {
+    pub fn cause(&self) -> Option<&Cause> {
         self.refusal.as_ref()?.cause()
     }
 }
@@ -226,12 +219,7 @@ impl From<acyclic_auth::operation::Stopped> for Error {
 /// The one detail every transport carries for a failure: its code and cause.
 impl From<Error> for wire::ErrorDetail {
     fn from(error: Error) -> Self {
-        error_detail(
-            error.code,
-            error
-                .refusal
-                .and_then(acyclic_auth::refusal::Refusal::into_cause),
-        )
+        error_detail(error.code, error.refusal.and_then(Refusal::into_cause))
     }
 }
 
@@ -241,10 +229,7 @@ impl From<&Error> for wire::ErrorDetail {
     }
 }
 
-fn error_detail(
-    code: wire::ErrorCode,
-    cause: Option<acyclic_auth::refusal::Cause>,
-) -> wire::ErrorDetail {
+fn error_detail(code: wire::ErrorCode, cause: Option<Cause>) -> wire::ErrorDetail {
     let cause = cause.unwrap_or_default();
     wire::ErrorDetail {
         code: code as i32,
