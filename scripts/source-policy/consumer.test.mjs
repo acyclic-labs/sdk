@@ -65,5 +65,6 @@ test('an unrelated declaration does not reopen a polling helper consumer', () =>
  ]);
  const edit = source => newProjectPollingSites(before, new Map(before).set(producer, source));
  assert.ok(!edit(helper + '\nexport function unrelated() { return false; }').some(site => site.file === consumer));
+ assert.ok(!edit('export function unrelated() { return false; }\n' + helper).some(site => site.file === consumer));
  assert.ok(edit(before.get(producer).replace('sleep(1)', 'sleep(2)')).some(site => site.file === consumer));
 });
