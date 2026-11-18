@@ -1,5 +1,5 @@
 //! Real endpoint runner; the host provisions the fixture through AgentHost.
-use acyclic_conformance::client::{Fixture, verify};
+use acyclic_conformance_client::{Fixture, verify};
 use acyclic_harness_client::{AgentId, AgentPath};
 use acyclic_stream::grpc::Client;
 
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(path) => {
             let fixture = serde_json::from_slice(&std::fs::read(&path)?)?;
             let report =
-                acyclic_conformance::client::tool_output::verify(&provider, session, 0, &fixture)
+                acyclic_conformance_client::tool_output::verify(&provider, session, 0, &fixture)
                     .await?;
             println!("{}", serde_json::to_string(&report)?);
             return Ok(());
@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(path) => {
             let fixture = serde_json::from_slice(&std::fs::read(&path)?)?;
             let report =
-                acyclic_conformance::client::controls::verify(&provider, &session, 0, &fixture)
+                acyclic_conformance_client::controls::verify(&provider, &session, 0, &fixture)
                     .await?;
             println!("{}", serde_json::to_string(&report)?);
             return Ok(());

@@ -282,7 +282,6 @@ rust_test(
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
         "//:scripts/mold-linker.sh",
-        "//:tree/rust/proofs/sdk-rustdoc-fixtures",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",

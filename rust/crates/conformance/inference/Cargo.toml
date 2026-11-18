@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-conformance-inference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Captured-real transport and complete provider qualification runner"
+
+[dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../../harness-core", default-features = false, features = ["conformance"] }
+acyclic-harness-providers = { version = "=0.2.0", path = "../../harness-providers", features = ["endpoint-presets"] }
+acyclic-stream = { version = "=0.2.0", path = "../../stream", features = ["conformance"] }
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

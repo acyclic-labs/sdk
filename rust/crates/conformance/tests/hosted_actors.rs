@@ -1,7 +1,7 @@
 //! The public endpoint vectors through GraphCoder's Actors composition.
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
-use acyclic_conformance::client::endpoint::{self, Scenario};
+use acyclic_conformance_client::endpoint::{self, Scenario};
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness::{
     Capabilities, Error,
@@ -555,7 +555,7 @@ async fn run(producer: Producer) -> Outcome {
         assert!(
             matches!(
                 &failure.cause,
-                Some(acyclic_conformance::client::Cause::Stream(error))
+                Some(acyclic_conformance_client::Cause::Stream(error))
                     if error.category() == StreamCategory::Unavailable
             ),
             "closed producer returned {failure:?}"
@@ -631,7 +631,7 @@ async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
     };
     assert!(matches!(
         failure.cause,
-        Some(acyclic_conformance::client::Cause::Connect(_))
+        Some(acyclic_conformance_client::Cause::Connect(_))
     ));
     Ok(())
 }

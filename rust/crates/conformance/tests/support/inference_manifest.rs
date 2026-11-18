@@ -1,5 +1,5 @@
 //! Independent provenance and unknown-field checks over original manifest captures.
-use acyclic_conformance::inference::replay::Manifest;
+use acyclic_conformance_inference::replay::Manifest;
 
 /// Check every admitted manifest against the provenance and strict-field contract.
 ///

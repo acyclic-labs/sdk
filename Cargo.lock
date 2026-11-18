@@ -279,6 +279,10 @@ dependencies = [
  "acyclic-actors",
  "acyclic-agent-host-conformance",
  "acyclic-auth",
+ "acyclic-conformance-client",
+ "acyclic-conformance-filesystem",
+ "acyclic-conformance-inference",
+ "acyclic-conformance-runner",
  "acyclic-fs",
  "acyclic-fs-format",
  "acyclic-fs-native-contract",
@@ -316,6 +320,58 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "acyclic-conformance-client"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "acyclic-conformance-filesystem"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-fs-work",
+ "blake3",
+ "hex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "acyclic-conformance-inference"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-core",
+ "acyclic-harness-providers",
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "acyclic-conformance-runner"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness",
+ "blake3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

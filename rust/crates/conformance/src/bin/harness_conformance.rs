@@ -1,6 +1,6 @@
 //! Validate a cross-language Harness report and emit its qualification receipt.
 
-use acyclic_conformance::runner::{harness_protocol_identity, validate_harness_report};
+use acyclic_conformance_runner::{harness_protocol_identity, validate_harness_report};
 use std::io::{self, Read};
 
 fn main() {

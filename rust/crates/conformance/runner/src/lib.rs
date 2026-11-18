@@ -154,7 +154,7 @@ impl std::error::Error for ReportError {}
 /// Returns the digest that all Harness runner reports must bind.
 #[must_use]
 pub fn harness_suite_digest() -> String {
-    digest(crate::HARNESS_SUITE)
+    digest(acyclic_harness::conformance::LEGACY_MARKER_INVENTORY)
 }
 
 /// Returns the exact Harness wire identity that a qualifying report must bind.
@@ -170,7 +170,7 @@ pub fn harness_protocol_identity() -> ProtocolIdentity {
 /// Validates exact suite coverage and emits a deterministic receipt.
 pub fn validate_harness_report(report_bytes: &[u8]) -> Result<QualificationReceipt, ReportError> {
     let report = parse_report(report_bytes)?;
-    let suite: Suite = serde_json::from_slice(crate::HARNESS_SUITE)
+    let suite: Suite = serde_json::from_slice(acyclic_harness::conformance::LEGACY_MARKER_INVENTORY)
         .map_err(|error| ReportError(format!("invalid embedded Harness suite: {error}")))?;
 
     if report.protocol != RUNNER_PROTOCOL {
@@ -401,7 +401,7 @@ mod tests {
     use super::*;
 
     fn report() -> RunnerReport {
-        let suite: Suite = serde_json::from_slice(crate::HARNESS_SUITE).unwrap_or_else(|error| {
+        let suite: Suite = serde_json::from_slice(acyclic_harness::conformance::LEGACY_MARKER_INVENTORY).unwrap_or_else(|error| {
             unreachable!("embedded suite must parse in its own tests: {error}")
         });
         RunnerReport {

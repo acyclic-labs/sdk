@@ -693,7 +693,7 @@ async fn external_client_delivers_attributed_peer_input_to_live_session() {
 #[cfg(feature = "client-session")]
 #[tokio::test(flavor = "multi_thread")]
 async fn selected_discovery_survives_a_serving_process_restart() {
-    use acyclic_conformance::client::endpoint;
+    use acyclic_conformance_client::endpoint;
     use acyclic_harness_client::{
         AgentBinding, AgentCommand, AgentControls, AgentExchangeError, AgentReply, PreparedCommand,
     };

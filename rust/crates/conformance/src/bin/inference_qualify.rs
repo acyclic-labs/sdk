@@ -1,5 +1,5 @@
 //! Qualify complete captured-real inference families or a disposable local endpoint.
-use acyclic_conformance::inference::replay;
+use acyclic_conformance_inference::replay;
 
 #[tokio::main]
 async fn main() {
@@ -35,7 +35,7 @@ async fn main() {
         }
         println!(
             "INFERENCE_LIVE_PASS {} elapsed_ms={}",
-            acyclic_conformance::inference::SUITE.join(","),
+            acyclic_harness_core::model::conformance::SUITE.join(","),
             started.elapsed().as_millis()
         );
         return;

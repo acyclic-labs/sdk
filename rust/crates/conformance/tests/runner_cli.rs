@@ -1,11 +1,9 @@
 //! End-to-end checks for the machine-readable Harness qualification command.
 
-use acyclic_conformance::{
-    HARNESS_SUITE,
-    runner::{
-        CaseResult, CaseStatus, RUNNER_PROTOCOL, RunnerIdentity, RunnerReport, Subject,
-        harness_protocol_identity, harness_suite_digest,
-    },
+use acyclic_conformance::HARNESS_SUITE;
+use acyclic_conformance_runner::{
+    CaseResult, CaseStatus, RUNNER_PROTOCOL, RunnerIdentity, RunnerReport, Subject,
+    harness_protocol_identity, harness_suite_digest,
 };
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
 use serde::Deserialize;
