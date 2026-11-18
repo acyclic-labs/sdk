@@ -142,11 +142,16 @@ fn historical_docs_rs_policy_is_required_and_validated() {
         historical_profiles_for_package(&metadata, "feature-rich", "host", &targets),
         Err(ProfileError::InvalidFeature { .. })
     ));
-    metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"all-features":"true"}}});
-    assert!(historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).is_err());
-    metadata.packages[0].metadata =
-        serde_json::json!({"docs":{"rs":{"rustdoc-args":["--cfg","pretend"]}}});
-    assert!(historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).is_err());
+    for policy in [
+        serde_json::json!({"all-features":"true"}),
+        serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
+    ] {
+        metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":policy}});
+        assert!(matches!(
+            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets),
+            Err(ProfileError::InvalidRustdoc(_))
+        ));
+    }
 }
 
 #[test]
