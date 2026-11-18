@@ -52,12 +52,12 @@ jobs:
         run: node scripts/check-test-features.mjs
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
-        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents'
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
       - name: Check that no tracked file disables incremental compilation
         run: node scripts/check-incremental.mjs
-      # Formatting differs between rustfmt releases (macro bodies among
-      # them), so it is checked with the pinned toolchain the gate uses.
-      - name: Install the pinned rustfmt
-        run: rustup toolchain install
-      - name: Check formatting of every tracked Rust file without compiling
-        run: node scripts/qualify-rustfmt.mjs
+      # The Bazel rustfmt aspect checks every crate with the pinned toolchain's rustfmt.
+      # Each crate's check is cached and reruns only when its sources change.
+      - name: Install Bazelisk
+        run: npm install --global @bazel/bazelisk@1.26.0
+      - name: Check formatting of every Rust crate
+        run: bazelisk build --config=fmt //... -//rust/vendor/...
