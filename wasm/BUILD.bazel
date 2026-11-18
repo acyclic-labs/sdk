@@ -111,3 +111,14 @@ wasm_bindings(
     ],
     visibility = ["//visibility:public"],
 )
+
+wasm_bindings(
+    name = "cloudflare-conformance",
+    module = "//rust/crates/conformance/cloudflare:acyclic_cloudflare_conformance_wasm_cdylib",
+    out_name = "acyclic_cloudflare_conformance",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)

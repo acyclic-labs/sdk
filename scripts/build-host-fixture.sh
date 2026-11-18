@@ -11,9 +11,8 @@ step() {
   fi
 }
 step workspace cd "$(dirname "$0")/.."
-step host-compile cargo build -p acyclic-cloudflare-conformance --target wasm32-unknown-unknown --locked
-bindgen=$(bash scripts/ensure-wasm-bindgen.sh) || {
-  printf 'STEP host-bindgen failed; recovery: bash scripts/ensure-wasm-bindgen.sh\n' >&2
-  exit 1
-}
-step host-facade "$bindgen" --target web --out-dir rust/crates/conformance/cloudflare/generated "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/acyclic_cloudflare_conformance.wasm"
+step host-compile bazel build --remote_download_toplevel //wasm:cloudflare-conformance
+bazel_bin=$(bazel info bazel-bin) || exit $?
+generated=rust/crates/conformance/cloudflare/generated
+step host-facade-directory mkdir -p "$generated"
+step host-facade cp -Rf "$bazel_bin/wasm/cloudflare-conformance/." "$generated/"

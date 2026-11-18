@@ -17,6 +17,7 @@ WASM_FEATURES = [
         "conformance",
         "js-bytes",
         "serde",
+        "test-support",
         "wasm",
         "wasm-journal",
     ]

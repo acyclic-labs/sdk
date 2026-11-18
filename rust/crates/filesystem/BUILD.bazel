@@ -16,6 +16,8 @@ FEATURES = [
 
 WASM_FEATURES = [
         "browser",
+        "conformance",
+        "test-support",
         "typescript",
     ]
 
