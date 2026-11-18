@@ -150,26 +150,21 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         if let Ok(value) = decode(bytes, None) {
-            let encoded = encode(value.as_ref(), None).expect("admitted model cell encodes");
-            assert_eq!(encoded.as_ref(), bytes);
-            let restored = decode(&encoded, None).expect("writer output decodes");
-            assert_eq!(encode(restored.as_ref(), None).unwrap(), encoded);
-            for version in [b'0', b'2', b'4', u8::MAX] {
-                let mut header = bytes[..4].to_vec();
-                header[3] = version;
-                assert_eq!(
-                    decode(&header, None).err().unwrap().code(),
-                    crate::wire::ErrorCode::Unsupported
-                );
-            }
-            assert_ne!(
-                decode(&bytes[..4], None).err().unwrap().code(),
-                crate::wire::ErrorCode::Unsupported
-            );
-            let mut trailing = bytes.to_vec();
-            trailing.push(0);
-            assert!(decode(&trailing, None).is_err());
+            let result = check_admitted(bytes, value);
+            assert!(result.is_ok(), "model cell round trip failed: {result:?}");
         }
+    }
+
+    fn check_admitted(bytes: &[u8], value: Option<ModelEventAdmission>) -> Result<()> {
+        let encoded = encode(value.as_ref(), None)?;
+        assert_eq!(encoded.as_ref(), bytes);
+        let restored = decode(&encoded, None)?;
+        assert_eq!(encode(restored.as_ref(), None)?, encoded);
+        crate::filesystem::execution_journal::codec_fuzz::check_versioned_frame(
+            bytes,
+            [b'0', b'2', b'4', u8::MAX],
+            |frame| decode(frame, None),
+        )
     }
 
     pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>

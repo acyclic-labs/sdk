@@ -9,21 +9,12 @@ pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
             matches!(&encoded, Ok(encoded) if encoded.as_ref() == bytes),
             "checkpoint round trip failed: {encoded:?}"
         );
-        for version in [b'0', b'3', b'4', b'5', b'6', b'7', b'8', u8::MAX] {
-            let mut header = bytes[..4].to_vec();
-            header[3] = version;
-            assert!(
-                codec::decode(&header, None)
-                    .is_err_and(|error| error.code() == crate::wire::ErrorCode::Unsupported)
-            );
-        }
-        assert!(
-            codec::decode(&bytes[..4], None)
-                .is_err_and(|error| error.code() != crate::wire::ErrorCode::Unsupported)
+        let result = crate::filesystem::execution_journal::codec_fuzz::check_versioned_frame(
+            bytes,
+            [b'0', b'3', b'4', b'5', b'6', b'7', b'8', u8::MAX],
+            |frame| codec::decode(frame, None),
         );
-        let mut trailing = bytes.to_vec();
-        trailing.push(0);
-        assert!(codec::decode(&trailing, None).is_err());
+        assert!(result.is_ok(), "checkpoint framing failed: {result:?}");
     }
 }
 
