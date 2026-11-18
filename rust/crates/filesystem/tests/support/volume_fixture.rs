@@ -1,16 +1,15 @@
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, Fs, FsError, MemoryAuthorityBackend, MemoryObjectBackend, PublicationPermit, Volume,
-    VolumeConfig,
+    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout, Fs,
+    FsError, MemoryAuthorityBackend, MemoryObjectBackend, Volume, VolumeConfig,
 };
-use acyclic_fs_format::identity::{FileId, OperationId};
+use acyclic_fs_format::identity::FileId;
 use acyclic_fs_format::metadata::FileMetadata;
 use acyclic_fs_work::performance::OperationFailure;
 use acyclic_stream::OwnedBytes;
 
+use super::B;
 use super::checkout_fixture::{path, writable_pinned};
-use super::{B, allow};
 
 pub(super) type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;
 pub(super) type TestCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -47,39 +46,6 @@ pub(super) async fn create(
         )
         .await?
         .value)
-}
-
-pub(super) async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    checkout: &mut Checkout<A, O>,
-    cancel: &CancellationToken,
-) -> TestResult {
-    checkout
-        .commit(
-            OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            B,
-            cancel,
-            allow::<FsError>,
-        )
-        .await?;
-    Ok(())
-}
-
-pub(super) async fn read(
-    checkout: &mut TestCheckout,
-    id: FileId,
-    offset: u64,
-    length: u64,
-    cancel: &CancellationToken,
-) -> TestResult<OwnedBytes> {
-    Ok(checkout
-        .read_file_range(id, ByteRange { offset, length }, B, cancel)
-        .await?
-        .value
-        .bytes)
 }
 
 pub(super) async fn open_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(

@@ -1,4 +1,11 @@
-use super::*;
+use acyclic_fs::kernel::{AttributeClass, AttributeName};
+use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs::{AuthoredMutation, CancellationToken, Fs, FsError, NamedAttributeWriteMode};
+use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_stream::OwnedBytes;
+
+use super::B;
+use super::checkout_fixture::{config, path};
 
 #[tokio::test]
 async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
@@ -13,7 +20,7 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     let volume = ready!(fs.create_volume(config(), B, &cancellation,));
     let mut checkout = ready!(volume.value.checkout(
         GenerationSelector::Head,
-        writable_tracking(),
+        CheckoutMode::tracking_transaction(),
         B,
         &cancellation,
     ));
@@ -28,10 +35,7 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         B,
         &cancellation
     ));
-    let name = AttributeName::new(
-        crate::kernel::AttributeClass::PosixXattr,
-        b"user.acyclic".to_vec(),
-    )?;
+    let name = AttributeName::new(AttributeClass::PosixXattr, b"user.acyclic".to_vec())?;
     assert!(
         ready!(
             checkout
@@ -49,20 +53,17 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         );
     assert!(empty_listing.value.entries.is_empty());
     assert!(!empty_listing.value.has_more);
-    let absent_remove = (checkout.value.change_named_attribute(
-        path.clone(),
-        &name.clone(),
-        None,
-        B,
-        &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("attribute-free removal unexpectedly succeeded")?;
+    let absent_remove =
+        (checkout
+            .value
+            .change_named_attribute(path.clone(), &name, None, B, &cancellation))
+        .await
+        .err()
+        .ok_or("attribute-free removal unexpectedly succeeded")?;
     assert!(matches!(absent_remove.error, FsError::NotFound));
     let absent_replace = (checkout.value.change_named_attribute(
         path.clone(),
-        &name.clone(),
+        &name,
         Some((
             &OwnedBytes::from_static(b"replacement"),
             NamedAttributeWriteMode::Replace,
@@ -76,7 +77,7 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
     ready!(checkout.value.change_named_attribute(
         path.clone(),
-        &name.clone(),
+        &name,
         Some((
             &OwnedBytes::from_static(b"first"),
             NamedAttributeWriteMode::Create
@@ -86,7 +87,7 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ));
     let duplicate_create = (checkout.value.change_named_attribute(
         path.clone(),
-        &name.clone(),
+        &name,
         Some((
             &OwnedBytes::from_static(b"duplicate"),
             NamedAttributeWriteMode::Create,
@@ -114,12 +115,14 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
             .value
             .list_named_attributes(&path, None, 8, B, &cancellation,)
     );
-    assert_eq!(listing.value.entries.len(), 1);
-    assert_eq!(listing.value.entries[0].name, name);
+    let [entry] = listing.value.entries.as_slice() else {
+        return Err("expected one named attribute".into());
+    };
+    assert_eq!(entry.name, name);
     assert!(!listing.value.has_more);
     ready!(checkout.value.change_named_attribute(
         path.clone(),
-        &name.clone(),
+        &name,
         Some((
             &OwnedBytes::from_static(b"second"),
             NamedAttributeWriteMode::Replace
@@ -127,13 +130,11 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         B,
         &cancellation
     ));
-    ready!(checkout.value.change_named_attribute(
-        path.clone(),
-        &name.clone(),
-        None,
-        B,
-        &cancellation
-    ));
+    ready!(
+        checkout
+            .value
+            .change_named_attribute(path.clone(), &name, None, B, &cancellation)
+    );
     assert!(
         ready!(
             checkout

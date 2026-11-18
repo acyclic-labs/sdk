@@ -11,7 +11,9 @@ use acyclic_stream::OwnedBytes;
 
 use super::B;
 use super::checkout_fixture::{config, path, path_parts, writable_pinned};
-use super::fixtures::{TestResult, commit, create, fixture, open_checkout, read};
+use super::fixtures::{TestResult, create, fixture, open_checkout};
+use super::volume_commit::commit;
+use super::volume_read::read;
 
 #[tokio::test]
 async fn generation_diff_is_semantic_and_bounded() -> TestResult {

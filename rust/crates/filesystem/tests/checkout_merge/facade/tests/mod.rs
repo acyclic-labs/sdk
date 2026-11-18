@@ -7,6 +7,10 @@ mod checkout_fixture;
 #[path = "../../../support/volume_fixture.rs"]
 mod fixtures;
 mod merge;
+#[path = "../../../support/volume_commit.rs"]
+mod volume_commit;
+#[path = "../../../support/volume_read.rs"]
+mod volume_read;
 
 use allow_publication::allow;
 
