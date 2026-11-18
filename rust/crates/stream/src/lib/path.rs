@@ -243,6 +243,10 @@ impl StreamPath {
     pub(crate) fn parent_text(path: &str) -> Option<&str> {
         path.rsplit_once('/').map(|(parent, _)| parent)
     }
+
+    pub(crate) fn ancestors_including_self(&self) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(self.as_str()), |&path| Self::parent_text(path))
+    }
 }
 
 // Borrow canonical path components without allocating another path or matcher.

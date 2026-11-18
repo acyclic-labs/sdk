@@ -67,15 +67,11 @@ fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) -> Result<(), Stre
     for index in 0..paths.len() {
         let path = paths.get(index).ok_or(StreamError::InvalidArgument)?;
         let kept_paths = paths.get(..kept).ok_or(StreamError::InvalidArgument)?;
-        let covered =
-            std::iter::successors(crate::StreamPath::parent_text(path.as_str()), |ancestor| {
-                crate::StreamPath::parent_text(ancestor)
-            })
-            .any(|ancestor| {
-                kept_paths
-                    .binary_search_by(|candidate| candidate.as_str().cmp(ancestor))
-                    .is_ok()
-            });
+        let covered = path.ancestors_including_self().skip(1).any(|ancestor| {
+            kept_paths
+                .binary_search_by(|candidate| candidate.as_str().cmp(ancestor))
+                .is_ok()
+        });
         if !covered {
             paths.swap(kept, index);
             kept += 1;

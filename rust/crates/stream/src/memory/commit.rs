@@ -1111,13 +1111,11 @@ fn install_namespace(
         if previous.get(path).is_some() {
             continue;
         }
-        let mut ancestor = Some(path.clone());
-        while let Some(path) = ancestor {
-            if previous.get(&path).is_some() {
+        for path in path.ancestors_including_self() {
+            if previous.contains_key(path) {
                 break;
             }
-            ancestor = path.parent();
-            if let Some(signals) = state.signals.get(&path)? {
+            if let Some(signals) = state.signals.get(path)? {
                 let _ = signals.changed.notify();
                 crate::follow_index::FollowIndex::created(&signals.follows);
             }
