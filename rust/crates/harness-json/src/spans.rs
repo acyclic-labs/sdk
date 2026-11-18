@@ -108,9 +108,11 @@ impl<P: Policy> JsonSpans<P> {
     /// Resume a validated immutable array at an indexed element boundary.
     /// Its producer has already validated the document and retained its bounds.
     pub fn array_at(position: u64, opening: u64) -> Self {
-        let mut cursor = Self::default();
-        cursor.position = position;
-        cursor.root_started = true;
+        let mut cursor = Self {
+            position,
+            root_started: true,
+            ..Self::default()
+        };
         cursor.lexical.state.depth = 1;
         cursor.frames.push(Frame {
             kind: SpanKind::Array,
@@ -122,6 +124,10 @@ impl<P: Policy> JsonSpans<P> {
 
     fn invalid(code: P::Context) -> P::Error {
         P::input(JsonInputError::Shape, code)
+    }
+
+    fn depth(&self, code: P::Context) -> Result<u32, P::Error> {
+        u32::try_from(self.frames.len()).map_err(|_| P::input(JsonInputError::Depth, code))
     }
 
     fn start(&mut self, kind: SpanKind, code: P::Context) -> Result<bool, P::Error> {
@@ -152,13 +158,14 @@ impl<P: Policy> JsonSpans<P> {
         kind: SpanKind,
         start: u64,
         end: u64,
+        code: P::Context,
         emit: &mut dyn FnMut(SpanEvent) -> Result<bool, P::Error>,
     ) -> Result<bool, P::Error> {
         if self.frames.is_empty() {
             self.root_done = true;
         }
         emit(SpanEvent::End {
-            depth: self.frames.len() as u32,
+            depth: self.depth(code)?,
             kind,
             start,
             end,
@@ -201,12 +208,18 @@ impl<P: Policy> JsonSpans<P> {
                     }
                     yielded |= if self.key {
                         emit(SpanEvent::Key {
-                            depth: self.frames.len() as u32,
+                            depth: self.depth(code)?,
                             start: self.token_start,
                             end: self.position,
                         })?
                     } else {
-                        self.end(SpanKind::String, self.token_start, self.position, emit)?
+                        self.end(
+                            SpanKind::String,
+                            self.token_start,
+                            self.position,
+                            code,
+                            emit,
+                        )?
                     };
                 }
             } else {
@@ -217,8 +230,13 @@ impl<P: Policy> JsonSpans<P> {
                             return Err(Self::invalid(code));
                         }
                         self.atom = None;
-                        yielded |=
-                            self.end(SpanKind::Scalar, self.token_start, self.position, emit)?;
+                        yielded |= self.end(
+                            SpanKind::Scalar,
+                            self.token_start,
+                            self.position,
+                            code,
+                            emit,
+                        )?;
                     } else {
                         self.atom = Some(atom.byte(byte).ok_or_else(|| Self::invalid(code))?);
                         self.lexical.byte(byte, bounds, code, &charge)?;
@@ -261,7 +279,7 @@ impl<P: Policy> JsonSpans<P> {
                         {
                             return Err(Self::invalid(code));
                         }
-                        yielded |= self.end(kind, frame.start, next_position, emit)?;
+                        yielded |= self.end(kind, frame.start, next_position, code, emit)?;
                     }
                     _ => {
                         let kind = match byte {
@@ -274,14 +292,14 @@ impl<P: Policy> JsonSpans<P> {
                         self.token_start = self.position;
                         if !self.key {
                             yielded |= emit(SpanEvent::Start {
-                                depth: self.frames.len() as u32,
+                                depth: self.depth(code)?,
                                 start: self.position,
                                 kind,
                             })?;
                         }
                         match kind {
                             SpanKind::Object | SpanKind::Array => {
-                                if self.frames.len() as u32 > bounds.maximum_depth {
+                                if self.depth(code)? > bounds.maximum_depth {
                                     return Err(P::input(JsonInputError::Depth, code));
                                 }
                                 self.frames
@@ -324,7 +342,13 @@ impl<P: Policy> JsonSpans<P> {
             if !atom.complete() {
                 return Err(Self::invalid(code));
             }
-            self.end(SpanKind::Scalar, self.token_start, self.position, emit)?;
+            self.end(
+                SpanKind::Scalar,
+                self.token_start,
+                self.position,
+                code,
+                emit,
+            )?;
         }
         if !(self.root_done || self.sequence && !self.root_started)
             || !self.frames.is_empty()
