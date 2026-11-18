@@ -303,12 +303,15 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     assert!(verify(&revision, &release, &archive)
         .unwrap_err()
         .contains("missing Cargo Rust source"));
+    fs::copy(fixture.path().join("src/lib.rs"), entry.join("src/lib.rs")).unwrap();
     for (path, dirty, expected) in [("", true, "dirty source"), ("../outside", false, "escapes")] {
-        let (release, archive) = fixture.archive_with_dirty(&revision, path, dirty);
+        write_archive_vcs(&entry, &revision, path, dirty);
+        let (release, archive) = fixture.pack_archive(&entry);
         let error = verify(&revision, &release, &archive).unwrap_err();
         assert!(error.contains(expected), "{error}");
     }
-    let (release, archive) = fixture.archive(&revision, "examples");
+    write_archive_vcs(&entry, &revision, "examples", false);
+    let (release, archive) = fixture.pack_archive(&entry);
     assert!(verify(&revision, &release, &archive)
         .unwrap_err()
         .contains("differs from Cargo"));

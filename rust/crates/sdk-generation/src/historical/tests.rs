@@ -670,6 +670,17 @@ fn complete_registry_cohort_rejects_missing_retired_owner_before_import() {
 
 use std::fs;
 use std::path::PathBuf;
+fn write_archive_vcs(entry: &Path, revision: &str, vcs_path: &str, dirty: bool) {
+    fs::write(
+        entry.join(".cargo_vcs_info.json"),
+        serde_json::to_vec(
+            &serde_json::json!({"git":{"sha1": revision,"dirty":dirty}, "path_in_vcs": vcs_path}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 struct Fixture(tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
@@ -719,14 +730,7 @@ impl Fixture {
     fn stage_archive(&self, revision: &str, vcs_path: &str, dirty: bool) -> PathBuf {
         let entry = self.path().join("historical-fixture-0.1.0");
         fs::create_dir_all(&entry).unwrap();
-        fs::write(
-            entry.join(".cargo_vcs_info.json"),
-            serde_json::to_vec(
-                &serde_json::json!({"git":{"sha1": revision,"dirty":dirty}, "path_in_vcs": vcs_path}),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        write_archive_vcs(&entry, revision, vcs_path, dirty);
         fs::create_dir_all(entry.join("src")).unwrap();
         fs::create_dir_all(entry.join("examples")).unwrap();
         fs::copy(self.path().join("src/lib.rs"), entry.join("src/lib.rs")).unwrap();
