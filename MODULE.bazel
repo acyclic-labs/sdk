@@ -48,13 +48,22 @@ register_toolchains("@musl_toolchains_hub//:all", dev_dependency = True)
 
 register_toolchains("@llvm_toolchain//:all", dev_dependency = True)
 
-# The pinned JavaScript tools also build the package trees for dependent modules.
+# Pinned Node serves the shared policy test rule and downstream package builds.
 node = use_extension("//:node_repo.bzl", "node")
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
 
 bun = use_extension("//:bun_repo.bzl", "bun", dev_dependency = True)
 use_repo(bun, "bunjs")
+# The source-policy package's parser runtime, at its bun.lock integrity pin.
+typescript_parser = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+typescript_parser(
+    name = "typescript_parser",
+    urls = ["https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz"],
+    integrity = "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==",
+    strip_prefix = "package",
+    build_file_content = 'exports_files(glob(["package.json", "lib/*.js"]), visibility = ["//visibility:public"])',
+)
 
 npm_codegen_repository = use_repo_rule("//:npm_codegen_repo.bzl", "npm_codegen_repository")
 npm_codegen_repository(name = "npm_codegen_packages")

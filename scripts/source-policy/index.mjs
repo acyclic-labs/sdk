@@ -70,8 +70,8 @@ function constantString(expression) {
  return pieces.join('');
 }
 
-function scriptTokens(file, source) {
- ts ??= require('typescript-parser');
+function scriptTokens(file, source, parser) {
+ ts ??= parser ?? require('typescript-parser');
  const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
  // Both snapshots share a virtual root; no host filesystem lookup participates
  // in resolving a source binding, and the dependency pass reuses this AST.
@@ -123,6 +123,68 @@ function scriptTokens(file, source) {
  return {stream: out, parsed};
 }
 
+function shellHereRedirect(source, start) {
+ const match = /^<<(-?)[ \t]*((?:'[^'\r\n]*'|"[^"\r\n]*"|\\[^\r\n]|[^ \t\r\n;&|()<>'"\\])+)/.exec(source.slice(start));
+ if (!match) return undefined;
+ const delimiter = match[2].replace(/'([^']*)'|"([^"]*)"|\\(.)/g, (_, single, double, escaped) => single ?? double ?? escaped);
+ return {delimiter, tabs: match[1] === '-', end: start + match[0].length};
+}
+
+function shellHereEnd(source, body, {delimiter, tabs}) {
+ while (body < source.length) {
+  const newline = source.indexOf('\n', body);
+  const last = newline < 0 ? source.length : newline;
+  const text = source.slice(body, last).replace(/\r$/, '');
+  const end = newline < 0 ? last : last + 1;
+  if ((tabs ? text.replace(/^\t+/, '') : text) === delimiter) return {body, end};
+  body = end;
+ }
+ return undefined;
+}
+
+function shellQuoteEnd(source, end, quote, escaped, malformed) {
+ const scopes = [{quote, escaped}];
+ while (end < source.length) {
+  const scope = scopes[scopes.length - 1];
+  const character = source[end++];
+  if (scope.quote !== undefined) {
+   if (character === scope.quote) {
+    scopes.pop();
+    if (!scopes.length) return end;
+   } else if (scope.escaped && character === '\\') end++;
+   else if (scope.quote === '"' && character === '$' && source[end] === '(') {
+    scopes.push({depth: 1, arithmetic: source[end + 1] === '(', hereDocuments: [], wordBoundary: true});
+    end++;
+   }
+  } else if (character === '#' && scope.wordBoundary && !scope.arithmetic) {
+   const newline = source.indexOf('\n', end);
+   end = newline < 0 ? source.length : newline;
+   continue;
+  } else if (character === '<' && !scope.arithmetic) {
+   if (source.startsWith('<<', end)) { end += 2; continue; }
+   const redirect = shellHereRedirect(source, end - 1);
+   if (redirect) {
+    scope.hereDocuments.push(redirect);
+    end = redirect.end;
+   }
+  } else if (character === '\n') {
+   for (const redirect of scope.hereDocuments.splice(0)) {
+    const result = shellHereEnd(source, end, redirect);
+    if (!result) throw malformed('unterminated shell here-document');
+    end = result.end;
+   }
+  } else if (character === "'" || character === '"')
+   scopes.push({quote: character, escaped: character === '"' || source[end - 2] === '$'});
+  else if (character === '\\') {
+   if (source[end++] === '\n') continue;
+  }
+  else if (character === '(') scope.depth++;
+  else if (character === ')' && --scope.depth === 0) scopes.pop();
+  scope.wordBoundary = /^[ \t\r\n;|&()<>]$/.test(character);
+ }
+ return source.length + 1;
+}
+
 // Nested comments, raw strings and lifetimes have Rust lexical boundaries.
 // Quoted child programs and computed property names remain visible as literals.
 function nativeTokens(source, file) {
@@ -151,6 +213,8 @@ function nativeTokens(source, file) {
  let line = 1;
  let yamlFlow = 0;
  let wordBoundary = true;
+ const hereDocuments = [];
+ let arithmeticDepth = 0;
  const malformed = message => new SourceSyntaxError(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
@@ -165,8 +229,37 @@ function nativeTokens(source, file) {
  };
  while (at < source.length) {
   const tail = source.slice(at);
+  if (shell && !arithmeticDepth && tail.startsWith('((')) {
+   arithmeticDepth = 2;
+   emit(at + 1, 'punctuation');
+   emit(at + 1, 'punctuation');
+   continue;
+  }
+  if (arithmeticDepth && tail[0] === '(') arithmeticDepth++;
+  if (arithmeticDepth && tail[0] === ')') arithmeticDepth--;
+  if (shell && !arithmeticDepth && tail.startsWith('<<<')) { emit(at + 3, 'punctuation'); continue; }
+  const redirect = shell && !arithmeticDepth && tail.startsWith('<<') && shellHereRedirect(source, at);
+  if (redirect) {
+   hereDocuments.push(redirect);
+   emit(redirect.end, 'punctuation');
+   continue;
+  }
+  if (hereDocuments.length && (tail.startsWith('\n') || tail.startsWith('\r\n'))) {
+   emit(at + (tail.startsWith('\r') ? 2 : 1));
+   for (const pending of hereDocuments.splice(0)) {
+    const result = shellHereEnd(source, at, pending);
+    if (!result) throw malformed('unterminated shell here-document');
+    emit(result.body, 'literal');
+    emit(result.end);
+   }
+   continue;
+  }
   const blank = tail.match(whitespace);
-  if (blank) { emit(at + blank[0].length); continue; }
+  if (blank) {
+   const width = hereDocuments.length ? blank[0].search(/\r?\n/) : -1;
+   emit(at + (width >= 0 ? width : blank[0].length));
+   continue;
+  }
   if (hashComments && tail.startsWith('#') && (!wordComments || wordBoundary)) {
    emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue;
   }
@@ -224,6 +317,12 @@ function nativeTokens(source, file) {
   }
   const character = rust && quote === "'" && tail.match(/^'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\r\n])'/u);
   if (character) { emit(at + character[0].length, 'literal'); continue; }
+  if (shell && (quote === '"' || quote === "'")) {
+   const end = shellQuoteEnd(source, at + 1, quote, quote === '"' || source[at - 1] === '$', malformed);
+   if (end > source.length) throw malformed('unterminated quoted string');
+   emit(end, 'literal');
+   continue;
+  }
   if (quote === '"' || (!rust && quote === "'")) {
    let end = at + (verbatim ? verbatim[0].length : 1);
    while (end < source.length) {
@@ -245,11 +344,12 @@ function nativeTokens(source, file) {
    ? powershell && tail.startsWith('`\r\n') ? 3 : Math.min(2, tail.length) : 1;
   emit(at + width, word ? 'word' : 'punctuation', spelling);
  }
+ if (hereDocuments.length) throw malformed('unterminated shell here-document');
  return out;
 }
 
-export function pollingUnit(file, source) {
- const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source) : undefined;
+export function pollingUnit(file, source, parser = undefined) {
+ const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source, parser) : undefined;
  const stream = parsed?.stream ?? nativeTokens(source, file);
  // A direct Rust Future::poll advances one state machine. Other poll/select
  // spellings remain conservative candidates, including native imports/aliases.

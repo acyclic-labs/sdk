@@ -1,0 +1,106 @@
+import assert from 'node:assert/strict';
+import {readFileSync, realpathSync} from 'node:fs';
+import test from 'node:test';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
+import {fuzzProject} from '../no-polling.fuzz.mjs';
+import {newProjectPollingSites} from './project.mjs';
+
+const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
+const indexUrl = new URL('./index.mjs', import.meta.url);
+
+test('source-only command preserves the recorded producer/consumer graph', () => {
+ const declared = resolve('node_modules/typescript-parser/lib/typescript.js');
+ assert.equal(fileURLToPath(import.meta.resolve('typescript-parser')),
+  process.execArgv.includes('--preserve-symlinks') ? declared : realpathSync(declared),
+  'the declared runtime package must own parser lookup under the active Node loader');
+ const capture = JSON.parse(readFileSync(new URL('../fixtures/no-polling/actor-project.json', import.meta.url), 'utf8'));
+ const before = new Map(capture.sources);
+ const [producer, consumer] = capture.files;
+ const after = new Map(before).set(producer, before.get(producer).replace('this.#initialize = initialize;', 'this.#initialize = initialize; Bun.sleep(1);'));
+ const run = request => spawnSync(process.execPath, [fileURLToPath(new URL('./check.mjs', import.meta.url)),
+  fileURLToPath(import.meta.resolve('typescript-parser'))], {input: JSON.stringify(request), encoding: 'utf8'});
+ const request = {before: [...before], after: [...after]};
+ const result = run(request);
+ assert.equal(result.status, 0, result.stderr);
+ const actual = JSON.parse(result.stdout);
+ assert.deepEqual(actual, newProjectPollingSites(before, after));
+ assert.ok(actual.some(site => site.file === consumer && site.kind === 'polling-helper-reference'));
+ assert.ok(actual.some(site => site.file === producer && site.kind === 'timer-or-readiness'));
+ assert.equal(run({...request, after: [...after, [...after][0]]}).status, 1);
+});
+
+test('closed project consumers use the original parser and production graph oracle', async () => {
+ const original = readFileSync(indexUrl, 'utf8');
+ // Counterfactual production branch: a closed artifact has no installed
+ // package to resolve. The parser and the graph themselves remain original.
+ const sourceUrl = moduleUrl(original
+  .replace('createRequire(import.meta.url)', 'createRequire(' + JSON.stringify(indexUrl.href) + ')')
+  .replace("require('typescript-parser')", '(() => { throw Error("runtime parser lookup"); })()'));
+ const source = readFileSync(new URL('./project.mjs', import.meta.url), 'utf8')
+  .replace("from 'typescript-parser'", 'from ' + JSON.stringify(import.meta.resolve('typescript-parser')))
+  .replace("from './index.mjs'", 'from ' + JSON.stringify(sourceUrl));
+ const [index, graph] = await Promise.all([import(sourceUrl), import(moduleUrl(source))]);
+ const replay = api => fuzzProject(Uint8Array.of(0), {source: index, graph: api});
+ assert.doesNotThrow(() => replay(graph));
+ // Delete precisely the parser handoff in production. The unchanged oracle
+ // must fail, including the recorded Actor constructor/dependency snapshots.
+ // Use an independently loaded lexer so the successful pass cannot retain its
+ // parser and conceal a missing dependency in the negative control.
+ const freshUrl = moduleUrl(original
+  .replace('createRequire(import.meta.url)', 'createRequire(' + JSON.stringify(indexUrl.href) + ')')
+  .replace("require('typescript-parser')", '(() => { throw Error("runtime parser lookup"); })()') + '\n// independent control');
+ const negative = await import(moduleUrl(source.replace(JSON.stringify(sourceUrl), JSON.stringify(freshUrl))
+  .replace('pollingUnit(file, source, ts)', 'pollingUnit(file, source)')));
+ assert.throws(() => replay(negative), /runtime parser lookup/);
+});
+
+test('an unrelated declaration does not reopen a polling helper consumer', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const helper = 'export function settle() { const ticks = 1; return Bun.sleep(ticks); }';
+ const before = new Map([
+  [producer, helper + '\nexport function unrelated() { return true; }'],
+  [consumer, "import {settle} from '../lib/helper.js'; export const out = settle();"],
+ ]);
+ const edit = source => newProjectPollingSites(before, new Map(before).set(producer, source));
+ assert.ok(!edit(helper + '\nexport function unrelated() { return false; }').some(site => site.file === consumer));
+ assert.ok(!edit('export function unrelated() { return false; }\n' + helper).some(site => site.file === consumer));
+ assert.ok(edit(before.get(producer).replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
+});
+
+test('a dormant function body does not change a module initialization dependency', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const source = 'Bun.sleep(1); export function dormant() { return true; }';
+ const before = new Map([[producer, source], [consumer, "import '../lib/helper.js';"]]);
+ const changes = newSource => newProjectPollingSites(before, new Map(before).set(producer, newSource));
+ assert.ok(!changes(source.replace('true', 'false')).some(site => site.file === consumer));
+ assert.ok(changes(source.replace('sleep(1)', 'sleep(2)'))
+  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+ const active = new Map(before).set(producer, source + ' dormant();');
+ assert.ok(newProjectPollingSites(active, new Map(active).set(producer, active.get(producer).replace('true', 'false')))
+  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+});
+
+test('unrelated source edits preserve dependencies on immutable literal bindings', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const helper = 'const ticks = 1; export function settle() { return Bun.sleep(ticks); }';
+ const caller = "import {settle} from '../lib/helper.js'; export const out = settle();";
+ const before = new Map([[producer, helper], [consumer, caller]]);
+ const changes = source => newProjectPollingSites(before, new Map(before).set(producer, source));
+ assert.ok(!changes('export const label = "unrelated"; ' + helper).some(site => site.file === consumer));
+ assert.ok(changes(helper.replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
+});
+
+test('opaque execution retains module state and initializer dependencies', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const global = 'globalThis.ready = true; export async function settle() { while (!globalThis.ready) await Bun.sleep(1); }';
+ const caller = "import {settle} from '../lib/helper.js'; settle();";
+ const referenced = new Map([[producer, global], [consumer, caller]]);
+ assert.ok(newProjectPollingSites(referenced, new Map(referenced).set(producer, global.replace('true', 'false')))
+  .some(site => site.file === consumer && site.kind === 'polling-helper-reference'));
+ const indirect = "eval('start()'); function start() { return Bun.sleep(1); }";
+ const imported = new Map([[producer, indirect], [consumer, "import '../lib/helper.js';"]]);
+ assert.ok(newProjectPollingSites(imported, new Map(imported).set(producer, indirect.replace('sleep(1)', 'sleep(2)')))
+  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+});
