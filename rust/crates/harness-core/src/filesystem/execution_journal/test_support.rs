@@ -9,14 +9,14 @@ pub(crate) async fn journal() -> Result<(
     crate::core::AuthorityRoot,
 )> {
     journal_with_backends(
-        Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_stream::ProviderOwner::new(acyclic_stream::MemoryStream::default()),
         acyclic_fs::Fs::memory(),
     )
     .await
 }
 
 pub(in crate::filesystem::execution_journal) async fn journal_with_backends<P, A, O>(
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     filesystem: acyclic_fs::Fs<A, O>,
 ) -> Result<(
     FilesystemExecutionJournal<P, A, O>,

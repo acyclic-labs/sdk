@@ -297,7 +297,7 @@ impl Cut<'_> {
 
     async fn stage<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         offset: usize,
         records: &[OwnedBytes],
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -350,7 +350,7 @@ impl Cut<'_> {
 
     pub(super) async fn publish<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,

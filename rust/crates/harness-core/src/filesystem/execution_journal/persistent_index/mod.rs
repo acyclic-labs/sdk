@@ -18,7 +18,7 @@ pub(super) struct NodeRef {
 }
 
 pub(super) struct Reader<'a, P: ?Sized> {
-    pub(super) provider: &'a Arc<P>,
+    pub(super) provider: &'a acyclic_stream::ProviderOwner<P>,
     pub(super) path: &'a StreamPath,
     pub(super) base: u64,
     pub(super) staged: &'a [OwnedBytes],
@@ -27,7 +27,7 @@ pub(super) struct Reader<'a, P: ?Sized> {
 }
 
 pub(super) struct Writer<'a, P: ?Sized> {
-    provider: &'a Arc<P>,
+    provider: &'a acyclic_stream::ProviderOwner<P>,
     path: &'a StreamPath,
     base: u64,
     scratch: Scratch,

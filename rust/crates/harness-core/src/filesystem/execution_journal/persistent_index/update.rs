@@ -9,7 +9,7 @@ pub(super) struct Ancestor {
 
 impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
     pub(in crate::filesystem::execution_journal) fn new(
-        provider: &'a Arc<P>,
+        provider: &'a acyclic_stream::ProviderOwner<P>,
         path: &'a StreamPath,
         base: u64,
         io: Option<&PreparationIo>,

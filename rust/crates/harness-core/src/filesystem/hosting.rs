@@ -484,7 +484,7 @@ where
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let turner = FilesystemTurnHost::new(
-            Arc::clone(&stream),
+            stream.clone(),
             within.clone(),
             Arc::clone(&volumes),
             issuer.clone(),

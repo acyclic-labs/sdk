@@ -2,8 +2,7 @@
 mod authority;
 use acyclic_agent_host_conformance::{Result as SuiteResult, protocol::Endpoint};
 use acyclic_harness_core::agent::AgentPath;
-use acyclic_stream::{BoxProviderFuture, StreamError, StreamProvider};
-use std::sync::Arc;
+use acyclic_stream::{BoxProviderFuture, ProviderOwner, StreamError, StreamProvider};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 
@@ -24,7 +23,7 @@ pub fn tool() -> Result<JsValue, JsValue> {
 struct Hosted {
     port: JsValue,
     binding: Vec<u8>,
-    provider: Arc<dyn StreamProvider>,
+    provider: ProviderOwner<dyn StreamProvider>,
 }
 
 fn failure(method: &str, error: JsValue) -> acyclic_agent_host_conformance::Failure {
@@ -78,7 +77,7 @@ impl Endpoint for Hosted {
     fn binding(&self) -> &[u8] {
         &self.binding
     }
-    fn provider(&self) -> Arc<dyn StreamProvider> {
+    fn provider(&self) -> ProviderOwner<dyn StreamProvider> {
         self.provider.clone()
     }
     fn exchange(

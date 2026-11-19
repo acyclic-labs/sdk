@@ -16,12 +16,12 @@ use acyclic_harness_core::{
     tool::ToolDefinition,
 };
 use acyclic_stream::{
-    BoxProviderFuture, ProviderPlatform, ReadRequest, StreamCategory, StreamError, StreamProvider,
+    BoxProviderFuture, ProviderOwner, ProviderPlatform, ReadRequest, StreamCategory, StreamError,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::json;
-use std::sync::Arc;
 
 pub mod embedded;
 mod observations;
@@ -75,7 +75,7 @@ pub trait Endpoint: ProviderPlatform {
     /// Deliver this explicitly placed actor, without activating its children.
     fn drain<'a>(&'a self, agent: &'a AgentPath) -> BoxProviderFuture<'a, Result>;
     /// The same storage the real host reads and publishes to.
-    fn provider(&self) -> Arc<dyn StreamProvider>;
+    fn provider(&self) -> ProviderOwner<dyn StreamProvider>;
     /// Actual executions of the shared internal fixture tool.
     fn effects(&self) -> BoxProviderFuture<'_, Result<u64>>;
 }
