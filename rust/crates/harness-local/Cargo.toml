@@ -117,7 +117,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 rcgen = "0.14.10"
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
-shuttle = "=0.9.8"
+shuttle = "=0.9.10"
 tracing-subscriber.workspace = true
 loom = "0.7.3"
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }

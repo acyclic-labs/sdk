@@ -15,7 +15,7 @@ cargo-fuzz = true
 sdk-docs = { path = ".." }
 cargo_metadata = "=0.23.1"
 libfuzzer-sys = "0.4"
-rustdoc-types = "=0.60.0"
+rustdoc-types = "=0.61.0"
 serde_json = "1"
 
 [[bin]]

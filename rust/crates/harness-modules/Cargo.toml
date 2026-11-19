@@ -9,12 +9,12 @@ description = "Static settings-module compilation and effective-tree import reso
 documentation = "https://docs.rs/acyclic-harness-modules"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-oxc_allocator = "=0.156.0"
-oxc_codegen = { version = "=0.156.0", default-features = false }
-oxc_parser = { version = "=0.156.0", default-features = false }
-oxc_semantic = { version = "=0.156.0", default-features = false }
-oxc_span = "=0.156.0"
-oxc_transformer = { version = "=0.156.0", default-features = false }
+oxc_allocator = "=0.159.0"
+oxc_codegen = { version = "=0.159.0", default-features = false }
+oxc_parser = { version = "=0.159.0", default-features = false }
+oxc_semantic = { version = "=0.159.0", default-features = false }
+oxc_span = "=0.159.0"
+oxc_transformer = { version = "=0.159.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 

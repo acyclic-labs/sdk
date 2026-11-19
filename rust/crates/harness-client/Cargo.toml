@@ -21,7 +21,7 @@ acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
-base64 = { version = "=0.22.1" }
+base64 = { version = "=0.23.1" }
 blake3 = { workspace = true }
 bytes.workspace = true
 futures.workspace = true

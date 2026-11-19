@@ -126,7 +126,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.3"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
-serde-saphyr = { version = "=2.0.0", default-features = false, features = ["deserialize"] }
+serde-saphyr = { version = "=2.1.1", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -185,7 +185,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
 rcgen = "0.14.10"
-serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
+serde-saphyr = { version = "=2.1.1", default-features = false, features = ["serialize"] }
 tracing-subscriber.workspace = true
 loom = { version = "0.7.3", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }

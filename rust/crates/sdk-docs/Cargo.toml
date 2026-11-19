@@ -29,7 +29,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 sdk-file-identity = { path = "file-identity" }
 cargo_metadata = "=0.23.1"
 public-api = "=0.52.2"
-rustdoc-types = "=0.60.0"
+rustdoc-types = "=0.61.0"
 schemars = { workspace = true }
 semver = "1.0.27"
 serde = { version = "1.0.228", features = ["derive"] }
