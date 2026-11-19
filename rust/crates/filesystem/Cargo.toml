@@ -514,7 +514,7 @@ tempfile = { version = "3.27.0" }
 [target.'cfg(target_os = "linux")'.dependencies]
 indexmap = "=2.14.2"
 fuser = { version = "=0.18.0", default-features = false }
-nix = { version = "0.31.3", default-features = false, features = ["fs", "user", "mount"] }
+nix = { version = "0.32.0", default-features = false, features = ["fs", "user", "mount"] }
 rustix = { workspace = true, features = ["fs", "net"] }
 vhost = { version = "0.18.0", features = ["vhost-user-backend"] }
 vmm-sys-util = "0.15.0"

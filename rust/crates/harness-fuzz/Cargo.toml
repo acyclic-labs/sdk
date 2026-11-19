@@ -160,12 +160,12 @@ acyclic-executable-search = { path = "../executable-search", optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 clap.workspace = true
 acyclic-harness-client = { path = "../harness-client", optional = true }
 acyclic-harness = { path = "../harness", default-features = false, optional = true }
 diffy = { workspace = true, optional = true }
-serde-saphyr = { version = "=2.0.0", features = ["serialize"], optional = true }
+serde-saphyr = { version = "=2.1.1", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
 acyclic-fs = { path = "../filesystem", default-features = false, optional = true }
