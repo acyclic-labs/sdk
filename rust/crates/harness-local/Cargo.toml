@@ -12,10 +12,13 @@ description = "The durable native host behind the acyclic-harness facade"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness-local"
 
+[package.metadata.bazel]
+unit-test-shards = 16
+
 [features]
 research = ["acyclic-harness-core/research"]
 conformance = ["acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
-test-support = ["acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-hosting/test-support", "acyclic-harness-search/test-support"]
+test-support = ["acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-harness-hosting/test-support", "acyclic-harness-search/test-support", "acyclic-fs-format/test-support", "acyclic-native-lines/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 wasm = []
 

@@ -15,7 +15,7 @@ async fn durable_traversal_groups_full_flushes_without_overlapping_staging_actio
     let mut expected = Vec::new();
     for index in 0..count {
         let name = format!("file-{index}");
-        let bytes = vec![u8::try_from(index)?; if index % 2 == 0 { 16 } else { 8192 }];
+        let bytes = vec![index.to_le_bytes()[0]; if index % 2 == 0 { 16 } else { 8192 }];
         checkout
             .create(
                 crate::AuthoredMutation::CreateFile {

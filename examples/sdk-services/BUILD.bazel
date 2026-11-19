@@ -12,6 +12,7 @@ rust_library(
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//:rust/README.md",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -45,6 +46,7 @@ rust_binary(
     srcs = [
         "examples/actors.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -79,6 +81,7 @@ rust_binary(
     srcs = [
         "examples/fs.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -113,6 +116,7 @@ rust_binary(
     srcs = [
         "examples/objects.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -147,6 +151,7 @@ rust_binary(
     srcs = [
         "examples/streams.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -181,6 +186,7 @@ rust_binary(
     srcs = [
         "examples/workers.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

@@ -1,6 +1,6 @@
 use super::*;
+use crate::foundation::Epoch;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
-use crate::model::FilesystemProfile;
 use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
 use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
@@ -510,26 +510,48 @@ impl AsyncObjectStore for PostPutObjectStore {
         self.put(id, bytes, work).await
     }
 }
+#[cfg(any(not(unit_test_split), unit_test_facade_checkout))]
 mod adoption;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod concurrency;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod content;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod creation;
+#[cfg(any(not(unit_test_split), unit_test_facade_checkout))]
 mod detached;
-mod fault_creation;
-mod fault_mutations;
-mod fault_publication;
+#[cfg(any(not(unit_test_split), unit_test_facade_checkout))]
 mod fork_proof;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(not(unit_test_split), unit_test_facade_checkout)
+))]
 mod heterogeneous_mount;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod identity;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod live;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod local;
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod profiles;
-mod protocol_helpers;
+#[cfg(any(not(unit_test_split), unit_test_facade_checkout))]
 mod selection;
-mod special;
+#[cfg(any(not(unit_test_split), unit_test_facade_checkout))]
 mod tracking;
+#[cfg(any(not(unit_test_split), unit_test_facade_checkout))]
 mod transactions;
+
+#[cfg(any(not(unit_test_split), unit_test_facade_recovery))]
+mod checkout_reconciliation;
+#[cfg(any(not(unit_test_split), unit_test_facade_recovery))]
+mod fault_creation;
+#[cfg(any(not(unit_test_split), unit_test_facade_recovery))]
+mod fault_mutations;
+#[cfg(any(not(unit_test_split), unit_test_facade_recovery))]
+mod fault_publication;
+
+mod protocol_helpers;
 use protocol_helpers::*;
 #[path = "../../../tests/support/volume_fixture.rs"]
 mod fixtures;

@@ -58,6 +58,24 @@ impl NativeViewBaseline {
             ..self.clone()
         }
     }
+
+    /// Only host-supplied values for unavailable authored fields need a fact.
+    pub(crate) fn needs_host_defaults(prior: &FileMetadata, physical: &FileMetadata) -> bool {
+        fn is_default<T>(prior: &MetadataField<T>, physical: &MetadataField<T>) -> bool {
+            matches!(prior, MetadataField::Unavailable)
+                && matches!(physical, MetadataField::Value(_))
+        }
+
+        is_default(&prior.posix_mode, &physical.posix_mode)
+            || is_default(&prior.posix_uid, &physical.posix_uid)
+            || is_default(&prior.posix_gid, &physical.posix_gid)
+            || is_default(&prior.posix_flags, &physical.posix_flags)
+            || is_default(&prior.windows_attributes, &physical.windows_attributes)
+            || (!cfg!(target_os = "linux") && is_default(&prior.created_ns, &physical.created_ns))
+            || is_default(&prior.modified_ns, &physical.modified_ns)
+            || is_default(&prior.accessed_ns, &physical.accessed_ns)
+            || (!cfg!(unix) && is_default(&prior.changed_ns, &physical.changed_ns))
+    }
     pub(super) fn restore_canonical_stamps(
         &self,
         root_identity: NativeRootIdentity,

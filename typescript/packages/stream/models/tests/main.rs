@@ -8,7 +8,7 @@ mod session_model;
 
 #[test]
 fn native_and_wasm_error_mapping_agree() -> std::io::Result<()> {
-    let output = std::process::Command::new("bun")
+    let output = std::process::Command::new(acyclic_test_support::host_tool!("bun"))
         .args([
             "test",
             "./node_modules/@acyclic-labs/stream/test/error-mapping.test.ts",

@@ -5,8 +5,9 @@ use acyclic_fs::{
 };
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
-use crate::simulation_image::{Image, check};
+use crate::workspace_simulation::fixtures::fork_workspace;
+use crate::workspace_simulation::simulation_image::{Image, check};
+use crate::workspace_simulation::transaction::commit;
 use acyclic_native_runtime::testing::sweep::{minimize, seeds, sweep};
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 use std::collections::BTreeMap;

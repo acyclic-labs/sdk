@@ -72,7 +72,7 @@ fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes() -> R
         let reference = reference?;
         assert_eq!(
             journal.4.load(Ordering::SeqCst) - reads,
-            usize::from(step > 2)
+            usize::from(step > 1)
         );
         let (files, bytes) = trace
             .iter()
@@ -84,14 +84,9 @@ fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes() -> R
         // inspecting history. The total also detects missing or extra records.
         total_files += files;
         assert_eq!(journal.1.lock().unwrap().len(), total_files);
-        assert_eq!(
-            files,
-            match step {
-                1 => 1,
-                2 => 3,
-                _ => 2,
-            }
-        );
+        // The first request publishes its reusable header, segment and
+        // manifest. Subsequent requests publish only the new segment and cut.
+        assert_eq!(files, if step == 1 { 3 } else { 2 });
         assert!(bytes < 4096, "step {step} encoded {bytes} bytes");
         largest_delta = largest_delta.max(bytes);
         if [1, 100, 1000].contains(&step) {

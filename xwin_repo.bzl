@@ -12,17 +12,20 @@ target is incompatible with every platform: pass
 --repo_env=XWIN_SYSROOT=<xwin sysroot> to build for Windows.
 """
 
+WINDOWS_LIB_DIRS = [
+    "crt/lib/x86_64",
+    "sdk/lib/ucrt/x86_64",
+    "sdk/lib/um/x86_64",
+]
+
 _LEAVES = [
     "crt/include",
-    "crt/lib/x86_64",
     "sdk/include/cppwinrt",
     "sdk/include/shared",
     "sdk/include/ucrt",
     "sdk/include/um",
     "sdk/include/winrt",
-    "sdk/lib/ucrt/x86_64",
-    "sdk/lib/um/x86_64",
-]
+] + WINDOWS_LIB_DIRS
 
 def _xwin_repository_impl(ctx):
     root = ctx.os.environ.get("XWIN_SYSROOT")
@@ -43,7 +46,13 @@ filegroup(
     name = "libs",
     srcs = glob(["crt/lib/**", "sdk/lib/**"], allow_empty = True),%s
 )
-""" % (incompatible, incompatible))
+
+# Package the directories the native linker's LIB search path names.
+filegroup(
+    name = "native_libs",
+    srcs = glob([directory + "/*" for directory in %r], allow_empty = True),%s
+)
+""" % (incompatible, incompatible, WINDOWS_LIB_DIRS, incompatible))
 
 xwin_repository = repository_rule(
     implementation = _xwin_repository_impl,

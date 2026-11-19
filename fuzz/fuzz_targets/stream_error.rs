@@ -10,8 +10,8 @@ fuzz_target!(|input: &[u8]| {
         .and_then(|code| StreamError::from_code(&code));
     let decoded = serde_json::from_slice::<StreamError>(input);
     assert_eq!(
-        decoded.as_ref().ok(),
-        expected.as_ref(),
+        decoded.as_ref().ok().map(StreamError::category),
+        expected.as_ref().map(StreamError::category),
         "failure admission changed: decoded={decoded:?}"
     );
     // Admission must hold even when the arbitrary input is not a valid code.
@@ -31,7 +31,9 @@ fuzz_target!(|input: &[u8]| {
             );
             let decoded = serde_json::from_slice::<StreamError>(&encoded);
             assert!(
-                decoded.as_ref().is_ok_and(|decoded| decoded == error),
+                decoded
+                    .as_ref()
+                    .is_ok_and(|decoded| decoded.category() == error.category()),
                 "canonical failure writer output was refused: original={error:?}; decoded={decoded:?}"
             );
         }

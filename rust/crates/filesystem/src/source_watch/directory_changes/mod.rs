@@ -37,10 +37,13 @@ mod startup;
 #[cfg(test)]
 use reader::notification;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 mod tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 mod tests_burst;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 mod tests_rename;
 
 /// A new watch's read buffer, and so the kernel's change buffer for its

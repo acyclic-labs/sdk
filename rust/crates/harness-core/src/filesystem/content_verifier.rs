@@ -569,6 +569,9 @@ where
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("generation-bound range", range.offset, range.length));
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let owned = PreparationScope::new(io)?;
+            let original = io;
+            let io = owned.io();
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -615,11 +618,15 @@ where
                 quota.transfer();
                 Ok::<_, Error>(selected)
             })?;
-            let hold = io
-                .map(|io| io.guard_owned(selection.logical_owned_bytes()?))
-                .transpose()?;
             drop(grant);
             drop(grant_hold);
+            let hold = if let Some(original) = original {
+                let bytes = selection.logical_owned_bytes()?;
+                owned.finish(bytes)?;
+                Some(original.guard_owned(bytes)?)
+            } else {
+                None
+            };
             Ok((selection, bytes, hold))
         })
     }

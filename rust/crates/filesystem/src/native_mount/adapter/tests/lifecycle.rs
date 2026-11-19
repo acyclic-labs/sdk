@@ -65,9 +65,6 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
     Ok(())
 }
 
-type MemorySource =
-    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
-
 #[test]
 fn capture_parent_refusals_keep_the_checkout_live() -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::shared::outcome::{

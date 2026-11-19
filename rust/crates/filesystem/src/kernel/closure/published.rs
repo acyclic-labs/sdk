@@ -159,10 +159,12 @@ impl<P, S: Deref<Target = ProofSlot<P>>> Unpublished<P, S> {
 
 #[cfg(test)]
 #[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod loom_tests;
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 #[cfg(test)]

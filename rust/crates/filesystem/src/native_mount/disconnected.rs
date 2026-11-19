@@ -4,8 +4,10 @@ use super::*;
 #[cfg(loom)]
 pub(in crate::native_mount) mod kernel;
 mod linux;
+pub(super) use linux::mount_id;
 #[cfg(test)]
 #[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod models;
 
 // Detection, owner acquisition and detach all operate on the one pinned object.

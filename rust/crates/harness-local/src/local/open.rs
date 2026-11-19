@@ -121,6 +121,7 @@ impl PreparedLocalHarness {
             home: &stored.scratch,
             seed: (&stored.seed.0, &stored.seed.1),
             configuration: &opening.config.configuration,
+            issuer_access: None,
             decisions: crate::config::SettingsAdmissions::new(&stored.volume_stream),
 
             maximum_bytes: opening.config.limits.file_bytes,
@@ -340,20 +341,8 @@ impl Opening {
             (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
             _ => checkout,
         };
-        let custody_directory = self
-            .config
-            .without_user_settings
-            .then(|| directory.join("signing-custody"));
-        let custody = match (
-            self.config.signing_store.as_deref(),
-            custody_directory.as_deref(),
-        ) {
-            (Some(store), _) => acyclic_native_runtime::signing_key::SigningCustody::Store(store),
-            (None, Some(directory)) => {
-                acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(directory)
-            }
-            (None, None) => acyclic_native_runtime::signing_key::SigningCustody::Configured,
-        };
+        let custody_directory = directory.join("signing-custody");
+        let custody = self.config.signing_custody(&custody_directory);
         let owner = owner::Owner::open(
             &directory,
             &self.config.project,
@@ -696,6 +685,7 @@ impl Opening {
             home: &scratch,
             seed: (&seed.0, &seed.1),
             configuration: &self.config.configuration,
+            issuer_access: None,
             decisions: crate::config::SettingsAdmissions::new(&volume_stream),
 
             maximum_bytes: self.config.limits.file_bytes,

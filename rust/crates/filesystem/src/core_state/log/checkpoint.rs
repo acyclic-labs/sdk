@@ -290,6 +290,7 @@ impl CoreLog {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests {
     use super::*;
 

@@ -18,7 +18,9 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
   const load = file => import(pathToFileURL(join(packages, "harness-actor/dist", file)).href);
   const { HARNESS_BINDINGS, HARNESS_MODULE } = await load("bindings.js");
   const { harnessManifest } = await load("manifest.js");
-  const { deployment, ...config } = JSON.parse(readFileSync(resolve(configFile), "utf8"));
+  const { deployment, options, model } = JSON.parse(readFileSync(resolve(configFile), "utf8"));
+  const { provider, spec, selection, limits, compaction } = model;
+  const config = { options, model: { provider, spec, selection, limits, compaction } };
   const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 
   const closure = wasmAssetClosure(`bun scripts/build-harness-actor.mjs --config ${JSON.stringify(configFile)} --out ${JSON.stringify(outputDirectory)}`);

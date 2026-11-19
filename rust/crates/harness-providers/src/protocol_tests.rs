@@ -582,7 +582,7 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
         sent.iter()
             .all(|request| request.url.ends_with("/messages"))
     );
-    let next = json(&sent[2].body)?;
+    let next = acyclic_harness_provider_response::json(&sent[2].body)?;
     assert_eq!(next["max_tokens"], 50000);
     // More bytes than tokens is valid. The provider admits an unknown count;
     // the byte upper bound must not turn this into a false overflow.
@@ -686,7 +686,7 @@ async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() 
     }));
     let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
     assert_eq!(sent.len(), 2);
-    let body = json(&sent[1].body)?;
+    let body = acyclic_harness_provider_response::json(&sent[1].body)?;
     assert!(crate::validate_input(Adapter::Responses, &body).is_empty());
     let input = body["input"].as_array().expect("Responses input");
     let start = input
@@ -841,7 +841,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             }
         );
         let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
-        let body = json(&sent[1].body)?;
+        let body = acyclic_harness_provider_response::json(&sent[1].body)?;
         if adapter == Adapter::Gemini {
             // The signed part replays exactly as received, without an id
             // the provider never sent.
@@ -852,7 +852,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
         } else if adapter == Adapter::Responses {
             for request in sent.iter() {
                 assert_eq!(
-                    json(&request.body)?["include"],
+                    acyclic_harness_provider_response::json(&request.body)?["include"],
                     json!(["reasoning.encrypted_content"])
                 );
             }

@@ -360,4 +360,5 @@ mod coordinator;
 #[doc(hidden)]
 pub use streams::fuzzing::check_persisted_window;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

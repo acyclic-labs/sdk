@@ -2,7 +2,7 @@ use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, FsError,
     LivePublicationObservation, PublicationPermit, StagedContent,
 };
-use acyclic_fs_format::identity::OperationId;
+use acyclic_fs_format::identity::{FileId, OperationId};
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_stream::OwnedBytes;
 

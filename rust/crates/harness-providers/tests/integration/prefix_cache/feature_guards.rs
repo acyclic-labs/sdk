@@ -68,7 +68,8 @@ async fn manifest(
                 "inputSchema":{"type":"object"}}],
         }))?;
         for definition in catalog.model_definitions(None, None)? {
-            let mut tool = crate::integration_helpers::echo_tool(&definition.name);
+            let mut tool =
+                crate::prefix_cache_cases::integration_helpers::echo_tool(&definition.name);
             tool.definition = definition;
             extra.push(tool);
         }

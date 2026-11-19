@@ -129,11 +129,11 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
             }
             assert_eq!(
                 leader_work.live_allocation_bytes(),
-                NativeMaterializationWork::accounting_state_bytes()
+                Ok(NativeMaterializationWork::accounting_state_bytes())
             );
             assert_eq!(
                 follower_work.live_allocation_bytes(),
-                NativeMaterializationWork::accounting_state_bytes()
+                Ok(NativeMaterializationWork::accounting_state_bytes())
             );
         }
     }

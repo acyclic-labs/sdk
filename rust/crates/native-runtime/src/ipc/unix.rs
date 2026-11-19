@@ -92,7 +92,7 @@ impl UnixListener {
         let (_parent, address) = socket_path(path)?;
         #[cfg(not(target_os = "linux"))]
         let address = path;
-        let listener = tokio::net::UnixListener::bind(&address)?;
+        let listener = tokio::net::UnixListener::bind(address)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         let metadata = owner.socket_metadata(path)?;
         Ok(Self {

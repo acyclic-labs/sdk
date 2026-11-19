@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use super::{
     DemandError, DemandWork, NativeMaterializationWork, WorkBudget, ordinary_work, test_root,
 };
@@ -531,4 +531,5 @@ pub(crate) fn set_windows_name<W: NativeHostWork>(
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests_windows_stat.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod stat_tests;

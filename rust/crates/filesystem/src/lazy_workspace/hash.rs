@@ -82,9 +82,11 @@ fn hash_with_charge<T: Serialize>(
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "hash_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "hash_loom_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod models;

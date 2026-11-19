@@ -100,7 +100,7 @@ impl NativeAllocation {
     pub fn release(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         let empty = bytes == 0;
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         let empty = empty && !model_checking::force_ledger_release();
         if empty {
             return Ok(());
@@ -258,8 +258,10 @@ impl Drop for NativeResourceRetirement {
 #[cfg(test)]
 #[cfg(loom)]
 #[path = "allocation_model.rs"]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod model_checking;
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "allocation_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod tests;

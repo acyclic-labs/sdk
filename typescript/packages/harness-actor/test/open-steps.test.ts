@@ -29,9 +29,10 @@ mock.module("@acyclic-labs/harness", () => ({
 }));
 const { guestManifest, openGuest } = await import("../src/open.js");
 const config = { options: {}, model: { provider: "p", spec: {}, selection: "s", limits: undefined, compaction: {} } };
+const env = { model() {} };
 const failure = async (step: string) => {
   failing = step;
-  const error = await openGuest({} as never, config as never).then(() => undefined, (error: unknown) => error);
+  const error = await openGuest(env as never, config as never).then(() => undefined, (error: unknown) => error);
   // The wire form the host reads; the message and cause never cross.
   const { type, detail } = error as { type: string; detail: unknown };
   expect(JSON.stringify({ type, detail })).not.toContain("secret");

@@ -748,4 +748,5 @@ use records::*;
 pub mod codec_fuzz;
 mod native_records;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;

@@ -390,6 +390,7 @@ impl NativeSourceWatch {
                 // Queue overflow records stop scheduling this watch.
                 self.shared.ensure_cleanup_covered(WRITE, work)?;
                 #[cfg(test)]
+                #[cfg(any(not(unit_test_split), unit_test_mount_watch))]
                 super::admission_tests::before_unsubscribe_record();
                 let unsubscribed = hub::hub().map(|hub| hub.unsubscribe(self.shared.subscriber));
                 self.shared.record_cleanup(WRITE, work).and(unsubscribed)?;

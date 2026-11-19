@@ -5,7 +5,8 @@ use acyclic_fs::{
 };
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_contracts::fixtures::fork_workspace;
+use crate::workspace_contracts::transaction::commit;
 
 #[tokio::test]
 async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<dyn Error>> {

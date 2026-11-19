@@ -25,12 +25,11 @@ pub mod crash_cuts;
 mod policy;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
-mod scripted;
 pub use policy::FixedToolPolicy;
 #[cfg(not(target_arch = "wasm32"))]
 pub use replay::assert_replay_admission;
 
-pub use scripted::{
+pub use crate::model::scripted::{
     RETROSPECTIVE, ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
     is_retrospective, model_visible_messages, read_request_files,
 };

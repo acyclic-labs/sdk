@@ -118,6 +118,7 @@ impl WorkspaceName {
         let output = Self(retained);
         #[cfg(test)]
         #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+        #[cfg(any(not(unit_test_split), unit_test_workspace_accounting))]
         name_tests::redundant_allocation();
         Ok(output)
     }
@@ -312,16 +313,19 @@ fn charged<T>(
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "identity_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "identity_loom.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod model;
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "name_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace_accounting))]
 mod name_tests;
 
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]
@@ -331,6 +335,7 @@ mod reference;
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "name_loom.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod name_model;
 
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]

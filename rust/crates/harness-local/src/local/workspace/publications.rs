@@ -270,7 +270,8 @@ mod tests {
                 volume,
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
             )?
-            .without_default_tools(),
+            .without_default_tools()
+            .without_user_settings(),
         )
         .await?;
         Ok((directory, local))
@@ -285,7 +286,10 @@ mod tests {
         use std::sync::atomic::Ordering::SeqCst;
         for checkpoint in ["task:submitted", "task:completed"] {
             let (_directory, local) = fixture().await?;
-            let workspace = local.workspace.as_ref().unwrap();
+            let workspace = local
+                .workspace
+                .as_ref()
+                .ok_or_else(|| Error::NotFound("checkout".into()))?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let head = workspace
                 .view()
@@ -309,9 +313,14 @@ mod tests {
             )));
             let paused = loop {
                 tokio::select! {
-                    result = &mut enqueue => panic!("enqueue completed before {checkpoint}: {result:?}"),
+                    result = &mut enqueue => {
+                        return Err(Error::Invalid(format!(
+                            "enqueue completed before {checkpoint}: {result:?}"
+                        )));
+                    }
                     boundary = boundaries.recv() => {
-                        let boundary = boundary.expect("enqueue boundary");
+                        let boundary = boundary
+                            .ok_or_else(|| storage("enqueue boundary stream closed"))?;
                         if boundary.name == checkpoint { break boundary; }
                         boundary.release();
                     }
@@ -320,7 +329,7 @@ mod tests {
             drop(enqueue);
             paused.release();
             crate::test_support::run_native_schedule(&schedule, boundaries, schedule.drained())
-                .await;
+                .await?;
             assert!(workspace.publication_debt.load(SeqCst), "{checkpoint}");
             assert!(
                 LocalWorkspace::owes_publication(
@@ -587,7 +596,7 @@ mod tests {
             fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
                 Box::pin(async move {
                     self.inner.verify().await?;
-                    let entered = self.entered.lock().unwrap().take();
+                    let entered = self.entered.lock().map_err(storage)?.take();
                     if let Some(entered) = entered {
                         let _ = entered.send(());
                         std::future::pending::<()>().await;

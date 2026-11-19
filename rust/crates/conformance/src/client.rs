@@ -16,15 +16,23 @@ pub enum Cause {
     Stream(acyclic_stream::StreamError),
     /// Opening the selected endpoint failed.
     Connect(acyclic_stream::grpc::ConnectError),
+    /// The agent committed a terminal turn outcome other than completion.
+    Turn(acyclic_harness_core::agent::TurnOutcome),
 }
 
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentPath, AgentRecord as _, AgentSelection,
-    ConversationEntry, StatusRecord, WireSessionError,
+    ConversationEntry, StatusRecord, StreamView, WireSessionError,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{StreamProvider, session::Client};
 use serde::{Deserialize, Serialize};
+
+fn focused_conversation(client: &AgentClient) -> Result<&StreamView, Failure> {
+    client
+        .conversation()
+        .map_err(|error| observation_failure("focused_conversation", error))
+}
 
 /// One host-created settled record and status, with exclusive starting cursors.
 /// Each stream must end immediately after the supplied record at suite entry.
@@ -50,7 +58,7 @@ pub struct Failure {
     pub case: &'static str,
     /// Original provider diagnostic or failed invariant.
     pub detail: String,
-    /// Original typed transport/provider cause, when the vector observed one.
+    /// Original typed cause, when the vector observed one.
     #[serde(skip)]
     pub cause: Option<Cause>,
 }
@@ -63,10 +71,11 @@ impl std::fmt::Display for Failure {
 
 impl std::error::Error for Failure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause.as_ref().map(|cause| match cause {
-            Cause::Stream(error) => error as &dyn std::error::Error,
-            Cause::Connect(error) => error as &dyn std::error::Error,
-        })
+        match self.cause.as_ref()? {
+            Cause::Stream(error) => Some(error),
+            Cause::Connect(error) => Some(error),
+            Cause::Turn(_) => None,
+        }
     }
 }
 
@@ -224,15 +233,14 @@ async fn verify_observation(
             }
         }
     }
-    let cursor = client.conversation().next_sequence();
-    let revision = client.conversation().revision();
+    let view = focused_conversation(&client)?;
+    let cursor = view.next_sequence();
+    let revision = view.revision();
     client
         .set_view(selection(), std::iter::empty())
         .map_err(|error| observation_failure("retain_selection", error))?;
-    if client.conversation().next_sequence() != cursor
-        || client.conversation().revision() != revision
-        || client.conversation().records().len() != 1
-    {
+    let view = focused_conversation(&client)?;
+    if view.next_sequence() != cursor || view.revision() != revision || view.records().len() != 1 {
         return Err(failure(
             "retain_selection",
             "unchanged demand reset the fold or cursor",
@@ -259,9 +267,10 @@ async fn verify_observation(
                 ));
             }
         }
+        let view = focused_conversation(&client)?;
         if client.session().revision() != composition
-            || client.conversation().next_sequence() != cursor
-            || client.conversation().revision() != revision
+            || view.next_sequence() != cursor
+            || view.revision() != revision
         {
             return Err(failure(
                 "complete_cursor_refusal",
@@ -273,11 +282,12 @@ async fn verify_observation(
     client
         .set_view(selection(), std::iter::repeat_with(selection).take(257))
         .map_err(|error| failure("retain_repeated_selection", error))?;
-    if client.conversation().next_sequence() != cursor
+    let view = focused_conversation(&client)?;
+    if view.next_sequence() != cursor
         || client.selected_agents().count() != 1
         || client.agent() != &fixture.agent
-        || client.conversation().revision() != revision
-        || client.conversation().records().len() != 1
+        || view.revision() != revision
+        || view.records().len() != 1
     {
         return Err(failure(
             "retain_repeated_selection",
@@ -317,8 +327,8 @@ async fn verify_observation(
             std::iter::empty(),
         )
         .map_err(|error| observation_failure("reselection_cursor", error))?;
-    if client.conversation().next_sequence() != cursor || client.conversation().records().len() != 0
-    {
+    let view = focused_conversation(&client)?;
+    if view.next_sequence() != cursor || view.records().next().is_some() {
         return Err(failure(
             "reselection_cursor",
             "reselection reused the evicted history or reset its cursor",

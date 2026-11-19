@@ -174,6 +174,7 @@ impl<A, O> Workspace<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> S3Workspace<A, O> {
     async fn disclose<T>(&self, result: Result<T, S3Error>) -> Result<T, S3Error> {
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_foundation))]
         if access_tests::omitted() {
             return result;
         }
@@ -688,6 +689,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> S3Workspac
 
 #[cfg(test)]
 #[path = "s3/access_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod access_tests;
 
 enum ListingTask {
@@ -1250,6 +1252,7 @@ pub enum S3Error {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
     use crate::Fs;

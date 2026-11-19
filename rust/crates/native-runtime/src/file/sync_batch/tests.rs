@@ -321,7 +321,12 @@ fn batch_enumerates_every_original_full_flush_fault_boundary() -> io::Result<()>
     use crate::testing::{DurableFault, InjectedStorageFault, Schedule};
     initialize_native_io_services()?;
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let width = NativeSyncBatch::capacity()?;
+    // The batch's poll loop and the schedule's ordinal mapping are index-independent, so
+    // every fault boundary is enumerated on a small batch. Sizing this grid by the machine's
+    // worker count made it quadratic in the CPU count (193 cuts x 4 faults x 192 members on
+    // a 192-core host). The full-capacity batch is covered by
+    // `batch_full_flushes_keep_original_charges_and_handle_order`.
+    let width = NativeSyncBatch::capacity()?.min(8);
     for cut in 0..=width {
         for fault in [
             DurableFault::Before,

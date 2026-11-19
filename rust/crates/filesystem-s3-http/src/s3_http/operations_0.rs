@@ -362,12 +362,10 @@ where
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                            acyclic_fs::OperationReceipt {
-                                value: (),
-                                work: acyclic_fs::WorkCounters::default(),
-                            },
-                        )
+                        Ok::<_, OperationFailure<acyclic_fs::WorkspaceError>>(OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        })
                     },
                 )
                 .await

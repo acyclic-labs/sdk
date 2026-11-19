@@ -32,10 +32,19 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 serde_json.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+acyclic-fs-merge = { version = "=0.2.0", path = "../filesystem-merge" }
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["test-support"] }
+base64 = "=0.23.1"
+blake3.workspace = true
+bytes.workspace = true
+hex.workspace = true
+tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 async-trait.workspace = true
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 serde.workspace = true
 tempfile = "3.27.0"
 

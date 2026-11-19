@@ -95,7 +95,7 @@ mod pool;
 use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
 mod flights;
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use flights::verify_original_flight_admission_and_retirement;
 
 enum FlightState {
@@ -752,15 +752,18 @@ mod provider;
 
 #[cfg(test)]
 #[path = "tests/cache/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(loom)]
 #[path = "cache/decoded_model.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod decoded_model;
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "cache/decoded_properties.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod decoded_properties;
 
 #[cfg(all(any(test, feature = "fuzzing"), not(loom)))]

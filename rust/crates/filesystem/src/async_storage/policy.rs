@@ -15,6 +15,7 @@ pub enum PolicyOwner {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -255,6 +256,7 @@ impl PolicyGroup {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod grouped_tests {
     use super::*;
     use proptest::prelude::*;

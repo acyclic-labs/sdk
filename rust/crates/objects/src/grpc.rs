@@ -7,6 +7,7 @@ use crate::{
     Retained, RootId, Usage, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
+use acyclic_auth::operation::grpc_timeout;
 use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
 use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamCategory};
@@ -565,24 +566,6 @@ async fn deadline(metadata: &MetadataMap) {
         Some(timeout) => tokio::time::sleep(timeout).await,
         None => std::future::pending().await,
     }
-}
-
-/// Parses the gRPC `TimeoutValue TimeoutUnit` spelling.
-fn grpc_timeout(value: &str) -> Option<std::time::Duration> {
-    let (amount, unit) = value.split_at(value.len().checked_sub(1)?);
-    if amount.is_empty() || amount.len() > 8 || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let amount: u64 = amount.parse().ok()?;
-    Some(match unit {
-        "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),
-        "M" => std::time::Duration::from_secs(amount.checked_mul(60)?),
-        "S" => std::time::Duration::from_secs(amount),
-        "m" => std::time::Duration::from_millis(amount),
-        "u" => std::time::Duration::from_micros(amount),
-        "n" => std::time::Duration::from_nanos(amount),
-        _ => return None,
-    })
 }
 
 fn stamp(metadata: &mut MetadataMap, revision: Option<&Revision>) {

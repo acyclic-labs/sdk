@@ -159,7 +159,9 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
             .lock()
             .map_err(|_| "shared state poisoned")?;
         let instance = &state.shared.as_ref().ok_or("shared view")?.instance;
-        let (worker, physical) = instance.physical_owner();
+        let (worker, physical) = instance
+            .physical_owner()
+            .ok_or("missing live physical owner")?;
         (worker, physical, Arc::clone(&instance.views))
     };
     assert_ne!(physical, std::thread::current().id());
@@ -374,7 +376,7 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
     for death in [
         OwnerDeath::Owner,
         OwnerDeath::ProcessGroup,
-        OwnerDeath::WithExitAction,
+        OwnerDeath::WithMountHelper,
     ] {
         owner_exit_namespace(death)?;
     }
@@ -399,7 +401,8 @@ fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::er
     let before = device_count()?;
     let server_root = tempfile::tempdir()?;
     let (source, _) = shared_sources(posix_config())?;
-    let mut live = mount_view(source, server_root.path(), false)?;
+    let mut live = mount_view(source, server_root.path(), false)
+        .map_err(|error| format!("starting the isolated FUSE connection: {error}"))?;
     let io = {
         let driver = live.driver.as_ref().ok_or("live FUSE driver")?;
         driver
@@ -421,7 +424,10 @@ fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::er
         error.raw_os_error(),
         Some(libc::ENOTCONN | libc::ENOENT)
     ));
-    assert!(live.stop()?);
+    assert!(
+        live.stop()
+            .map_err(|error| format!("retiring the disconnected FUSE connection: {error}"))?
+    );
     assert_eq!(mounts_at(server_root.path())?, 0);
 
     Ok(())
@@ -434,13 +440,14 @@ enum OwnerDeath {
     Owner,
     /// SIGKILL to the owner's whole process group.
     ProcessGroup,
-    /// SIGKILL to the owner-exit action, then to the owner.
-    WithExitAction,
+    /// SIGKILL to the automatic unmount helper, then to the owner.
+    WithMountHelper,
 }
 
 fn owner_exit_namespace(death: OwnerDeath) -> Result<(), Box<dyn std::error::Error>> {
+    use super::owner::{process_event, wait_exit};
     use std::io::{BufRead as _, BufReader};
-    use std::os::unix::process::CommandExt as _;
+    use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     // The owner and the next open share a registry no other process opens,
@@ -458,35 +465,36 @@ fn owner_exit_namespace(death: OwnerDeath) -> Result<(), Box<dyn std::error::Err
     .process_group(0)
     .spawn()?;
     let mut lines = BufReader::new(owner.stdout.take().ok_or("child stdout")?).lines();
-    let (cleanup_pid, fence) = loop {
+    let (cleanup_pid, helper_pid, fence) = loop {
         let line = lines
             .next()
             .ok_or("the owner exited before its view was live")??;
         // The test host can prefix the first output line with its test name.
         if let Some((_, ready)) = line.rsplit_once("shared view owner: ready ") {
-            let (pid, fence) = ready.split_once(' ').ok_or("owner fence")?;
-            break (pid.parse::<u32>()?, std::path::PathBuf::from(fence));
+            let (pid, rest) = ready.split_once(' ').ok_or("owner cleanup PID")?;
+            let (helper, fence) = rest.split_once(' ').ok_or("owner fence")?;
+            break (
+                pid.parse::<u32>()?,
+                helper.parse::<u32>()?,
+                Path::new(fence).to_owned(),
+            );
         }
     };
-    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::fd::AsRawFd as _;
+    assert_eq!(mounts_at(&root)?, 1, "the original owner has a live mount");
     // The original owner still holds this PID; registration precedes its
     // kill, so PID reuse cannot select another process's terminal event.
-    // SAFETY: pidfd_open takes the retained original PID and no pointers.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, cleanup_pid, 0) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // SAFETY: pidfd_open returned this fresh owned descriptor.
-    let cleanup = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd)?) };
-    // Remove the actual cleanup producer through its retained kernel identity.
-    // This cannot accidentally signal a reused numeric PID.
-    if death == OwnerDeath::WithExitAction {
-        // SAFETY: the retained pidfd names the original action; SIGKILL carries
+    let cleanup = process_event(cleanup_pid, false)?;
+    // The event-driven exit action must detach even when the OS helper
+    // itself was killed and cannot run its automatic unmount.
+    if death == OwnerDeath::WithMountHelper && helper_pid != 0 {
+        let guardian = process_event(helper_pid, false)?;
+        // SAFETY: the retained pidfd names the original helper; SIGKILL carries
         // no siginfo pointer and flags zero selects the ordinary delivery.
         if unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
-                cleanup.as_raw_fd(),
+                guardian.as_raw_fd(),
                 libc::SIGKILL,
                 std::ptr::null::<libc::siginfo_t>(),
                 0,
@@ -505,30 +513,19 @@ fn owner_exit_namespace(death: OwnerDeath) -> Result<(), Box<dyn std::error::Err
     } else {
         owner.kill()?;
     }
-    owner.wait()?;
-    let mut terminal = libc::pollfd {
-        fd: cleanup.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    loop {
-        // SAFETY: one initialized record, with its original pidfd retained.
-        if unsafe { libc::poll(&mut terminal, 1, -1) } >= 0 {
-            break;
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error.into());
-        }
-    }
+    assert_eq!(owner.wait()?.signal(), Some(libc::SIGKILL));
+    wait_exit(&cleanup)?;
     let remaining = mounts_at(&root)?;
     assert!(fence.exists(), "the original fence remains recoverable");
-    println!("owner death {death:?}: remaining_mounts={remaining}");
-    // The exit action detaches at once; with it gone too, the dead mount
-    // stays until the next process that opens the registry.
-    let expected = usize::from(death == OwnerDeath::WithExitAction);
-    assert_eq!(remaining, expected, "the dead owner's namespace");
-    // That next open reaps every dead fence, detaching any mount it names.
+    println!(
+        "owner death {death:?}: helper_backed={} remaining_mounts={remaining}",
+        helper_pid != 0
+    );
+    assert_eq!(
+        remaining, 0,
+        "owner death left a mount before registry recovery"
+    );
+    // The next open only has the original fence record left to recover.
     let status = child(
         "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
         temporary.path(),
@@ -558,7 +555,7 @@ fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(&root)?;
     let (source, _) = shared_sources(posix_config())?;
     let session = view(source, &root.join("crashed"))?;
-    let cleanup = session
+    let (cleanup, guardian) = session
         .driver
         .as_ref()
         .ok_or("live driver")?
@@ -567,10 +564,15 @@ fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(PoisonError::into_inner)
         .shared
         .as_ref()
-        .and_then(|view| view.exit_action_id())
-        .ok_or("original owner-exit action")?;
+        .map(|view| view.exit_action_ids())
+        .ok_or("original shared view")?;
+    let cleanup = cleanup.ok_or("original owner-exit action")?;
     let [fence, ..] = crate::native_mount_control_paths(&root)?;
-    println!("shared view owner: ready {cleanup} {}", fence.display());
+    println!(
+        "shared view owner: ready {cleanup} {} {}",
+        guardian.unwrap_or(0),
+        fence.display()
+    );
     loop {
         std::thread::park();
     }

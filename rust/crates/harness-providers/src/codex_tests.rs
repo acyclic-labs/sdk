@@ -316,7 +316,7 @@ proptest! {
             acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let body = {
             let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
             let mut io = CredentialIo::new(Some(&mut custody)).unwrap();
@@ -324,13 +324,13 @@ proptest! {
             io.json_body(&request).unwrap()
         };
         prop_assert_eq!(body.as_ref(), original.as_ref());
-        prop_assert!(work.live_allocation_bytes() > baseline);
+        prop_assert!(work.live_allocation_bytes().unwrap() > baseline);
         let retained = body.slice(..);
         drop(body);
         prop_assert_eq!(retained.as_ref(), original.as_ref());
-        prop_assert!(work.live_allocation_bytes() > baseline);
+        prop_assert!(work.live_allocation_bytes().unwrap() > baseline);
         drop(retained);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
 
     #[test]
@@ -352,24 +352,24 @@ proptest! {
             acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         {
             let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
             let mut io = CredentialIo::new(Some(&mut custody)).unwrap();
             let (bytes, decoded) = load(&path, &mut io).unwrap();
             prop_assert_eq!(bytes.as_slice(), encoded.as_slice());
             prop_assert_eq!(decoded, document);
-            prop_assert_eq!(work.receipt().source_bytes_read, bytes.len() as u64);
-            prop_assert!(work.live_allocation_bytes() > baseline);
+            prop_assert_eq!(work.receipt().unwrap().source_bytes_read, bytes.len() as u64);
+            prop_assert!(work.live_allocation_bytes().unwrap() > baseline);
         }
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
 }
 
 #[test]
 fn checked_in_auth_seed_exercises_an_accepted_document() {
     for seed in [
-        include_bytes!("../fuzz/corpus/provider_stream/auth.json").as_slice(),
+        include_bytes!("../fuzz/corpus/provider_stream/provider-auth.json").as_slice(),
         include_bytes!("../fuzz/corpus/provider_stream/auth-jwt.json").as_slice(),
     ] {
         assert!(decode_auth(&seed[1..]).is_ok());

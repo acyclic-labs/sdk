@@ -188,38 +188,47 @@ pub use yielding::{Yielded, YieldingFile};
 #[cfg(test)]
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_bounded_record.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod bounded_record_tests;
 #[cfg(test)]
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_bounded_source.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod bounded_source_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 #[path = "tests_interrupted_sync.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod interrupted_sync_tests;
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 #[path = "tests_macos_metadata.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod macos_metadata_tests;
 #[cfg(test)]
 #[cfg(unix)]
 #[path = "tests_unix.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests_windows_clone.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod windows_clone_tests;
 #[cfg(test)]
 #[cfg(all(windows))]
 #[path = "tests_windows_directory.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod windows_directory_tests;
 #[cfg(test)]
 #[cfg(all(windows))]
 #[path = "tests_windows_file_opens.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod windows_file_open_tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests_yielding.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod yielding_tests;
 
 #[cfg(test)]
@@ -230,4 +239,5 @@ use test_support::{test_path, test_root};
 #[cfg(test)]
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[path = "tests_flat_parent.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod flat_parent_tests;

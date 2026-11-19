@@ -183,9 +183,10 @@ pub fn execute_examples(
         let output = command.run_output().map_err(|e| e.to_string())?;
         if !output.status.success() {
             return Err(format!(
-                "historical example {}::{} failed: {}",
+                "historical example {}::{} failed ({}): {}",
                 example.package,
                 example.target,
+                output.status,
                 String::from_utf8_lossy(&output.stderr)
             ));
         }

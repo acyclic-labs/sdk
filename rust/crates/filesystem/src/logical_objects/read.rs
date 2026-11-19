@@ -78,6 +78,18 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             object_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
+        if let Err(ObjectStoreError::LogicalObjects(error)) = &result
+            && let Some(limit) = std::error::Error::source(error)
+                .and_then(|cause| cause.downcast_ref::<acyclic_objects::ReadLimitExceeded>())
+        {
+            // Report the original work limit only when the authenticated
+            // selection would exceed it. Provider quotas and object-size
+            // policy remain distinct refusals.
+            work.admit(WorkCounters {
+                object_bytes_read: limit.observed,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
         let value = result?;
         if observed > maximum {
             completed?;

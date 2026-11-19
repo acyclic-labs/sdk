@@ -4,6 +4,7 @@ use crate::{NativeMaterializationWork as Work, WorkCounters};
 
 #[cfg(test)]
 #[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(super) mod model_checking;
 
 #[derive(Debug)]
@@ -184,14 +185,20 @@ impl ProjectionCore {
     }
 }
 
+struct StaleKernelItems {
+    inodes: FuseOwned<Vec<KernelCacheItem>>,
+    names: FuseOwned<Vec<KernelCacheItem>>,
+}
+
 impl ProjectionState {
     fn stale_kernel_items(
         &mut self,
         source: &dyn MountFilesystem,
         through: ViewStamp,
         work: &Work,
-    ) -> Result<FuseOwned<Vec<KernelCacheItem>>, NativeMountError> {
-        let mut items = fuse_vec(0, work)?;
+    ) -> Result<StaleKernelItems, NativeMountError> {
+        let mut inodes = fuse_vec(0, work)?;
+        let mut names = fuse_vec(0, work)?;
         let mut bindings = fuse_vec(0, work)?;
         for (inode, entry) in &self.by_inode {
             work.charge(Items.delta(1))?;
@@ -200,16 +207,16 @@ impl ProjectionState {
             if let Some(held) = entry.kernel
                 && !source.unchanged_since_with_meter(anchor, Some(file_id), held, work)?
             {
-                fuse_reserve(&mut items, 1, work)?;
-                items.push(KernelCacheItem::Inode(*inode));
+                fuse_reserve(&mut inodes, 1, work)?;
+                inodes.push(KernelCacheItem::Inode(*inode));
             }
             for (name, held) in &entry.negative_children {
                 work.charge(Items.delta(1))?;
                 let path = fuse_child_path(anchor, name, work)?;
                 if !source.binding_unchanged_since_with_meter(&path, *held, work)? {
                     let name = fuse_copy_bytes(name, work)?;
-                    fuse_reserve(&mut items, 1, work)?;
-                    items.push(KernelCacheItem::Entry {
+                    fuse_reserve(&mut names, 1, work)?;
+                    names.push(KernelCacheItem::Entry {
                         parent: *inode,
                         name,
                     });
@@ -231,8 +238,8 @@ impl ProjectionState {
                             binding.path.components().last().ok_or(libc::ESTALE)?,
                             work,
                         )?;
-                        fuse_reserve(&mut items, 1, work)?;
-                        items.push(KernelCacheItem::Entry {
+                        fuse_reserve(&mut names, 1, work)?;
+                        names.push(KernelCacheItem::Entry {
                             parent: parent_inode,
                             name,
                         });
@@ -242,7 +249,7 @@ impl ProjectionState {
                 }
             }
         }
-        for item in items.iter() {
+        for item in inodes.iter().chain(names.iter()) {
             match item {
                 KernelCacheItem::Attributes { .. } | KernelCacheItem::Reply(_) => (),
                 KernelCacheItem::Inode(inode) => {
@@ -264,7 +271,7 @@ impl ProjectionState {
                 .ok_or(libc::EIO)?
                 .kernel = None;
         }
-        Ok(items)
+        Ok(StaleKernelItems { inodes, names })
     }
 }
 
@@ -291,7 +298,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
                 break;
             }
             #[cfg(test)]
-            #[cfg(all(loom))]
+            #[cfg(loom)]
             model_checking::before_invalidator_wait();
             state = core
                 .invalidation
@@ -319,32 +326,36 @@ pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl Ke
 
 fn invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     #[cfg(test)]
-    #[cfg(all(not(loom)))]
+    #[cfg(not(loom))]
+    #[cfg(any(not(unit_test_split), unit_test_mount_driver))]
     super::tests::owner::pause_invalidations(core);
     let mut through = None;
     let result = core.request(|work| {
-        let mut items = core.state_to_finish().invalidation.take_deferred()?;
-        loop {
-            drop_kernel_caches(notifier, &mut items, work)?;
-            if through.is_some() {
-                break;
-            }
+        let (mut deferred, stale) = {
             let mut state = core.state_to_finish();
-            let Some(target) = state
-                .invalidation
-                .notified
-                .filter(|target| state.invalidation.scanned < Some(*target))
-            else {
-                through = state.invalidation.notified;
-                break;
+            let deferred = state.invalidation.take_deferred()?;
+            through = state.invalidation.notified;
+            let stale = if let Some(target) =
+                through.filter(|target| state.invalidation.scanned < Some(*target))
+            {
+                let items = state.stale_kernel_items(core.source.as_ref(), target, work)?;
+                state.invalidation.scanned = Some(target);
+                Some(items)
+            } else {
+                None
             };
-            items = state
-                .stale_kernel_items(core.source.as_ref(), target, work)?
-                .map(Vec::into_iter);
-            state.invalidation.scanned = Some(target);
-            through = Some(target);
-        }
-        Ok(())
+            (deferred, stale)
+        };
+        let Some(StaleKernelItems { inodes, names }) = stale else {
+            return drop_kernel_caches(notifier, &mut deferred, work);
+        };
+        // Invalidate cached inode data before publishing a deferred OPEN. An
+        // invalidation from the same view after OPEN can discard the kernel's
+        // first GETATTR and make it read using the old size.
+        drop_kernel_caches(notifier, &mut inodes.map(Vec::into_iter), work)?;
+        drop_kernel_caches(notifier, &mut deferred, work)?;
+        // Name invalidations can wait on locks held by the pending request.
+        drop_kernel_caches(notifier, &mut names.map(Vec::into_iter), work)
     });
     {
         let mut state = core.state_to_finish();
@@ -404,7 +415,8 @@ fn drop_kernel_caches(
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 mod tests {
     use super::*;
 

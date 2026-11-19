@@ -190,6 +190,7 @@ mod projfs;
 #[cfg(target_os = "windows")]
 mod provider_stack;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod stack_budget;
 
 #[cfg(target_os = "linux")]
@@ -312,4 +313,11 @@ use fence::*;
 #[cfg(test)]
 pub(crate) mod fixture_access;
 #[cfg(test)]
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_views,
+    all(unit_test_mount_watch, any(target_os = "linux", target_os = "macos"))
+))]
 mod tests;

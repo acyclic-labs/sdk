@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import type { ProviderSpec } from "@acyclic-labs/harness";
 import initializeManifest, { validate, verifyArtifact } from "../../workers/generated/wasm/acyclic_manifest.js";
 import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT,
   STREAMS_ENDPOINT } from "../src/bindings.js";
@@ -13,7 +14,7 @@ const entry = new TextEncoder().encode("export function manifest() {} export fun
 const module = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const asset = { path: `harness.${sha256(module)}.wasm`, sha256: sha256(module), size: module.length,
   mediaType: "application/wasm", role: "module" } as const;
-const spec = owner.model.spec as Parameters<typeof harnessManifest>[1];
+const spec = owner.model.spec as ProviderSpec;
 const deployment = owner.deployment as Parameters<typeof harnessManifest>[0];
 const volumes = owner.options.filesystem_provider;
 const manifest = (assets = [asset]) => harnessManifest(deployment, spec, volumes, sha256(entry), assets);

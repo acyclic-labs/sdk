@@ -461,4 +461,5 @@ impl NativeMaterializationWork {
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "work_normalization_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod tests;

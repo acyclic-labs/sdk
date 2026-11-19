@@ -57,7 +57,7 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
     let publication = crate::PublicationChanges::proposed(
         fs.objects(),
         (&retained_root.0, generation.object_id()),
-        &retained_root.0,
+        (&retained_root.0, &[]),
         crate::kernel::PublishGenerationRequest {
             authority_id: authority,
             volume_id: workspace.id().volume_id(),

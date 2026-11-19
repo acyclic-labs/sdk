@@ -97,8 +97,8 @@ impl<I> Instances<I> {
                 // teardown. Both change this predicate under the same mutex;
                 // constructor failure or unwind removes the slot as well.
                 let state = Arc::clone(&slot.state);
-                #[cfg(test)]
-                #[cfg(all(not(loom)))]
+                #[cfg(all(test, any(not(unit_test_split), unit_test_mount)))]
+                #[cfg(not(loom))]
                 tests::before_wait();
                 drop(
                     state
@@ -174,8 +174,9 @@ fn physical_root(root: &Path) -> Result<PathBuf, NativeMountError> {
     }
 }
 
-#[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

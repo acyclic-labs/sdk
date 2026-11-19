@@ -38,6 +38,7 @@ pub(super) enum Intent {
 
 pub(super) struct Sidebar {
     pub source: LiveExplorer<ReadProvider>,
+    projection: UiView,
     root: AgentPath,
     pub focused: bool,
     selected: usize,
@@ -58,6 +59,7 @@ impl Sidebar {
         source.view.orchestrator_view(true);
         Ok(Self {
             source,
+            projection: UiView::new(1)?,
             root: conversation.agent().clone(),
             focused: false,
             selected: 0,
@@ -286,7 +288,6 @@ impl Sidebar {
         if !shown {
             return Vec::new();
         }
-        let projection = UiView::new(1).expect("nonzero UI page size");
         let mut rows: Vec<_> = self
             .matches
             .iter()
@@ -307,7 +308,8 @@ impl Sidebar {
                             file: &|_| None,
                         };
                         let summary = match self.files.snapshot(path) {
-                            Some(Ok(files)) => projection
+                            Some(Ok(files)) => self
+                                .projection
                                 .row(&cut, |name| {
                                     files
                                         .files

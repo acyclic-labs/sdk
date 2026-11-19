@@ -25,6 +25,7 @@ rust_library(
         "tests/fixtures/grammar.md",
         "tests/fixtures/selection.md",
     ],
+    tags = ["resources:memory:384"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -75,7 +76,7 @@ rust_test(
         "@sdk_crates//proptest-1.12.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:384"],
 )
 
 isolated_test(
@@ -145,7 +146,7 @@ rust_test(
         "//rust/crates/markdown/fuzz:tree/corpus/streaming",
         "//rust/crates/markdown/fuzz:tree/corpus/syntax_data",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -186,6 +187,7 @@ rust_library(
         "tests/fixtures/grammar.md",
         "tests/fixtures/selection.md",
     ],
+    tags = ["resources:memory:384"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

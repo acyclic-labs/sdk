@@ -465,6 +465,7 @@ impl Shared {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 mod tests {
     use super::*;
     use crate::source_watch::HostChangeSink;

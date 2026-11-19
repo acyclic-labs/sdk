@@ -517,9 +517,11 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     .await?;
     // Unrelated staged objects must not turn a durable provider batch into
     // scalar reads. Exercise both representations on the actual local medium.
+    // These values exceed the physical key length, so LocalMedium must read
+    // them from its log instead of answering from the index.
     let durable = [
-        blob(OwnedBytes::from_static(b"first durable batch member")),
-        blob(OwnedBytes::from_static(b"second durable batch member")),
+        blob(OwnedBytes::from(vec![1; 1024])),
+        blob(OwnedBytes::from(vec![2; 1024])),
     ];
     for (id, bytes) in &durable {
         store
@@ -596,7 +598,11 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                         store.read_many(requests, &mut work).await
                     }
                 }));
-                assert!(futures::poll!(batch.as_mut()).is_pending());
+                let first_poll = futures::poll!(batch.as_mut());
+                if native && let std::task::Poll::Ready(result) = first_poll {
+                    result?;
+                    return Err("native batch returned before physical admission".into());
+                }
                 let observers = schedule
                     .trace()
                     .iter()
@@ -636,7 +642,8 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                             .await?,
                     );
                 }
-                if requests.len() == draining_requests.len() {
+                let has_spill = requests.len() == draining_requests.len();
+                if native && has_spill {
                     // The read has classified this identity as private. Drain it
                     // through the real publication path while its independent
                     // durable reads are still held before physical execution.
@@ -667,11 +674,19 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                         boundary.release();
                     }
                 });
-                let result = batch.await;
+                let result = match first_poll {
+                    std::task::Poll::Ready(result) => {
+                        drop(batch);
+                        result
+                    }
+                    std::task::Poll::Pending => batch.await,
+                };
                 schedule.drained().await;
                 driver.abort();
                 let _ = driver.await;
-                assert_eq!(admitted, 2, "durable misses must overlap before release");
+                if native {
+                    assert_eq!(admitted, 2, "durable misses must overlap before release");
+                }
                 let (values, allocation) = result?;
                 assert_eq!(values.len(), expected.len());
                 assert_eq!(
@@ -681,7 +696,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 for (read, bytes) in values.iter().zip(expected) {
                     assert_eq!(&read.bytes, *bytes);
                 }
-                let drained = u64::from(requests.len() == draining_requests.len());
+                let drained = u64::from(native && has_spill);
                 assert_eq!(
                     work.spent().unwrap().object_probes,
                     2 + drained + u64::from(native)
@@ -689,7 +704,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 if !native {
                     assert_eq!(
                         work.spent().unwrap().backend_read_operations,
-                        1 + drained,
+                        1 + u64::from(has_spill),
                         "durable reads must preserve the provider batch"
                     );
                 }

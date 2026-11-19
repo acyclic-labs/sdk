@@ -8,7 +8,7 @@
 use crate::conformance::Result;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_harness_core::agent::*;
-use acyclic_stream::UnixMillisClock as _;
+use acyclic_stream::{ProviderOwner, UnixMillisClock as _};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -38,7 +38,7 @@ impl acyclic_stream::UnixMillisClock for AuthorityClock {
 /// Save a real spawn without activating its child. Endpoint hosts can then
 /// adopt that child through their public placement API, including after reopen.
 pub async fn spawned<P: acyclic_harness_core::store::JournalProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: ProviderOwner<P>,
     within: ActorReference,
 ) -> Result<AgentPath> {
     let handler = Arc::new(AgentHandler::new(

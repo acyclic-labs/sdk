@@ -14,7 +14,8 @@ mod catalog_document;
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_file;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod length_continuation_tests;
 mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]
@@ -59,7 +60,8 @@ mod resolved;
 mod retry;
 mod spec;
 mod sse;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod stream;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -86,11 +88,13 @@ pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_native, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
-pub use spec::{Authentication, PromptCache, ProviderSpec, RetrySpec, TimeoutSpec};
+pub use spec::{
+    Authentication, PromptCache, ProviderConfig, ProviderSpec, RetrySpec, ScriptedAdapter,
+    ScriptedProviderSpec, TimeoutSpec,
+};
 
 use acyclic_harness_core::{Error, Result};
 use acyclic_harness_provider_response::{http_error, unavailable};
-use serde_json::Value;
 mod sync;
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ use super::*;
 use crate::native_host::HostRoot;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 #[tokio::test]
 async fn file_comparison_keeps_its_read_buffer_out_of_the_caller_frame()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -272,6 +273,7 @@ async fn host_name_has_binding<O: crate::AsyncObjectStore>(
 
 #[cfg(test)]
 #[cfg(all(unix))]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod tests {
     use super::*;
 

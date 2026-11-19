@@ -64,7 +64,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
 
     for reads in [1, 2] {
-        let source = crate::workspace::accounting_tests::Prefunded {
+        let source = crate::workspace::Prefunded {
             budget: WorkBudget {
                 backend_read_operations: reads,
                 ..WorkBudget::UNBOUNDED
@@ -97,7 +97,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     }
 
     let first_key = IdempotencyKey::new();
-    let source = crate::workspace::accounting_tests::Prefunded {
+    let source = crate::workspace::Prefunded {
         budget: WorkBudget::UNBOUNDED,
         held: std::sync::Mutex::new(None),
     };

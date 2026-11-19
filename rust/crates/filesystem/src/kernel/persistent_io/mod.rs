@@ -132,4 +132,5 @@ pub(crate) use decode::{clone_key, clone_value, decode_read_with_accounting};
 
 #[cfg(test)]
 #[path = "../tests/persistent_io.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

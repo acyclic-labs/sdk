@@ -74,7 +74,11 @@ where
             let handle = runtime.handle().clone();
             workers.push(scope.spawn(move || {
                 handle.block_on(async move {
-                    let inputs = std::iter::from_fn(|| jobs.lock().unwrap().pop_front());
+                    let inputs = std::iter::from_fn(|| {
+                        jobs.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front()
+                    });
                     let cases = super::scenario_admission(inputs.map(factory), slots);
                     drive(cases, send, cancel).await;
                 });

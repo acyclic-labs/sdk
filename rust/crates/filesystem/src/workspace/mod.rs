@@ -43,12 +43,28 @@ const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 
 pub(crate) mod access;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod access_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_workspace_accounting))]
 mod accounting_tests;
 mod attributes;
 #[cfg(test)]
-pub(crate) use accounting_tests::Prefunded;
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_workspace,
+    unit_test_workspace_accounting,
+    unit_test_workspace_merge
+))]
+mod test_work;
+#[cfg(test)]
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_workspace,
+    unit_test_workspace_accounting,
+    unit_test_workspace_merge
+))]
+pub(crate) use test_work::Prefunded;
 mod changed_paths;
 mod checkout;
 mod commit;
@@ -60,6 +76,7 @@ mod errors;
 mod extents;
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_workspace_accounting))]
 mod fork_accounting_tests;
 mod fork_options;
 mod generation;
@@ -82,11 +99,12 @@ mod outcomes;
 mod path_apply;
 mod paths;
 mod publication;
-pub use publication::OperationPublication;
+pub use publication::{OperationPublication, PublicationEvidenceSeal};
 mod read_core;
 mod reads;
 mod restore;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_workspace_accounting))]
 mod retention_accounting_tests;
 mod reverse_paths;
 pub use reverse_paths::FileIdentityPaths;
@@ -152,6 +170,13 @@ pub use transaction::Transaction;
 
 #[cfg(test)]
 #[path = "../tests/workspace/mod.rs"]
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_workspace,
+    unit_test_workspace_accounting,
+    unit_test_workspace_merge,
+    unit_test_workspace_recovery
+))]
 mod tests;
 
 use reverse_traversal::{
@@ -185,8 +210,10 @@ pub(crate) use reverse_traversal::{
 };
 
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod access_read_model;
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod access_write_model;

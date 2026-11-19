@@ -2,6 +2,8 @@ use crate::{Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCounterSp
 use acyclic_harness_core::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
+include!(concat!(env!("OUT_DIR"), "/token_counters.rs"));
+
 pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-6.1-sol";
 
 const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
@@ -289,9 +291,6 @@ const MODELS: &[(&str, &str, u32, Output, ModelFeatures, bool)] = &[
 
 /// Standard endpoint policies, model capacities and capabilities as ordinary data.
 pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
-    let counters: BTreeMap<Adapter, Option<TokenCounterSpec>> =
-        serde_json::from_str(include_str!("token_counters.json"))
-            .expect("embedded native token counters");
     ENDPOINTS
         .iter()
         .map(|(id, adapter, authentication, base_url)| {
@@ -343,7 +342,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     allow_http_host: None,
                     headers: BTreeMap::new(),
                     models,
-                    token_counter: counters.get(&adapter).cloned().flatten(),
+                    token_counter: token_counter(adapter),
                     max_event_bytes: None,
                     retry: crate::RetrySpec::DEFAULT,
                     timeouts: crate::TimeoutSpec::DEFAULT,

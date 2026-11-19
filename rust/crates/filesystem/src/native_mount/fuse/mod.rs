@@ -30,8 +30,10 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGua
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(super) use tests::packets::trace_kernel_packets;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(super) use tests::write_gate::pause_next_write_after_admission;
 
 #[cfg(feature = "test-support")]
@@ -135,4 +137,5 @@ pub(super) use shared_instance::hold as hold_shared_instance;
 mod transport_io;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(in crate::native_mount) mod tests;

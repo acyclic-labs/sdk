@@ -35,8 +35,8 @@ def _isolated_test_impl(ctx):
 
     # Cargo's CARGO_BIN_EXE_<name>, relative to the runfiles root; the runner makes it absolute.
     # A filegroup with one file, such as the toolchain's Cargo, is that executable.
-    # Keep every executable below one directory: an executable's default short path is its
-    # package path, which can collide with a test data directory of the same name.
+    # An external tool keeps its repository layout, including companion files beside the
+    # executable. Locally built tools use aliases to avoid collisions with test data paths.
     for target, name in ctx.attr.binaries.items():
         info = target[DefaultInfo]
         files = info.files.to_list()
@@ -45,6 +45,11 @@ def _isolated_test_impl(ctx):
             if len(files) != 1:
                 fail("{}: {} names {} files, not one executable".format(ctx.label, name, len(files)))
             tool = files[0]
+        data = info.data_runfiles
+        if tool.short_path.startswith("../"):
+            environment["CARGO_BIN_EXE_" + name] = tool.short_path
+            runfiles = runfiles.merge(ctx.runfiles(files = [tool])).merge(data)
+            continue
         extension = "." + tool.extension if tool.extension else ""
         package = ctx.label.package + "/" if ctx.label.package else ""
         path = package + ".cargo-bin/" + name + extension
@@ -53,7 +58,6 @@ def _isolated_test_impl(ctx):
         # The tool's own data runfiles never need its original executable entry; that entry
         # is what can obscure a test data directory with the same short path. Each link is a
         # SymlinkEntry, so read its path and target file rather than unpacking it.
-        data = info.data_runfiles
         runfiles = runfiles.merge(ctx.runfiles(
             files = [file for file in data.files.to_list() if file != tool],
             symlinks = {

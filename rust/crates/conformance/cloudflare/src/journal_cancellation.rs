@@ -74,7 +74,7 @@ pub async fn qualify_journal_cancellation(
         "pre-admission refusal lost its original condition",
     )?;
     check(
-        peer.tail(path.clone()).await == Ok(1),
+        peer.tail(path.clone()).await.map_err(stream_error)? == 1,
         "unstarted journal attempt retired a live authority",
     )?;
     let mut follow = peer
@@ -126,14 +126,14 @@ pub async fn qualify_journal_cancellation(
         "cancelled journal follow did not terminate",
     )?;
     check(
-        peer.tail(path.clone()).await == Err(StreamError::Unavailable),
+        matches!(peer.tail(path.clone()).await, Err(StreamError::Unavailable)),
         "cancelled journal admitted a stale observer",
     )?;
     // Releasing the original host acknowledgement cannot revive its retired replica.
     wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&release.call0(&JsValue::NULL)?))
         .await?;
     check(
-        peer.tail(path.clone()).await == Err(StreamError::Unavailable),
+        matches!(peer.tail(path.clone()).await, Err(StreamError::Unavailable)),
         "late journal acknowledgement revived a retired authority",
     )?;
     drop(follow);
@@ -143,7 +143,7 @@ pub async fn qualify_journal_cancellation(
         .await
         .map_err(stream_error)?;
     check(
-        reopened.tail(path.clone()).await == Ok(2),
+        reopened.tail(path.clone()).await.map_err(stream_error)? == 2,
         "reopen lost the cancelled caller's original transaction",
     )?;
     check(
@@ -154,7 +154,7 @@ pub async fn qualify_journal_cancellation(
         "reopen lost the original conditional commit identity",
     )?;
     check(
-        reopened.tail(path).await == Ok(2),
+        reopened.tail(path).await.map_err(stream_error)? == 2,
         "retry duplicated the original conditional commit",
     )?;
     Ok(())

@@ -75,6 +75,7 @@ pub fn check(bytes: &[u8]) -> bool {
     valid
 }
 
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 #[test]
 fn seeded_continuations_preserve_scalar_and_composite_cuts() {
     let cancellation = CancellationToken::new();

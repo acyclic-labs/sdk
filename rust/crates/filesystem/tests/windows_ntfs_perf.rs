@@ -391,7 +391,7 @@ const FILES_PER_DIRECTORY: usize = 10;
 const CHANGES: usize = 100;
 const ACTIVATIONS: usize = 101;
 
-fn ntfs_source() -> NtfsCostResult<(tempfile::TempDir, tempfile::TempDir, u128)> {
+fn ntfs_source() -> NtfsCostResult<tempfile::TempDir> {
     let source = tempfile::tempdir()?;
     let hot = source.path().join("hot");
     std::fs::create_dir(&hot)?;
@@ -405,9 +405,13 @@ fn ntfs_source() -> NtfsCostResult<(tempfile::TempDir, tempfile::TempDir, u128)>
             )?;
         }
     }
+    Ok(source)
+}
 
+fn ntfs_native_copy(source: &std::path::Path) -> NtfsCostResult<(tempfile::TempDir, u128)> {
     // A regular-file-only native copy is a lower bound, not an SDK-semantic
     // substitute: it does not capture source lineage, conflicts, or recovery.
+    let hot = source.join("hot");
     let native_view = tempfile::tempdir()?;
     let started = Instant::now();
     let native_hot = native_view.path().join("hot");
@@ -422,9 +426,7 @@ fn ntfs_source() -> NtfsCostResult<(tempfile::TempDir, tempfile::TempDir, u128)>
             std::fs::copy(from.join(&name), to.join(&name))?;
         }
     }
-    let native_copy_us = started.elapsed().as_micros();
-
-    Ok((source, native_view, native_copy_us))
+    Ok((native_view, started.elapsed().as_micros()))
 }
 
 async fn attach_ntfs(
@@ -494,11 +496,12 @@ async fn prepare_ntfs(
         .await?)
 }
 
-async fn ntfs_durable_phases(source: &std::path::Path) -> NtfsCostResult<(u128, u128)> {
-    // Profile the two preparation phases independently on a fresh lazy root.
+#[tokio::test]
+async fn report_ntfs_durable_working_set_costs() -> NtfsCostResult<()> {
+    let source = ntfs_source()?;
     let phase_state = tempfile::tempdir()?;
     let phase_fs = Fs::local(LocalOptions::new(phase_state.path())).await?;
-    let phase_lazy = attach_ntfs(&phase_fs, source, "windows-ntfs-phases").await?;
+    let phase_lazy = attach_ntfs(&phase_fs, source.path(), "windows-ntfs-phases").await?;
     let started = Instant::now();
     let cancellation = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -520,12 +523,22 @@ async fn ntfs_durable_phases(source: &std::path::Path) -> NtfsCostResult<(u128, 
     // native working-set preparation uses a reconstructible view instead.
     let durable_materialize_us = started.elapsed().as_micros();
 
-    Ok((exactify_us, durable_materialize_us))
+    println!(
+        "{}",
+        json!({
+            "schema": "acyclic-windows-ntfs-durable-working-set-cost-v1",
+            "files": DIRECTORIES * FILES_PER_DIRECTORY,
+            "exactify_us": exactify_us,
+            "durable_materialize_us": durable_materialize_us,
+        })
+    );
+    Ok(())
 }
 
 #[tokio::test]
 async fn report_ntfs_working_set_costs() -> NtfsCostResult<()> {
-    let (source, _native_view, native_copy_us) = ntfs_source()?;
+    let source = ntfs_source()?;
+    let (native_view, native_copy_us) = ntfs_native_copy(source.path())?;
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let started = Instant::now();
@@ -592,19 +605,15 @@ async fn report_ntfs_working_set_costs() -> NtfsCostResult<()> {
         .await?;
     let sync_us = started.elapsed().as_micros();
 
-    let (exactify_us, durable_materialize_us) = ntfs_durable_phases(source.path()).await?;
-
     println!(
         "{}",
         json!({
-            "schema": "acyclic-windows-ntfs-working-set-cost-v4",
+            "schema": "acyclic-windows-ntfs-working-set-cost-v5",
             "files": DIRECTORIES * FILES_PER_DIRECTORY,
             "changed_paths": CHANGES,
             "native_copy_us": native_copy_us,
             "attach_us": attach_us,
             "preparation_us": preparation_us,
-            "exactify_us": exactify_us,
-            "durable_materialize_us": durable_materialize_us,
             "warm_preparation_us": warm_preparation_us,
             "activation_p50_us": activation_p50_us,
             "activation_p95_us": activation_p95_us,
@@ -613,6 +622,14 @@ async fn report_ntfs_working_set_costs() -> NtfsCostResult<()> {
             "sync_us": sync_us,
         })
     );
+    drop((warm_working_set, working_set, lazy, fs));
+    // These independent trees can retire together after their last users
+    // release them. Join every removal before the case completes.
+    let cleanup = [warm_view, view, state, native_view, source]
+        .map(|directory| tokio::task::spawn_blocking(move || drop(directory)));
+    for removal in cleanup {
+        removal.await?;
+    }
     Ok(())
 }
 

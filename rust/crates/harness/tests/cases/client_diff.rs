@@ -9,7 +9,7 @@ mod properties;
 
 use acyclic_fs::Fs;
 use acyclic_harness::{
-    AgentId, Capabilities, IdempotencyKey, Result,
+    AgentId, Capabilities, Error, IdempotencyKey, Result,
     client::{DiffLimits, DiffPath, DiffPublication, DiffView, FileDiff},
     context::{ContextRoot, PinnedContextPath},
     conversation::{
@@ -250,20 +250,18 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer
-            .bootstrap_scope(
-                "owner",
-                &Capabilities::new([
-                    volume.capability(VolumeOperation::Read, &mut None)?,
-                    volume.capability(VolumeOperation::Write, &mut None)?,
-                    volume.directory_read_capability("", &mut None)?,
-                ]),
-                Some(agent),
-                &mut None,
-            )
-            .expect("scope");
+        let scope = issuer.bootstrap_scope(
+            "owner",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.directory_read_capability("", &mut None)?,
+            ]),
+            Some(agent),
+            &mut None,
+        )?;
         host.create_volume(&volume).await?;
-        let verifier = issuer.verifier(&mut None).expect("verifier");
+        let verifier = issuer.verifier(&mut None)?;
         let writer = ContentGrant::verify(
             &verifier,
             &scope,
@@ -308,7 +306,7 @@ impl Fixture {
             .reader
             .list_private_directory(&self.root.volume, "", "", None, None, 128, None, None)?
             .await?
-            .expect("fixture directory exists");
+            .ok_or_else(|| Error::NotFound("fixture directory".into()))?;
         Ok(PinnedContextPath {
             root: self.root.clone(),
             generation: page.generation,
@@ -386,7 +384,7 @@ impl Fixture {
         current: &acyclic_harness::resources::GenerationRef,
         rows: u32,
         bytes: u32,
-    ) -> DiffReader {
+    ) -> Result<DiffReader> {
         self.query_as(Arc::clone(&self.files), base, current, rows, bytes)
     }
 
@@ -402,12 +400,12 @@ impl Fixture {
         current: &acyclic_harness::resources::GenerationRef,
         rows: u32,
         bytes: u32,
-    ) -> DiffReader {
+    ) -> Result<DiffReader> {
         let agent = acyclic_harness::agent::AgentPath::root(
             &acyclic_harness::agent::AgentId::from_bytes([1; 16]),
         );
-        let page =
-            acyclic_harness::client::AgentPageRequest::new(rows, bytes, None).expect("page credit");
+        let page = acyclic_harness::client::AgentPageRequest::new(rows, bytes, None)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         let source = acyclic_harness::hosting::DiffSource::new(
             reader,
             acyclic_harness::client::DiffSnapshot {
@@ -417,12 +415,12 @@ impl Fixture {
                 current: current.clone(),
             },
         );
-        DiffReader {
+        Ok(DiffReader {
             frames: source.frames(page.clone(), acyclic_harness::client::DiffProjection::Patch),
             agent,
             page,
             cursor: None,
-        }
+        })
     }
 }
 
@@ -473,7 +471,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     let current = fixture.source("kept.txt").await?.generation;
     let volume = &fixture.root.volume;
     let mut whole = fixture
-        .query(&base, &current, 128, 64 * 1024)
+        .query(&base, &current, 128, 64 * 1024)?
         .collect()
         .await?;
     whole.sort_by(|left, right| left.path.cmp(&right.path));
@@ -502,7 +500,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     assert_eq!(whole.last().and_then(|file| file.next.as_ref()), None);
 
     // One row per frame reassembles each file without reconstructing an earlier prefix.
-    let mut query = fixture.query(&base, &current, 1, 64 * 1024);
+    let mut query = fixture.query(&base, &current, 1, 64 * 1024)?;
     let mut page_count = 0;
     let mut patches = std::collections::BTreeMap::<String, String>::new();
     while let Some(fragments) = query.next().await? {
@@ -521,7 +519,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(patches, expected);
     // Pin the query before a later publication. No request token can replace its cut.
-    let mut pinned = fixture.query(&base, &current, 1, 64 * 1024);
+    let mut pinned = fixture.query(&base, &current, 1, 64 * 1024)?;
     let first = pinned.next().await?.expect("first original frame");
     fixture.put("added.txt", "four\n", "later").await?;
     let later = fixture.source("kept.txt").await?.generation;
@@ -543,7 +541,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     assert_eq!(original, expected);
     assert!(
         fixture
-            .query(&later, &later, 128, 64 * 1024)
+            .query(&later, &later, 128, 64 * 1024)?
             .collect()
             .await?
             .is_empty()
@@ -574,7 +572,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         .await?;
     let expensive_current = fixture.source("expensive.txt").await?.generation;
     let mut bounded = fixture
-        .query(&expensive_base, &expensive_current, 128, 2048)
+        .query(&expensive_base, &expensive_current, 128, 2048)?
         .collect()
         .await?;
     bounded.sort_by(|left, right| left.path.cmp(&right.path));
@@ -631,7 +629,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
             acyclic_harness_client::encoded_agent_reply_size(encoded.len() as u64)
                 .expect("scalar wire credit"),
         )
-        .expect("page credit");
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
         let request = AgentPageRequest::new(
             2,
             bytes,
@@ -652,15 +650,12 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
         &mut None,
     )?;
-    let scope = fixture
-        ._issuer
-        .bootstrap_scope(
-            "reader",
-            &Capabilities::new([other.capability(VolumeOperation::Read, &mut None)?]),
-            Some(AgentId::from_bytes([1; 16])),
-            &mut None,
-        )
-        .expect("scope");
+    let scope = fixture._issuer.bootstrap_scope(
+        "reader",
+        &Capabilities::new([other.capability(VolumeOperation::Read, &mut None)?]),
+        Some(AgentId::from_bytes([1; 16])),
+        &mut None,
+    )?;
     let unlisted = FilesystemContentVerifier::new(
         fixture.host.clone(),
         &fixture._issuer.verifier(&mut None).expect("verifier"),
@@ -670,7 +665,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
     )?;
     assert!(matches!(
         fixture
-            .query_as(unlisted, &base, &current, 128, 64 * 1024)
+            .query_as(unlisted, &base, &current, 128, 64 * 1024)?
             .collect()
             .await,
         Err(acyclic_harness::Error::Unauthorized(_))
@@ -769,7 +764,7 @@ async fn live_diff_queries_fence_frontiers_and_cached_patches_against_policy_cha
             fixture.put("z.txt", "\0", "following").await?;
         }
         let current = fixture.source("").await?.generation;
-        let mut query = fixture.query(&base, &current, 1, 64 * 1024);
+        let mut query = fixture.query(&base, &current, 1, 64 * 1024)?;
         let first = query.next().await?.expect("first file header");
         assert_eq!(first.len(), 1);
         let shown = first[0].path.clone();
@@ -792,7 +787,7 @@ async fn live_diff_queries_fence_frontiers_and_cached_patches_against_policy_cha
         assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unauthorized);
         drop(query);
         let fresh = fixture
-            .query(&base, &current, 128, 64 * 1024)
+            .query(&base, &current, 128, 64 * 1024)?
             .collect()
             .await?;
         if cached_patch {
@@ -880,7 +875,7 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
             .await
             .expect("range publication");
         let current = fixture.source("restored.txt").await?.generation;
-        let omitted = fixture.query(&base, &current, 128, 2048).collect().await?;
+        let omitted = fixture.query(&base, &current, 128, 2048)?.collect().await?;
         assert_eq!(
             omitted.len(),
             1,
@@ -889,7 +884,7 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
         assert_eq!(omitted[0].omitted_bytes, Some(length as u64));
         assert!(omitted[0].patch.is_empty());
         let funded = fixture
-            .query(&base, &current, 128, 64 * 1024)
+            .query(&base, &current, 128, 64 * 1024)?
             .collect()
             .await?;
         if length <= 64 * 1024 {
@@ -937,10 +932,10 @@ impl ContentResidencyVerifier for Reader<'_> {
 
         let index = self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some(limits) = self.expected_limits {
-            assert_eq!(
-                maximum_bytes,
-                Some(*limits.get(index).expect("expected diff read"))
-            );
+            let expected = limits
+                .get(index)
+                .ok_or_else(|| Error::Invalid("unexpected extra diff read".into()))?;
+            assert_eq!(maximum_bytes, Some(*expected));
         }
         let read = self.inner.read_private_path(
             volume,

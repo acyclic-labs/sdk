@@ -301,6 +301,7 @@ fn fill_windows_ranges<W: SourceDemandReadWork>(
 
 #[cfg(test)]
 #[cfg(all(unix))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod range_capability_tests {
     use super::*;
     use proptest::prelude::*;

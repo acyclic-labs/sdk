@@ -3,6 +3,44 @@ use acyclic_auth::secrets::SecretRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Declarative provider selected by a registered provider/model address.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
+pub enum ProviderConfig {
+    /// Workspace-backed provider. It declares no transport or credential policy.
+    Scripted(ScriptedProviderSpec),
+    /// A streaming protocol endpoint.
+    Endpoint(ProviderSpec),
+}
+
+/// The local adapter discriminator.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptedAdapter {
+    /// Replay an immutable script in the executing agent's volume.
+    Scripted,
+}
+
+/// Configuration for one volume-backed scripted provider.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
+pub struct ScriptedProviderSpec {
+    /// Provider adapter name.
+    #[cfg_attr(
+        all(target_arch = "wasm32", feature = "browser"),
+        tsify(type = "'scripted'")
+    )]
+    pub adapter: ScriptedAdapter,
+    /// Authenticated, digest-pinned file in the workspace.
+    #[cfg_attr(
+        all(target_arch = "wasm32", feature = "browser"),
+        tsify(type = "{ path: string; sha256: string }")
+    )]
+    pub script: acyclic_harness_core::model::scripted::VolumeScriptSource,
+}
+
 /// Authentication required by a registered endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]

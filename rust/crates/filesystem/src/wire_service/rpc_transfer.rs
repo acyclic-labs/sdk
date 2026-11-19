@@ -213,6 +213,7 @@ async fn check_export_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObject
     workspace: &crate::Workspace<A, O>,
 ) -> Result<(), Status> {
     #[cfg(test)]
+    #[cfg(any(not(unit_test_split), unit_test_foundation))]
     if tests::omitted_export_fence() {
         return Ok(());
     }

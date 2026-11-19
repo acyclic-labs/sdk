@@ -2,10 +2,10 @@ use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, FileRangeReadE
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, ExtentSeekTarget,
-    FsError, NamedAttributeWriteMode, OperationFailure, ResolvedFileRangeReadRequest,
+    FsError, NamedAttributeWriteMode, ResolvedFileRangeReadRequest,
 };
 use acyclic_fs_format::{identity::FileId, metadata::FileMetadata};
-use acyclic_fs_work::performance::WorkCounters;
+use acyclic_fs_work::performance::{OperationFailure, WorkCounters};
 use acyclic_stream::OwnedBytes;
 
 use super::B;

@@ -10,8 +10,8 @@ use acyclic_fs_format::identity::OperationId;
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
 use std::error::Error;
 
-use crate::fixtures::{allow, commit};
-use crate::selected_budget::selected_transaction_budget;
+use crate::workspace_transactions::selected_budget::selected_transaction_budget;
+use crate::workspace_transactions::transaction::{allow, commit};
 
 #[derive(Debug, thiserror::Error)]
 enum OwnerError {

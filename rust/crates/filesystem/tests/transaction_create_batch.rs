@@ -2,7 +2,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use crate::fixtures::commit;
+use crate::workspace_transactions::transaction::commit;
 use acyclic_fs_format::metadata::FileMetadata;
 use std::error::Error;
 use {

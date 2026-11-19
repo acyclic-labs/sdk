@@ -117,8 +117,7 @@ async fn a_foreign_control_event_recomputes_settlement_without_redispatch_or_ano
                 issuer,
                 TurnAdmission::LocalRoot,
                 executors(model.clone())?,
-                LIMITS,
-                Default::default(),
+                (LIMITS, Default::default()),
             )
             .with_actor_store(actor_store(&stream)?.root().clone()),
         ),
@@ -128,7 +127,7 @@ async fn a_foreign_control_event_recomputes_settlement_without_redispatch_or_ano
     let host = committing(&stream, &filesystem, driver)?;
     let mut adoption = adopted(path.id());
     adoption.volumes = volumes;
-    host.create(&intent("settlement-race"), adoption).await?;
+    create_filesystem_root(&host, &filesystem, &intent("settlement-race"), adoption).await?;
     let sender = super::super::user();
     host.send(
         &path,
@@ -149,7 +148,11 @@ async fn a_foreign_control_event_recomputes_settlement_without_redispatch_or_ano
         "foreign revalidation redispatched accepted work"
     );
     let state = host.state(&path).await?;
-    assert_eq!(state.conversation_tail, 1, "completed reply was stranded");
+    assert_eq!(
+        state.conversation_tail, 1,
+        "completed reply was stranded in {:?}",
+        state.phase
+    );
     let store = actor_store(&stream)?;
     let snapshot = store.load(&host.actor(&path)?).await?;
     assert!(snapshot.state().ok_or("actor missing")?.paused());
@@ -205,7 +208,7 @@ async fn admitted_files(
     acyclic_harness_core::core::RuntimeAuthority,
     Arc<dyn ContentPublisher>,
 )> {
-    let (filesystem, private) = with_journal(private_in(stream, path).await?).await?;
+    let (filesystem, private) = private_in(stream, path).await?;
     let home = VolumeRef::new(
         private.volume()?.provider().clone(),
         "home".into(),
@@ -283,6 +286,11 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
             policy.actions.insert(Kind::NoProgress, action);
             let (filesystem, volumes, issuer, publisher) =
                 admitted_files(&stream, &path, operation, &policy).await?;
+            // This proof steps the driver directly and publishes its own cuts.
+            let private = volumes.first().ok_or("missing private volume")?;
+            filesystem
+                .create_volume(&journal_of(private.volume()?)?)
+                .await?;
             let (body, _) = publisher
                 .stage_once(
                     OperationId::new(),
@@ -308,8 +316,7 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
                 issuer,
                 TurnAdmission::LocalRoot,
                 executors(model.clone())?,
-                LIMITS,
-                Default::default(),
+                (LIMITS, Default::default()),
             ));
             let mut adoption = adopted(path.id());
             adoption.volumes = volumes;
@@ -324,12 +331,23 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
                     attachments: None,
                 }),
             };
+            let opened = step(
+                &driver,
+                &path,
+                Some(state),
+                (2, 0),
+                published_wake(&stream, &path, wake()).await?,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+            let state = commit_turn_open(&stream, opened, 2).await?;
+            assert!(model.requests().is_empty());
             let first = step(
                 &driver,
                 &path,
                 Some(state.clone()),
                 (2, 0),
-                wake(),
+                Wake::Alarm,
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await?;
@@ -340,7 +358,7 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
                     Out::TurnDone { run, .. } => Some(*run),
                     _ => None,
                 })
-                .ok_or("turn did not settle")?;
+                .ok_or_else(|| format!("turn did not settle: {:?}", first.state.phase))?;
             let queries = Queries::new(&*stream, &path, run);
             assert!(
                 queries.read_signal(Kind::NoProgress).await?.is_none(),
@@ -351,7 +369,7 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
                 &path,
                 Some(state),
                 (2, 0),
-                wake(),
+                Wake::Alarm,
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await?;

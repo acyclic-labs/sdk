@@ -248,4 +248,5 @@ impl NativeMaterializationWork {
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 pub(super) mod tests;

@@ -81,8 +81,11 @@ pub use working_set::NativeWorkingSet;
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod command_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod mounted_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod tests;

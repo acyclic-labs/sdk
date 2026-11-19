@@ -7,5 +7,7 @@ mod unbounded;
 mod fixtures;
 #[path = "support/selected_budget.rs"]
 mod selected_budget;
+#[path = "support/transaction.rs"]
+mod transaction;
 #[path = "workspace_restore/workspace/mod.rs"]
 mod workspace;

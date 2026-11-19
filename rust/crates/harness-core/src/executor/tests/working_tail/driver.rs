@@ -13,6 +13,9 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         [
             tool_turn([echo_call("first", json!({"value": "old ".repeat(3_100)}))]),
             tool_turn([echo_call("second", json!({"value": "old ".repeat(3_100)}))]),
+            ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":4,"summary":"first settled exchange"}"#.into(),
+            ),
             tool_turn([echo_call("tail", json!({"value": "new"}))]),
             done_turn(),
         ],
@@ -48,10 +51,10 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         selected_context: None,
     };
     let mut execution = StockExecution::ordinary(&executor);
-    assert!(matches!(
-        execution.execute_progress(&input, journal).await?,
-        ExecutionProgress::Ready(_)
-    ));
+    execution
+        .execute_progress(&input, journal)
+        .await?
+        .into_output()?;
     assert!(
         execution.absolute_prior_count(0).await? > 0,
         "the original driver never retired its consumed prefix"
@@ -62,22 +65,23 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         "retirement invalidated a pending invocation index"
     );
     let dispatched = provider.requests().len();
-    assert!(matches!(
-        execution.execute_progress(&input, journal).await?,
-        ExecutionProgress::Ready(_)
-    ));
+    execution
+        .execute_progress(&input, journal)
+        .await?
+        .into_output()?;
     assert_eq!(
         provider.requests().len(),
         dispatched,
         "reentry dispatched a settled step twice"
     );
     assert_eq!(tool.0.load(Ordering::SeqCst), 3);
-    // Four dispatched requests, one base-pressure probe, one mandatory subset
-    // and one compacted request. Budgeting consumes the probe's validated count.
-    assert_eq!(dispatched, 4);
+    // Four responses and one summary, including the compacted response count.
+    // The pressure, retained subset, summary window and summary admission
+    // each need one additional count.
+    assert_eq!(dispatched, 5);
     assert_eq!(
         accounting_calls.load(Ordering::SeqCst),
-        7,
+        9,
         "working-base budgeting recounted its already validated source"
     );
     Ok(())

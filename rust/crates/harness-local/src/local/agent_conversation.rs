@@ -736,7 +736,11 @@ impl Conversation {
         self.selected_text(file, None).await
     }
 
-    async fn selected_text(&self, file: &FileRef, sequence: Option<u64>) -> Result<String> {
+    pub(super) async fn selected_text(
+        &self,
+        file: &FileRef,
+        sequence: Option<u64>,
+    ) -> Result<String> {
         let target = match sequence {
             Some(sequence) => ReadTarget::Conversation {
                 sequence,

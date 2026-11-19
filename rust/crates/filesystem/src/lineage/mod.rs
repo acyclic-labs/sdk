@@ -711,4 +711,5 @@ mod memory;
 pub use memory::{MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError};
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests;

@@ -1,4 +1,6 @@
+use super::volumes::canonical::Canonical;
 use super::*;
+use serde::ser::SerializeMap as _;
 
 /// An immutable namespace selection. The original producer supplies its
 /// provider generation and path; this does not assert a file length or digest.
@@ -31,6 +33,10 @@ pub(crate) struct PathSelectionView<'a> {
 }
 
 impl PathSelection {
+    pub(crate) fn canonical(&self) -> impl Serialize + '_ {
+        Canonical(self)
+    }
+
     pub(crate) fn view(&self) -> PathSelectionView<'_> {
         PathSelectionView {
             volume: &self.volume,
@@ -56,6 +62,33 @@ impl PathSelection {
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.view().logical_owned_bytes(self.path.capacity())
+    }
+}
+
+impl Serialize for Canonical<'_, PathSelection> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(3))?;
+        fields.serialize_entry("generation", &Canonical(self.0.generation.as_resource()))?;
+        fields.serialize_entry("path", &self.0.path)?;
+        fields.serialize_entry("volume", &Canonical(&self.0.volume))?;
+        fields.end()
+    }
+}
+
+impl Serialize for Canonical<'_, crate::resources::ResourceRef> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(Some(4))?;
+        fields.serialize_entry("key", self.0.key())?;
+        fields.serialize_entry("kind", &self.0.kind())?;
+        fields.serialize_entry("provider", &Canonical(self.0.provider()))?;
+        fields.serialize_entry("version", &self.0.version())?;
+        fields.end()
     }
 }
 

@@ -18,10 +18,8 @@ mod view;
 use view::AppendCursor;
 pub(super) use view::AppendView;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 pub(super) mod group_tests;
-
-pub(super) const NON_ADVANCING_PUBLICATION: &str =
-    "publication condition failed without advancing the authority";
 
 enum Preparation<T> {
     Ready(T),
@@ -108,9 +106,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 // left the authority at its expected head as definitive. A
                 // group keeps every member's outcome for its own recovery.
                 if matches!(&outcome, FsAppendOutcome::Conflict { actual } if *actual == expected) {
-                    return Err(
-                        AuthorityStoreError::RejectedStatic(NON_ADVANCING_PUBLICATION).into(),
-                    );
+                    return Err(AuthorityStoreError::PublicationConditionFailed.into());
                 }
                 Ok(outcome)
             }
@@ -201,7 +197,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             // Recovery above owns already-committed operations. With no target
             // advance left to rebase onto, a failed condition on the member
             // authority is a definitive refusal, not an optimistic conflict.
-            return Err(AuthorityStoreError::RejectedStatic(NON_ADVANCING_PUBLICATION).into());
+            return Err(AuthorityStoreError::PublicationConditionFailed.into());
         } else {
             FsAppendOutcome::Conflict { actual }
         })

@@ -5,6 +5,29 @@ pub(super) enum CompactionSource {
     Base { context: crate::context::Context },
 }
 
+pub(super) fn compaction_candidate_key(
+    step: u32,
+    proof: &crate::context::CompactionReference,
+    component: &str,
+    io: Option<&PreparationIo>,
+) -> Result<String> {
+    with_history_io(io, |work| {
+        if let Some(summary) = &proof.summary {
+            let digest = blake3::Hash::from(*summary.output.descriptor().sha256());
+            preparation_format(
+                format_args!(
+                    "context:{step}:{component}:{}:{}",
+                    summary.source_messages,
+                    digest.to_hex()
+                ),
+                work,
+            )
+        } else {
+            preparation_format(format_args!("context:{step}:{component}"), work)
+        }
+    })
+}
+
 impl StockExecution<'_> {
     pub(super) fn compaction_message_limit(
         &self,
@@ -103,12 +126,7 @@ impl StockExecution<'_> {
                     .await?;
                 (compaction, Some(working))
             } else {
-                let key = with_history_io(session.io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!("context:{step}:compaction"),
-                        work,
-                    )
-                })?;
+                let key = compaction_candidate_key(step, &reference, "compaction", session.io)?;
                 let compaction =
                     stage_json(journal, input.operation_id, &key, &reference, session.io).await?;
                 (

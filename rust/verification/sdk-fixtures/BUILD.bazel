@@ -20,6 +20,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "sdk-fixture-verification",
@@ -43,6 +44,7 @@ rust_library(
         "//rust/crates/sdk-generation:tests/cli_regressions/cache.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -74,7 +76,7 @@ rust_test(
     ],
     lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -139,7 +141,7 @@ rust_test(
         "//rust/crates/sdk-generation:src/parallel.rs",
         "//rust/crates/sdk-generation:src/shared_cache.rs",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

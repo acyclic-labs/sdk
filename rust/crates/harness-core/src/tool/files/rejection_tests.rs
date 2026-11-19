@@ -27,9 +27,7 @@ fn assert_recoverable(error: Error, original: &acyclic_fs::NativeMaterialization
         crate::model::ToolResultContent::Error { .. }
     ));
     assert!(
-        original
-            .live_allocation_bytes()
-            .map_err(|error| TestCaseError::fail(error.to_string()))?
+        original.live_allocation_bytes().unwrap()
             > acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
 }

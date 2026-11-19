@@ -20,6 +20,7 @@ pub fn unix_seconds(millis: u64) -> Result<u64, ClockUnavailable> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
 
     #[test]

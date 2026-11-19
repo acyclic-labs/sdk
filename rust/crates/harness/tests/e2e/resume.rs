@@ -190,7 +190,7 @@ async fn observed(
             after = record.sequence;
             let value = super::execution::normalized_observation(journal, &record.event).await?;
             let kind = value.get("kind").ok_or("missing observation kind")?;
-            events.push(if kind == "model" {
+            events.push(if matches!(kind.as_str(), Some("model" | "model_output")) {
                 value
             } else {
                 json!({"kind": kind})
@@ -210,6 +210,7 @@ fn expected() -> Vec<Value> {
             "event": {"kind": "content", "delta": REST}}),
         json!({"kind": "model", "step": 0, "purpose": "response",
             "event": {"kind": "completed", "metadata": {"finish": "stop"}}}),
+        json!({"kind": "model_output", "step": 0}),
     ]
 }
 

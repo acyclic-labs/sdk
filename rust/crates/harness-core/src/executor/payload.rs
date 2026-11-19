@@ -103,7 +103,7 @@ pub fn decode_json<'a, T: PreparationRecord>(
             // The admitted Value already owns normalized JSON data. Sort it in
             // place and compare through the original encoder's borrowed sink.
             parsed.0.sort_all_objects();
-            if !io.encoded_matches(&parsed.0, bytes)? {
+            if !io.encoded_matches(&parsed.0, bytes, Some(bytes.len() as u64))? {
                 return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Storage,

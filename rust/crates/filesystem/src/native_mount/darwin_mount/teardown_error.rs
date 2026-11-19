@@ -47,3 +47,19 @@ pub(super) fn retirement_result(status: i32, dissent: i32) -> std::io::Result<()
     }
     Ok(())
 }
+
+/// A concurrent unmount may win before our request reaches Disk Arbitration.
+/// Only the kernel mount-table check can confirm that retirement in this case.
+pub(super) fn retirement_after_probe(
+    result: Result<(), super::NativeMountError>,
+    detached: bool,
+) -> Result<(), super::NativeMountError> {
+    use super::NativeMountError;
+    match result {
+        Err(
+            NativeMountError::Io(error)
+            | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Io(error)),
+        ) if detached && error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}

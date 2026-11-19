@@ -293,22 +293,19 @@ impl Fixture {
             &mut None,
         )?;
         self.host.create_volume(&private).await?;
-        let scope = self
-            .issuer
-            .bootstrap_scope(
-                "journal",
-                &Capabilities::new([
-                    // This scope belongs to the host journal reader/writer.
-                    acyclic_harness::contract::capability::HARNESS_HOST.to_owned(),
-                    private.capability(VolumeOperation::Read, &mut None)?,
-                    private.capability(VolumeOperation::Write, &mut None)?,
-                    self.volume.capability(VolumeOperation::Read, &mut None)?,
-                    self.volume.directory_read_capability("", &mut None)?,
-                ]),
-                Some(AgentId::from_bytes([1; 16])),
-                &mut None,
-            )
-            .expect("scope proof");
+        let scope = self.issuer.bootstrap_scope(
+            "journal",
+            &Capabilities::new([
+                // This scope belongs to the host journal reader/writer.
+                acyclic_harness::contract::capability::HARNESS_HOST.to_owned(),
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+                self.volume.capability(VolumeOperation::Read, &mut None)?,
+                self.volume.directory_read_capability("", &mut None)?,
+            ]),
+            Some(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )?;
         Ok((private, scope))
     }
 
@@ -323,7 +320,7 @@ impl Fixture {
             self.host.clone(),
             acyclic_harness::filesystem::FilesystemJournalBinding {
                 volume: &private,
-                verifier: &self.issuer.verifier(&mut None).expect("verifier copy"),
+                verifier: &self.issuer.verifier(&mut None)?,
                 scope: &scope,
                 io: None,
             },
@@ -354,33 +351,26 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer
-            .bootstrap_scope(
-                "owner",
-                &Capabilities::new([
-                    volume.capability(VolumeOperation::Write, &mut None)?,
-                    volume.capability(VolumeOperation::Read, &mut None)?,
-                    volume.directory_read_capability("", &mut None)?,
-                ]),
-                Some(agent),
-                &mut None,
-            )
-            .expect("scope proof");
+        let scope = issuer.bootstrap_scope(
+            "owner",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.directory_read_capability("", &mut None)?,
+            ]),
+            Some(agent),
+            &mut None,
+        )?;
         host.create_volume(&volume).await?;
+        let verifier = issuer.verifier(&mut None)?;
         let writer = ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier copy"),
+            &verifier,
             &scope,
             &volume,
             VolumeOperation::Write,
             &mut None,
         )?;
-        let reader = FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            32_768,
-            None,
-        )?;
+        let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
         Ok(Self {
             host,
             issuer,

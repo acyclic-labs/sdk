@@ -14,7 +14,6 @@ pub(super) struct Writer {
     sequence: (u64, u64),
     pending: (Vec<u8>, Vec<u8>),
     maximum: usize,
-    runtime: tokio::runtime::Handle,
 }
 
 impl Writer {
@@ -40,7 +39,6 @@ impl Writer {
             sequence: (0, 0),
             pending: (Vec::new(), Vec::new()),
             maximum,
-            runtime: tokio::runtime::Handle::current(),
         };
         writer
             .stage("request.json", &request, "application/json")
@@ -76,7 +74,7 @@ pub(in crate::local::checkout_tools) async fn stage(
 }
 
 impl Writer {
-    pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
+    pub(super) async fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
         let (stderr, mut bytes) = match chunk {
             ProcessOutput::Stdout(bytes) => (false, bytes),
             ProcessOutput::Stderr(bytes) => (true, bytes),
@@ -94,10 +92,7 @@ impl Writer {
             pending.extend_from_slice(prefix);
             bytes = rest;
             if pending.len() == maximum {
-                let runtime = self.runtime.clone();
-                await_publication(&runtime, || async {
-                    self.flush(stderr).await.map_err(std::io::Error::other)
-                })?;
+                self.flush(stderr).await.map_err(std::io::Error::other)?;
             }
         }
         Ok(())

@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 // No principal or credential is retained here. The flattened records use vectors,

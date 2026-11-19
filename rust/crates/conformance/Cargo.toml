@@ -10,9 +10,15 @@ publish = false
 description = "Internal black-box conformance suites for Acyclic service providers"
 readme = "README.md"
 
-# The GraphCoder backend suite runs the plugin's acyclic binary, given as CARGO_BIN_EXE_acyclic.
-[package.metadata.bazel.test-tools.graphcoder_backends]
+[package.metadata.bazel]
+integration-test-shards = 3
+test-without-package-binaries = ["main"]
+
+[package.metadata.bazel.test-tools.main]
 acyclic = "//plugin:acyclic"
+graphcoder-seams = ":graphcoder-seams"
+harness-conformance = ":harness-conformance"
+qualify = ":qualify"
 
 [features]
 local-hotpath = []
@@ -63,11 +69,6 @@ tokio = { workspace = true, features = ["process"] }
 tempfile = { version = "3.27.0", optional = true }
 rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 notify = { workspace = true, optional = true }
-
-[[test]]
-name = "graphcoder_backends"
-path = "tests/graphcoder_backends.rs"
-required-features = ["graphcoder-backends"]
 
 [[bin]]
 name = "graphcoder-seams"
@@ -163,6 +164,3 @@ name = "client-fixture-conformance"
 test = false
 required-features = ["client-session"]
 
-[[test]]
-name = "hosted_actors"
-required-features = ["actors-hosting"]

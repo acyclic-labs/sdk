@@ -1,0 +1,531 @@
+use super::*;
+
+#[path = "../../../harness/examples/explicit-image-conversion.rs"]
+mod image_conversion;
+
+#[tokio::test]
+async fn image_conversion_authorizes_the_pinned_source_before_reading() -> Result<()> {
+    use acyclic_harness::{
+        conversation::ContentAccess,
+        filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+        runtime::ToolContext,
+        tool::ToolInvocation,
+    };
+    let provider = ProviderRef::new("images".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let agent = AgentId::new();
+    let volume = VolumeRef::new(
+        provider,
+        "images".into(),
+        VolumeClass::Project,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityRoot::new(
+        "images",
+        [19; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "images".into(),
+        },
+    );
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    let grants = Capabilities::new([read, write.clone()]);
+    let scope = issuer.bootstrap_scope("owner", &grants, Some(agent), &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let writer =
+        FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &scope, 4096, None)?;
+    let reader = FilesystemContentVerifier::new(host, &verifier, &scope, 4096, None)?;
+    let mut bytes = b"IMG1".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&[0x80, 0xff]);
+    let source = writer
+        .stage(
+            OperationId::new(),
+            "source.img1",
+            &bytes,
+            "application/x-harness-native-fixture",
+            "source.img1",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let tool = image_conversion::conversion_tool()?;
+    let operation = OperationId::new();
+    let invocation = ToolInvocation {
+        operation_id: operation,
+        call_id: "convert".into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::to_value(image_conversion::ConvertImage {
+            source: source.clone(),
+            destination: "derived.img1".into(),
+            mask: 0x5a,
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?,
+    };
+    let denied = ToolContext::new(
+        content_context(
+            reader.clone(),
+            Some(writer.clone()),
+            Capabilities::new([write]),
+        )
+        .await?,
+        operation,
+        "convert",
+    )?;
+    assert!(
+        tool.executor
+            .authorize(None, Some(&denied), &invocation, None)
+            .is_err()
+    );
+    let context = ToolContext::new(
+        content_context(reader, Some(writer), grants).await?,
+        operation,
+        "convert",
+    )?;
+    tool.executor
+        .authorize(None, Some(&context), &invocation, None)?;
+    let result = tool
+        .executor
+        .execute(invocation, Some(context.clone()))
+        .await?;
+    let converted: image_conversion::ConvertedImage =
+        serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(converted.source, source);
+    bytes[8] ^= 0x5a;
+    bytes[9] ^= 0x5a;
+    assert_eq!(
+        context.read_file(&converted.derived, None).await?.as_ref(),
+        bytes
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> Result<()> {
+    use acyclic_harness::{
+        filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+        runtime::ToolContext,
+        tool::{ToolInvocation, files},
+    };
+    use serde_json::json;
+    let provider = ProviderRef::new(
+        "tool-context".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let agent = AgentId::new();
+    let volume = VolumeRef::new(
+        provider,
+        "workspace".into(),
+        VolumeClass::Project,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityRoot::new(
+        "tool-context",
+        [11; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "tool-context".into(),
+        },
+    );
+    let read_cap = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write_cap = volume.capability(VolumeOperation::Write, &mut None)?;
+    let scope = issuer
+        .bootstrap_scope(
+            "owner",
+            &Capabilities::new([read_cap.clone(), write_cap.clone()]),
+            Some(agent),
+            &mut None,
+        )
+        .expect("scope proof");
+    let writer = FilesystemContentPublisher::new(
+        host.clone(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        4096,
+        None,
+    )?;
+    let reader = FilesystemContentVerifier::new(
+        host,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        4096,
+        None,
+    )?;
+    let source = writer
+        .stage(
+            OperationId::new(),
+            "source.txt",
+            b"one two",
+            "text/plain",
+            "source.txt",
+            acyclic_harness::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let task = content_context(
+        reader.clone(),
+        Some(writer.clone()),
+        Capabilities::new([read_cap.clone(), write_cap.clone()]),
+    )
+    .await?;
+    let read_tool = files::read()?;
+    let read_operation = OperationId::new();
+    let read_invocation = ToolInvocation {
+        operation_id: read_operation,
+        call_id: "read".into(),
+        name: read_tool.definition.name.clone(),
+        arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap()}),
+    };
+    let expected_read = json!({"file":files::FileReadSource::Content(source.clone()),"text":"one two","page":{"offset":0,"start":0,"end":7,"total":7,"eof":true}});
+    assert_eq!(
+        read_tool
+            .executor
+            .execute(
+                read_invocation.clone(),
+                Some(ToolContext::new(task.clone(), read_operation, "read")?)
+            )
+            .await?
+            .value,
+        expected_read
+    );
+    for wrong_context in [
+        ToolContext::new(task.clone(), OperationId::new(), "read")?,
+        ToolContext::new(task.clone(), read_operation, "another-call")?,
+    ] {
+        assert!(matches!(
+            read_tool
+                .executor
+                .execute(read_invocation.clone(), Some(wrong_context))
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    let mut tool = files::edit()?;
+    tool.definition.name = "example.exact_edit".into();
+    tool.definition.description =
+        "Consumer-defined edit contract using the portable executor".into();
+    tool.definition.validate(&mut None)?;
+    let operation = OperationId::new();
+    let invocation = ToolInvocation {
+        operation_id: operation,
+        call_id: "edit".into(),
+        name: tool.definition.name.clone(),
+        arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap(),"old_text":"two","new_text":"three"}),
+    };
+    let context = ToolContext::new(task.clone(), operation, "edit")?;
+    let first = tool
+        .executor
+        .execute(invocation.clone(), Some(context.clone()))
+        .await?;
+    let edited: FileRef = serde_json::from_value(
+        first
+            .value
+            .get("file")
+            .ok_or_else(|| Error::Invalid("tool result lacks its file reference".into()))?
+            .clone(),
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(
+        task.read_file(&edited, None).await?.as_ref(),
+        b"one three".as_ref()
+    );
+    assert_eq!(
+        task.read_file(&source, None).await?.as_ref(),
+        b"one two".as_ref()
+    );
+    let user = writer
+        .stage(
+            OperationId::new(),
+            "source.txt",
+            b"user edit",
+            "text/plain",
+            "source.txt",
+            acyclic_harness::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    assert_eq!(
+        tool.executor
+            .reconcile(invocation.clone(), Some(context))
+            .await?,
+        Some(first)
+    );
+    assert_eq!(
+        task.read_file(&user, None).await?.as_ref(),
+        b"user edit".as_ref()
+    );
+    let write_tool = files::write()?;
+    let write_operation = OperationId::new();
+    // Authored paths do not acquire journal authority from their spelling.
+    let authored_path = ".system/authored.txt";
+    let write_invocation = ToolInvocation {
+        operation_id: write_operation,
+        call_id: "write".into(),
+        name: write_tool.definition.name.clone(),
+        arguments: json!({"path":authored_path,"content":"exact \u{e9}\r\n"}),
+    };
+    let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
+    let written = write_tool
+        .executor
+        .execute(write_invocation.clone(), Some(write_context.clone()))
+        .await?;
+    let written_ref: FileRef = serde_json::from_value(
+        written
+            .value
+            .get("file")
+            .ok_or_else(|| Error::Invalid("write result lacks its file reference".into()))?
+            .clone(),
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(
+        task.read_file(&written_ref, None).await?.as_ref(),
+        "exact \u{e9}\r\n".as_bytes()
+    );
+    assert_eq!(
+        write_tool
+            .executor
+            .reconcile(write_invocation, Some(write_context))
+            .await?,
+        Some(written)
+    );
+    let patch_tool = files::patch_file(8192, 8)?;
+    assert_ne!(
+        patch_tool.definition.digest()?,
+        files::patch_file(8193, 8)?.definition.digest()?
+    );
+    let patch_operation = OperationId::new();
+    let patch_invocation = ToolInvocation {
+        operation_id: patch_operation,
+        call_id: "patch".into(),
+        name: patch_tool.definition.name.clone(),
+        arguments: json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+patched\n"}),
+    };
+    let patch_context = ToolContext::new(task.clone(), patch_operation, "patch")?;
+    let patched = patch_tool
+        .executor
+        .execute(patch_invocation.clone(), Some(patch_context.clone()))
+        .await?;
+    let patched_ref: FileRef = serde_json::from_value(
+        patched
+            .value
+            .get("file")
+            .ok_or_else(|| Error::Invalid("patch result lacks file".into()))?
+            .clone(),
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(
+        task.read_file(&patched_ref, None).await?.as_ref(),
+        b"patched\r\n".as_ref()
+    );
+    let later = writer
+        .stage(
+            OperationId::new(),
+            authored_path,
+            b"later user edit",
+            "text/plain",
+            "authored.txt",
+            acyclic_harness::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    assert_eq!(
+        patch_tool
+            .executor
+            .reconcile(patch_invocation.clone(), Some(patch_context.clone()))
+            .await?,
+        Some(patched)
+    );
+    assert_eq!(
+        task.read_file(&later, None).await?.as_ref(),
+        b"later user edit".as_ref()
+    );
+    let mut changed_patch = patch_invocation.clone();
+    changed_patch.arguments = json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+different\n"});
+    assert!(matches!(
+        patch_tool
+            .executor
+            .reconcile(changed_patch, Some(patch_context))
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    let stale_patch_operation = OperationId::new();
+    assert!(matches!(
+        patch_tool
+            .executor
+            .execute(
+                ToolInvocation {
+                    operation_id: stale_patch_operation,
+                    ..patch_invocation
+                },
+                Some(ToolContext::new(
+                    task.clone(),
+                    stale_patch_operation,
+                    "patch"
+                )?)
+            )
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        task.read_file(&later, None).await?.as_ref(),
+        b"later user edit".as_ref()
+    );
+    assert_eq!(
+        task.read_file(&user, None).await?.as_ref(),
+        b"user edit".as_ref()
+    );
+    assert_eq!(
+        read_tool
+            .executor
+            .reconcile(
+                read_invocation,
+                Some(ToolContext::new(task.clone(), read_operation, "read")?)
+            )
+            .await?
+            .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
+            .value,
+        expected_read
+    );
+    let fresh = OperationId::new();
+    let stale = ToolInvocation {
+        operation_id: fresh,
+        ..invocation.clone()
+    };
+    assert!(matches!(
+        tool.executor
+            .execute(stale, Some(ToolContext::new(task.clone(), fresh, "edit")?))
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    for (writer_binding, grants, expected) in [
+        (
+            None,
+            Capabilities::new([read_cap.clone(), write_cap.clone()]),
+            Error::Invalid("file version belongs to another selected volume".into()),
+        ),
+        (
+            Some(writer.clone()),
+            Capabilities::new([write_cap.clone()]),
+            Error::Unauthorized("file tool requires original source read grant".into()),
+        ),
+        (
+            Some(writer.clone()),
+            Capabilities::new([read_cap.clone()]),
+            Error::Unauthorized("task scope cannot write this volume".into()),
+        ),
+    ] {
+        let restricted = content_context(
+            reader.clone(),
+            writer_binding.map(|writer| writer as Arc<dyn ContentPublisher>),
+            grants,
+        )
+        .await?;
+        let refusal = tool
+            .executor
+            .execute(
+                invocation.clone(),
+                Some(ToolContext::new(restricted, operation, "edit")?),
+            )
+            .await
+            .expect_err("restricted edit must not publish");
+        assert_eq!(refusal.code(), expected.code(), "{refusal:?}");
+        assert_eq!(refusal.to_string(), expected.to_string());
+    }
+    assert_eq!(
+        task.read_file(&user, None).await?.as_ref(),
+        b"user edit".as_ref()
+    );
+    let ordinary = Arc::new(OrdinaryPublisher {
+        volume: volume.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let write_context = content_context(
+        reader.clone(),
+        Some(ordinary.clone()),
+        Capabilities::new([write_cap]),
+    )
+    .await?;
+    let write_tool = files::write()?;
+    for path in ["../escape.txt", "nested/../escape.txt"] {
+        let op = OperationId::new();
+        let invalid = ToolInvocation {
+            operation_id: op,
+            call_id: "invalid-path".into(),
+            name: write_tool.definition.name.clone(),
+            arguments: json!({"path":path,"content":"secret"}),
+        };
+        assert!(matches!(
+            write_tool
+                .executor
+                .execute(
+                    invalid,
+                    Some(ToolContext::new(write_context.clone(), op, "invalid-path")?)
+                )
+                .await,
+            Err(Error::Invalid(_)) | Err(Error::Unauthorized(_))
+        ));
+    }
+    assert_eq!(ordinary.calls.load(Ordering::SeqCst), 0);
+    let foreign_volume = VolumeRef::new(
+        volume.provider().clone(),
+        "foreign".into(),
+        VolumeClass::Project,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    let foreign = Arc::new(OrdinaryPublisher {
+        volume: foreign_volume.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let foreign_context = content_context(
+        reader,
+        Some(foreign.clone()),
+        Capabilities::new([
+            read_cap,
+            foreign_volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+    )
+    .await?;
+    let refusal = tool
+        .executor
+        .execute(
+            invocation.clone(),
+            Some(ToolContext::new(foreign_context, operation, "edit")?),
+        )
+        .await
+        .expect_err("a foreign destination must not publish");
+    assert!(
+        matches!(
+            refusal,
+            Error::Invalid(ref reason) if reason == "file version belongs to another selected volume"
+        ),
+        "{refusal:?}"
+    );
+    assert_eq!(foreign.calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        tool.executor.execute(invocation.clone(), None).await,
+        Err(Error::Unsupported(_))
+    ));
+    let mut changed = invocation;
+    *changed
+        .arguments
+        .get_mut("new_text")
+        .ok_or_else(|| Error::Invalid("edit input lacks its replacement".into()))? =
+        json!("different");
+    assert!(matches!(
+        tool.executor
+            .reconcile(changed, Some(ToolContext::new(task, operation, "edit")?))
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
+}

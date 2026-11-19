@@ -10,7 +10,8 @@ use acyclic_fs_work::performance::WorkBudget;
 use acyclic_stream::OwnedBytes;
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_merge::fixtures::fork_workspace;
+use crate::workspace_merge::transaction::commit;
 
 struct SelectTheirsDriver;
 

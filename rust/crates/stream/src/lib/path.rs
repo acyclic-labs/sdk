@@ -1,4 +1,6 @@
-use crate::{MAX_PATH_BYTES, StreamError};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::MAX_PATH_BYTES;
+use crate::StreamError;
 use std::{fmt, sync::Arc};
 
 /// Permanent account-relative slash-separated ASCII path.

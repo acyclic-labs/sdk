@@ -51,6 +51,7 @@ test('consumer graph reads Cargo.lock without a root Bazel resolution', t => {
   assert.deepEqual(workspaceGraph(requested, 'x86_64-unknown-linux-gnu', {resolution: matchingResolution}).resolve.nodes.find(n => n.id.endsWith('#serde@1.0.0')).features, ['missing']);
   fs.writeFileSync(path.join(root, 'cargo-bazel-lock.json'), '{invalid');
   assert.throws(() => workspaceGraph(root), SyntaxError);
+  assert.deepEqual(workspaceGraph(root, null, {resolution: null}), graph);
 });
 
 test('Git manifests retain build scripts and source fields when Bazel supplies library metadata', t => {

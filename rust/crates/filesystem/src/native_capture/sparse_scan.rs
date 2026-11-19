@@ -41,8 +41,10 @@ pub(super) fn block_has_data(
 #[cfg(test)]
 #[cfg(loom)]
 #[path = "sparse_scan_loom.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod model_checking;
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "sparse_scan_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;

@@ -30,10 +30,10 @@ async fn refresh_body_control(
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let mut parent = work.claim(0, 0, WorkCounters::UNCHARGED)?;
     let mut io = CredentialIo::new(Some(&mut parent))?;
-    let operation_bytes = work.live_allocation_bytes();
+    let operation_bytes = work.live_allocation_bytes()?;
     let chunks = encoded
         .chunks(chunk_bytes)
         .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
@@ -58,8 +58,8 @@ async fn refresh_body_control(
     let body = HttpResponse::with_native_body(200, source, &work)?.body;
     let mut pending = Box::pin(refresh_document(body, &mut io));
     assert!(pending.as_mut().now_or_never().is_none());
-    assert!(work.live_allocation_bytes() > operation_bytes);
-    assert_eq!(work.receipt().source_bytes_read, encoded.len() as u64);
+    assert!(work.live_allocation_bytes()? > operation_bytes);
+    assert_eq!(work.receipt()?.source_bytes_read, encoded.len() as u64);
     match terminal {
         0 => {
             release
@@ -91,12 +91,12 @@ async fn refresh_body_control(
     if terminal != 0 {
         // The former private collector put each full growth claim into io,
         // retaining those claims after its buffer and source had retired.
-        assert_eq!(work.live_allocation_bytes(), operation_bytes);
+        assert_eq!(work.live_allocation_bytes()?, operation_bytes);
     }
     drop(io);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     drop(parent);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -119,7 +119,7 @@ async fn accepted_publication_retains_ownership_after_observer_cancellation() ->
     };
     let (result, ()) = futures::join!(control, driver);
     let (work, baseline) = result?;
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -132,7 +132,7 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let mut parent = work.claim(0, 0, WorkCounters::UNCHARGED)?;
     let mut io = CredentialIo::new(Some(&mut parent))?;
     let mut permit = Some(login.refresh.acquire().await.ok().unwrap());
@@ -176,7 +176,7 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     assert!(permit.is_none(), "physical operation must own the permit");
     drop((io, parent));
     assert!(
-        work.live_allocation_bytes() > baseline,
+        work.live_allocation_bytes()? > baseline,
         "accepted publication must retain its original payload custody"
     );
 
@@ -200,7 +200,7 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     login.refresh.complete(retained, None);
     assert_eq!(login.bearer(&transport, None, None).await?.0, replacement);
     assert!(transport.sent.lock().unwrap().is_empty());
-    assert_eq!(work.receipt().durability_operations, 1);
+    assert_eq!(work.receipt()?.durability_operations, 1);
 
     // Producer loss returns the original typed error and releases serialization;
     // it cannot strand the waiter or publish the staged update.

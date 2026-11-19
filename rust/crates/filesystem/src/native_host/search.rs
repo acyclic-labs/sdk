@@ -5,6 +5,7 @@ use super::*;
 
 #[cfg(test)]
 #[cfg(all(unix))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests {
     use super::*;
 

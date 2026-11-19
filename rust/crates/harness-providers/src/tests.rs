@@ -10,7 +10,7 @@ use acyclic_harness_core::{
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -699,7 +699,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                 .count(),
             1
         );
-        let body = json(&sent[0].body)?;
+        let body = acyclic_harness_provider_response::json(&sent[0].body)?;
         for field in ["max_output_tokens", "max_completion_tokens"] {
             assert!(
                 body.get(field).is_none(),
@@ -910,7 +910,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             .sent
             .lock()
             .map_err(|_| invalid("poisoned fixture"))?;
-        let body = json(&sent[0].body)?;
+        let body = acyclic_harness_provider_response::json(&sent[0].body)?;
         assert!(
             (u64::from(count.fixed_tokens)
                 + count

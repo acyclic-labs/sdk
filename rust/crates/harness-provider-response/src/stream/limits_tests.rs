@@ -217,12 +217,14 @@ mod accounting {
                 prop_assert_eq!(state.logical_owned_bytes().unwrap(),
                     std::mem::size_of::<State>() as u64 + state.budget.used() as u64);
                 queries += 1;
-                prop_assert_eq!(work.receipt().items_examined, queries);
+                let receipt = work.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
+                prop_assert_eq!(receipt.items_examined, queries);
             }
             prop_assert!(state.logical_owned_bytes().unwrap() >= scanned_bytes(&state).0);
             // Real production accounting does one examined item per query,
             // independently of the number of retained calls/reasoning blocks.
-            prop_assert_eq!(work.receipt().items_examined, queries + 1);
+            let receipt = work.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(receipt.items_examined, queries + 1);
         }
     }
 }

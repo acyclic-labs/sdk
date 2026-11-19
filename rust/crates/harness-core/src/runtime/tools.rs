@@ -1126,12 +1126,14 @@ impl ToolContext {
         let (volume, relative) =
             self.select_tool_read_path(path, crate::tool::ReadPathKind::Directory, io)?;
         crate::executor::with_history_io(io, |history| {
-            if !crate::core::directory_read_granted_with_work(
-                self.effective_scope().grants(),
-                volume,
-                &relative,
-                history,
-            )? {
+            if (volume.is_agent_journal() && relative.is_empty())
+                || !crate::core::directory_read_granted_with_work(
+                    self.effective_scope().grants(),
+                    volume,
+                    &relative,
+                    history,
+                )?
+            {
                 return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,
@@ -1178,7 +1180,7 @@ impl ToolContext {
         }
         if crate::live::feedback::is_sink(path) {
             return Ok((
-                &self.task().tool_read_content().volume,
+                &self.task().output_content.volume,
                 std::borrow::Cow::Borrowed(crate::live::feedback::PATH),
             ));
         }
@@ -1372,14 +1374,22 @@ impl ToolContext {
             let concrete = crate::executor::with_history_io(io, |history| {
                 crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
             })?;
+            let concrete_hold = io
+                .map(|io| io.guard_owned(concrete.capacity() as u64))
+                .transpose()?;
             if let Some(original) = original {
                 if self.tool_path_selection(&concrete, io)?.0 == original {
+                    if let Some(hold) = concrete_hold {
+                        hold.into_retained()?;
+                    }
                     return Ok((concrete.into(), None));
                 }
-                crate::executor::stock_retire_text(concrete, io)?;
                 continue;
             }
             if prefix == SEED_PATH {
+                if let Some(hold) = concrete_hold {
+                    hold.into_retained()?;
+                }
                 return Ok((concrete.into(), None));
             }
             // Every probe and continuation uses the same bounded interval.
@@ -1390,10 +1400,7 @@ impl ToolContext {
             let (selected, bytes, hold) =
                 match self.read_tool_path_range(&concrete, None, probe, io).await {
                     Ok(read) => read,
-                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
-                        crate::executor::stock_retire_text(concrete, io)?;
-                        continue;
-                    }
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => continue,
                     Err(error) => return Err(error),
                 };
             let continuation = |range: acyclic_fs::ByteRange| {
@@ -1419,7 +1426,6 @@ impl ToolContext {
                 None => false,
             };
             if inherits_seed {
-                crate::executor::stock_retire_text(concrete, io)?;
                 continue;
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1444,6 +1450,9 @@ impl ToolContext {
                 drop(hold);
                 None
             };
+            if let Some(hold) = concrete_hold {
+                hold.into_retained()?;
+            }
             return Ok((concrete.into(), Some((selected, custody))));
         }
         if original.is_some() {

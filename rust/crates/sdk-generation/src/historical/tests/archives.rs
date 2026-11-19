@@ -385,6 +385,10 @@ fn archive_rejects_unarchived_module_in_maintained_native_source_closure() {
 }
 #[test]
 fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure() {
+    compiler::with(actual_cargo_examples);
+}
+
+fn actual_cargo_examples() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let owners = BTreeSet::from(["historical-fixture".into()]);
@@ -441,6 +445,10 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
 }
 #[test]
 fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutations() {
+    compiler::with(executed_examples_reject_source_mutations);
+}
+
+fn executed_examples_reject_source_mutations() {
     let fixture = Fixture::new();
     let root = fixture.path();
     let package = root.join("rust/crates/owned");

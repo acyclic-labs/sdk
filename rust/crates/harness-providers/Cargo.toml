@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 description = "Streaming model providers for the acyclic harness"
 
+[package.metadata.bazel]
+integration-test-shards = 3
+
 [features]
 research = ["acyclic-harness-core/research", "acyclic-harness?/research"]
 endpoint-presets = []
@@ -61,6 +64,10 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [dev-dependencies]
 httpdate = "1.0.3"
 
@@ -92,17 +99,8 @@ workspace = true
 
 [package.metadata.bazel.test-dependencies]
 credential-fixture = ["acyclic_harness_providers"]
-live-cache = ["acyclic_harness_core", "acyclic_harness_providers", "acyclic_stream", "async_stream", "bytes", "futures", "serde_json", "tokio"]
-prefix-cache = ["acyclic_actors", "acyclic_fs", "acyclic_harness_core", "acyclic_harness_local", "acyclic_harness_providers", "acyclic_objects", "acyclic_stream", "bytes", "futures", "harness_mock_model", "serde_json", "tempfile", "tokio"]
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "live-cache"
-path = "tests/live_cache.rs"
-
-[[test]]
-name = "prefix-cache"
-path = "tests/prefix_cache_cases.rs"

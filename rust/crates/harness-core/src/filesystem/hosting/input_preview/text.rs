@@ -90,16 +90,27 @@ impl Text {
                 } else if quoted.high {
                     return Err(Error::Record("invalid input JSON surrogate"));
                 } else if character == '"' {
-                    let quoted = self.quoted.take().expect("open JSON string");
+                    let quoted = self
+                        .quoted
+                        .take()
+                        .ok_or(Error::Record("input JSON has no open string"))?;
                     match quoted.role {
                         Role::Key => {
                             if let Some(raw) = quoted.raw {
                                 let key: String = serde_json::from_str(&raw)
                                     .map_err(|_| Error::Record("invalid input JSON key"))?;
-                                self.frames.last_mut().expect("key object").text = key == "text";
+                                self.frames
+                                    .last_mut()
+                                    .ok_or(Error::Record("input JSON key has no object"))?
+                                    .text = key == "text";
                             }
                         }
-                        Role::Text => output.push_str(&decode(quoted.raw.expect("text chunk"))?),
+                        Role::Text => {
+                            let raw = quoted
+                                .raw
+                                .ok_or(Error::Record("input JSON text has no chunk"))?;
+                            output.push_str(&decode(raw)?);
+                        }
                         Role::Other => {}
                     }
                     if self.frames.is_empty() {
@@ -118,10 +129,12 @@ impl Text {
                         .as_ref()
                         .is_some_and(|raw| raw.len() >= self.chunk)
                 {
-                    let mut raw = quoted.raw.take().expect("text chunk");
+                    let mut raw = quoted
+                        .raw
+                        .replace("\"".into())
+                        .ok_or(Error::Record("input JSON text has no chunk"))?;
                     raw.push('"');
                     output.push_str(&decode(raw)?);
-                    quoted.raw = Some("\"".into());
                 }
                 continue;
             }

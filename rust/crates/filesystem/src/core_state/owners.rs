@@ -119,9 +119,11 @@ impl LocalCoreStateStore {
 
 #[cfg(test)]
 #[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod models;
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

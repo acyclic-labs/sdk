@@ -1,11 +1,7 @@
-//! `ACYCLIC_LOOM=1 cargo test -p acyclic-native-runtime --test wake_loom --features model-checking`
+//! `ACYCLIC_LOOM=1 cargo test -p acyclic-native-runtime --test main --features model-checking wake_loom::`
 #![cfg(loom)]
-#[path = "../src/sync/locks.rs"]
-pub mod sync;
-#[path = "../src/wake.rs"]
-mod wake;
+use crate::wake::NativeWake;
 use loom::sync::Arc;
-use wake::NativeWake;
 
 #[test]
 fn native_wake_preserves_completion_at_every_wait_boundary() {

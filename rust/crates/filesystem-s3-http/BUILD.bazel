@@ -11,6 +11,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/s3_http/access_tests.rs","src/s3_http/tests.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -26,6 +27,7 @@ rust_library(
     lint_config = "//:workspace_lints",
     deps = [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//base64_0_23_1-0.23.1",
@@ -66,6 +68,7 @@ rust_test(
     lint_config = "//:workspace_lints",
     deps = [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//axum-0.8.9",
@@ -90,7 +93,7 @@ rust_test(
         "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","no-sandbox","resources:memory:256"],
 )
 
 isolated_test(

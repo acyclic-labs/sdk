@@ -166,10 +166,12 @@ fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
 
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(crate) use worker_context_tests::assert_filtered_callback_isolation;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 mod worker_context_tests {
     use std::sync::{Arc, Mutex, mpsc};
     use tracing_subscriber::{layer::Context, prelude::*};

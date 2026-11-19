@@ -264,7 +264,7 @@ async fn pending(
         let result = if revoked {
             crate::access::fixtures::publish_policy(
                 &workspace,
-                &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
+                &crate::access::fixtures::denied(crate::access::Action::Read, "**")?,
             )
             .await
         } else {

@@ -6,7 +6,7 @@ use serde_json::Value;
 fn append(events: Vec<ModelEvent>, request: &mut ModelRequest, answer: &mut String) {
     let bytes = serde_json::to_vec(&events).unwrap();
     let replay: Vec<ModelEvent> = serde_json::from_slice(&bytes).unwrap();
-    crate::projection::gemini::assert_visible_replay(&replay);
+    assert!(crate::projection::gemini::check_visible_replay(&replay).is_ok());
     let mut results = Vec::new();
     for event in replay {
         let part = match event {
@@ -721,7 +721,7 @@ async fn signed_answer_native_stream_keeps_exact_custody() -> Result<()> {
             holds.push(custody);
         }
     }
-    crate::projection::gemini::assert_visible_replay(&events);
+    assert!(crate::projection::gemini::check_visible_replay(&events).is_ok());
     drop((events, holds));
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())

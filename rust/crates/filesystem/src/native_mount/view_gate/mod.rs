@@ -11,6 +11,7 @@ mod leases;
 use leases::WaitingWriter;
 pub(super) use leases::{ViewMutationPhase, ViewReadLease, ViewWriteLease};
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests;
 
 /// Internal callback reentrancy identity, never an OS or authority capability.

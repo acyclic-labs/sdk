@@ -1,6 +1,8 @@
 //! Real public commit-path benchmark. Run one named case per invocation with
-//! `cargo test --release -p acyclic-fs --test main fs_concurrency_bench::CASE -- --exact --nocapture`.
+//! `cargo test --release -p acyclic-fs --test fs_concurrency_bench CASE -- --exact --nocapture`.
 //! The driver also builds unchanged on the pre-combiner revision.
+#![cfg(not(loom))]
+
 use acyclic_fs::model::{GenerationSelector, Lifecycle, VolumeConfig};
 use acyclic_stream::{OwnedBytes, StreamProvider};
 use futures::TryStreamExt;
@@ -41,8 +43,11 @@ fn path(parts: &[String]) -> Result<NamespacePath> {
     Ok(NamespacePath::new(
         parts
             .iter()
-            .map(|part| LogicalName::new(NameEncoding::Utf8, part.as_bytes().to_vec()))
-            .collect::<std::result::Result<Vec<_>, _>>()?,
+            .map(|part| {
+                LogicalName::new(NameEncoding::Utf8, part.as_bytes().to_vec())
+                    .map_err(Box::<dyn std::error::Error>::from)
+            })
+            .collect::<Result<Vec<_>>>()?,
         config.limits,
     )?)
 }
@@ -55,7 +60,6 @@ struct Worker {
 }
 
 async fn run(writers: usize, same_file: bool) -> Result {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let cancel = CancellationToken::new();
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();

@@ -20,9 +20,15 @@ pub fn matches(bytes: &[u8], actual: &str) -> bool {
     if actual != expected {
         return false;
     }
-    let descriptor = FileDescriptor::from_bytes(bytes, actual, &mut None).unwrap();
-    let encoded = serde_json::to_vec(&descriptor).unwrap();
-    let restored: FileDescriptor = serde_json::from_slice(&encoded).unwrap();
+    let Ok(descriptor) = FileDescriptor::from_bytes(bytes, actual, &mut None) else {
+        return false;
+    };
+    let Ok(encoded) = serde_json::to_vec(&descriptor) else {
+        return false;
+    };
+    let Ok(restored) = serde_json::from_slice::<FileDescriptor>(&encoded) else {
+        return false;
+    };
     restored == descriptor
         && restored.verify(bytes, &mut None).is_ok()
         && text.is_none_or(|text| text.into_bytes() == bytes)

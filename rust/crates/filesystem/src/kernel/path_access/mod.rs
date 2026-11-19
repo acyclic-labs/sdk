@@ -143,6 +143,7 @@ pub(crate) use api::{
 };
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 #[path = "../tests/path_access/mod.rs"]
 mod tests;
 pub(super) fn path_error(error: crate::FsError) -> PathLookupError {

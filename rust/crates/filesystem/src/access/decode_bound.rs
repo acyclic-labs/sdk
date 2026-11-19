@@ -90,6 +90,7 @@ impl Policy {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::super::{
         Action, Conditions, Effect, GenerationRange, Generations, PrincipalKind, PrincipalPattern,

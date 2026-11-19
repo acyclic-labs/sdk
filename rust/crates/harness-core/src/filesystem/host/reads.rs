@@ -3,7 +3,8 @@ mod capture;
 pub(crate) mod media_type;
 #[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod skills_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 /// The cut one read resolves at: the authored generation that carries policy
@@ -56,6 +57,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O>
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retained_skill_source(
+        &self,
+        volume: &VolumeRef,
+        generation: &GenerationRef,
+        path: &str,
+    ) -> Result<Option<Arc<crate::context::native_skills::NativeSkills>>> {
+        Ok(self
+            .skill_sources(volume)?
+            .filter(|sources| sources.matches(volume, generation, path)))
+    }
+
     async fn select_private_read<'a>(
         &self,
         volume: &VolumeRef,
@@ -615,6 +628,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )>,
     > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(generation) = expected_generation
+            && let Some(sources) = self.retained_skill_source(volume, generation, path)?
+        {
+            return Ok(self
+                .read_retained_skill(
+                    sources,
+                    volume,
+                    grant,
+                    (path, generation),
+                    maximum_bytes,
+                    access,
+                )?
+                .await?
+                .map(|(file, bytes)| (file, bytes, None)));
+        }
         if let Some(io) = io {
             return Ok(self
                 .read_private_path_indexed_measured(
@@ -1088,20 +1117,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_fs_format::object_reference::GenerationId> {
-        let cut = self.file_generation(reference, io)?;
-        match cut.as_resource().version() {
-            None => acyclic_fs_format::object_reference::GenerationId::from_bytes(
-                cut.as_resource().key(),
-            ),
-            Some(_) => None,
-        }
-        .ok_or_else(|| {
-            stock_boundary(
+        match bounded_io::parse_file_version(reference.version(), io)? {
+            bounded_io::FileVersion::Authored(generation) => Ok(generation),
+            bounded_io::FileVersion::Private(_) => Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "file was read at a private cut, not an authored generation",
-            )
-        })
+            )),
+        }
     }
 }
 // Only the selected user path is classified here. Metadata, backing storage,
@@ -1271,9 +1294,16 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: &'a PreparationIo,
 ) -> Result<Option<(FileRef, DecodeReservation<'a>)>> {
     let metadata_key = content_metadata_key_io(volume, path, Some(io))?;
-    let metadata_key_hold = io.guard_owned(metadata_key.retained_bytes() as u64)?;
-    let metadata_key = (metadata_key, metadata_key_hold);
-    let metadata = read_file_annotation(generation, path, &metadata_key.0, None, Some(io)).await?;
+    let _key_hold = io.guard_owned(metadata_key.retained_bytes() as u64)?;
+    let absolute = crate::executor::preparation_format(
+        format_args!("/{}", path.trim_start_matches('/')),
+        &mut Some(&mut io.history_io()),
+    )?;
+    let _path_hold = io.guard_owned(absolute.capacity() as u64)?;
+    let annotation = (absolute.as_str(), &metadata_key);
+    let metadata =
+        super::metadata::read_file_annotation_at(generation, &absolute, &metadata_key, None, io)
+            .await?;
     let staged = match metadata {
         Some(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
@@ -1290,7 +1320,7 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 &generation.workspace(),
                 generation,
                 &staged.0,
-                &metadata_key.0,
+                annotation,
                 &metadata.0,
                 io,
             )

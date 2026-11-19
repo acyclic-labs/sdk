@@ -432,10 +432,12 @@ impl<'a> CaptureBatch<'a> {
                 .read_metadata(record.file_id, self.meter, &lookup_cancellation)
                 .await?;
             prior_metadata = Some(prior);
+            let needs_host_defaults =
+                NativeViewBaseline::needs_host_defaults(&prior, &canonical_metadata);
             canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior);
             if let Some(baseline) = self.baseline {
                 let materialized = match &baseline.store {
-                    Some(store) => {
+                    Some(store) if needs_host_defaults => {
                         store
                             .materialization(self.meter.clone())
                             .materialized_metadata(
@@ -445,7 +447,7 @@ impl<'a> CaptureBatch<'a> {
                             )
                             .await?
                     }
-                    None => None,
+                    _ => None,
                 };
                 baseline.restore_canonical_stamps(
                     self.source_root.identity(),
@@ -472,12 +474,20 @@ impl<'a> CaptureBatch<'a> {
         existing: (Option<FileRecord>, bool, Option<crate::FileId>),
     ) -> Result<bool, CaptureError> {
         // Staging opens the file once and proves it is still the observed node before reading a byte.
+        let inline = existing.0.filter(|record| {
+            existing.1
+                && record.link_count == 1
+                && matches!(record.payload, crate::kernel::FilePayload::InlineRegular(_))
+        });
         let staged = stage_regular_body(
             checkout,
             self.source_root,
             &host_path,
             metadata,
-            self.maximum_extent_spans,
+            (
+                self.maximum_extent_spans,
+                existing.0.is_none() || inline.is_some(),
+            ),
             self.meter,
             &mut self.receipt.staged_file_bytes,
         )
@@ -487,15 +497,16 @@ impl<'a> CaptureBatch<'a> {
         let ranges = staged.ranges;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let unchanged = if let (Some(record), true, _) = existing
-            && record.link_count == 1
+        let unchanged = if let Some(record) = inline
             && let crate::kernel::FilePayload::InlineRegular(data) = record.payload
         {
             if logical_bytes == data.as_bytes().len() as u64
-                && let Some(bytes) = staged
-                    .inline
-                    .as_ref()
-                    .and_then(|bytes| bytes.get(..data.as_bytes().len()))
+                && let Some(bytes) = staged.inline_content.as_deref().or_else(|| {
+                    staged
+                        .inline
+                        .as_ref()
+                        .and_then(|bytes| bytes.get(..data.as_bytes().len()))
+                })
             {
                 self.meter.charge(WorkCounters {
                     items_examined: logical_bytes,
@@ -565,6 +576,19 @@ impl<'a> CaptureBatch<'a> {
             capture_drop_path(path, self.meter)?;
             return Ok(false);
         }
+        let mut inline_content = staged.inline_content;
+        if existing.0.is_none()
+            && let Some(bytes) = inline_content.take()
+        {
+            capture_reserve(&mut self.mutations, 1, self.meter)?;
+            self.mutations.push(AuthoredMutation::CreateFile {
+                file_id: existing.2,
+                path,
+                bytes,
+                metadata: canonical_metadata,
+            });
+            return Ok(true);
+        }
         let count = ranges
             .len()
             .checked_add(2 + usize::from(logical_bytes != 0))
@@ -583,18 +607,34 @@ impl<'a> CaptureBatch<'a> {
                 metadata: canonical_metadata,
             });
         }
-        if logical_bytes != 0 {
-            self.mutations.push(AuthoredMutation::Resize {
-                path: clone_capture_path(&path, self.meter)?,
-                logical_bytes,
-            });
-        }
-        for (range, content) in ranges {
-            self.mutations.push(AuthoredMutation::WriteFromContent {
-                path: clone_capture_path(&path, self.meter)?,
-                offset: range.offset,
-                content,
-            });
+        if let Some(bytes) = inline_content {
+            if !bytes.is_empty() {
+                // The authored write stages the admitted body during apply.
+                self.receipt.staged_file_bytes = self
+                    .receipt
+                    .staged_file_bytes
+                    .checked_add(bytes.len() as u64)
+                    .ok_or(WorkError::Overflow)?;
+                self.mutations.push(AuthoredMutation::Write {
+                    path: clone_capture_path(&path, self.meter)?,
+                    offset: 0,
+                    bytes,
+                });
+            }
+        } else {
+            if logical_bytes != 0 {
+                self.mutations.push(AuthoredMutation::Resize {
+                    path: clone_capture_path(&path, self.meter)?,
+                    logical_bytes,
+                });
+            }
+            for (range, content) in ranges {
+                self.mutations.push(AuthoredMutation::WriteFromContent {
+                    path: clone_capture_path(&path, self.meter)?,
+                    offset: range.offset,
+                    content,
+                });
+            }
         }
         self.meter
             .clone()

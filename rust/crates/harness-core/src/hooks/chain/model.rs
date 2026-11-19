@@ -342,9 +342,13 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
         .map(|index| plugin(&index.to_string(), None))
         .collect();
     let (output, runs) = judge(hooks, "original", |name, _| {
-        match decisions[name.parse::<usize>().unwrap()] {
-            2 => json!({"allow":false,"reason":"denied"}),
-            1 => json!({"ask":"approval?","to":"person"}),
+        match name
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| decisions.get(index))
+        {
+            Some(2) => json!({"allow":false,"reason":"denied"}),
+            Some(1) => json!({"ask":"approval?","to":"person"}),
             _ => json!({"allow":true}),
         }
     })
@@ -352,7 +356,12 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
     let denied = decisions.contains(&2);
     let mut visits = vec![0; decisions.len()];
     for (name, _) in &runs {
-        visits[name.parse::<usize>().unwrap()] += 1;
+        let visit = name
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| visits.get_mut(index))
+            .ok_or_else(|| Error::Invalid(format!("unexpected hook visit {name:?}")))?;
+        *visit += 1;
     }
     if visits.iter().any(|visits| *visits != 1) {
         return Err(Error::Invalid(

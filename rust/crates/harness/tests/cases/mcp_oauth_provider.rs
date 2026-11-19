@@ -6,8 +6,8 @@ use std::process::{Command, Output};
 const MODE: &str = "ACYCLIC_OAUTH_PROVIDER_CHILD";
 const BUILT: &str = "built OAuth client in a fresh process";
 
-fn child(mode: &str) -> Output {
-    Command::new(std::env::current_exe().unwrap())
+fn child(mode: &str) -> std::io::Result<Output> {
+    Command::new(std::env::current_exe()?)
         .args([
             "--exact",
             "mcp_oauth_provider::fresh_process_child",
@@ -15,24 +15,19 @@ fn child(mode: &str) -> Output {
         ])
         .env(MODE, mode)
         .output()
-        .unwrap()
 }
 
 #[test]
 fn fresh_process_child() {
     // Only meaningful when re-executed by the test below.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "fixed child-mode control set by this test's own parent; this target has no test-support seam"
-    )]
-    let Ok(mode) = std::env::var(MODE) else {
+    let Some(mode) = acyclic_harness::test_support::environment(MODE) else {
         return;
     };
     assert!(rustls::crypto::CryptoProvider::get_default().is_none());
-    match mode.as_str() {
-        "harness" => drop(acyclic_harness::mcp::oauth::default_oauth_http_client().unwrap()),
+    match mode.to_str() {
+        Some("harness") => drop(acyclic_harness::mcp::oauth::default_oauth_http_client().unwrap()),
         // The former re-export path: rmcp's constructor builds its own client.
-        "rmcp" => drop(
+        Some("rmcp") => drop(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -48,8 +43,8 @@ fn fresh_process_child() {
 }
 
 #[test]
-fn oauth_client_needs_no_preinstalled_provider() {
-    let harness = child("harness");
+fn oauth_client_needs_no_preinstalled_provider() -> std::io::Result<()> {
+    let harness = child("harness")?;
     let stdout = String::from_utf8_lossy(&harness.stdout);
     assert!(
         harness.status.success() && stdout.contains(BUILT) && stdout.contains("1 passed"),
@@ -59,7 +54,7 @@ fn oauth_client_needs_no_preinstalled_provider() {
     // Negative control: the provider-unaware constructor fails in the same
     // fresh process for the missing provider, so the case above observes the
     // provider installation.
-    let rmcp = child("rmcp");
+    let rmcp = child("rmcp")?;
     let (stdout, stderr) = (
         String::from_utf8_lossy(&rmcp.stdout),
         String::from_utf8_lossy(&rmcp.stderr),
@@ -71,4 +66,5 @@ fn oauth_client_needs_no_preinstalled_provider() {
         "{stdout}
 {stderr}"
     );
+    Ok(())
 }

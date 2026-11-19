@@ -365,9 +365,10 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         "complete",
     );
     let provider = provider(Adapter::Chat, &fixture)?;
+    let (model, adapter) = provider.provider.binding();
     let executor = StockExecutor::new(
-        provider.provider.model().clone(),
-        provider.provider.clone(),
+        model,
+        adapter,
         ContextPipeline::default(),
         ToolRegistry::default(),
     )

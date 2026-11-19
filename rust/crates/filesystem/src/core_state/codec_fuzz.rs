@@ -297,6 +297,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 #[test]
 fn production_metadata_corpus_preserves_original_decode_custody() -> std::io::Result<()> {
     crate::initialize_test_native_io();

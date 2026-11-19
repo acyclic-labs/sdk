@@ -30,10 +30,7 @@ use acyclic_harness::context::CompactionPolicy;
 use drivers::run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Instant,
-};
+use std::collections::BTreeSet;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use scenario_data::discover;
 
@@ -257,8 +254,45 @@ async fn unrecoverable_scenario_oracles_reject_uncertain_outcomes_and_extra_disp
     }
     Ok(())
 }
+include!(concat!(env!("OUT_DIR"), "/scenario_cases.rs"));
+
 #[test]
-fn scenarios() -> TestResult {
+fn scenarios_cover_every_fixture() -> TestResult {
+    let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
+    let mut paths = Vec::new();
+    discover(&root, &mut paths)?;
+    let discovered: BTreeSet<_> = paths.into_iter().collect();
+    let registered: BTreeSet<_> = scenarios::VALUES
+        .iter()
+        .map(|path| root.join(path))
+        .collect();
+    if let Some(path) = discovered.difference(&registered).next() {
+        return Err(format!("unregistered scenario: {}", path.display()).into());
+    }
+    if let Some(path) = registered.difference(&discovered).next() {
+        return Err(format!("registered scenario is absent: {}", path.display()).into());
+    }
+    if let Some(filter) = scenario_filter()
+        && !discovered
+            .iter()
+            .any(|path| path.to_string_lossy().contains(&filter))
+    {
+        return Err(format!("no scenarios match {filter:?}").into());
+    }
+    Ok(())
+}
+
+fn scenario_filter() -> Option<String> {
+    acyclic_harness::test_support::environment("E2E_FILTER")
+        .and_then(|value| value.into_string().ok())
+}
+
+fn run_scenario(relative: &str) -> TestResult {
+    let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
+    let path = root.join(relative);
+    if scenario_filter().is_some_and(|filter| !path.to_string_lossy().contains(&filter)) {
+        return Ok(());
+    }
     if acyclic_harness::test_support::environment("E2E_TRACE").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(
@@ -267,25 +301,32 @@ fn scenarios() -> TestResult {
             .without_time()
             .try_init();
     }
-    let started = Instant::now();
-    run_scenarios(started)
-}
-
-fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        return Err("scenario services must start before the async runtime".into());
-    }
-    acyclic_native_runtime::initialize_native_io_services()?;
-    Ok(scenario_builder().build()?)
+    let runtime = scenario_runtime(1)?;
+    let scenario = async { drivers::run(scenario::load_value(&root, &path)?).await };
+    runtime.block_on(stall::guarded(&path, scenario))?
 }
 
 const BLOCKING_WORKERS: usize = 16;
 const MAX_ASYNC_WORKERS: usize = 32;
+
+fn scenario_worker_budget() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .clamp(2, MAX_ASYNC_WORKERS)
+}
+
+fn scenario_runtime(workers: usize) -> TestResult<tokio::runtime::Runtime> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err("scenario services must start before the async runtime".into());
+    }
+    acyclic_native_runtime::initialize_native_io_services()?;
+    Ok(scenario_builder().worker_threads(workers).build()?)
+}
+
 fn scenario_builder() -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    let available = std::thread::available_parallelism().map_or(1, usize::from);
     builder
-        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .worker_threads(scenario_worker_budget())
         .max_blocking_threads(BLOCKING_WORKERS)
         .enable_all();
     builder
@@ -293,30 +334,13 @@ fn scenario_builder() -> tokio::runtime::Builder {
 
 #[tokio::test]
 async fn scenario_bootstrap_rejects_an_already_running_runtime() {
-    let error = scenario_runtime().expect_err("bootstrapped inside the runtime");
+    let error =
+        scenario_runtime(scenario_worker_budget()).expect_err("bootstrapped inside the runtime");
     assert!(
         error
             .to_string()
             .contains("services must start before the async runtime")
     );
-}
-
-/// Scenarios admitted per available CPU. Each admitted scenario holds a harness, its stores and its native work, so
-/// admission follows the machine rather than the corpus: a larger corpus queues instead of exhausting fixtures.
-const SCENARIOS_PER_CPU: usize = 4;
-
-/// The admission bound; `E2E_SCENARIO_CAPACITY` overrides it for measurement.
-fn scenario_capacity() -> TestResult<usize> {
-    let capacity = match acyclic_harness::test_support::environment("E2E_SCENARIO_CAPACITY")
-        .and_then(|value| value.into_string().ok())
-    {
-        Some(capacity) => capacity.parse()?,
-        None => std::thread::available_parallelism()?.get() * SCENARIOS_PER_CPU,
-    };
-    if capacity == 0 {
-        return Err("scenario capacity is zero".into());
-    }
-    Ok(capacity)
 }
 
 fn scenario_admission<I>(
@@ -330,96 +354,6 @@ where
     assert!(capacity > 0, "scenario capacity is zero");
     let capacity = runtime_tests::admission_capacity(capacity);
     stream::iter(cases).buffer_unordered(capacity)
-}
-
-fn run_scenarios(started: Instant) -> TestResult {
-    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
-    let mut paths = Vec::new();
-    discover(&root, &mut paths)?;
-    paths.sort();
-    if let Some(filter) = acyclic_harness::test_support::environment("E2E_FILTER")
-        .and_then(|value| value.into_string().ok())
-    {
-        paths.retain(|path| path.to_string_lossy().contains(&filter));
-    }
-    if paths.is_empty() {
-        return Err("no scenarios discovered".into());
-    }
-    let count = paths.len();
-    let capacity = scenario_capacity()?;
-
-    let available = std::thread::available_parallelism().map_or(1, usize::from);
-    let budget = available.clamp(2, MAX_ASYNC_WORKERS);
-    let (services, drivers) = case_workers::layout(budget, capacity);
-    // Reassign the existing CPU budget: one or more async service threads plus
-    // thread-affine scenario drivers. The blocking/native pools are unchanged.
-    if tokio::runtime::Handle::try_current().is_ok() {
-        return Err("scenario services must start before the async runtime".into());
-    }
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let runtime = scenario_builder().worker_threads(services).build()?;
-    let mut guard = progress_guard::Guard::new();
-    let registry = guard.registry.clone();
-    let io = guard.io.clone();
-    let admitted = std::sync::Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
-    let mut failures = Vec::new();
-    let _results = case_workers::run(
-        &runtime,
-        paths,
-        capacity,
-        drivers,
-        &mut guard,
-        |path: std::path::PathBuf| {
-            let root = root.clone();
-            let admitted = admitted.clone();
-            let registry = registry.clone();
-            let io = io.clone();
-            async move {
-                let case_path = path.clone();
-                let (running, peak) = &*admitted;
-                peak.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
-                let result: TestResult = stall::run(io, registry, case_path.clone(), async move {
-                    let case = scenario::load_value(&root, &case_path)?;
-                    drivers::run(case).await?;
-                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                })
-                .await;
-                running.fetch_sub(1, Ordering::SeqCst);
-                (path, result)
-            }
-        },
-        |(path, result)| {
-            let name = path
-                .strip_prefix(
-                    acyclic_test_support::source_path("rust/crates/harness").join("tests"),
-                )
-                .unwrap_or(path)
-                .display();
-            match result {
-                Ok(()) => println!("PASS {name}"),
-                Err(error) => {
-                    eprintln!("FAIL {name}: {error}");
-                    failures.push(path.clone());
-                }
-            }
-        },
-    )?;
-    let peak = admitted.1.load(Ordering::SeqCst);
-    println!(
-        "{} scenarios, {} failed, peak {} admitted of capacity {}, {:.3}s",
-        count,
-        failures.len(),
-        peak,
-        capacity,
-        started.elapsed().as_secs_f64()
-    );
-    if peak > capacity {
-        return Err(format!("{peak} scenarios ran at once, over capacity {capacity}").into());
-    }
-    if !failures.is_empty() {
-        return Err(format!("{} scenarios failed", failures.len()).into());
-    }
-    Ok(())
 }
 
 #[path = "remote_files.rs"]

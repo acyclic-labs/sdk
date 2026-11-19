@@ -557,4 +557,5 @@ fn project_merge_error(error: FsError) -> MergeGenerationError {
 
 #[cfg(test)]
 #[path = "tests/merge/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

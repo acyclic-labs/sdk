@@ -19,7 +19,7 @@ fn namespace_failure_keeps_its_darwin_failure_and_work_prefix() -> TestResult {
         context.run::<()>(false, |_| panic!("terminal callback ran again")),
         Err(libc::ECANCELED)
     );
-    let (cause, prefix) = callback_failure(&context);
+    let (cause, prefix) = callback_failure(&context)?;
     assert!(matches!(
         cause,
         NativeMountError::Source(MountSourceError::NamespacePath(
@@ -51,7 +51,7 @@ fn failed_completion_keeps_its_darwin_failure_and_work_prefix() -> TestResult {
         context.run::<()>(false, |_| panic!("terminal callback ran again")),
         Err(libc::ENOENT)
     );
-    let (cause, prefix) = callback_failure(&context);
+    let (cause, prefix) = callback_failure(&context)?;
     assert!(matches!(
         cause,
         NativeMountError::Source(MountSourceError::MutationFinalization { .. })
@@ -90,7 +90,7 @@ fn callback_panic_survives_context_retirement_and_stays_fatal() -> TestResult {
         }),
         Err(libc::EIO)
     );
-    let (failure, completed) = callback_failure(&context);
+    let (failure, completed) = callback_failure(&context)?;
     assert_eq!(
         context.run::<()>(false, |_| panic!("fatal callback ran again")),
         Err(libc::EIO)
@@ -144,9 +144,9 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
             assert_eq!(getattr(&context, c"/"), 0);
             assert_eq!(create(&context, c"/guarded"), (-libc::EACCES, 0));
         }
-        let failure = callback_failure(&context);
+        let failure = callback_failure(&context)?;
         assert!(matches!(failure.0, NativeMountError::CallbackDenied { .. }));
-        assert_eq!(failure.1, original.receipt().unwrap());
+        assert_eq!(failure.1, original.receipt()?);
         assert_eq!(
             context
                 .source
@@ -188,7 +188,7 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
                 // SAFETY: context, terminated path and input remain alive through the callback.
                 unsafe {
                     acyclic_fs_darwin_mount_write(
-                        &target as *const super::super::requests::CallbackTarget as usize,
+                        target.address(),
                         c"/limited".as_ptr(),
                         0,
                         incoming.as_ptr().cast(),
@@ -206,7 +206,7 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
             assert_eq!(create(&context, c"/limited"), (-libc::EIO, 0));
             assert!(source.lookup(&path)?.is_none());
         }
-        let failure = callback_failure(&context);
+        let failure = callback_failure(&context)?;
         assert!(matches!(
             failure.0,
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
@@ -234,7 +234,7 @@ fn absence_probes_remain_usable_until_original_cancellation() -> TestResult {
     assert_eq!(getattr(&context, c"/later"), 0);
     cancellation.cancel();
     assert_eq!(getattr(&context, c"/later"), -libc::ECANCELED);
-    let failure = callback_failure(&context);
+    let failure = callback_failure(&context)?;
     assert!(matches!(
         failure.0,
         NativeMountError::Demand(crate::DemandError::Cancelled)
@@ -357,13 +357,16 @@ fn authored_guard_context(
     Ok((context, guard, original))
 }
 
-fn callback_failure(context: &DarwinMountContext) -> (NativeMountError, WorkCounters) {
-    context
+fn callback_failure(
+    context: &DarwinMountContext,
+) -> Result<(NativeMountError, WorkCounters), Box<dyn std::error::Error>> {
+    let (cause, receipt) = context
         .handler_failure
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take_failure()
-        .expect("callback failed")
+        .ok_or("callback failure was not retained")?;
+    Ok((cause, receipt?))
 }
 
 fn getattr(context: &Arc<DarwinMountContext>, path: &CStr) -> c_int {
@@ -371,12 +374,7 @@ fn getattr(context: &Arc<DarwinMountContext>, path: &CStr) -> c_int {
     let mut output = std::mem::MaybeUninit::<NativeStat>::uninit();
     // SAFETY: the context and native input/output remain live through the call.
     unsafe {
-        acyclic_fs_darwin_mount_getattr(
-            &target as *const super::super::requests::CallbackTarget as usize,
-            path.as_ptr(),
-            0,
-            output.as_mut_ptr(),
-        )
+        acyclic_fs_darwin_mount_getattr(target.address(), path.as_ptr(), 0, output.as_mut_ptr())
     }
 }
 
@@ -386,7 +384,7 @@ fn create(context: &Arc<DarwinMountContext>, path: &CStr) -> (c_int, u64) {
     // SAFETY: the context and native path/handle remain live through the call.
     let status = unsafe {
         acyclic_fs_darwin_mount_create(
-            &target as *const super::super::requests::CallbackTarget as usize,
+            target.address(),
             path.as_ptr(),
             0o644,
             context.mount_uid,
@@ -414,22 +412,23 @@ fn fsync_keeps_its_open_handle(bypass_handle: bool) -> TestResult {
         &work,
     )?;
     let target = super::super::requests::CallbackTarget::View(Arc::new(context));
-    let address = &target as *const super::super::requests::CallbackTarget as usize;
+    let address = target.address();
     let name = CString::new("/sync-owner")?;
-    // SAFETY: the context and terminated path remain live through this call.
     assert_eq!(
+        // SAFETY: the context and terminated path remain live through this call.
         unsafe {
             super::super::namespace_ops::acyclic_fs_darwin_mount_remove(address, name.as_ptr(), 0)
         },
         0
     );
-    // SAFETY: this live context owns the handle. A retained open handle needs
-    // no path, including when the kernel has already unlinked its name.
     assert_eq!(
+        // SAFETY: this live context owns the handle. A retained open handle needs
+        // no path, including when the kernel has already unlinked its name.
         unsafe { acyclic_fs_darwin_mount_fsync(address, std::ptr::null(), handle) },
         0
     );
     assert_eq!(
+        // SAFETY: the target remains live and release resolves the handle without a path.
         unsafe { acyclic_fs_darwin_mount_release(address, std::ptr::null(), handle) },
         0
     );
@@ -440,6 +439,7 @@ fn fsync_keeps_its_open_handle(bypass_handle: bool) -> TestResult {
             Ok(0)
         })
     } else {
+        // SAFETY: the live context validates the handle even after its release.
         unsafe { acyclic_fs_darwin_mount_fsync(address, std::ptr::null(), handle) }
     };
     assert_eq!(result, -libc::ESTALE, "fsync accepted a released handle");
@@ -497,13 +497,8 @@ fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
     };
     // SAFETY: the receiving context remains live. No path is required for a
     // handle lookup, and this deliberately foreign id must never find a file.
-    let status = unsafe {
-        acyclic_fs_darwin_mount_fsync(
-            &target as *const super::super::requests::CallbackTarget as usize,
-            std::ptr::null(),
-            foreign,
-        )
-    };
+    let status =
+        unsafe { acyclic_fs_darwin_mount_fsync(target.address(), std::ptr::null(), foreign) };
     assert_eq!(
         status,
         -libc::ESTALE,
@@ -511,13 +506,8 @@ fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
     );
     // A foreign-handle refusal does not poison the receiving view.
     assert_eq!(
-        unsafe {
-            acyclic_fs_darwin_mount_fsync(
-                &target as *const super::super::requests::CallbackTarget as usize,
-                std::ptr::null(),
-                second_handle,
-            )
-        },
+        // SAFETY: the live target owns this handle, which is sufficient without a path.
+        unsafe { acyclic_fs_darwin_mount_fsync(target.address(), std::ptr::null(), second_handle) },
         0
     );
     drop(first);

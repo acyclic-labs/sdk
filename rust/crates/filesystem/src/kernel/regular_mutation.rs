@@ -1131,5 +1131,6 @@ fn clone_stage_error(error: FsError, stage: CloneStage) -> FsError {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 #[path = "tests/regular_mutation/mod.rs"]
 mod tests;

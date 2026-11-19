@@ -232,4 +232,5 @@ pub enum TreeReadError {
 
 #[cfg(test)]
 #[path = "tests/read.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

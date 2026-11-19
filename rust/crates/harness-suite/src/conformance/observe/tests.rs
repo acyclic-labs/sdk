@@ -4,6 +4,7 @@ use acyclic_actors::guest::Handler;
 use acyclic_harness_core::agent::Delivered;
 use acyclic_stream::StreamCategory;
 use acyclic_stream::testing::Counted;
+use std::sync::Arc;
 
 #[test]
 fn counter_only_mutation_keeps_the_provider_allocation_budget() {
@@ -22,7 +23,7 @@ fn counter_only_mutation_keeps_the_provider_allocation_budget() {
     }
 
     let direct = MemoryStream::default();
-    let observed = Observed::counters(Arc::new(MemoryStream::default()));
+    let observed = Observed::counters(ProviderOwner::new(MemoryStream::default()));
     let baseline = admitted(&direct);
     assert!(baseline.count_total > 0);
     assert_eq!(
@@ -38,10 +39,10 @@ async fn counter_only_keeps_effects_and_dispatch_counts_without_request_retentio
     for capture in [true, false] {
         let inner = Counted::new(MemoryStream::default());
         let dispatched = inner.ledger();
-        let provider = Arc::new(if capture {
-            Observed::capturing(Arc::new(inner))
+        let provider = ProviderOwner::new(if capture {
+            Observed::capturing(ProviderOwner::new(inner))
         } else {
-            Observed::counters(Arc::new(inner))
+            Observed::counters(ProviderOwner::new(inner))
         });
         let handler: Arc<dyn Handler> = vectors::handler(&provider)?;
         let host = vectors::hosting(provider.clone(), handler, None)?;
@@ -185,7 +186,7 @@ fn every_native_forward_counts_like_the_provider_negative_control() -> Result {
     .map_err(|_| "native work admission")?
     .runtime_meter();
     for capture in [true, false] {
-        let inner = Arc::new(Counted::new(MemoryStream::default()));
+        let inner = ProviderOwner::new(Counted::new(MemoryStream::default()));
         let dispatched = inner.ledger();
         let observed = if capture {
             Observed::capturing(inner.clone())

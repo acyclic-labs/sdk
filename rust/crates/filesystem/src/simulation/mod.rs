@@ -210,7 +210,9 @@ mod objects;
 
 #[cfg(test)]
 #[path = "../tests/simulation/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod native_write_controls;

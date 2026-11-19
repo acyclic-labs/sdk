@@ -280,9 +280,10 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     let failed = work
         .finish(result)
         .expect_err("first original message hash must reject");
-    assert_eq!(failed.work.bytes_hashed, 0);
-    assert!(failed.work.bytes_encoded > 0);
-    assert_eq!(failed.work.output_bytes, 0);
+    let observed = failed.work()?;
+    assert_eq!(observed.bytes_hashed, 0);
+    assert!(observed.bytes_encoded > 0);
+    assert_eq!(observed.output_bytes, 0);
     let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
         budget,
         &cancellation,
@@ -294,6 +295,7 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     let failed = work
         .finish(result)
         .expect_err("cancelled reconstruction must not start");
-    assert_eq!(failed.work.bytes_encoded + failed.work.bytes_hashed, 0);
+    let observed = failed.work()?;
+    assert_eq!(observed.bytes_encoded + observed.bytes_hashed, 0);
     Ok(())
 }

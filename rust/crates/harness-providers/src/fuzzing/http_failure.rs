@@ -67,8 +67,14 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
 /// turn an incomplete context refusal into a successful classification.
 /// Returns whether valid context-status JSON reached the spelling comparison.
 pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
+    let result = check_http_failure_invariants(input);
+    assert!(result.is_ok(), "HTTP failure invariant failed: {result:?}");
+    matches!(result, Ok(true))
+}
+
+fn check_http_failure_invariants(input: &[u8]) -> super::CheckResult<bool> {
     let Some((status, bytes)) = input.split_first_chunk::<2>() else {
-        return false;
+        return Ok(false);
     };
     let status = u16::from_le_bytes(*status);
     for failure in [false, true] {
@@ -80,10 +86,10 @@ pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
     if matches!(status, 400 | 413)
         && let Ok(value) = acyclic_harness_provider_response::json(bytes)
     {
-        let canonical = serde_json::to_vec(&value).expect("JSON value encodes");
-        let escaped = escaped_strings(&canonical);
+        let canonical = serde_json::to_vec(&value)?;
+        let escaped = escaped_strings(&canonical)?;
         assert_eq!(
-            acyclic_harness_provider_response::json(&escaped).unwrap(),
+            acyclic_harness_provider_response::json(&escaped)?,
             value,
             "escape mutation changed JSON meaning"
         );
@@ -92,17 +98,17 @@ pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
             decode(status, &escaped, escaped.len().max(1), false).0,
             "JSON spelling cannot change the status or context class"
         );
-        return true;
+        return Ok(true);
     }
     assert!(
         !matches!(status, 400 | 413) || acyclic_harness_provider_response::json(bytes).is_err(),
         "production-accepted refusal skipped fuzz spelling comparison"
     );
-    false
+    Ok(false)
 }
 
 // Mutate canonical JSON, preserving existing escapes and all non-ASCII bytes.
-fn escaped_strings(bytes: &[u8]) -> Vec<u8> {
+fn escaped_strings(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = Vec::new();
     let mut quoted = false;
@@ -110,14 +116,16 @@ fn escaped_strings(bytes: &[u8]) -> Vec<u8> {
     while let Some(byte) = input.next() {
         if quoted && byte == b'\\' {
             output.push(byte);
-            let escape = input.next().expect("canonical escape has its second byte");
+            let escape = input
+                .next()
+                .ok_or("canonical escape lacks its second byte")?;
             output.push(escape);
             if escape == b'u' {
                 for _ in 0..4 {
                     output.push(
                         input
                             .next()
-                            .expect("canonical Unicode escape has four digits"),
+                            .ok_or("canonical Unicode escape lacks four digits")?,
                     );
                 }
             }
@@ -137,12 +145,13 @@ fn escaped_strings(bytes: &[u8]) -> Vec<u8> {
             output.push(byte);
         }
     }
-    output
+    Ok(output)
 }
 
 #[cfg(test)]
 #[test]
-fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking() {
+fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
+-> super::CheckResult {
     for input in [
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").as_slice(),
@@ -217,7 +226,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     control_input.extend_from_slice(&serde_json::to_vec(&control).unwrap());
     assert_http_failure_invariants(&control_input);
     let canonical = serde_json::to_vec(&value).unwrap();
-    let escaped = escaped_strings(&canonical);
+    let escaped = escaped_strings(&canonical)?;
     // Move the captured refusal through the supported envelopes; a selected
     // non-object error still takes precedence over the root's discriminants.
     for (mutation, expected) in [
@@ -239,7 +248,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         ),
     ] {
         let bytes = serde_json::to_vec(&mutation).unwrap();
-        for spelling in [&bytes, &escaped_strings(&bytes)] {
+        for spelling in [&bytes, &escaped_strings(&bytes)?] {
             assert_eq!(
                 acyclic_harness_provider_response::context_overflow_bytes(spelling, None).unwrap(),
                 expected
@@ -279,4 +288,5 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         );
         assert_eq!(denied.live_allocation_bytes(), baseline);
     }
+    Ok(())
 }

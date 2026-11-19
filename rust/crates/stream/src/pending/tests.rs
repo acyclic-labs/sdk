@@ -3,7 +3,7 @@ use crate::BoxProviderFuture;
 use crate::StreamCategory;
 use crate::{CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream};
 use futures::FutureExt as _;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct Executor(Mutex<Vec<BoxProviderFuture<'static, ()>>>);

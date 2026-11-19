@@ -250,6 +250,7 @@ fn reference_node(body: &[u8], from: usize) -> Option<([u8; 16], u64, &[u8], usi
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod reference_tests {
     use super::*;
     use proptest::prelude::*;

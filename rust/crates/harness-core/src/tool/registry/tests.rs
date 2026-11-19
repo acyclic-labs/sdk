@@ -14,18 +14,24 @@ proptest! {
     ) {
         // Agent tools are bound by the turn owner, not the default registry.
         let names: Vec<_> = crate::tools::catalog().map(|spec| spec.name).collect();
-        let registry = crate::tools::defaults().unwrap();
+        let enabled = crate::tools::default_names();
+        let registry = crate::tools::defaults()?;
         let grants = crate::Capabilities::new(
             names.iter().enumerate().filter(|(i, _)| selected[*i])
                 .map(|(_, name)| format!("tool:call:{name}"))
                 .chain(crate::tools::AGENT_TOOLS.map(|name| format!("tool:call:{name}"))),
         );
-        let definitions = registry.definitions_for_grants(&grants, None).unwrap();
-        for (index, name) in names.iter().enumerate() {
-            prop_assert_eq!(definitions.iter().any(|definition| definition.name == *name),
-                selected[index]);
+        let definitions = registry.definitions_for_grants(&grants, None)?;
+        let mut expected_count = 0;
+        for (name, selected) in names.iter().zip(selected) {
+            let expected = selected && enabled.iter().any(|enabled| enabled.as_str() == *name);
+            prop_assert_eq!(
+                definitions.iter().any(|definition| definition.name == *name),
+                expected,
+            );
+            expected_count += usize::from(expected);
         }
-        prop_assert_eq!(definitions.len(), selected.iter().filter(|selected| **selected).count());
+        prop_assert_eq!(definitions.len(), expected_count);
     }
 }
 

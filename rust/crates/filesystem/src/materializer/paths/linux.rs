@@ -136,6 +136,7 @@ pub(super) fn validate_mounts(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod tests {
     use super::*;
 

@@ -616,10 +616,12 @@ pub enum MutationPlanError {
 
 #[cfg(test)]
 #[path = "tests/mutation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod original_controls {
     use super::super::allocation::{KernelAccounting, KernelOwnedAllocation};
     use super::*;

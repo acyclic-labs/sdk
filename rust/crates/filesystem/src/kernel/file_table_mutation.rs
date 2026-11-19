@@ -404,4 +404,5 @@ pub enum FileTableMutationError {
 
 #[cfg(test)]
 #[path = "tests/file_table_mutation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -1,7 +1,8 @@
 use acyclic_fs::{ApplyOptions, ForkOptions, Fs, IdempotencyKey, JoinOutcome, PublicationPermit};
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_fork_selection::fixtures::fork_workspace;
+use crate::workspace_fork_selection::transaction::commit;
 
 #[tokio::test]
 async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()

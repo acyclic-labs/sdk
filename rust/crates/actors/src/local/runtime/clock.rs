@@ -30,6 +30,61 @@ pub trait Clock: UnixMillisClock + ProviderPlatform + 'static {
 
 /// Wall clock over the shared native absolute alarm or browser event loop.
 pub struct SystemClock;
+impl SystemClock {
+    /// Retains the current host timeline when handing it to background owners.
+    #[must_use]
+    pub fn bind(clock: std::sync::Arc<dyn Clock>) -> std::sync::Arc<dyn Clock> {
+        #[cfg(all(
+            feature = "test-support",
+            any(target_os = "linux", target_vendor = "apple", windows)
+        ))]
+        if clock.is_system_clock()
+            && let Some(original) = acyclic_native_runtime::testing::CapturedClock::capture()
+        {
+            return std::sync::Arc::new(CapturedSystemClock(original));
+        }
+        clock
+    }
+}
+
+#[cfg(all(
+    feature = "test-support",
+    any(target_os = "linux", target_vendor = "apple", windows)
+))]
+struct CapturedSystemClock(acyclic_native_runtime::testing::CapturedClock);
+
+#[cfg(all(
+    feature = "test-support",
+    any(target_os = "linux", target_vendor = "apple", windows)
+))]
+impl UnixMillisClock for CapturedSystemClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.unix_millis()
+    }
+}
+
+#[cfg(all(
+    feature = "test-support",
+    any(target_os = "linux", target_vendor = "apple", windows)
+))]
+impl Clock for CapturedSystemClock {
+    fn sleep_until(
+        &self,
+        deadline_unix_ms: u64,
+    ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
+        if self.now_unix_millis() >= deadline_unix_ms {
+            return Box::pin(std::future::ready(Ok(())));
+        }
+        let alarm = self.0.wait_until(deadline_unix_ms);
+        Box::pin(async move {
+            alarm
+                .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?
+                .await
+                .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))
+        })
+    }
+}
+
 impl UnixMillisClock for SystemClock {
     fn is_system_clock(&self) -> bool {
         true

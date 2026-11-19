@@ -294,7 +294,8 @@ pub trait AsyncObjectStore: ProviderPlatform {
         object_id: crate::storage::ObjectId,
         context: &mut crate::async_storage::AuthorityWork<'_>,
     ) -> impl std::future::Future<Output = std::result::Result<bool, crate::ObjectStoreError>> + acyclic_stream::ProviderTask;
-    /// The collection this store runs while it stays open, if it collects.
+    /// The collection this store runs while it stays open. A store without
+    /// collection keeps previously published immutable objects available.
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         None
     }

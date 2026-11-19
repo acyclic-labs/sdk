@@ -619,8 +619,17 @@ pub(in crate::local) fn reconciliation_generation(
         acyclic_fs::WorkspaceRebase::Rebased(generation)
         | acyclic_fs::WorkspaceRebase::AlreadyRebased(generation)
         | acyclic_fs::WorkspaceRebase::Current(generation) => Ok(generation),
-        _ => Err(Error::Conflict(
-            "checkout reconciliation did not settle".into(),
+        acyclic_fs::WorkspaceRebase::Stale(_) => Err(Error::Conflict(
+            "checkout head changed during reconciliation".into(),
+        )),
+        acyclic_fs::WorkspaceRebase::Conflicted { .. } => Err(Error::Conflict(
+            "checkout edits overlap changes from its source".into(),
+        )),
+        acyclic_fs::WorkspaceRebase::Fenced => Err(Error::Conflict(
+            "checkout writer was superseded during reconciliation".into(),
+        )),
+        acyclic_fs::WorkspaceRebase::IdempotencyConflict => Err(Error::Conflict(
+            "checkout reconciliation identity names another change".into(),
         )),
     }
 }

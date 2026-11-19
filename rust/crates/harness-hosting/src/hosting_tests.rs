@@ -1418,18 +1418,18 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
 }
 
 #[test]
-fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
-    let version = CommitId::from_bytes([0xa5; 32]);
+fn a_children_cursor_carries_its_exact_revision_and_last_path() -> Result {
+    let revision = Revision {
+        scope: acyclic_stream::RevisionScope::new(acyclic_stream::OwnedBytes::from_static(b"tree")),
+        incarnation: 42,
+        index: 123,
+    };
     let after = AgentPath::root(&crate::agent::AgentId::from_bytes([0x5a; 16]))
         .child(&crate::agent::AgentId::from_bytes([0x3c; 16]))?;
-    let cursor = children_cursor(&version, after.as_str());
-    assert_eq!(
-        page_json_bytes(&cursor)? - 2,
-        children_cursor_bytes(&version, after.as_str()) as u64
-    );
+    let cursor = format!("{}:{}", after.as_str(), serde_json::to_string(&revision)?);
     assert_eq!(
         parse_children_cursor(&cursor)?,
-        (version, StreamPath::new(after.as_str())?)
+        (revision, StreamPath::new(after.as_str())?)
     );
     assert!(parse_children_cursor("agents/root/children/a").is_err());
     Ok(())

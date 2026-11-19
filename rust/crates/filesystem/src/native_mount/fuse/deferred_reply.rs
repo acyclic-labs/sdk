@@ -16,7 +16,7 @@ pub(super) struct DeferredReply {
     request: FuseOwned<Vec<u8>>,
     response: FuseOwned<Vec<u8>>,
     core: Arc<ProjectionCore>,
-    #[cfg(test)]
+    #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
     capture: Option<(Arc<super::tests::packets::Capture>, u64)>,
     _allocation: crate::NativeAllocation,
 }
@@ -32,8 +32,11 @@ impl DeferredReply {
         reply: &mut PacketReply<'_>,
         request: &[u8],
         response: &[u8],
-        pending: PendingReply<Arc<HostIo>>,
-        #[cfg(test)] capture: Option<(Arc<super::tests::packets::Capture>, u64)>,
+        pending: impl FnOnce() -> PendingReply<Arc<HostIo>>,
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))] capture: Option<(
+            Arc<super::tests::packets::Capture>,
+            u64,
+        )>,
     ) -> Result<bool, NativeMountError> {
         let core = Arc::clone(reply.core().ok_or(libc::EPROTO)?);
         let work = reply.completion().work().ok_or(libc::EPROTO)?.clone();
@@ -59,17 +62,17 @@ impl DeferredReply {
             .invalidation
             .deferred
             .push(KernelCacheItem::Reply(Box::new(Self {
-                pending: Some(pending),
+                pending: Some(pending()),
                 completion: Some(completion),
                 request,
                 response,
                 core: Arc::clone(&core),
-                #[cfg(test)]
+                #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
                 capture,
                 _allocation: allocation,
             })));
-        #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+        #[cfg(not(loom))]
         if let Some(queued) = core
             .publication_test
             .lock()
@@ -97,7 +100,7 @@ impl DeferredReply {
             .as_mut()
             .ok_or(libc::EPROTO)?
             .publish(&response.slices().ok_or(libc::EPROTO)?)?;
-        #[cfg(test)]
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
         if outcome == PacketDevicePublication::Published
             && let Some((capture, sequence)) = &self.capture
         {

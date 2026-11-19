@@ -28,6 +28,7 @@ rust_library(
         "//rust/crates/sdk-docs/fuzz:corpus/metadata_output/native-workspace.json",
         "//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json",
     ],
+    tags = ["resources:memory:512"],
     edition = "2021",
     version = "0.1.0",
     crate_features = FEATURES,
@@ -103,13 +104,13 @@ rust_test(
         "src/lib.rs",
         "//:workspace-manifests",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
     name = "sdk_docs_test",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
+    binaries = {"@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-docs",
     exclude = ["::full_cloud::"],
     workers = 1,
@@ -120,7 +121,7 @@ isolated_test(
 isolated_test(
     name = "sdk_docs_test_full-cloud",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    binaries = {"@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-docs",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

@@ -100,8 +100,19 @@ pub mod ipc;
 mod kernel_keyring;
 pub mod owner_record;
 pub mod private_file;
+
+/// The standard Linux FUSE helpers, in preference order.
+#[cfg(target_os = "linux")]
+pub const FUSE_MOUNT_HELPERS: [&std::ffi::CStr; 4] = [
+    c"/usr/bin/fusermount3",
+    c"/bin/fusermount3",
+    c"/usr/bin/fusermount",
+    c"/bin/fusermount",
+];
 /// Injected, native or private-file custody for store-owned authority signing seeds.
 pub mod signing_key;
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub use file::file_identity_from_metadata;
 #[cfg(unix)]
 pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]

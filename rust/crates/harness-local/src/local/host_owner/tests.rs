@@ -476,14 +476,14 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     let discovery: serde_json::Value = serde_json::from_str(
         recovered["environment"]["ACYCLIC_WORKSPACES"]
             .as_str()
-            .expect("workspace JSON"),
+            .ok_or_else(|| Error::Invalid("missing recovered workspace JSON".into()))?,
     )
     .map_err(storage)?;
     assert_eq!(discovery["project"], json!(view));
     let mut previous_discovery: serde_json::Value = serde_json::from_str(
         expected["environment"]["ACYCLIC_WORKSPACES"]
             .as_str()
-            .expect("workspace JSON"),
+            .ok_or_else(|| Error::Invalid("missing original workspace JSON".into()))?,
     )
     .map_err(storage)?;
     previous_discovery["project"] = json!(view);
@@ -708,12 +708,13 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     let (state, stored) = fixture.owner.native.session(&child).await?;
     let stored_bytes = serde_json::to_vec(&stored).map_err(storage)?;
     agents::validation::check_native_session_storage(&stored_bytes);
-    if let Some(agents::StoredOutcome::Complete(file)) = &stored.result {
-        let event_bytes = fixture.owner.native.read(&state, file).await?;
-        agents::validation::check_native_session_storage(&event_bytes);
-    } else {
-        panic!("completed session did not retain its admitted event");
-    }
+    let Some(agents::StoredOutcome::Complete(file)) = &stored.result else {
+        return Err(Error::Invalid(
+            "completed session did not retain its admitted event".into(),
+        ));
+    };
+    let event_bytes = fixture.owner.native.read(&state, file).await?;
+    agents::validation::check_native_session_storage(&event_bytes);
     fixture.restart(&child).await?;
     assert_eq!(
         fixture
@@ -1185,9 +1186,13 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     let child = agents::child(&fixture.parent, "child")?;
     let held = fixture.owner.locks.hold(vec![child.clone()]).await;
     let operation = OperationId::new();
-    let mut reply = tracing::dispatcher::with_default(&subscriber, || {
-        fixture.owner.dispatch(operation, action())
-    });
+    use tracing::instrument::WithSubscriber as _;
+    let mut reply = Box::pin(
+        fixture
+            .owner
+            .dispatch(operation, action())
+            .with_subscriber(subscriber.clone()),
+    );
     assert!(futures::poll!(reply.as_mut()).is_pending());
     // The real dispatch has the same identity as its eventual bridge reply;
     // observing it adds no request and does not consume the pending prompt.
@@ -1201,9 +1206,12 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
         "a returned pending reply is complete"
     );
     let held = fixture.owner.locks.hold(vec![child]).await;
-    let mut withdrawn = tracing::dispatcher::with_default(&subscriber, || {
-        fixture.owner.dispatch(OperationId::new(), action())
-    });
+    let mut withdrawn = Box::pin(
+        fixture
+            .owner
+            .dispatch(OperationId::new(), action())
+            .with_subscriber(subscriber),
+    );
     assert!(futures::poll!(withdrawn.as_mut()).is_pending());
     assert!(!snapshot()?.is_empty());
     drop(withdrawn);
@@ -1565,7 +1573,9 @@ async fn concurrent_spawns_with_shared_bindings(
                 },
             )
             .await?;
-        let listed = agents["agents"].as_array().expect("agent page");
+        let listed = agents["agents"]
+            .as_array()
+            .ok_or_else(|| Error::Invalid("missing agent page".into()))?;
         assert_eq!(listed.len(), current.len());
         assert_eq!(agents["next"], page["next"]);
         for (agent, reference) in listed.iter().zip(&current) {

@@ -739,4 +739,5 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -1,14 +1,17 @@
 use super::*;
 
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 type RetirementAuthored =
     CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 type RetirementSource = (
     Arc<RetirementAuthored>,
     Arc<dyn MountFilesystem>,
     adapter::NativeSourceIoLease,
 );
 
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(in crate::native_mount) fn native_retirement_source(
     root: &Path,
     original: &crate::NativeMaterializationWork,
@@ -43,6 +46,7 @@ pub(super) fn shared_runtime() -> std::io::Result<&'static tokio::runtime::Runti
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 impl ViewObserver for Recorded {
     fn view_changed(&self, position: ViewStamp, _origin: crate::native_mount::ViewOrigin) {
         self.0
@@ -52,6 +56,7 @@ impl ViewObserver for Recorded {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 pub(super) async fn recorded_view(
     source_root: &Path,
 ) -> Result<
@@ -267,6 +272,7 @@ pub(super) fn mounted(names: &[&str]) -> MountPath {
     })
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 pub(super) async fn live_lazy_mount_of(
     demand: crate::demand::native::NativeDemandSource,
     destination: &Path,
@@ -306,7 +312,7 @@ pub(super) async fn live_lazy_mount_of(
     )
     .await?
     .0;
-    let options = crate::native_mount::tests::fixture_access::options(
+    let options = crate::native_mount::fixture_access::options(
         lazy.workspace(),
         MountOptions::read_write().publication(MountPublication::Manual),
     )
@@ -317,6 +323,7 @@ pub(super) async fn live_lazy_mount_of(
         .await?)
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 pub(super) fn sorted_names(directory: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {
     let mut names = std::fs::read_dir(directory)?
         .map(|entry| entry.map(|entry| entry.file_name()))
@@ -325,11 +332,13 @@ pub(super) fn sorted_names(directory: &Path) -> std::io::Result<Vec<std::ffi::Os
     Ok(names)
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 pub(super) fn is_absent(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 pub(super) async fn keeps_a_reused_identity_apart(
     watched: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -398,6 +407,7 @@ pub(super) async fn keeps_a_reused_identity_apart(
 }
 
 #[cfg(unix)]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 pub(super) async fn keeps_hard_links_one_file(
     watched: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {

@@ -114,6 +114,7 @@ impl AsRef<[u8]> for EncodedContext {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests {
     use super::*;
     use crate::{Digest, FileId, ObjectId, ObjectKind, ObjectStorage};

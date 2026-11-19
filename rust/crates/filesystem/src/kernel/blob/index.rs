@@ -234,6 +234,7 @@ impl BlobIndexBuilder {
 
 #[cfg(test)]
 #[path = "index_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 pub(super) fn effective_page_width(

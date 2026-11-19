@@ -779,4 +779,5 @@ pub(crate) use validation::{validate_candidate, validate_journal};
 
 #[cfg(test)]
 #[path = "multi_root/tests/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests;

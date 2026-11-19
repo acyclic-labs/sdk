@@ -20,6 +20,5 @@ wasm_bindings(
     name = "backoff",
     module = ":module",
     out_name = "acyclic_backoff_wasm",
-    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     visibility = ["//visibility:public"],
 )

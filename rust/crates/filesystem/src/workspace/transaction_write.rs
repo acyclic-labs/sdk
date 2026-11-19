@@ -24,7 +24,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .write_with_accounting(path, bytes, None, &mut accounting, cancellation)
+            .write_with_accounting(path, bytes, None, None, &mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    /// Creates or replaces a file and upserts one named attribute in the same
+    /// mutation batch. A failed file write cannot leave a staged attribute update.
+    pub async fn write_with_attribute<W: crate::facade::FsWork>(
+        &mut self,
+        path: &str,
+        bytes: acyclic_stream::OwnedBytes,
+        attribute: (&crate::kernel::AttributeName, &[u8]),
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .write_with_accounting(
+                path,
+                bytes,
+                None,
+                Some(attribute),
+                &mut accounting,
+                cancellation,
+            )
             .await;
         work.finish(result, &accounting)
     }
@@ -34,6 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         path: &str,
         bytes: impl Into<acyclic_stream::OwnedBytes>,
         condition: Option<FileCondition>,
+        attribute: Option<(&crate::kernel::AttributeName, &[u8])>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
@@ -57,11 +82,64 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             path.retire(accounting)?;
             return Err(error);
         }
-        let mut operations =
-            crate::kernel::Owned::allocate(if existing.is_some() { 2 } else { 1 }, accounting)?;
+        if existing.is_some_and(|record| record.kind != FileKind::Regular) {
+            path.retire(accounting)?;
+            return Err(WorkspaceError::NotRegularFile);
+        }
+        let metadata = if let Some((name, value)) = attribute {
+            let prepared = async {
+                let metadata = match existing {
+                    Some(record) => {
+                        self.checkout
+                            .read_metadata_with_accounting(record.file_id, accounting, cancellation)
+                            .await?
+                    }
+                    None => FileMetadata::default(),
+                };
+                crate::facade::change_attribute(
+                    &self.workspace.volume,
+                    metadata,
+                    name,
+                    Some((value, crate::NamedAttributeWriteMode::Upsert)),
+                    accounting,
+                    cancellation,
+                )
+                .await
+            }
+            .await;
+            match prepared {
+                Ok(metadata) => Some(metadata),
+                Err(error) => {
+                    path.retire(accounting)?;
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
+        let count = 1
+            + usize::from(existing.is_some())
+            + usize::from(existing.is_some() && metadata.is_some());
+        let mut operations = crate::kernel::Owned::allocate(count, accounting)?;
         if let Some(record) = existing {
-            if record.kind != FileKind::Regular {
-                return Err(WorkspaceError::NotRegularFile);
+            if let Some(metadata) = metadata {
+                let (name, allocation) =
+                    path.value.clone_with_accounting(accounting, cancellation)?;
+                let bytes = name.retained_bytes();
+                // The byte mutation follows this metadata edit and records
+                // the file's final modified and status-change timestamps.
+                Self::push_mutation(
+                    &mut operations,
+                    crate::kernel::Owned::new(
+                        AuthoredMutation::SetMetadata {
+                            path: name,
+                            metadata,
+                        },
+                        allocation,
+                        bytes,
+                    ),
+                    accounting,
+                )?;
             }
             Self::reset_file(
                 &path.value,
@@ -82,7 +160,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 file_id: None,
                 path: path.value,
                 bytes: bytes.into(),
-                metadata: FileMetadata::default(),
+                metadata: metadata.unwrap_or_default(),
             }
         };
         Self::push_mutation(
@@ -669,7 +747,7 @@ impl BatchFileMode for ReplaceFiles {
         accounting: &'a mut KernelAccounting<'_>,
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = Result<(), WorkspaceError>> + Send {
-        transaction.write_with_accounting(path, bytes.clone(), None, accounting, cancellation)
+        transaction.write_with_accounting(path, bytes.clone(), None, None, accounting, cancellation)
     }
 }
 
@@ -790,11 +868,13 @@ fn classify_batch_paths(
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "transaction_batch_properties.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod batch_properties;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "transaction_batch_differential.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod batch_differential;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -804,9 +884,11 @@ mod batch_original;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "transaction_batch_index_properties.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod batch_index_properties;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "transaction_batch_rebase.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod batch_rebase;

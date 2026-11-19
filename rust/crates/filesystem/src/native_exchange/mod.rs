@@ -22,6 +22,7 @@ mod windows;
 #[cfg(windows)]
 use windows::*;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;
 
 impl From<NativeExchangeError> for crate::demand::DemandError {

@@ -1,12 +1,16 @@
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 use super::access::{compiled, deny, seed};
 use super::*;
-use crate::access::AccessView;
-use crate::access::{Action, Policy};
+use crate::access::Policy;
+#[cfg(any(not(unit_test_split), unit_test_mount))]
+use crate::access::{AccessView, Action};
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 struct Reload {
     source: std::sync::Weak<MemorySource>,
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 impl crate::native_mount::NativeAccessOwner for Reload {
     fn check<'a>(
         &'a self,
@@ -113,13 +117,14 @@ where
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn cached_denial_observes_owner_policy_publication_before_host_probes()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     seed(&source, "file", b"pinned")?;
     let selected = checkout_state(&source).0;
-    let denied = crate::access::fixtures::denied(Action::Read, "file");
+    let denied = crate::access::fixtures::denied(Action::Read, "file")?;
     publish(&source, &denied)?;
     let view = compiled(
         &source,

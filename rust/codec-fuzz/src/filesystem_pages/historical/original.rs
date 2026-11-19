@@ -8,6 +8,7 @@ use {
         Lifecycle, LogicalObjectStore, ProposedCommit, PublicationPermit, VolumeConfig,
     },
     acyclic_fs_format::identity::{FileId, VolumeId},
+    acyclic_fs_format::metadata::FileMetadata,
     acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
     acyclic_fs_work::performance::WorkBudget,

@@ -409,6 +409,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::{HeapFutureEvent, in_heap_admitted, in_heap_measured};
     use crate::kernel::allocation::AllocationLedger;
@@ -847,4 +848,5 @@ mod tests {
 
 #[cfg(test)]
 #[path = "heap_future/frame_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod frame_tests;

@@ -1231,12 +1231,10 @@ impl RecordCache {
     }
 
     fn release_backing(&mut self, value: &Value) {
-        if let Value::Record(value) = value {
+        if let Value::Record(value) = value
+            && let Some(count) = self.resident.get_mut(value.backing())
+        {
             let backing = value.backing();
-            let count = self
-                .resident
-                .get_mut(backing)
-                .expect("cached records retain their backing");
             *count -= 1;
             if *count == 0 {
                 self.bytes -= backing.capacity();

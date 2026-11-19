@@ -1,0 +1,16 @@
+--- a/rust/private/rustc_resource_set.bzl
++++ b/rust/private/rustc_resource_set.bzl
+@@ -288,9 +288,8 @@
+     if not is_codegen_units_enabled(toolchain):
+         return None
+ 
+-    codegen_units = toolchain._codegen_units
++    # A compile's front end runs on one thread and only its code generation is parallel, so over the whole
++    # compile it keeps about half its codegen units busy: that is its real parallelism, and what it books.
++    cpus = max(1, (toolchain._codegen_units + 1) // 2)
+ 
+-    if codegen_units > len(_RESOURCE_SETS):
+-        return _RESOURCE_SETS[len(_RESOURCE_SETS)]
+-
+-    return _RESOURCE_SETS[codegen_units]
++    return _RESOURCE_SETS[min(cpus, len(_RESOURCE_SETS))]

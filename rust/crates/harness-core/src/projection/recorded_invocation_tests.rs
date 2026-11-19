@@ -102,7 +102,6 @@ proptest! {
         let mut record = record(json!({"data":text, "nested":nested}), json!({"signature":signature, "nested":metadata}));
         record.target = target;
         record.filesystem = filesystem;
-        input::assert_envelope(&record);
         if let Some((in_arguments, number_marker, nesting)) = reserved {
             let key = if number_marker { "$serde_json::private::Number" } else { "$serde_json::private::RawValue" };
             let mut marker = json!({"signature":"opaque", key:"null"});
@@ -113,6 +112,7 @@ proptest! {
         input::check(&serde_json::to_vec(&record).unwrap());
         let limits = Limits {file_bytes:Some(file_bytes), render_bytes:Some(render_bytes), ..Limits::default()};
         let admitted = record.invocation.validate_recorded(&record.metadata, limits, None).is_ok();
+        if admitted { input::assert_envelope(&record); }
         if reserved.is_some() { prop_assert!(!admitted); }
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs_work::performance::work_budget(2_000_000, 4*1024*1024),

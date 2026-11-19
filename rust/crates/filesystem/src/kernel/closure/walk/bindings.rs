@@ -132,7 +132,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     ) -> Result<(), crate::FsError> {
         for change in &diff.files {
             self.examine(1)?;
-            let record = change.after.ok_or(crate::ObjectStoreError::Corrupt)?;
+            let Some(record) = change.after else {
+                continue;
+            };
             let mismatch = || ClosureError::BindingRelationMismatch(record.file_id);
             if record.file_id == root {
                 if record.bindings.is_some() || record.link_count != 1 {
@@ -151,10 +153,11 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         for forward in &diff.bindings {
             self.examine(1)?;
-            let entry = forward
-                .after
-                .as_ref()
-                .ok_or(crate::ObjectStoreError::Corrupt)?;
+            // Removed edges were already matched with the corresponding
+            // removed file against the authenticated prior namespace.
+            let Some(entry) = &forward.after else {
+                continue;
+            };
             let mismatch = || ClosureError::BindingRelationMismatch(entry.file_id);
             let proof = map_get(&self.binding_proofs, &entry.file_id)?.ok_or_else(mismatch)?;
             let binding = Self::binding_entries(proof).next().ok_or_else(mismatch)?;

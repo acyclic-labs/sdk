@@ -659,4 +659,5 @@ pub(super) fn set_insert(
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "memory/tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

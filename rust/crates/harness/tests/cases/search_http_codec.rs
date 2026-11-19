@@ -4,6 +4,8 @@
 mod support;
 use proptest::prelude::*;
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 fn json_leaf() -> impl Strategy<Value = serde_json::Value> {
     prop_oneof![
         Just(serde_json::Value::Null),
@@ -31,50 +33,54 @@ proptest! {
         leaf in json_leaf(),
     ) {
         for exa in [true, false] {
-            support::check(support::response(depth, size, shape, &leaf), exa);
+            let bytes = support::response(depth, size, shape, &leaf)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            support::check(bytes, exa).map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
     }
 }
 
 #[test]
-fn exa_codec_seed_corpus_settles() {
-    corpus(true);
+fn exa_codec_seed_corpus_settles() -> TestResult {
+    corpus(true)
 }
 
 #[test]
-fn tinyfish_codec_seed_corpus_settles() {
-    corpus(false);
+fn tinyfish_codec_seed_corpus_settles() -> TestResult {
+    corpus(false)
 }
 
 #[test]
-fn incomplete_and_over_depth_responses_are_rejected() {
+fn incomplete_and_over_depth_responses_are_rejected() -> TestResult {
     for exa in [true, false] {
         for bytes in [
             br#"{"results":[]"#.to_vec(),
-            support::response(4096, 0, 0, &serde_json::Value::Null),
+            support::response(4096, 0, 0, &serde_json::Value::Null)?,
         ] {
-            support::check(bytes, exa);
+            support::check(bytes, exa)?;
         }
     }
+    Ok(())
 }
 
-fn corpus(exa: bool) {
+fn corpus(exa: bool) -> TestResult {
     for corpus in ["search_http_codec", "search_http_envelope"] {
         let corpus = acyclic_test_support::source_path("rust/crates/harness")
             .join("../harness-fuzz/corpus")
             .join(corpus);
-        for entry in std::fs::read_dir(corpus).unwrap() {
-            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-            support::check(support::fuzz_response(&bytes), exa);
+        for entry in std::fs::read_dir(corpus)? {
+            let bytes = std::fs::read(entry?.path())?;
+            support::check(support::fuzz_response(&bytes)?, exa)?;
         }
     }
     support::check(
-        support::response(0, 1_047_552, 1, &serde_json::Value::String(String::new())),
+        support::response(0, 1_047_552, 1, &serde_json::Value::String(String::new()))?,
         exa,
-    );
+    )?;
     for length in [1_048_575, 1_048_576, 1_048_577] {
-        let mut bytes = support::response(0, 0, 0, &serde_json::Value::Null);
+        let mut bytes = support::response(0, 0, 0, &serde_json::Value::Null)?;
         bytes.resize(length, b' ');
-        support::check(bytes, exa);
+        support::check(bytes, exa)?;
     }
+    Ok(())
 }

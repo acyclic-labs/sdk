@@ -15,6 +15,8 @@ pub(crate) fn source_file_id(
     identity: &[u8; 32],
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<crate::FileId, crate::FsError> {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let identity = &acyclic_native_runtime::testing::source_identity(*identity);
     let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
     accounting.charge(WorkCounters {
         bytes_hashed: domain.len() as u64 + 48,
@@ -47,6 +49,7 @@ pub use empty::Empty;
 mod routed;
 pub use routed::Routed;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod computed_tests;
 
 /// Native provider backed by a held, no-follow directory capability.
@@ -54,6 +57,7 @@ mod computed_tests;
 pub mod native;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +65,7 @@ mod accounting;
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod scope_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,4 +114,5 @@ pub(crate) use paths::*;
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod context_loom_tests;

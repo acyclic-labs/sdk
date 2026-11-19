@@ -21,6 +21,7 @@ cargo_build_script(
         "build.rs",
         "build/client.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-machines",
@@ -51,6 +52,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -123,7 +125,7 @@ rust_test(
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
@@ -203,7 +205,7 @@ rust_test(
         "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -232,6 +234,7 @@ rust_binary(
     srcs = [
         "examples/machines-authorization.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -260,6 +263,7 @@ rust_binary(
     srcs = [
         "examples/machines-typescript-consumer.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -317,6 +321,7 @@ cargo_build_script(
         "build.rs",
         "build/client.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-machines",
@@ -349,6 +354,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

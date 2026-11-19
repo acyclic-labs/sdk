@@ -302,7 +302,7 @@ pub use directory::{
 pub use file_source::{FilePathSelection, PathSelection};
 pub(crate) use file_source::{PathSelectionView, names_generation};
 pub use files::{FileDescriptor, FileRef};
-pub(crate) use files::{PublicationDomain, PublicationWitness};
+pub(crate) use files::{FileIdentity, PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
 pub use volumes::{

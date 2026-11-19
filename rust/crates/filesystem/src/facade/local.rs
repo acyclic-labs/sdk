@@ -116,6 +116,7 @@ async fn canonical_local_root(
     not(loom)
 ))]
 #[path = "local_root_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod local_root_tests;
 
 /// How the root's Objects provider flushes.

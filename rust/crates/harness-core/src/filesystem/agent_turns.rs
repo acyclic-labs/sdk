@@ -216,6 +216,27 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
                 VolumeOperation::Write,
                 &mut None,
             )?;
+            if let Some(label) =
+                crate::core::filesystem_scope_label(scope.capabilities(), &mut None)?
+            {
+                use acyclic_fs::access::{Action, Capability};
+                let capability = Capability::from_scope_label(label)
+                    .map_err(|error| Error::Unauthorized(error.to_string()))?
+                    .ok_or_else(|| Error::Unauthorized("invalid filesystem grant".into()))?;
+                // Reject a definitely read-only ceiling before observing history.
+                // The bound volume still checks the complete path and policy.
+                if capability.layers.is_empty()
+                    || capability.layers.iter().any(|layer| {
+                        !layer
+                            .iter()
+                            .any(|grant| grant.actions.contains(&Action::Write))
+                    })
+                {
+                    return Err(Error::Unauthorized(
+                        "admission cannot write the private volume".into(),
+                    ));
+                }
+            }
         }
         if issuer.native().is_none() {
             let scope = parent
@@ -262,90 +283,50 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
         external: &[FileRef],
         turn: Option<OperationId>,
     ) -> Result<AgentAuthority<'v>> {
-        let BindingGrants {
-            mut labels,
-            layer,
-            volumes,
-        } = binding_grants(
-            self.volumes,
-            &self.journal,
-            &self.ancestor_journals()?,
-            external,
-        )?;
-        let (grants, scope) = match self.parent {
-            Some(parent) => {
-                let ceiling = parent.capabilities();
-                let mut granted: Vec<String> = ceiling
-                    .iter()
-                    .filter(|label| {
-                        *label != crate::contract::capability::HARNESS_HOST
-                            && !acyclic_fs::access::is_filesystem_capability(label)
-                    })
-                    .map(str::to_owned)
-                    .collect();
-                granted.extend(labels.into_iter().filter(|label| ceiling.contains(label)));
-                // A directory or exact-file read the admission grants on a
-                // volume bound whole is kept; its path is still checked at use.
-                granted.extend(
-                    ceiling
-                        .iter()
-                        .filter(|label| {
-                            matches!(
-                                acyclic_fs::access::ContentReadLabel::parse(label),
-                                Ok(Some(read)) if volumes.contains(&read.volume)
-                            )
-                        })
-                        .map(str::to_owned),
+        let scope = if let Some(parent) = self.parent {
+            self.issuer
+                .delegate(
+                    parent,
+                    "agent",
+                    crate::core::ScopeDerivation::Workload {
+                        journal: &self.journal,
+                        volumes: self.volumes,
+                        external,
+                    },
+                )
+                .await?
+        } else {
+            let mut labels = volume_grants(
+                self.volumes,
+                &self.journal,
+                external,
+                Some(self.owner),
+                &|_| true,
+            )?;
+            if let Some(seed) = seed(self.volumes)? {
+                labels.push(seed.capability(VolumeOperation::Read, &mut None)?);
+            }
+            labels.push(
+                crate::conversation::OwnJournalRead::of(self.journal.provider(), self.owner)?
+                    .into_label(),
+            );
+            labels.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
+            labels.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
+            if let Some(turn) = turn {
+                labels.push(
+                    self.journal
+                        .directory_read_capability(&format!("{TURN_INPUTS}/{turn}"), &mut None)?,
                 );
-                if let Some(label) = crate::core::filesystem_scope_label(ceiling, &mut None)? {
-                    let narrowed = acyclic_fs::access::Capability::from_scope_label(label)
-                        .map_err(|error| Error::Unauthorized(error.to_string()))?
-                        .ok_or_else(|| Error::Unauthorized("invalid filesystem ceiling".into()))?
-                        .attenuate(layer, None);
-                    granted.push(
-                        narrowed
-                            .to_scope_label()
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
-                    );
-                }
-                let scope = self
-                    .issuer
-                    .issue(
-                        Some(parent),
-                        "agent",
-                        &Capabilities::new(granted),
-                        Some(self.owner),
-                    )
-                    .await?;
-                (scope.capabilities().clone(), scope)
+                labels.push(self.journal.directory_read_capability(
+                    crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                    &mut None,
+                )?);
             }
-            None => {
-                if let Some(turn) = turn {
-                    // Keep the fixed native input route alongside the journal
-                    // policy's ordinary read admission (including summaries).
-                    labels.push(
-                        self.journal.directory_read_capability(
-                            &format!("{TURN_INPUTS}/{turn}"),
-                            &mut None,
-                        )?,
-                    );
-                    // Captured instructions are immutable published input,
-                    // including snapshots retained across checkpoints. This
-                    // read route excludes manifests, configuration and other
-                    // input categories; it grants neither listing nor writes.
-                    labels.push(self.journal.directory_read_capability(
-                        crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
-                        &mut None,
-                    )?);
-                }
-                let grants = Capabilities::new(labels);
-                let scope = self
-                    .issuer
-                    .issue(None, "agent", &grants, Some(self.owner))
-                    .await?;
-                (grants, scope)
-            }
+            self.issuer
+                .issue(None, "agent", &Capabilities::new(labels), Some(self.owner))
+                .await?
         };
+        let grants = scope.capabilities().clone();
         let verifier = self.issuer.verifier(&mut None)?;
         Ok(AgentAuthority {
             issuer: self.issuer,
@@ -354,22 +335,6 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
             verifier,
             private: self.private,
         })
-    }
-
-    /// The journals of this agent's ancestors, its parent first. A fork's
-    /// conversation is its ancestors' conversation up to the fork point, so
-    /// it reads what each ancestor's journal publishes for its turns.
-    fn ancestor_journals(&self) -> Result<Vec<VolumeRef>> {
-        let mut journals = Vec::new();
-        let mut ancestor = self.path.parent();
-        while let Some(path) = ancestor {
-            journals.push(crate::conversation::journal_volume(
-                self.journal.provider().clone(),
-                &path.id(),
-            )?);
-            ancestor = path.parent();
-        }
-        Ok(journals)
     }
 
     /// Host authority over this agent's journal and retained conversation files.
@@ -591,6 +556,75 @@ fn seed(volumes: &[WorkspaceEntry]) -> Result<Option<VolumeRef>> {
         .transpose()
 }
 
+/// Retain only filesystem labels tied to the enrolled workspaces, the
+/// agent's own journal, or an independently authorized immutable file.
+pub(crate) fn inherited_workload_grants(
+    parent: &Capabilities,
+    volumes: &[WorkspaceEntry],
+    journal: &VolumeRef,
+    external: &[FileRef],
+    owner: crate::AgentId,
+) -> Result<Vec<String>> {
+    use acyclic_fs::access::{ContentRead, ContentReadLabel, is_filesystem_capability};
+    let mut bound = volume_grants(volumes, journal, external, Some(owner), &|_| true)?;
+    if let Some(seed) = seed(volumes)? {
+        bound.push(seed.capability(VolumeOperation::Read, &mut None)?);
+    }
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        bound.push(journal.capability(operation, &mut None)?);
+    }
+    let directory_volumes = parent
+        .with_prefix(acyclic_fs::access::DIRECTORY_READ_PREFIX)
+        .next()
+        .map_or(&[][..], |_| volumes);
+    let whole_directories = directory_volumes
+        .iter()
+        .filter(|binding| binding.root.is_empty())
+        .filter_map(WorkspaceEntry::as_volume)
+        .filter_map(|volume| {
+            let read = volume.capability(VolumeOperation::Read, &mut None);
+            match read {
+                Ok(read) if !bound.contains(&read) => None,
+                Ok(_) => Some(volume.identity_digest(
+                    crate::store::default_projection_read_limits().maximum_bytes,
+                    &mut None,
+                )),
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let labels = parent.iter().filter(|label| {
+        if *label == crate::contract::capability::HARNESS_HOST
+            || label.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+        {
+            return false;
+        }
+        !is_filesystem_capability(label)
+            || bound.iter().any(|binding| binding.as_str() == *label)
+            || matches!(
+                ContentReadLabel::parse(label),
+                Ok(Some(read))
+                    if read.kind == ContentRead::File || whole_directories.contains(&read.volume)
+            )
+    });
+    let mut labels = labels.map(str::to_owned).collect::<Vec<_>>();
+    // The host role can read staged inputs, but it never crosses into the
+    // workload. Carry that access only for the original selected file.
+    if parent.contains(crate::contract::capability::HARNESS_HOST) {
+        for file in external.iter().filter(|file| {
+            file.volume() == journal && crate::core::journal_input_requires_selection(file.path())
+        }) {
+            if matches!(
+                crate::core::file_read_grant(parent, file, &mut None)?,
+                Some(crate::core::ReadGrant::Volume)
+            ) {
+                labels.push(file.read_capability(&mut None)?);
+            }
+        }
+    }
+    Ok(labels)
+}
+
 /// A workload's selection under a structured `filesystem:` `ceiling` held by
 /// its admission.
 ///
@@ -603,8 +637,8 @@ fn seed(volumes: &[WorkspaceEntry]) -> Result<Option<VolumeRef>> {
 /// [`volume_grants`] for `owner`, its provider's seed layer and its
 /// [`crate::conversation::OwnJournalRead`], each operation only where the
 /// ceiling allows every action its explicit label carries. That label never
-/// reaches the workload, so no guest holds a grant that names volumes by role
-/// and could reach another agent's journal or private volume.
+/// reaches the workload. A mount grant whose reads exclude fork keeps its
+/// original action set in a structured layer pinned to the selected resources.
 ///
 /// Also returns the label prefixes the ceiling forbids: the workload drops
 /// every parent label with one of them, so an explicit label never grants an
@@ -667,6 +701,13 @@ pub(crate) fn ceiling_grants(
     // An explicit label carries its operation's whole fixed action set, so
     // the ceiling must allow all of it.
     let allowed = |operation| allows(super::access::label_actions(operation));
+    if allows(ActionSet::MountRead) && !allowed(VolumeOperation::Read) {
+        // A mount can read and list without permission to fork. Preserve
+        // those original actions by binding the structured grant to the
+        // workload's resources. A whole-volume label would also grant fork.
+        let selected = mount_workload_ceiling(capability, volumes, journal, external, owner)?;
+        return Ok((vec![selected], Vec::new()));
+    }
     // Labels held together carry more: these admit the raw workspace. Issuing
     // them under a narrower ceiling would widen it, and withholding either
     // would narrow an operation the ceiling allows.
@@ -704,6 +745,55 @@ pub(crate) fn ceiling_grants(
         ]);
     }
     Ok((grants, denied))
+}
+
+fn mount_workload_ceiling(
+    capability: acyclic_fs::access::Capability,
+    volumes: &[WorkspaceEntry],
+    journal: &VolumeRef,
+    external: &[FileRef],
+    owner: crate::AgentId,
+) -> Result<String> {
+    use acyclic_fs::access::{Action, ActionSet, Capability};
+    let mut layer = Vec::new();
+    let mut bind = |volume: &VolumeRef, path: &str, actions: &[acyclic_fs::access::Action]| {
+        let binding = Capability::subtree(Some(volume.storage_name(&mut None)?), path, actions)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        layer.extend(binding.layers.into_iter().flatten());
+        Ok::<_, Error>(())
+    };
+    for entry in volumes {
+        if entry.role != crate::agent::WorkspaceRole::Internal
+            && let Some(volume) = entry.as_volume()
+            && (volume.class() != VolumeClass::AgentPrivate
+                || *volume.owner() == VolumeOwner::Agent(owner))
+        {
+            bind(
+                volume,
+                &entry.root,
+                if entry.mode == crate::agent::WorkspaceMode::ReadWrite {
+                    ActionSet::MountWrite.actions()
+                } else {
+                    ActionSet::MountRead.actions()
+                },
+            )?;
+        }
+    }
+    bind(journal, "", ActionSet::MountRead.actions())?;
+    if let Some(seed) = seed(volumes)? {
+        bind(&seed, "", ActionSet::MountRead.actions())?;
+    }
+    for file in external {
+        bind(
+            file.volume(),
+            file.path(),
+            &[Action::Read, Action::ReadHistory],
+        )?;
+    }
+    capability
+        .attenuate(layer, None)
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// The visible entries' read/write ceilings and retained exact versions on
@@ -757,9 +847,11 @@ fn volume_grants(
     for file in external {
         // A retained exact file can lie outside the current root on a still
         // bound volume. Its immutable conversation selection grants it alone.
-        // Journal files are granted by the agent's own journal read.
+        // Most local journal files are granted by the journal's own read.
+        // Staged inputs need a proof of their selection as well.
         if seed.as_ref() != Some(file.volume())
-            && file.volume() != journal
+            && (file.volume() != journal
+                || crate::core::journal_input_requires_selection(file.path()))
             && !volumes.iter().filter(granted).any(|binding| {
                 binding.as_volume() == Some(file.volume()) && binding.root.is_empty()
             })
@@ -771,148 +863,6 @@ fn volume_grants(
         }
     }
     Ok(grants)
-}
-
-/// What an agent's bindings reach, the one source of every agent's authority:
-/// routing, tools, the visible entries' read/write ceilings, its provider's
-/// seed layer, its own journal's reads and retained exact input versions.
-/// Raw writers cannot widen a rooted entry; scoped publication belongs to the
-/// table's view composition.
-struct BindingGrants {
-    /// Signed-scope labels, each naming exactly one bound resource.
-    labels: Vec<String>,
-    /// The same resources as one structured layer, naming each volume by the
-    /// storage reference its workspace is bound with.
-    layer: Vec<acyclic_fs::access::Grant>,
-    /// Identity digest of every volume bound whole: seed, journals and
-    /// workspaces bound at their root.
-    volumes: Vec<[u8; 32]>,
-}
-
-fn binding_grants(
-    volumes: &[WorkspaceEntry],
-    journal: &VolumeRef,
-    ancestors: &[VolumeRef],
-    external: &[FileRef],
-) -> Result<BindingGrants> {
-    use acyclic_fs::access::{Action, ActionSet};
-    let mut grants = Vec::with_capacity(3 * volumes.len() + 3);
-    let mut layer = Vec::with_capacity(volumes.len() + external.len() + 2);
-    let mut bound = Vec::with_capacity(volumes.len() + 2);
-    let mut reach = |volume: &VolumeRef, root: &str, actions: &[Action]| -> Result<()> {
-        let pinned = acyclic_fs::access::Capability::subtree(
-            Some(volume.storage_name(&mut None)?),
-            root,
-            actions,
-        )
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        layer.extend(pinned.layers.into_iter().flatten());
-        Ok(())
-    };
-    // Only seed, journals and whole-volume workspaces are bound whole; an
-    // external file or attachment is reached by its exact path alone.
-    let mut bind = |volume: &VolumeRef| -> Result<()> {
-        bound.push(volume.identity_digest(
-            crate::store::default_projection_read_limits().maximum_bytes,
-            &mut None,
-        )?);
-        Ok(())
-    };
-    let seed = volumes
-        .iter()
-        .find_map(WorkspaceEntry::as_volume)
-        .map(|volume| crate::seed::volume(volume.provider()))
-        .transpose()?;
-    if let Some(seed) = &seed {
-        grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
-        reach(seed, "", ActionSet::SourceRead.actions())?;
-        bind(seed)?;
-    }
-    grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
-    // The journal read every admitted agent's admission carries. The journal
-    // policy alone decides each path: what a turn publishes for its agent to
-    // read (inputs, tool outputs, inherited conversation, compaction
-    // summaries) is readable, and execution records stay host-private.
-    // An ancestor's journal is read the same way: a fork's inherited
-    // conversation, its turns and their inputs, live there.
-    for journal in std::iter::once(journal).chain(ancestors) {
-        grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
-        reach(journal, "", ActionSet::SourceRead.actions())?;
-        bind(journal)?;
-    }
-    // Every agent may spawn, message and archive within its own subtree.
-    grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
-    for binding in volumes
-        .iter()
-        .filter(|binding| binding.role != crate::agent::WorkspaceRole::Internal)
-    {
-        let Some(volume) = binding.as_volume() else {
-            continue; // A lazy subtree view has no whole-volume authority.
-        };
-        let actions = if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
-            &Action::ALL[..]
-        } else {
-            ActionSet::SourceRead.actions()
-        };
-        reach(volume, &binding.root, actions)?;
-        if !binding.root.is_empty() {
-            // A content read label hides its path, so a rooted binding keeps
-            // only its own root read, never an admission's.
-            grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
-        } else {
-            bind(volume)?;
-            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
-            if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
-                for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
-                    grants.push(volume.capability(operation, &mut None)?);
-                }
-            }
-        }
-    }
-    for file in external {
-        // A retained exact file can lie outside the current root on a still
-        // bound volume. Its immutable conversation selection grants it alone.
-        if seed.as_ref() != Some(file.volume())
-            && file.volume() != journal
-            && !ancestors.contains(file.volume())
-            && !volumes.iter().any(|binding| {
-                binding.role != crate::agent::WorkspaceRole::Internal
-                    && binding.as_volume() == Some(file.volume())
-                    && binding.root.is_empty()
-            })
-        {
-            // Whole-volume reads already cover retained versions. Adding
-            // redundant exact grants on reopen would change an unchanged
-            // execution's authority binding merely because it retained input.
-            grants.push(file.read_capability(&mut None)?);
-            // A retained version is read from history once its volume advances.
-            reach(
-                file.volume(),
-                file.path(),
-                &[Action::Read, Action::ReadHistory],
-            )?;
-            // An attachment manifest's files are copies in its own directory,
-            // so one grant reaches them however many it lists.
-            if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
-                && let Some((directory, _)) = file.path().rsplit_once('/')
-            {
-                grants.push(
-                    file.volume()
-                        .directory_read_capability(directory, &mut None)?,
-                );
-                reach(
-                    file.volume(),
-                    directory,
-                    &[Action::Read, Action::ReadHistory],
-                )?;
-            }
-        }
-    }
-    Ok(BindingGrants {
-        labels: grants,
-        layer,
-        volumes: bound,
-    })
 }
 
 /// The authority of the agent at `path` over `volumes`, signed with
@@ -1068,7 +1018,7 @@ pub struct TurnLimits {
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     traces: Option<acyclic_stream::trace::Registry<P>>,
     within: acyclic_actors::addressing::ActorReference,
     actor_root: Option<acyclic_stream::StreamPath>,
@@ -1160,14 +1110,13 @@ where
     /// account and namespace used to observe child settlement.
     #[must_use]
     pub fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         within: acyclic_actors::addressing::ActorReference,
         host: Arc<FilesystemHost<A, O>>,
         issuer: impl Into<RuntimeAuthority>,
         admission: TurnAdmission,
         executors: Arc<dyn TurnExecutors>,
-        limits: TurnLimits,
-        policy: crate::approvals::ApprovalPolicy,
+        (limits, policy): (TurnLimits, crate::approvals::ApprovalPolicy),
     ) -> Self {
         let issuer = issuer.into();
         let templates = Arc::new(super::Templates::new(
@@ -1789,7 +1738,7 @@ where
             None,
         )?;
         let mut journal = FilesystemExecutionJournal::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
                 volume: &storage.volume,
@@ -2194,10 +2143,13 @@ struct SettledTurn {
     output: FileRef,
     steering: Option<FileRef>,
     steered: Vec<ModelMessage>,
-    transcript: Vec<ModelMessage>,
+    transcript: Option<Vec<ModelMessage>>,
+    working_context: Option<crate::executor::WorkingContextPrefix>,
     /// Whether a completed turn's output text replays as its reply. A failed
     /// or cancelled turn keeps only the steps that completed.
     replay_text: bool,
+    /// A committed cancellation preserves the input even without a reply.
+    retain_unanswered_input: bool,
     notices: Option<crate::agent::NoticeSelection>,
 }
 
@@ -2274,8 +2226,13 @@ impl<'a> TurnContext<'a> {
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
-                    transcript: Vec::new(),
+                    transcript: None,
+                    working_context: None,
                     replay_text: entry.outcome.is_completed(),
+                    retain_unanswered_input: matches!(
+                        entry.outcome,
+                        crate::agent::TurnOutcome::Cancelled
+                    ),
                     notices: entry.notices,
                 })
             })
@@ -2302,17 +2259,17 @@ impl<'a> TurnContext<'a> {
         while let Some(settled) = self.settled.get_mut(index) {
             let original = std::mem::replace(&mut settled.input, ModelContent::Text(String::new()));
             settled.input = crate::agent::expand_attachments(original, reader).await?;
-            settled.transcript = staged_transcript(
+            let (transcript, working_context) = staged_transcript(
                 reader,
                 &settled.output,
                 std::mem::take(&mut settled.steered),
                 settled.replay_text,
             )
             .await?;
-            // A failed or cancelled turn with no completed step has no model
-            // item to replay. It is not history: the next request starts from
-            // the same prefix the failed one did.
-            if !settled.replay_text && settled.transcript.is_empty() {
+            // A failed turn with no completed step starts the next request
+            // from its original prefix. A cancelled turn retains its input
+            // and omits the interrupted reply.
+            if !settled.replay_text && !settled.retain_unanswered_input && transcript.is_empty() {
                 self.settled.remove(index);
                 if let Some(fork) = &mut self.fork
                     && *fork > index
@@ -2325,6 +2282,8 @@ impl<'a> TurnContext<'a> {
                     }
                 }
             } else {
+                settled.transcript = Some(transcript);
+                settled.working_context = working_context;
                 index += 1;
             }
         }
@@ -2388,6 +2347,7 @@ impl<'a> TurnContext<'a> {
                         settled
                             .transcript
                             .iter()
+                            .flatten()
                             .flat_map(|message| message.content.file_refs()),
                     )
                     .chain(
@@ -2536,9 +2496,8 @@ impl<'a> TurnContext<'a> {
                 });
                 message_ids.push(message_id(settled, ModelRole::User));
             }
-            if transcript.is_empty() {
-                return Err(Error::Invalid("settled transcript is not decoded".into()));
-            }
+            let transcript = transcript
+                .ok_or_else(|| Error::Invalid("settled transcript is not decoded".into()))?;
             for (part, message) in transcript.into_iter().enumerate() {
                 messages.push(message);
                 message_ids.push(match part {
@@ -2624,13 +2583,16 @@ async fn staged_transcript(
     output: &FileRef,
     mut fallback: Vec<ModelMessage>,
     replay_text: bool,
-) -> Result<Vec<ModelMessage>> {
+) -> Result<(
+    Vec<ModelMessage>,
+    Option<crate::executor::WorkingContextPrefix>,
+)> {
     let bytes = reader
         .read(output, output.descriptor().byte_length(), None, None)?
         .await?;
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-    Ok(if output.transcript.is_empty() {
+    let transcript = if output.transcript.is_empty() {
         // Only a completed turn's reply is a model item. A failed or
         // cancelled turn keeps its partial stream for observation, never as
         // history the next request must carry.
@@ -2645,7 +2607,8 @@ async fn staged_transcript(
         }
     } else {
         output.transcript
-    })
+    };
+    Ok((transcript, output.working_context))
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
@@ -2930,80 +2893,70 @@ where
                 use crate::agent::{
                     AnnouncedDocument, AnnouncementDocument as _, AnnouncementKind,
                 };
-                let announcements = match pinned_announcements {
-                    Some(kept) => kept,
-                    None => {
-                        let roster = self.executors.roster(agent).filter(|roster| {
-                            !context.contains_announcement(
-                                AnnouncementKind::Targets,
-                                roster.canonical().1,
-                            )
+                let announcements = if let Some(kept) = pinned_announcements {
+                    kept
+                } else {
+                    let roster = self.executors.roster(agent).filter(|roster| {
+                        !context
+                            .contains_announcement(AnnouncementKind::Targets, roster.canonical().1)
+                    });
+                    let seen = context
+                        .instruction_entries(bindings.journal.reader.as_ref())
+                        .await?;
+                    let update = self
+                        .executors
+                        .workspaces(
+                            agent,
+                            &seen,
+                            &bindings.content,
+                            &bindings.issuer,
+                            &bindings.scope,
+                        )
+                        .await?
+                        .and_then(|update| {
+                            (!context.contains_announcement(
+                                AnnouncementKind::Workspaces,
+                                update.document.canonical().1,
+                            ) || !update.instructions.is_empty())
+                            .then_some(update)
                         });
-                        let seen = context
-                            .instruction_entries(bindings.journal.reader.as_ref())
-                            .await?;
-                        let update = self
-                            .executors
-                            .workspaces(
-                                agent,
-                                &seen,
-                                &bindings.content,
-                                &bindings.issuer,
-                                &bindings.scope,
-                            )
-                            .await?
-                            .filter(|update| {
-                                !context.contains_announcement(
-                                    AnnouncementKind::Workspaces,
-                                    update.document.canonical().1,
-                                ) || !update.instructions.is_empty()
+                    let mut changed = Vec::new();
+                    if roster.is_some() || update.is_some() {
+                        let announcement_files = &bindings.journal.files;
+                        if let Some(roster) = roster {
+                            let (bytes, digest) = roster.canonical();
+                            changed.push(AnnouncedDocument {
+                                kind: AnnouncementKind::Targets,
+                                digest,
+                                file: announcement_files
+                                    .stage_announcement(AnnouncementKind::Targets, digest, bytes)
+                                    .await?,
+                                instructions: None,
                             });
-                        let mut changed = Vec::new();
-                        if roster.is_some() || update.is_some() {
-                            let announcement_files = &bindings.journal.files;
-                            if let Some(roster) = roster {
-                                let (bytes, digest) = roster.canonical();
-                                changed.push(AnnouncedDocument {
-                                    kind: AnnouncementKind::Targets,
-                                    digest,
-                                    file: announcement_files
-                                        .stage_announcement(
-                                            AnnouncementKind::Targets,
-                                            digest,
-                                            bytes,
-                                        )
-                                        .await?,
-                                    instructions: None,
-                                });
-                            }
-                            if let Some(update) = update {
-                                let (bytes, digest) = update.document.canonical();
-                                changed.push(AnnouncedDocument {
-                                    kind: AnnouncementKind::Workspaces,
-                                    digest,
-                                    file: announcement_files
-                                        .stage_announcement(
-                                            AnnouncementKind::Workspaces,
-                                            digest,
-                                            bytes,
-                                        )
-                                        .await?,
-                                    instructions: announcement_files
-                                        .stage_instructions(
-                                            update.instructions,
-                                            bindings.content.reader.as_ref(),
-                                        )
-                                        .await?,
-                                });
-                            }
                         }
-                        changed
+                        if let Some(update) = update {
+                            let (bytes, digest) = update.document.canonical();
+                            changed.push(AnnouncedDocument {
+                                kind: AnnouncementKind::Workspaces,
+                                digest,
+                                file: announcement_files
+                                    .stage_announcement(AnnouncementKind::Workspaces, digest, bytes)
+                                    .await?,
+                                instructions: announcement_files
+                                    .stage_instructions(
+                                        update.instructions,
+                                        bindings.content.reader.as_ref(),
+                                    )
+                                    .await?,
+                            });
+                        }
                     }
+                    changed
                 };
                 let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
                     Arc::clone(&bindings.journal.files),
-                    Arc::clone(&self.stream),
+                    self.stream.clone(),
                     self.within.clone(),
                     agent.path.clone(),
                     (turn, segment),
@@ -3012,7 +2965,7 @@ where
                 let children = Arc::new(FilesystemTurnChildren {
                     clock: Arc::clone(&self.clock),
                     files: Arc::clone(&files),
-                    stream: Arc::clone(&self.stream),
+                    stream: self.stream.clone(),
                     within: self.within.clone(),
                     host: Arc::clone(&self.host),
                     issuer: self.issuer.clone(),
@@ -3045,16 +2998,19 @@ where
                 // later arrivals and exact replay retain their own boundaries.
                 let initial_through = self.stream.tail(agent.path.inbox()?).await?;
                 let boundary = super::agent_steering::FilesystemBoundary::new(
-                    Arc::clone(&self.stream),
+                    self.stream.clone(),
                     Arc::clone(&self.host),
-                    self.issuer.clone(),
-                    self.admission.clone(),
+                    (self.issuer.clone(), self.admission.clone()),
                     agent.clone(),
                     (turn, inbox, initial_through),
-                    Arc::clone(&bindings.journal.files),
-                    crate::executor::ExecutionJournal::output_content(&journal, turn, None)?
-                        .and_then(|content| content.writer)
-                        .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
+                    (
+                        Arc::clone(&bindings.journal.files),
+                        crate::executor::ExecutionJournal::output_content(&journal, turn, None)?
+                            .and_then(|content| content.writer)
+                            .ok_or_else(|| {
+                                Error::Invalid("agent turn has no journal writer".into())
+                            })?,
+                    ),
                     self.executors.content_limits().render_bytes,
                 );
                 // Each call dispatches only once the effects of the turn's earlier
@@ -3095,12 +3051,16 @@ where
                     .with_agent_approvals(Arc::clone(&approvals));
                 // Only this agent's selected turns have a journal on its private
                 // volume; an inherited ancestor turn is not a local predecessor.
-                let preceding_turn = context
+                let preceding = context
                     .settled
                     .get(context.fork.unwrap_or(0)..)
-                    .and_then(|turns| turns.last())
-                    .map(|turn| turn.turn);
-                let journal = journal.with_preceding_turn(preceding_turn).await?;
+                    .and_then(|turns| turns.last());
+                let journal = journal
+                    .with_preceding_turn(preceding.map(|turn| turn.turn))
+                    .await?
+                    .with_preceding_working_context(
+                        preceding.and_then(|turn| turn.working_context.clone()),
+                    );
                 let selected = context
                     .select(
                         &*self.stream,
@@ -3137,11 +3097,12 @@ where
                 if let Some(factory) = &self.workspace_tools {
                     authority.workspace_tools = Some(factory(agent, &authority)?);
                 }
+                let executor = self
+                    .executors
+                    .executor(agent, turn, &input, &authority)
+                    .await?;
                 Ok(OpenTurn {
-                    executor: self
-                        .executors
-                        .executor(agent, turn, &input, &authority)
-                        .await?,
+                    executor,
                     journal,
                     custody: Some(authority.issuer),
                     selected: Some(selected),
@@ -3160,7 +3121,7 @@ where
 // One host-only journal binding for queries; it grants no model-content scope,
 // opens no model executor and does not reread policy or history payloads.
 async fn query_journal<P, A, O>(
-    stream: &Arc<P>,
+    stream: &acyclic_stream::ProviderOwner<P>,
     host: &Arc<FilesystemHost<A, O>>,
     issuer: &RuntimeAuthority,
     admission: &TurnAdmission,
@@ -3174,7 +3135,7 @@ where
     let admitted = AdmittedAgent::verify(issuer, admission, &agent.path, &agent.volumes)?;
     let (volume, authority) = admitted.journal_authority(host, &[], &[]).await?;
     FilesystemExecutionJournal::new(
-        Arc::clone(stream),
+        stream.clone(),
         Arc::clone(host),
         FilesystemJournalBinding {
             volume: &volume,
@@ -3189,7 +3150,7 @@ where
 // Optional activity uses only the host's retained ceiling; it never rebinds the
 // parent's agent-scoped workload admission to a different identity.
 async fn query_activity_journal<P, A, O>(
-    stream: &Arc<P>,
+    stream: &acyclic_stream::ProviderOwner<P>,
     host: &Arc<FilesystemHost<A, O>>,
     issuer: &RuntimeAuthority,
     admission: &TurnAdmission,
@@ -3214,7 +3175,7 @@ where
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     clock: Arc<dyn acyclic_actors::local::Clock>,
     files: Arc<AgentInternalFiles<A, O>>,
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,

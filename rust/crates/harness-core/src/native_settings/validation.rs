@@ -3,6 +3,19 @@ use super::{model_selection as selection, workspace};
 #[cfg(not(target_arch = "wasm32"))]
 use crate as harness;
 
+type CheckResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn once(once: &std::sync::Once, check: fn() -> CheckResult) {
+    once.call_once(|| {
+        let result = check();
+        assert!(
+            result.is_ok(),
+            "settings admission check failed: {result:?}"
+        );
+    });
+}
+
 mod model;
 #[cfg(feature = "test-support")]
 pub use model::exercise as check_model_selection;

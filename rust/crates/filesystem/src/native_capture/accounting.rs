@@ -90,6 +90,7 @@ pub(super) fn capture_sort_by<T>(
 
 #[cfg(test)]
 #[path = "sort_properties.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod sort_properties;
 
 pub(super) fn capture_charge(

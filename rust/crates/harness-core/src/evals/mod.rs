@@ -302,5 +302,6 @@ impl<C: Inputs> acyclic_fs::demand::View for View<C> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;

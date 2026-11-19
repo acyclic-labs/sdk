@@ -1,6 +1,6 @@
 use super::*;
 use crate::Fs;
-use crate::workspace::accounting_tests::Prefunded;
+use crate::workspace::Prefunded;
 use std::sync::Mutex;
 
 #[tokio::test]

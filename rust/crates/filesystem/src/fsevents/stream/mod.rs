@@ -1,7 +1,7 @@
 use super::*;
 mod start;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     pub(crate) static BEFORE_DRAIN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -180,7 +180,7 @@ impl EventStream {
         if on_queue() {
             return result.and(self.defer_terminal(registration, work));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         BEFORE_DRAIN.with(|hook| {
             if let Some(observe) = hook.borrow_mut().take() {
                 observe();

@@ -9,7 +9,7 @@ description = "Typed JSON heap layouts and allocation accounting for the harness
 documentation = "https://docs.rs/acyclic-harness-layout"
 
 [features]
-test-support = ["acyclic-fs/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support"]
+test-support = ["acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-fs-format/test-support"]
 
 [dependencies]
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }

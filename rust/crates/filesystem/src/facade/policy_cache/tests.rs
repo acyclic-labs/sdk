@@ -172,7 +172,7 @@ async fn shared_policy_bytes_have_cache_custody_independent_of_invocation_ledger
     drop(second);
     crate::access::fixtures::publish_policy(
         &owner,
-        &crate::access::fixtures::denied(crate::access::Action::Read, "secret"),
+        &crate::access::fixtures::denied(crate::access::Action::Read, "secret")?,
     )
     .await?;
     let changed = load(&owner, &other, &cancel).await?;

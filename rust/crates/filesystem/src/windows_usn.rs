@@ -166,6 +166,7 @@ fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests {
     use super::{
         JournalSnapshot, NativeRootIdentity, Path, WindowsUsnCheckpoint, WindowsUsnContinuity,

@@ -131,4 +131,5 @@ fn to_listing(receipt: persistent_pagination::Receipt<AttributeEntry>) -> Attrib
 
 #[cfg(test)]
 #[path = "tests/attribute_list.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-fs-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+test = false
+
+[dependencies]
+acyclic-fs = { path = "../filesystem", features = ["test-support"] }
+acyclic-fs-format = { path = "../filesystem-format" }
+acyclic-fs-work = { path = "../filesystem-work" }
+acyclic-objects = { path = "../objects", default-features = false }
+acyclic-stream = { path = "../stream", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { path = "../native-runtime" }
+
+[lints]
+workspace = true

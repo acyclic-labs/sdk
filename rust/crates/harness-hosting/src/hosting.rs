@@ -54,8 +54,8 @@ use acyclic_harness_client::{
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    BoxProviderFuture, ChildrenPageRequest, CommitId, HeadProjection, HeadsRequest,
-    ProviderPlatform, RevisionCut, StreamCategory, StreamError, StreamPath,
+    BoxProviderFuture, ChildrenPageRequest, HeadProjection, HeadsRequest, ProviderPlatform,
+    Revision, RevisionCut, StreamCategory, StreamError, StreamPath,
     session::{CallAuthorization, CallProvider},
 };
 use bytes::Bytes;
@@ -1413,36 +1413,28 @@ where
                     _ => return Err(Error::Record("this host serves one tree")),
                 };
                 use base64::{Engine as _, engine::general_purpose::STANDARD};
-                let cursor_context =
-                    peers.then(|| format!("peer-page-v1\0{}\0{}", requester, parent));
+                let cursor_context = format!("children-page-v1\0{peers}\0{requester}\0{parent}");
                 let mut credit = PageCredit::new(page, |next| AgentReply::Children {
                     items: Vec::new(),
                     next,
                 })?;
-                let (hierarchy_version, after) = match page.cursor() {
+                let (at, after) = match page.cursor() {
                     Some(cursor) => {
-                        let decrypted;
-                        let cursor = if let Some(context) = &cursor_context {
-                            let sealed = STANDARD
-                                .decode(cursor)
-                                .map_err(|_| Error::Record("invalid peer cursor"))?;
-                            decrypted = self
-                                .cursor_key
-                                .open(context.as_bytes(), &sealed)
-                                .map_err(|_| Error::Record("invalid peer cursor"))?;
-                            std::str::from_utf8(&decrypted)
-                                .map_err(|_| Error::Record("invalid peer cursor"))?
-                        } else {
-                            cursor
-                        };
-                        let (version, after) = parse_children_cursor(cursor)?;
-                        (Some(version), Some(after))
+                        let invalid = || Error::Stream(StreamError::InvalidArgument);
+                        let sealed = STANDARD.decode(cursor).map_err(|_| invalid())?;
+                        let decoded = self
+                            .cursor_key
+                            .open(cursor_context.as_bytes(), &sealed)
+                            .map_err(|_| invalid())?;
+                        let cursor = std::str::from_utf8(&decoded).map_err(|_| invalid())?;
+                        let (revision, after) = parse_children_cursor(cursor)?;
+                        (Some(revision), Some(after))
                     }
                     None => (None, None),
                 };
                 let provider = agents.provider();
                 let request = HeadsRequest {
-                    at: None,
+                    at,
                     retained: Default::default(),
                     durable_through: None,
                     projection: HeadProjection::Watermarks,
@@ -1452,7 +1444,7 @@ where
                         tail_stream: None,
                         parent: Some(parent),
                         after,
-                        hierarchy_version,
+                        hierarchy_version: None,
                         limit: chunk,
                     }),
                     limit: chunk,
@@ -1474,6 +1466,14 @@ where
                 let listed = view
                     .children
                     .ok_or(Error::Stream(StreamError::InvalidResponse))?;
+                // A byte-limited response can also need a cursor when Stream
+                // returned all remaining children. Preserve the exact cut.
+                let cursor_cut = if listed.next_after.is_some() || listed.children.len() > 1 {
+                    serde_json::to_string(&view.snapshot)
+                        .map_err(|_| Error::Record("children cursor encoding failed"))?
+                } else {
+                    String::new()
+                };
                 let mut items = Vec::with_capacity(listed.children.len());
                 let mut listed_paths = Vec::with_capacity(listed.children.len());
                 let mut paths = acyclic_stream::HeadSet::with_capacity(listed.children.len());
@@ -1589,18 +1589,18 @@ where
                     }
                 }
                 for (index, item) in items.iter().enumerate() {
-                    let next_bytes =
-                        (index + 1 < items.len() || listed.next_after.is_some()).then(|| {
-                            let bytes = children_cursor_bytes(
-                                &listed.hierarchy_version,
-                                listed_paths[index].as_str(),
-                            );
-                            (if peers {
-                                acyclic_auth::cursor::CursorKey::sealed_len(bytes).div_ceil(3) * 4
-                            } else {
-                                bytes
-                            }) as u64
-                        });
+                    let next_bytes = if index + 1 < items.len() || listed.next_after.is_some() {
+                        let path = listed_paths
+                            .get(index)
+                            .ok_or(Error::Record("children page lost its source cursor"))?;
+                        let bytes = cursor_cut.len() + 1 + path.as_str().len();
+                        Some(
+                            (acyclic_auth::cursor::CursorKey::sealed_len(bytes).div_ceil(3) * 4)
+                                as u64,
+                        )
+                    } else {
+                        None
+                    };
                     if !credit.accept(item, next_bytes)? {
                         break;
                     }
@@ -1620,16 +1620,14 @@ where
                             ))?)
                             .ok_or(Error::Record("children page lost its source cursor"))?
                     };
-                    let cursor = children_cursor(&listed.hierarchy_version, last.as_str());
-                    Some(if let Some(context) = &cursor_context {
+                    let cursor = format!("{}:{cursor_cut}", last.as_str());
+                    Some(
                         STANDARD.encode(
                             self.cursor_key
-                                .seal(context.as_bytes(), cursor.as_bytes())
-                                .map_err(|_| Error::Record("peer cursor encryption failed"))?,
-                        )
-                    } else {
-                        cursor
-                    })
+                                .seal(cursor_context.as_bytes(), cursor.as_bytes())
+                                .map_err(|_| Error::Record("children cursor encryption failed"))?,
+                        ),
+                    )
                 } else {
                     None
                 };
@@ -1898,26 +1896,6 @@ fn text(content: &ModelContent) -> std::result::Result<&str, Error> {
     }
 }
 
-/// AgentPath admits only fixed ASCII segments and hex identities, so this
-/// cursor's content needs no JSON escaping. Share its size with allocation.
-fn children_cursor_bytes(version: &CommitId, after: &str) -> usize {
-    version.as_bytes().len() * 2 + 1 + after.len()
-}
-
-/// A children page's continuation: the listing's hierarchy version, which a
-/// later page must name, and the last returned agent.
-fn children_cursor(version: &CommitId, after: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut cursor = String::with_capacity(children_cursor_bytes(version, after));
-    for byte in version.as_bytes() {
-        cursor.push(char::from(HEX[usize::from(byte >> 4)]));
-        cursor.push(char::from(HEX[usize::from(byte & 0xf)]));
-    }
-    cursor.push(':');
-    cursor.push_str(after);
-    cursor
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryCursor {
@@ -1938,20 +1916,12 @@ fn history_cursor(cursor: &HistoryCursor) -> std::result::Result<Option<String>,
         .transpose()
 }
 
-/// The hierarchy version and last path [`children_cursor`] encoded.
-fn parse_children_cursor(cursor: &str) -> std::result::Result<(CommitId, StreamPath), Error> {
+/// The exact listing cut and last path of a children page.
+fn parse_children_cursor(cursor: &str) -> std::result::Result<(Revision, StreamPath), Error> {
     let invalid = || Error::Stream(StreamError::InvalidArgument);
-    let (version, after) = cursor.split_once(':').ok_or_else(invalid)?;
-    if version.len() != 64 {
-        return Err(invalid());
-    }
-    let mut bytes = [0; 32];
-    for (byte, pair) in bytes.iter_mut().zip(version.as_bytes().chunks_exact(2)) {
-        let pair = std::str::from_utf8(pair).map_err(|_| invalid())?;
-        *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
-    }
+    let (after, cut) = cursor.split_once(':').ok_or_else(invalid)?;
     Ok((
-        CommitId::from_bytes(bytes),
+        serde_json::from_str(cut).map_err(|_| invalid())?,
         StreamPath::new(after).map_err(Error::Stream)?,
     ))
 }
@@ -2157,6 +2127,7 @@ fn reply(
     })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "hosting_tests.rs"]
 mod tests;

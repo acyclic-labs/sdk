@@ -42,7 +42,7 @@ impl LocalHarnessConfig {
             }
         }
         if (!self.hermetic || self.state_directory.is_some())
-            && !self.without_user_settings
+            && !self.uses_private_file_signing()
             && self.signing_store.is_none()
         {
             failures.extend(

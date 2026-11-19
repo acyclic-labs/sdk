@@ -36,7 +36,7 @@ impl ViewOwner for PreparedMerge {
                     )
                 })
             {
-                let gate = self.gate.lock().unwrap().take();
+                let gate = self.gate.lock().map_err(storage)?.take();
                 if let Some((entered, release)) = gate {
                     entered
                         .send(())
@@ -77,7 +77,7 @@ impl ViewOwner for ReconciledCheckout {
                     acyclic_fs::OperationWindowPhase::Idle
                 )
             {
-                let entered = self.entered.lock().unwrap().take();
+                let entered = self.entered.lock().map_err(storage)?.take();
                 if let Some(entered) = entered {
                     entered
                         .send(())

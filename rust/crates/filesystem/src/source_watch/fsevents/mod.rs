@@ -20,10 +20,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 mod events;
+use acyclic_native_runtime::file_identity_from_metadata as identity;
 #[cfg(test)]
 use events::change;
-use events::identity;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 pub(super) mod tests;
 
 const ITEM_FLAGS: u32 = 0x00ff_ff00;
@@ -65,22 +66,14 @@ impl NativeSourceWatch {
             let root = held_path(directory.directory_fd(), work)?;
             bytes = root.capacity() as u64;
             ownership.retain(bytes, work)?;
-            work.started_io(WorkCounters {
-                items_examined: 1,
-                ..READ
-            })?;
-            let held = identity(&std::fs::symlink_metadata(&root)?);
             let actual = directory.identity();
-            if held != (actual.device, actual.object) {
-                return Err(DemandError::SourceUnavailable);
-            }
             let control = super::arc_control_bytes::<Shared>();
             work.claim(control)?;
             bytes += control;
             ownership.retain(control, work)?;
             let shared = Arc::new(Shared {
                 root,
-                held,
+                held: (actual.device, actual.object),
                 stream_bytes: AtomicU64::new(0),
                 delivery,
                 ownership,
@@ -111,6 +104,15 @@ impl NativeSourceWatch {
                 work,
             )?;
             stream.set_terminal(shared.clone());
+            // The live stream owns later changes. Check the original
+            // binding after arming so a move during startup is detected too.
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..READ
+            })?;
+            if identity(&std::fs::symlink_metadata(&shared.root)?) != shared.held {
+                return Err(DemandError::SourceUnavailable);
+            }
             Ok(Self {
                 shared,
                 stream: Custody::new(Some(stream)),
@@ -138,13 +140,7 @@ impl NativeSourceWatch {
     ) -> Result<bool, DemandError> {
         work.check()?;
         self.shared.delivery.take_failure(work)?;
-        work.started_io(WorkCounters {
-            items_examined: 1,
-            ..READ
-        })?;
-        if std::fs::symlink_metadata(&self.shared.root)
-            .is_ok_and(|metadata| identity(&metadata) == self.shared.held)
-        {
+        if self.shared.root_unchanged(work)? {
             self.delivery().deliver(&[HostChange::Unconfirmed], work)?;
         } else if self.delivery().notify_lost() {
             self.delivery().deliver(&[HostChange::Everything], work)?;

@@ -11,6 +11,7 @@
 #include <fuse.h>
 
 #include "nfs4_server.h"
+#include "darwin_mount_owner.h"
 #include "darwinfuse_internal.h"
 #include "fuse_context.h"
 #include "inode_table.h"
@@ -23,12 +24,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
-#include <spawn.h>
 #include <sys/mount.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
-
-extern char **environ;
 
 /* ---- Diagnostics ---- */
 
@@ -121,6 +118,10 @@ struct fuse_chan {
     dfuse_inode_table_t *inode_table;
     char                *mountpoint;
     parsed_args_t        mount_args;
+    struct acyclic_mount_owner owner;
+    const unsigned char  *owner_image;
+    size_t               owner_image_len;
+    int                  fence;
 };
 
 struct fuse {
@@ -129,14 +130,16 @@ struct fuse {
     size_t                        ops_size;
     void                         *user_data;
     void                         *init_result;
-    _Atomic int                   exited;
     void                        (*mounted)(void *arg);
     void                         *mounted_arg;
 };
 
 static void *server_thread_func(void *arg)
 {
-    return (void *)(intptr_t)nfs4_server_run((darwinfuse_server_t *)arg);
+    struct fuse_chan *channel = arg;
+    int result = nfs4_server_run(channel->server);
+    acyclic_mount_owner_release(&channel->owner);
+    return (void *)(intptr_t)result;
 }
 
 /* ---- Mount via mount_nfs ---- */
@@ -145,13 +148,16 @@ static void *server_thread_func(void *arg)
  * Mount the server's local socket. Metadata is revalidated on access; the
  * change attribute makes every revalidation exact. NFSv4.0 callbacks need an
  * IP address, so a local socket mount takes none: the server never delegates.
+ * Explicit locks keep mount_nfs from selecting local locking, which NFSv4
+ * rejects, for a soft, read-only mount.
  */
-static int do_mount_nfs(const char *socket_path, const char *mount_point,
-                         const parsed_args_t *args)
+static int do_mount_nfs(struct fuse_chan *ch)
 {
+    const char *socket_path = nfs4_server_socket_path(ch->server);
+    const parsed_args_t *args = &ch->mount_args;
     char opts[512];
     int len = snprintf(opts, sizeof(opts),
-        "vers=4,nocallback,actimeo=%d,nonegnamecache,noacl,"
+        "vers=4,locks,nocallback,actimeo=%d,nonegnamecache,noacl,"
         "rsize=262144,wsize=262144,"
         "soft,intr,retrycnt=0", DARWINFUSE_ATTRIBUTE_TIMEOUT);
     char server[128];
@@ -171,72 +177,11 @@ static int do_mount_nfs(const char *socket_path, const char *mount_point,
     if (args && args->namedattr)
         len += snprintf(opts + len, sizeof(opts) - (size_t)len, ",namedattr");
 
-    DFUSE_LOG("mount_nfs -o %s %s %s", opts, server, mount_point);
-
-    int err_pipe[2];
-    if (pipe(err_pipe) < 0) {
-        DFUSE_ERR("pipe for mount_nfs stderr failed");
-        return -1;
-    }
-
-    /* posix_spawn, not fork: libSystem's fork child handlers can abort a
-     * child whose fork copied another thread's libnotify setup. mount_nfs
-     * inherits only its standard streams, its stderr our pipe. */
-    posix_spawn_file_actions_t actions;
-    posix_spawnattr_t attributes;
-    int spawned = posix_spawn_file_actions_init(&actions);
-    if (spawned == 0) {
-        spawned = posix_spawnattr_init(&attributes);
-        if (spawned != 0)
-            posix_spawn_file_actions_destroy(&actions);
-    }
-    /* Use the same built-in utility admitted by NativeMountProbe.
-     * Embedders need not include system administration tools in PATH. */
-    char *const argv[] = { "mount_nfs", "-o", opts, server,
-                           (char *)mount_point, NULL };
-    pid_t pid;
-    if (spawned == 0) {
-        if ((spawned = posix_spawnattr_setflags(&attributes,
-                                                POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0
-            && (spawned = posix_spawn_file_actions_addinherit_np(&actions,
-                                                                 STDIN_FILENO)) == 0
-            && (spawned = posix_spawn_file_actions_addinherit_np(&actions,
-                                                                 STDOUT_FILENO)) == 0
-            && (spawned = posix_spawn_file_actions_adddup2(&actions, err_pipe[1],
-                                                           STDERR_FILENO)) == 0)
-            spawned = posix_spawn(&pid, "/sbin/mount_nfs", &actions,
-                                  &attributes, argv, environ);
-        posix_spawnattr_destroy(&attributes);
-        posix_spawn_file_actions_destroy(&actions);
-    }
-    if (spawned != 0) {
-        DFUSE_ERR("posix_spawn mount_nfs failed: %s", strerror(spawned));
-        close(err_pipe[0]);
-        close(err_pipe[1]);
-        return -1;
-    }
-
-    close(err_pipe[1]);
-
-    char errbuf[1024];
-    ssize_t errlen = 0;
-    ssize_t n;
-    while ((n = read(err_pipe[0], errbuf + errlen,
-                     sizeof(errbuf) - 1 - (size_t)errlen)) > 0)
-        errlen += n;
-    errbuf[errlen] = '\0';
-    close(err_pipe[0]);
-
-    int status;
-    if (waitpid(pid, &status, 0) < 0) {
-        DFUSE_ERR("waitpid failed: %s", strerror(errno));
-        return -1;
-    }
-
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        DFUSE_ERR("mount_nfs failed (exit status %d): %s",
-                  WIFEXITED(status) ? WEXITSTATUS(status) : -1,
-                  errlen > 0 ? errbuf : "(no stderr output)");
+    DFUSE_LOG("mount_nfs -o %s %s %s", opts, server, ch->mountpoint);
+    int status = acyclic_mount_owner_start(&ch->owner, ch->owner_image,
+        ch->owner_image_len, ch->fence, opts, server, ch->mountpoint, socket_path);
+    if (status) {
+        DFUSE_ERR("Mount custodian could not attach NFS: %s", strerror(status));
         return -1;
     }
 
@@ -246,7 +191,8 @@ static int do_mount_nfs(const char *socket_path, const char *mount_point,
 
 /* ---- Component API implementation ---- */
 
-struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
+struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args,
+                            const unsigned char *owner_image, size_t owner_image_len, int fence)
 {
     if (!mountpoint) return NULL;
 
@@ -278,6 +224,9 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
     }
     ch->mount_args = mount_args;
     ch->mount_args.mount_point = ch->mountpoint;
+    ch->owner_image = owner_image;
+    ch->owner_image_len = owner_image_len;
+    ch->fence = fence;
 
     /* Create NFS server; fuse_new() attaches the operations */
     darwinfuse_config_t config;
@@ -296,6 +245,15 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
         free(ch);
         return NULL;
     }
+    int owner_error = acyclic_mount_owner_init(&ch->owner);
+    if (owner_error) {
+        DFUSE_ERR("Failed to create NFS mount custody: %s", strerror(owner_error));
+        nfs4_server_destroy(ch->server);
+        dfuse_itable_destroy(ch->inode_table);
+        free(ch->mountpoint);
+        free(ch);
+        return NULL;
+    }
 
     DFUSE_LOG("fuse_mount: prepared %s (%s)", mountpoint,
               nfs4_server_socket_path(ch->server));
@@ -309,12 +267,11 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
  */
 static int mount_channel(struct fuse_chan *ch, pthread_t *srv_thread)
 {
-    if (pthread_create(srv_thread, NULL, server_thread_func, ch->server) != 0) {
+    if (pthread_create(srv_thread, NULL, server_thread_func, ch) != 0) {
         DFUSE_ERR("Failed to create server thread");
         return -1;
     }
-    int rc = do_mount_nfs(nfs4_server_socket_path(ch->server), ch->mountpoint,
-                          &ch->mount_args);
+    int rc = do_mount_nfs(ch);
     if (rc < 0) {
         DFUSE_ERR("Failed to mount NFS");
         nfs4_server_stop(ch->server);
@@ -323,20 +280,6 @@ static int mount_channel(struct fuse_chan *ch, pthread_t *srv_thread)
     if (rc == 0)
         DFUSE_LOG("fuse_loop: mounted on %s", ch->mountpoint);
     return rc;
-}
-
-void fuse_unmount(const char *mountpoint, struct fuse_chan *ch)
-{
-    /* The kernel detaches in the system call itself; spawning umount(8)
-     * would only add a process launch. */
-    if (mountpoint)
-        (void)unmount(mountpoint, 0);
-
-    if (ch) {
-        if (ch->server)
-            nfs4_server_stop(ch->server);
-        /* Note: server and inode_table are destroyed in fuse_destroy */
-    }
 }
 
 struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
@@ -349,7 +292,6 @@ struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
 
     struct fuse *f = calloc(1, sizeof(*f));
     if (!f) return NULL;
-    atomic_init(&f->exited, 0);
 
     f->chan = ch;
     f->ops = op;
@@ -369,6 +311,7 @@ struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
 void fuse_chan_destroy(struct fuse_chan *ch)
 {
     if (!ch) return;
+    acyclic_mount_owner_destroy(&ch->owner);
     if (ch->server)
         nfs4_server_destroy(ch->server);
     if (ch->inode_table)
@@ -432,9 +375,16 @@ int fuse_loop(struct fuse *f)
     if (rc == 0) {
         if (f->mounted)
             f->mounted(f->mounted_arg);
+        /* Keep serving kernel I/O while the custodian detaches the mount. */
+        int retirement = acyclic_mount_owner_wait(&f->chan->owner);
+        nfs4_server_stop(f->chan->server);
         void *result = NULL;
         pthread_join(srv_thread, &result);
         rc = (int)(intptr_t)result;
+        if (retirement) {
+            DFUSE_ERR("Mount custodian did not confirm retirement: %s", strerror(retirement));
+            if (rc == 0) rc = retirement;
+        }
     }
 
     /* Call ops->destroy() */
@@ -453,10 +403,13 @@ int fuse_loop_mt(struct fuse *f)
 
 void fuse_exit(struct fuse *f)
 {
-    if (!f) return;
-    atomic_store_explicit(&f->exited, 1, memory_order_release);
-    if (f->chan && f->chan->server)
-        nfs4_server_stop(f->chan->server);
+    if (f && f->chan)
+        acyclic_mount_owner_release(&f->chan->owner);
+}
+
+pid_t fuse_mount_owner_pid(const struct fuse *f)
+{
+    return f->chan->owner.pid;
 }
 
 void fuse_mark_namespace_changed(struct fuse *f)
@@ -487,38 +440,44 @@ int fuse_getgroups(int size, gid_t list[])
     return (int)tls_ngroups;
 }
 
-/* Live transport regression: readiness may synchronously use the mount.
- * mkdir requires an RPC even when root attributes are in the client cache. */
+/* A fresh child lookup requires an RPC even if the mount root is cached. */
 struct mounted_io_test {
     struct fuse *fuse;
     const char *root;
-    int (*retire)(const char *root);
-    _Atomic int created;
+    _Atomic int looked_up;
+    _Atomic mode_t created_mode;
     int result;
 };
 
 static int mounted_io_getattr(const char *path, struct stat *st)
 {
     struct mounted_io_test *test = fuse_get_context()->private_data;
-    if (strcmp(path, "/") != 0 &&
-        (strcmp(path, "/ready") != 0 || !atomic_load(&test->created)))
+    int root = strcmp(path, "/") == 0;
+    int created = strcmp(path, "/created") == 0;
+    mode_t mode = created ? atomic_load(&test->created_mode) : 0;
+    if ((created && !mode) || (!root && !created && strcmp(path, "/ready") != 0))
         return -ENOENT;
     memset(st, 0, sizeof(*st));
-    st->st_mode = S_IFDIR | 0755;
-    st->st_nlink = 2;
-    st->st_ino = strcmp(path, "/") == 0 ? 1 : 2;
+    st->st_mode = root ? S_IFDIR | 0755 : (created ? mode : S_IFREG | 0444);
+    st->st_nlink = root || created ? 2 : 1;
+    st->st_ino = root ? 1 : (created ? 3 : 2);
     st->st_uid = getuid();
     st->st_gid = getgid();
+    if (!root && !created) {
+        st->st_size = 1;
+        atomic_store(&test->looked_up, 1);
+    }
     return 0;
 }
 
 static int mounted_io_mkdir(const char *path, mode_t mode)
 {
-    (void)mode;
-    if (strcmp(path, "/ready") != 0) return -EINVAL;
     struct mounted_io_test *test = fuse_get_context()->private_data;
-    atomic_store(&test->created, 1);
-    return 0;
+    if (strcmp(path, "/created") != 0)
+        return -ENOENT;
+    mode_t absent = 0;
+    return atomic_compare_exchange_strong(&test->created_mode, &absent, S_IFDIR | (mode & 0777))
+        ? 0 : -EEXIST;
 }
 
 static void mounted_io_ready(void *arg)
@@ -526,25 +485,45 @@ static void mounted_io_ready(void *arg)
     struct mounted_io_test *test = arg;
     char path[4096];
     int len = snprintf(path, sizeof(path), "%s/ready", test->root);
-    test->result = len < 0 || (size_t)len >= sizeof(path) ? ENAMETOOLONG :
-        mkdir(path, 0755) == 0 ? 0 : errno;
+    struct stat stat;
+    if (len < 0 || (size_t)len >= sizeof(path))
+        test->result = ENAMETOOLONG;
+    else if (lstat(path, &stat) != 0)
+        test->result = errno;
+    else if (S_ISREG(stat.st_mode) && stat.st_size == 1 && atomic_load(&test->looked_up))
+        test->result = 0;
     if (test->result != 0)
-        DFUSE_ERR("Mounted readiness mkdir failed: %s (callback reached=%d)",
-                  strerror(test->result), atomic_load(&test->created));
-    int retired = test->retire(test->root);
-    if (retired != 0)
-        DFUSE_ERR("Mounted readiness retirement failed: %s", strerror(retired));
-    if (test->result == 0)
-        test->result = retired;
+        DFUSE_ERR("Mounted readiness lookup failed: %s (callback reached=%d)",
+                  strerror(test->result), atomic_load(&test->looked_up));
+    if (test->result == 0) {
+        int access_error = access(test->root, W_OK | X_OK) != 0 ? errno : 0;
+        len = snprintf(path, sizeof(path), "%s/created", test->root);
+        if (len < 0 || (size_t)len >= sizeof(path))
+            test->result = ENAMETOOLONG;
+        else if (mkdir(path, 0700) != 0 || lstat(path, &stat) != 0)
+            test->result = errno;
+        else if (!S_ISDIR(stat.st_mode) || atomic_load(&test->created_mode) != (S_IFDIR | 0700))
+            test->result = EIO;
+        if (test->result != 0) {
+            struct statfs status = {0};
+            int stat_error = statfs(test->root, &status) != 0 ? errno : 0;
+            DFUSE_ERR("Mounted readiness mkdir failed: %s (callback reached=%d, "
+                      "access=%d, statfs=%d, flags=%#x, owner=%u, uid=%u)",
+                      strerror(test->result), atomic_load(&test->created_mode) != 0,
+                      access_error, stat_error, status.f_flags, (unsigned)status.f_owner,
+                      (unsigned)getuid());
+        }
+    }
     fuse_exit(test->fuse);
 }
 
-int nfs4_test_mounted_io(const char *root, int (*retire)(const char *root))
+int nfs4_test_mounted_io(const char *root, const unsigned char *owner_image, size_t owner_image_len)
 {
-    struct mounted_io_test test = { .root = root, .retire = retire, .result = EIO };
-    atomic_init(&test.created, 0);
+    struct mounted_io_test test = { .root = root, .result = EIO };
+    atomic_init(&test.looked_up, 0);
+    atomic_init(&test.created_mode, 0);
     struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
-    struct fuse_chan *channel = fuse_mount(root, &args);
+    struct fuse_chan *channel = fuse_mount(root, &args, owner_image, owner_image_len, -1);
     if (!channel) return EIO;
     struct fuse_operations ops = {
         .getattr = mounted_io_getattr,
@@ -558,5 +537,5 @@ int nfs4_test_mounted_io(const char *root, int (*retire)(const char *root))
     fuse_set_mounted_callback(test.fuse, mounted_io_ready, &test);
     int rc = fuse_loop_mt(test.fuse);
     fuse_destroy(test.fuse);
-    return rc == 0 ? test.result : EIO;
+    return rc == 0 ? test.result : rc;
 }

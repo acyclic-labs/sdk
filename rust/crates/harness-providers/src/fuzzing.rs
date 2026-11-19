@@ -16,6 +16,8 @@ pub use projections::{assert_alloy_invariants, assert_image_invariants};
 pub use tool_arguments::assert_tool_arguments;
 use turn_text::text_matches;
 
+pub(crate) type CheckResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
     parse_at(adapter, input, width, [1; 16])
 }
@@ -42,7 +44,7 @@ fn parse_at(
     .map_err(|error| error.to_string())
 }
 
-fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
+fn check_chat_usage(input: &[u8], events: &[ModelEvent]) -> CheckResult {
     // Reuse the shipped framer, then compare original wire values with the
     // adapter output. Counter consensus over output alone cannot detect loss.
     let body = Box::pin(futures::stream::once(std::future::ready(Ok::<
@@ -55,12 +57,10 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
         crate::sse::decode(body, 4096)
             .try_take_while(|data| std::future::ready(Ok(data != "[DONE]")))
             .try_collect(),
-    )
-    .expect("accepted Chat stream has valid original frames");
+    )?;
     let mut expected = None;
     for frame in frames {
-        let value = acyclic_harness_provider_response::json(frame.as_bytes())
-            .expect("accepted Chat frame is JSON");
+        let value = acyclic_harness_provider_response::json(frame.as_bytes())?;
         if let Some(usage) = value.get("usage").and_then(serde_json::Value::as_object) {
             expected
                 .get_or_insert_with(serde_json::Map::new)
@@ -68,20 +68,29 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
         }
     }
     let Some(ModelEvent::Completed { metadata }) = events.last() else {
-        panic!("accepted Chat stream has no completion")
+        return Err("accepted Chat stream has no completion".into());
     };
     assert_eq!(
         metadata.get("usage"),
         expected.map(serde_json::Value::Object).as_ref(),
         "Chat completion lost original wire usage"
     );
+    Ok(())
 }
 
 /// Chunking cannot change acceptance, errors or the decoded events. Accepted
 /// events must round-trip through the durable model codec without losing data.
 pub fn assert_stream_invariants(input: &[u8]) {
+    let result = check_stream_invariants(input);
+    assert!(
+        result.is_ok(),
+        "provider stream invariant failed: {result:?}"
+    );
+}
+
+fn check_stream_invariants(input: &[u8]) -> CheckResult {
     let Some((&kind, input)) = input.split_first() else {
-        return;
+        return Ok(());
     };
     if kind == b'H' {
         if let Ok(header) = std::str::from_utf8(input) {
@@ -99,39 +108,35 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 );
             }
         }
-        return;
+        return Ok(());
     }
     if kind == b'F' {
         if let Ok(file) =
             serde_json::from_slice::<acyclic_harness_core::conversation::FileRef>(input)
         {
-            let marker = crate::files::FileText::default()
-                .project(
-                    &file,
-                    &acyclic_harness_core::model::FileProjectionPolicy::Reference,
-                )
-                .unwrap();
+            let marker = crate::files::FileText::default().project(
+                &file,
+                &acyclic_harness_core::model::FileProjectionPolicy::Reference,
+            )?;
             let restored: acyclic_harness_core::conversation::FileRef = serde_json::from_str(
                 marker
                     .strip_prefix("[file: ")
-                    .unwrap()
-                    .strip_suffix(']')
-                    .unwrap(),
-            )
-            .unwrap();
+                    .and_then(|body| body.strip_suffix(']'))
+                    .ok_or("file projection omitted its marker")?,
+            )?;
             assert_eq!(file, restored);
         }
-        return;
+        return Ok(());
     }
     if kind == b'T' {
         if let Ok(fragments) = serde_json::from_slice::<Vec<String>>(input) {
             crate::projection::text::assert_normalization(&fragments);
         }
-        return;
+        return Ok(());
     }
     if kind == b'V' {
         let Some((&kind, input)) = input.split_first() else {
-            return;
+            return Ok(());
         };
         let adapter = [
             Adapter::Anthropic,
@@ -144,17 +149,17 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 || acyclic_harness_provider_response::json(input).is_err(),
             "production-accepted input skipped fuzz validation"
         );
-        return;
+        return Ok(());
     }
     if kind == b'L' {
         assert_alloy_invariants(input);
-        return;
+        return Ok(());
     }
     if kind == b'P' {
         if let Ok(value) = crate::projection::arguments::literal(input) {
-            crate::projection::arguments::assert_normalization(&value);
+            crate::projection::arguments::check_normalization(&value)?;
         }
-        return;
+        return Ok(());
     }
     if kind == b'K' {
         use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
@@ -175,65 +180,17 @@ pub fn assert_stream_invariants(input: &[u8]) {
                     TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
                     TokenCountField::Count => serde_json::json!({"count":count}),
                 };
-                assert_eq!(
-                    response(&serde_json::to_vec(&encoded).unwrap(), &spec).unwrap(),
-                    count
-                );
+                assert_eq!(response(&serde_json::to_vec(&encoded)?, &spec)?, count);
             }
         }
-        return;
+        return Ok(());
     }
     if kind == b'R' {
-        if let Ok(block) =
-            serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
-        {
-            let encoded = serde_json::to_vec(&block).unwrap();
-            let replay: acyclic_harness_core::model::ReasoningBlock =
-                serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(block, replay);
-            for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
-                if let Some(raw) =
-                    crate::projection::native_reasoning::validated(adapter, &block.continuity)
-                {
-                    // Independent bounded literal decoder: native admission must
-                    // reject invalid strings, including inside skipped fields.
-                    let bounds = acyclic_harness_core::JsonBounds {
-                        maximum_bytes: Some(block.continuity.len() as u64),
-                        maximum_items: Some(block.continuity.len() as u64),
-                        maximum_depth: 128,
-                    };
-                    assert!(
-                        acyclic_harness_core::json_value_bounded(
-                            raw,
-                            bounds,
-                            None,
-                            &mut |_| Ok(()),
-                        )
-                        .is_ok()
-                    );
-                    assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
-                }
-            }
-            for family in ["anthropic", "responses", "gemini", "chat"] {
-                let mut target = block.origin.clone();
-                target.provider = family.into();
-                assert_eq!(
-                    crate::project_reasoning(&block, &target),
-                    crate::project_reasoning(&replay, &target)
-                );
-            }
-            let event = ModelEvent::ReasoningBlock { block: replay };
-            let encoded = serde_json::to_vec(&event).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<ModelEvent>(&encoded).unwrap(),
-                event
-            );
-        }
-        return;
+        return check_reasoning_round_trip(input);
     }
     if kind == b'C' {
-        catalog_round_trip(input);
-        return;
+        check_catalog_round_trip(input)?;
+        return Ok(());
     }
     if kind == b'N' {
         if let Ok(request) =
@@ -241,25 +198,25 @@ pub fn assert_stream_invariants(input: &[u8]) {
         {
             crate::tool_names::Names::assert_round_trip(&request);
             crate::call_ids::CallIds::assert_round_trip(&request);
-            let encoded = serde_json::to_vec(&request).unwrap();
-            let replay = serde_json::from_slice(&encoded).unwrap();
+            let encoded = serde_json::to_vec(&request)?;
+            let replay = serde_json::from_slice(&encoded)?;
             crate::tool_names::Names::assert_round_trip(&replay);
             crate::call_ids::CallIds::assert_round_trip(&replay);
         }
-        return;
+        return Ok(());
     }
     if kind == b'A' {
         if let Ok(auth) = crate::codex::decode_auth(input) {
             let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
-            let canonical = serde_json::to_vec(&auth).unwrap();
-            let restored = crate::codex::decode_auth(&canonical).unwrap();
+            let canonical = serde_json::to_vec(&auth)?;
+            let restored = crate::codex::decode_auth(&canonical)?;
             assert_eq!(
                 crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
                 refresh
             );
             assert_eq!(restored, auth);
         }
-        return;
+        return Ok(());
     }
     let adapter = [
         Adapter::Anthropic,
@@ -267,18 +224,62 @@ pub fn assert_stream_invariants(input: &[u8]) {
         Adapter::Chat,
         Adapter::Gemini,
     ][usize::from(kind) % 4];
+    check_event_stream(adapter, input)
+}
+
+fn check_reasoning_round_trip(input: &[u8]) -> CheckResult {
+    let Ok(block) = serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
+    else {
+        return Ok(());
+    };
+    let encoded = serde_json::to_vec(&block)?;
+    let replay = serde_json::from_slice(&encoded)?;
+    assert_eq!(block, replay);
+    for adapter in [Adapter::Responses, Adapter::Anthropic] {
+        if let Some(raw) =
+            crate::projection::native_reasoning::validated(adapter, &block.continuity)
+        {
+            // Independent bounded literal decoder: native admission must
+            // reject invalid strings, including inside skipped fields.
+            let bounds = acyclic_harness_core::JsonBounds {
+                maximum_bytes: Some(block.continuity.len() as u64),
+                maximum_items: Some(block.continuity.len() as u64),
+                maximum_depth: 128,
+            };
+            assert!(
+                acyclic_harness_core::json_value_bounded(raw, bounds, None, &mut |_| Ok(()))
+                    .is_ok()
+            );
+            assert_eq!(serde_json::to_vec(raw)?, block.continuity);
+        }
+    }
+    for family in ["anthropic", "responses", "gemini", "chat"] {
+        let mut target = block.origin.clone();
+        target.provider = family.into();
+        assert_eq!(
+            crate::project_reasoning(&block, &target),
+            crate::project_reasoning(&replay, &target)
+        );
+    }
+    let event = ModelEvent::ReasoningBlock { block: replay };
+    let encoded = serde_json::to_vec(&event)?;
+    assert_eq!(serde_json::from_slice::<ModelEvent>(&encoded)?, event);
+    Ok(())
+}
+
+fn check_event_stream(adapter: Adapter, input: &[u8]) -> CheckResult {
     let whole = parse(adapter, input, input.len().max(1));
     assert_eq!(whole, parse(adapter, input, 1));
     if let Ok(events) = whole {
         if adapter == Adapter::Gemini {
-            crate::projection::gemini::assert_visible_replay(&events);
+            crate::projection::gemini::check_visible_replay(&events)?;
         }
         if adapter == Adapter::Chat {
-            assert_chat_usage(input, &events);
+            check_chat_usage(input, &events)?;
         }
         // Identical provider bytes in a different turn must never reuse canonical
         // IDs. Bindings remain byte-for-byte equal, independently of chunking.
-        let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
+        let other = parse_at(adapter, input, input.len().max(1), [2; 16])?;
         let first: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -320,37 +321,44 @@ pub fn assert_stream_invariants(input: &[u8]) {
             if let ModelEvent::Completed { metadata } = &event {
                 acyclic_harness_core::executor::model_usage_codec_fuzz::check_metadata(metadata);
             }
-            let bytes = serde_json::to_vec(&event).unwrap();
-            let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
+            let bytes = serde_json::to_vec(&event)?;
+            let restored: ModelEvent = serde_json::from_slice(&bytes)?;
             assert_eq!(restored, event);
         }
     }
+    Ok(())
 }
 
 pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
-    let Ok(body) = acyclic_harness_provider_response::json(input) else {
-        return false;
-    };
-    let before = crate::validate_input(adapter, &body);
-    let encoded = serde_json::to_vec(&body).unwrap();
-    let replay = acyclic_harness_provider_response::json(&encoded).unwrap();
-    assert_eq!(body, replay, "input JSON round trip changed literal values");
-    assert_eq!(before, crate::validate_input(adapter, &replay));
-    true
+    let result = check_input_round_trip(adapter, input);
+    assert!(result.is_ok(), "input JSON round trip failed: {result:?}");
+    matches!(result, Ok(true))
 }
 
-fn catalog_round_trip(input: &[u8]) -> bool {
-    let Ok(spec) = serde_json::from_slice::<crate::ProviderSpec>(input) else {
-        return false;
+fn check_input_round_trip(adapter: Adapter, input: &[u8]) -> CheckResult<bool> {
+    let Ok(body) = acyclic_harness_provider_response::json(input) else {
+        return Ok(false);
     };
-    let canonical = serde_json::to_vec(&spec).unwrap();
-    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    let before = crate::validate_input(adapter, &body);
+    let encoded = serde_json::to_vec(&body)?;
+    let replay = acyclic_harness_provider_response::json(&encoded)?;
+    assert_eq!(body, replay, "input JSON round trip changed literal values");
+    assert_eq!(before, crate::validate_input(adapter, &replay));
+    Ok(true)
+}
+
+fn check_catalog_round_trip(input: &[u8]) -> serde_json::Result<bool> {
+    let Ok(spec) = serde_json::from_slice::<crate::ProviderSpec>(input) else {
+        return Ok(false);
+    };
+    let canonical = serde_json::to_vec(&spec)?;
+    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical)?;
+    assert_eq!(serde_json::to_vec(&restored)?, canonical);
     assert_eq!(
         crate::registry::validate_spec("fixture", &spec).is_ok(),
         crate::registry::validate_spec("fixture", &restored).is_ok()
     );
-    true
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -373,7 +381,10 @@ mod properties {
             for mut spec in crate::default_catalog().into_values() {
                 spec.base_url = format!("https://example.test/{endpoint}");
                 spec.max_event_bytes = Some(maximum);
-                prop_assert!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()));
+                prop_assert!(matches!(
+                    check_catalog_round_trip(&serde_json::to_vec(&spec).unwrap()),
+                    Ok(true)
+                ));
             }
         }
 
@@ -465,8 +476,11 @@ mod properties {
         assert_stream_invariants(include_bytes!(
             "../fuzz/corpus/provider_stream/llamacpp-text-request-literal-extension"
         ));
-        assert!(catalog_round_trip(
-            &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
+        assert!(matches!(
+            check_catalog_round_trip(
+                &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
+            ),
+            Ok(true)
         ));
         for input in [
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text-request").as_slice(),
@@ -553,6 +567,11 @@ mod properties {
 
 /// Typed model/tool JSON must preserve literal maps, including reserved serde keys.
 pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
+    let result = check_model_json_round_trip(value);
+    assert!(result.is_ok(), "model JSON round trip failed: {result:?}");
+}
+
+fn check_model_json_round_trip(value: &serde_json::Value) -> serde_json::Result<()> {
     use acyclic_harness_core::model::{
         Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent,
     };
@@ -560,35 +579,36 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
     >(
         value: T,
-    ) {
-        let encoded = serde_json::to_value(&value).unwrap();
-        let replay: T = serde_json::from_value(encoded).unwrap();
+    ) -> serde_json::Result<()> {
+        let encoded = serde_json::to_value(&value)?;
+        let replay: T = serde_json::from_value(encoded)?;
         assert_eq!(replay, value);
+        Ok(())
     }
     let call =
         ToolCall::new("call".into(), "echo".into(), value.clone()).with_metadata(value.clone());
-    round_trip(ModelEvent::ToolCall(call.clone()));
-    round_trip(ModelContentPart::ToolCall(call));
+    round_trip(ModelEvent::ToolCall(call.clone()))?;
+    round_trip(ModelContentPart::ToolCall(call))?;
     round_trip(ModelEvent::Completed {
         metadata: value.clone(),
-    });
+    })?;
     round_trip(ToolResultContent::Json {
         value: value.clone(),
-    });
+    })?;
     round_trip(Model {
         provider: "fixture".into(),
         name: "model".into(),
         revision: "1".into(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolInvocation {
         operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         call_id: "call".into(),
         name: "echo".into(),
         arguments: value.clone(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolResult {
         value: value.clone(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolDefinition {
         name: "echo".into(),
         revision: "1".into(),
@@ -596,24 +616,31 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         input_schema: value.clone(),
         output_schema: value.clone(),
         projection_schema: value.clone(),
-    });
+    })
 }
 
 /// OAR-RSN-02 from raw bytes. Validation agrees with an independent
 /// input-derived reference. Incomplete pairs refuse; complete sequences retain
 /// every original item without inserting, dropping or reordering content.
 pub fn assert_response_sequence(input: &[u8]) {
+    let result = check_response_sequence(input);
+    assert!(
+        result.is_ok(),
+        "response sequence invariant failed: {result:?}"
+    );
+}
+
+fn check_response_sequence(input: &[u8]) -> CheckResult {
     use crate::projection::native_reasoning::replay_responses;
     let Ok(body) = acyclic_harness_provider_response::json(input) else {
-        return;
+        return Ok(());
     };
     let errors = crate::validate_input(Adapter::Responses, &body);
-    let replay =
-        acyclic_harness_provider_response::json(&serde_json::to_vec(&body).unwrap()).unwrap();
+    let replay = acyclic_harness_provider_response::json(&serde_json::to_vec(&body)?)?;
     assert_eq!(body, replay);
     assert_eq!(errors, crate::validate_input(Adapter::Responses, &replay));
     let Some(items) = body["input"].as_array() else {
-        return;
+        return Ok(());
     };
     assert_eq!(
         errors.contains(&"OAR-RSN-02"),
@@ -621,6 +648,7 @@ pub fn assert_response_sequence(input: &[u8]) {
     );
     let result = replay_responses(items);
     assert_eq!(response_sequence_violation(items, &result), None);
+    Ok(())
 }
 
 /// The structured detector shared by the fuzz oracle and its negative controls.
@@ -658,13 +686,18 @@ fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
 /// Validation agrees with an independent reference for turn boundaries and
 /// Gemini call/response pairing, and the production sequence fold repairs both.
 pub fn assert_turns(input: &[u8]) {
+    let result = check_turns(input);
+    assert!(result.is_ok(), "turn sequence invariant failed: {result:?}");
+}
+
+fn check_turns(input: &[u8]) -> CheckResult {
     let Some((&selector, input)) = input.split_first() else {
-        return;
+        return Ok(());
     };
     let adapter = [Adapter::Anthropic, Adapter::Gemini][usize::from(selector % 2)];
     let Ok(serde_json::Value::Array(messages)) = acyclic_harness_provider_response::json(input)
     else {
-        return;
+        return Ok(());
     };
     let errors = crate::validate_input(adapter, &turn_body(adapter, &messages));
     let opens = user_turn(messages.first());
@@ -684,18 +717,19 @@ pub fn assert_turns(input: &[u8]) {
         );
     }
     let replay = crate::projection::wire::replay_turns;
-    let Some(output) = replay(adapter, &messages) else {
-        return;
+    let Some(output) = replay(adapter, &messages)? else {
+        return Ok(());
     };
     assert_eq!(turn_repair_violation(adapter, &messages, &output), None);
     if errors.is_empty() && canonical_turns(adapter, &messages) {
         assert_eq!(output, messages, "valid canonical turns were changed");
     }
     assert_eq!(
-        replay(adapter, &output).as_ref(),
+        replay(adapter, &output)?.as_ref(),
         Some(&output),
         "turn repair is not idempotent"
     );
+    Ok(())
 }
 
 /// Turns repair must leave unchanged: envelopes holding only the role and
@@ -907,8 +941,16 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
 
 /// Accepted provider catalogs preserve capacities/defaults through the production parser.
 pub fn assert_catalog_invariants(input: &[u8]) {
+    let result = check_catalog_invariants(input);
+    assert!(
+        result.is_ok(),
+        "provider catalog invariant failed: {result:?}"
+    );
+}
+
+fn check_catalog_invariants(input: &[u8]) -> CheckResult {
     if let Ok(document) = crate::catalog_document::parse(input) {
-        let original: serde_json::Value = serde_json::from_slice(input).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(input)?;
         for (name, provider) in &document.providers {
             assert_eq!(
                 original[name]
@@ -918,12 +960,13 @@ pub fn assert_catalog_invariants(input: &[u8]) {
                 "catalog HTTP host grant changed at decode"
             );
         }
-        let encoded = serde_json::to_vec(&document).unwrap();
-        let replay = crate::catalog_document::parse(&encoded).unwrap();
+        let encoded = serde_json::to_vec(&document)?;
+        let replay = crate::catalog_document::parse(&encoded)?;
         assert_eq!(document.default_model, replay.default_model);
         assert_eq!(
-            serde_json::to_value(document.providers).unwrap(),
-            serde_json::to_value(replay.providers).unwrap()
+            serde_json::to_value(document.providers)?,
+            serde_json::to_value(replay.providers)?
         );
     }
+    Ok(())
 }

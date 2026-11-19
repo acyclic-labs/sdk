@@ -96,7 +96,12 @@ impl Spans {
             1 => self.cell_field = key.0 == "outputs",
             3 => self.output_field = key.0 == "data",
             4 => self.media = Media::parse(key.0.as_ref()),
-            _ => unreachable!(),
+            _ => {
+                return Err(executor::rejection(
+                    work,
+                    "invalid notebook payload key depth",
+                ));
+            }
         }
         Ok(())
     }
@@ -149,7 +154,7 @@ impl Spans {
                     1 => self.cell_field = false,
                     3 => self.output_field = false,
                     4 => self.media = None,
-                    _ => unreachable!(),
+                    _ => return Err(invalid()),
                 }
                 if end - start > 2 + 6 * 15 {
                     return Ok(false);

@@ -236,7 +236,11 @@ impl Mode {
 }
 
 impl Platform {
-    async fn request_text(&self, request: &crate::model::ModelRequest) -> Result<String> {
+    async fn request_text(
+        &self,
+        request: &crate::model::ModelRequest,
+        selections: &[(u64, &crate::agent::ConversationEntry)],
+    ) -> Result<String> {
         let conversation = Conversation::open(self.connection.clone());
         let mut text = String::new();
         for message in &request.messages {
@@ -252,7 +256,10 @@ impl Platform {
                 }
             }
             for (file, _) in message.content.file_parts() {
-                text.push_str(&conversation.text(file).await?);
+                let sequence = selections
+                    .iter()
+                    .find_map(|(sequence, entry)| entry.references_file(file).then_some(*sequence));
+                text.push_str(&conversation.selected_text(file, sequence).await?);
             }
         }
         Ok(text)
@@ -367,13 +374,8 @@ async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     let platform = mode.open(provider.clone()).await?;
     let conversation = Conversation::open(platform.connection.clone());
     let mut client = ObservedConversation::observe(conversation, None).await?;
-    assert!(
-        client
-            .send("first", "remember the first fact")
-            .await?
-            .outcome
-            .is_completed()
-    );
+    let (first_sequence, first) = client.send_at("first", "remember the first fact").await?;
+    assert!(first.outcome.is_completed());
     let compact = client
         .conversation
         .compact("compact", Some("retain the fact"))
@@ -384,14 +386,23 @@ async fn summaries_remain_readable(mode: Mode) -> Result<()> {
         client.conversation.turn(sequence, &entry).await?.answer,
         "SUMMARY"
     );
-    let after = client.send("after", "use the retained fact").await?;
+    let (after_sequence, after) = client.send_at("after", "use the retained fact").await?;
     assert!(after.outcome.is_completed(), "{:?}", after.outcome);
     assert_eq!(provider.request_count(), 6);
     assert_eq!(provider.remaining(), 0);
     let request = provider
         .request(4)
         .ok_or_else(|| Error::NotFound("request after compaction".into()))?;
-    let text = platform.request_text(&request).await?;
+    let text = platform
+        .request_text(
+            &request,
+            &[
+                (first_sequence, &first),
+                (sequence, &entry),
+                (after_sequence, &after),
+            ],
+        )
+        .await?;
     assert!(text.contains("SUMMARY"), "{text}");
     assert!(!text.contains("FIRST"), "{text}");
     drop(client);
@@ -444,14 +455,16 @@ async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
     let prompt = client.conversation.turn(sequence, &entry).await?.prompt;
     assert_eq!(prompt.as_deref(), Some("CANCELLED_PROMPT"));
     assert_eq!(provider.request_count(), 1);
-    let after = client.send("after", "AFTER_PROMPT").await?;
+    let (after_sequence, after) = client.send_at("after", "AFTER_PROMPT").await?;
     assert!(after.outcome.is_completed(), "{:?}", after.outcome);
     assert_eq!(provider.request_count(), 3);
     assert_eq!(provider.remaining(), 0);
     let request = provider
         .request(1)
         .ok_or_else(|| Error::NotFound("request after cancellation".into()))?;
-    let text = platform.request_text(&request).await?;
+    let text = platform
+        .request_text(&request, &[(sequence, &entry), (after_sequence, &after)])
+        .await?;
     assert!(text.contains("CANCELLED_PROMPT"), "{text}");
     drop(client);
     platform.close().await
@@ -577,19 +590,28 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     let conversation = Conversation::open(platform.connection.clone());
     let mut client = ObservedConversation::observe(conversation, None).await?;
     let pressure = "x".repeat(capacity().context_tokens as usize * 3 / 5);
-    let first = client.send("first", &pressure).await?;
+    let (first_sequence, first) = client.send_at("first", &pressure).await?;
     assert!(first.outcome.is_completed(), "{:?}", first.outcome);
-    let recent = client.send("recent", "retain a recent exchange").await?;
+    let (recent_sequence, recent) = client.send_at("recent", "retain a recent exchange").await?;
     assert!(recent.outcome.is_completed(), "{:?}", recent.outcome);
     assert_eq!(summaries.load(std::sync::atomic::Ordering::SeqCst), 0);
-    let second = client.send("second", &pressure).await?;
+    let (second_sequence, second) = client.send_at("second", &pressure).await?;
     assert!(second.outcome.is_completed(), "{:?}", second.outcome);
     assert!(summaries.load(std::sync::atomic::Ordering::SeqCst) > 0);
     assert_eq!(script.request_count(), 6);
     let request = script
         .request(4)
         .ok_or_else(|| Error::NotFound("compacted response request".into()))?;
-    let text = platform.request_text(&request).await?;
+    let text = platform
+        .request_text(
+            &request,
+            &[
+                (first_sequence, &first),
+                (recent_sequence, &recent),
+                (second_sequence, &second),
+            ],
+        )
+        .await?;
     assert!(
         text.contains("RETAINED_FACT"),
         "summary absent from response context"

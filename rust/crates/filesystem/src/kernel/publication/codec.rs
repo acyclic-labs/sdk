@@ -5,7 +5,7 @@ pub(super) const PAYLOAD_VERSION: u16 = 5;
 pub(super) const FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v3\0";
 pub(super) const CONTEXTUAL_FINGERPRINT_DOMAIN: &[u8] =
     b"acyclic-fs-publish-contextual-fingerprint-v3\0";
-pub(super) const EVIDENCE_DOMAIN: &[u8] = b"acyclic-fs-publication-original-evidence-v1\0";
+pub(crate) const EVIDENCE_DOMAIN: &[u8] = b"acyclic-fs-publication-original-evidence-v1\0";
 
 /// Original semantic request retained when an independent operation is composed
 /// onto another member's durable prefix. Fingerprints bind this request; the
@@ -299,25 +299,25 @@ pub(super) fn fingerprint_domain(operation_context: Option<Digest>) -> &'static 
     }
 }
 
-pub(super) fn write_fingerprint_input(
-    bytes: &mut Vec<u8>,
+pub(super) fn hash_fingerprint_input(
+    hasher: &mut blake3::Hasher,
     request: &PublishGenerationRequest,
     operation_context: Option<Digest>,
     evidence: Option<OriginalEvidence>,
 ) {
-    bytes.extend_from_slice(&request.authority_id.into_bytes());
-    bytes.extend_from_slice(&request.epoch.get().to_le_bytes());
-    bytes.extend_from_slice(&request.expected.epoch.get().to_le_bytes());
-    bytes.extend_from_slice(&request.expected.sequence.get().to_le_bytes());
-    bytes.extend_from_slice(request.expected.digest.as_bytes());
+    hasher.update(&request.authority_id.into_bytes());
+    hasher.update(&request.epoch.get().to_le_bytes());
+    hasher.update(&request.expected.epoch.get().to_le_bytes());
+    hasher.update(&request.expected.sequence.get().to_le_bytes());
+    hasher.update(request.expected.digest.as_bytes());
     if let Some(context) = operation_context {
-        bytes.extend_from_slice(context.as_bytes());
+        hasher.update(context.as_bytes());
     }
-    bytes.extend_from_slice(&request.volume_id.into_bytes());
-    bytes.extend_from_slice(&request.generation_root.to_bytes());
-    bytes.push(u8::from(evidence.is_some()));
+    hasher.update(&request.volume_id.into_bytes());
+    hasher.update(&request.generation_root.to_bytes());
+    hasher.update(&[u8::from(evidence.is_some())]);
     if let Some(evidence) = evidence {
-        bytes.extend_from_slice(&evidence.bytes.to_le_bytes());
-        bytes.extend_from_slice(evidence.digest.as_bytes());
+        hasher.update(&evidence.bytes.to_le_bytes());
+        hasher.update(evidence.digest.as_bytes());
     }
 }

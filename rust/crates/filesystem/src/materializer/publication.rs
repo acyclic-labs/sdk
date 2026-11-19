@@ -122,18 +122,28 @@ where
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
     let result = async {
+        let t0 = std::time::Instant::now();
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
+        eprintln!(
+            "TIMING transition prepare={:?} edits={} phase={:?}",
+            t0.elapsed(),
+            journal.plan.edits.len(),
+            journal.phase
+        );
         let Some(materializer) = materializer else {
             return Ok(journal);
         };
-        materializer
+        let t1 = std::time::Instant::now();
+        let done = materializer
             .replay(
                 journal,
                 MaterializationRecovery::Complete,
                 &mut before_effect,
             )
-            .await
+            .await;
+        eprintln!("TIMING transition replay={:?}", t1.elapsed());
+        done
     }
     .await;
     finish_publication(result, &work)

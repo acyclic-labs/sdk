@@ -353,12 +353,15 @@ async fn measure_writer_batch(publishers: &[&CheckoutPublisher], layout: &str) -
             .map(|(elapsed, _)| *elapsed)
             .collect::<Vec<_>>();
         elapsed.sort_unstable();
+        let maximum = elapsed
+            .last()
+            .ok_or_else(|| Error::Invalid("no publication writers completed".into()))?;
         eprintln!(
             "PUBLICATION_LATENCY layout={layout} volume={} writers={} p50_us={} max_us={}",
             if prefix.is_empty() { "project" } else { "home" },
             publishers.len(),
             elapsed[elapsed.len() / 2].as_micros(),
-            elapsed.last().expect("writers").as_micros()
+            maximum.as_micros()
         );
         // Verification begins only after every timed publication has finished,
         // so verification reads cannot contend with the remaining writers.
@@ -440,7 +443,7 @@ async fn seeded_cost_fixture(
                 .ok_or_else(|| Error::NotFound("checkout".into()))?
                 .clone(),
             &harness.project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
             None,

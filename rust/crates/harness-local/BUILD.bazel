@@ -23,6 +23,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-local",
@@ -56,6 +57,7 @@ rust_library(
         "//rust/crates/harness-fuzz:corpus/native_answer/agy-hook-refusal.jsonl",
         "//rust/crates/harness-fuzz:corpus/native_answer/opencode-incomplete.jsonl",
     ],
+    tags = ["resources:memory:2304"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -340,7 +342,7 @@ rust_test(
         "@sdk_crates//which-8.0.6",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","no-sandbox","resources:memory:2304"],
 )
 
 isolated_test(
@@ -348,6 +350,7 @@ isolated_test(
     binary = ":acyclic_harness_local_test_cases",
     id = "acyclic-harness-local",
     exclude = ["::full_cloud::"],
+    shard_count = 16,
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -370,6 +373,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-local",
@@ -405,6 +409,7 @@ rust_library(
         "//rust/crates/harness-fuzz:corpus/native_answer/agy-hook-refusal.jsonl",
         "//rust/crates/harness-fuzz:corpus/native_answer/opencode-incomplete.jsonl",
     ],
+    tags = ["resources:memory:2304"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

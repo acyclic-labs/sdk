@@ -1,5 +1,29 @@
 use super::*;
 
+fn library_manifest(package: &Path) -> String {
+    // The shared archive scaffold includes an example. These cases exercise
+    // the library, so its packaged manifest declares only the library target.
+    fs::read_to_string(package.join("Cargo.toml"))
+        .unwrap()
+        .replace(
+            "[package]\n",
+            "example = []\n\n[package]\nautoexamples = false\n",
+        )
+}
+
+fn single_profile(package: &Path, manifest: &str) {
+    let mut manifest: toml::Table = toml::from_str(manifest).unwrap();
+    // Materialization starts from the Cargo-produced package scaffold, so
+    // replace its feature table explicitly to leave one library profile.
+    manifest.insert("features".into(), toml::Value::Table(toml::Table::new()));
+    fs::write(
+        package.join("Cargo.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+    fs::write(package.join("src/lib.rs"), "pub struct ArchiveOnly;\n").unwrap();
+}
+
 #[test]
 fn archive_locks_override_foreign_cargo_authority() {
     runtime::time_control();
@@ -150,8 +174,11 @@ fn archive_locks_override_foreign_cargo_authority() {
 #[test]
 fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
     runtime::time_control();
+    fn library_only(package: &Path) {
+        fs::write(package.join("Cargo.toml"), library_manifest(package)).unwrap();
+    }
     fn add_input_during_profile(package: &Path) {
-        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+        let manifest = library_manifest(package);
         fs::write(
             package.join("Cargo.toml"),
             manifest.replace(
@@ -184,11 +211,11 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
                     None,
                     true,
                     "demo",
-                    if during_profile {
-                        Some(add_input_during_profile)
+                    Some(if during_profile {
+                        add_input_during_profile
                     } else {
-                        None
-                    },
+                        library_only
+                    }),
                     None,
                 );
                 write_registry_transport(&support);
@@ -227,10 +254,9 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
 fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failures_fatal() {
     runtime::time_control();
     fn setup(package: &Path) {
-        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
         fs::write(
             package.join("Cargo.toml"),
-            manifest.replace(
+            library_manifest(package).replace(
                 "include = [",
                 "build = \"build.rs\"\ninclude = [\"build.rs\", ",
             ),
@@ -240,9 +266,13 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
         fs::write(package.join("build.rs"), "fn main() { let name = if std::env::var_os(\"CARGO_FEATURE_EXTRA\").is_some() { \"ExtraWire\" } else { \"DefaultWire\" }; std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), format!(\"/// Actual feature-generated API.\\npub struct {name};\\n\")).unwrap(); }\n").unwrap();
     }
     fn required_no_defaults(package: &Path) {
-        setup(package);
-        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
+        let manifest = library_manifest(package);
         fs::write(package.join("Cargo.toml"), format!("{manifest}\n[package.metadata.docs.rs]\nno-default-features=true\nfeatures=['extra']\n")).unwrap();
+        fs::write(
+            package.join("src/lib.rs"),
+            "#[cfg(not(feature=\"base\"))]\ncompile_error!(\"original package requires base\");\n",
+        )
+        .unwrap();
     }
     std::thread::scope(|scope| {
         for required_failure in [false, true] {
@@ -261,16 +291,20 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     None,
                 );
                 write_registry_transport(&support);
-                let (result, profiles) = run_historical_generation(
-                    &fixture,
-                    &support,
-                    Some("registry-archives"),
-                    None,
-                    &[],
-                );
+                let queries = commands::Queries::default();
+                let (result, profiles) = queries.run(|| {
+                    run_historical_generation(
+                        &fixture,
+                        &support,
+                        Some("registry-archives"),
+                        None,
+                        &[],
+                    )
+                });
                 if required_failure {
                     assert!(!result.status.success());
-                    assert!(output_message(&result).contains("Cargo profile"));
+                    let message = output_message(&result);
+                    assert!(message.contains("Cargo profile"), "{message}");
                     assert!(
                         !fixture.output.join("sdk-docs-versions.v1.json").exists(),
                         "required upstream profile failure cannot admit the version"
@@ -316,15 +350,17 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                             >= 2,
                         "actual Cargo profiles must use distinct OUT_DIR aliases"
                     );
-                    let drift = run_historical_drift(
-                        &Fixture {
-                            directory: fixture.directory.clone(),
-                            root: fixture.root.clone(),
-                            rustdoc: output.join(".rustdoc"),
-                            output,
-                        },
-                        &support,
-                    );
+                    let drift = queries.run(|| {
+                        run_historical_drift(
+                            &Fixture {
+                                directory: fixture.directory.clone(),
+                                root: fixture.root.clone(),
+                                rustdoc: output.join(".rustdoc"),
+                                output,
+                            },
+                            &support,
+                        )
+                    });
                     assert!(drift.status.success(), "{}", output_message(&drift));
                 }
             });
@@ -336,6 +372,10 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
 fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     runtime::time_control();
     fn owner_example(package: &Path) {
+        single_profile(
+            package,
+            &fs::read_to_string(package.join("Cargo.toml")).unwrap(),
+        );
         fs::write(
             package.join("examples/historical.rs"),
             "fn main() { println!(\"archive-example-executed:{}\", env!(\"CARGO_PKG_NAME\")); }\n",
@@ -343,8 +383,8 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         .unwrap();
     }
     // One immutable initial history prevents incidental wall-clock differences
-    // from creating redundant source frontiers. Each owner still packages and
-    // compiles its own source and complete four-profile historical matrix.
+    // from creating redundant source frontiers. Compile one library profile
+    // and run one example per owner to verify both bindings.
     let template = historical_source_fixture(None);
     init_git(&template.0.root, "historical docs fixture");
     let base_revision = git_revision(&template.0.root);
@@ -401,7 +441,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
             support,
             Some("registry-archives"),
             None,
-            &["demo-a", "demo-b", "demo-c"],
+            &[("demo-a", 1), ("demo-b", 1), ("demo-c", 1)],
         )
         .0
     });
@@ -471,6 +511,9 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
 #[test]
 fn registry_archive_native_source_is_not_a_publisher_git_retag() {
     runtime::time_control();
+    fn provenance_fixture(package: &Path) {
+        single_profile(package, &library_manifest(package));
+    }
     std::thread::scope(|scope| {
         for (dirty, published_lock, publisher_vcs) in [
             (true, true, true),
@@ -478,11 +521,31 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
             (false, true, false),
         ] {
             scope.spawn(move || {
-                let (fixture, support) =
-                    registry_archive_fixture(dirty, published_lock, None, publisher_vcs);
+                let (fixture, support) = build_registry_archive_fixture(
+                    dirty,
+                    published_lock,
+                    None,
+                    publisher_vcs,
+                    "demo",
+                    Some(provenance_fixture),
+                    None,
+                );
+                write_registry_transport(&support);
                 let publisher = git_revision(&fixture.root);
-                let result =
-                    run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+                let queries = commands::Queries::default();
+                let generate = || {
+                    queries.run(|| {
+                        run_historical_generation(
+                            &fixture,
+                            &support,
+                            Some("registry-archives"),
+                            None,
+                            &[("demo", 1)],
+                        )
+                        .0
+                    })
+                };
+                let result = generate();
                 assert!(result.status.success(), "{}", output_message(&result));
                 let output = fixture.output.join("releases/1.0.0");
                 let data: Value = serde_json::from_slice(
@@ -521,8 +584,7 @@ fn registry_archive_native_source_is_not_a_publisher_git_retag() {
                 if !published_lock {
                     let lock = output.join("sources/demo-1.0.0/Cargo.lock");
                     let captured_lock = fs::read(&lock).unwrap();
-                    let repeated =
-                        run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+                    let repeated = generate();
                     assert!(repeated.status.success(), "{}", output_message(&repeated));
                     assert_eq!(fs::read(&lock).unwrap(), captured_lock);
                 }
@@ -702,7 +764,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
     runtime::time_control();
     let (fixture, support) = historical_fixture(None);
     commands::expect_declared_profiles(2, || {
-        let (result, _) = run_historical_generation(&fixture, &support, None, None, &["demo"]);
+        let (result, _) = run_historical_generation(&fixture, &support, None, None, &[("demo", 4)]);
         assert!(result.status.success(), "{}", output_message(&result));
     });
     let version = fixture.output.join("releases/1.0.0");
@@ -811,7 +873,13 @@ fn excluded_published_path_owners_have_executed_api_and_drift() {
         .unwrap()
         .replace("name = \"demo\"", "name = \"demo-macros\"");
     let declared_demo = include_str!("../fixtures/excluded-owners/rust/crates/demo/Cargo.toml");
-    assert_eq!(declared_demo, format!("{}\n[dependencies]\ndemo-macros = {{ path = \"../../vendor/macros\" }}\ndemo-helper = {{ path = \"../../vendor/helper\" }}\n", fs::read_to_string(&demo_manifest).unwrap()));
+    assert_eq!(
+        declared_demo,
+        format!(
+            "{}\n[dependencies]\ndemo-macros = {{ path = \"../../vendor/macros\" }}\ndemo-helper = {{ path = \"../../vendor/helper\" }}\n",
+            fs::read_to_string(&demo_manifest).unwrap()
+        )
+    );
     fs::write(&demo_manifest, declared_demo).unwrap();
     fs::write(
         fixture.root.join("Cargo.toml"),

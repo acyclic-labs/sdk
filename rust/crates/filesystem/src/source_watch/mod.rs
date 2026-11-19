@@ -24,11 +24,13 @@ pub(crate) use directory_changes::NativeSourceWatch;
 pub(crate) use fsevents::NativeSourceWatch;
 #[cfg(test)]
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 pub(crate) use fsevents::tests::terminal_cancellation_watch;
 #[cfg(target_os = "linux")]
 pub(crate) use inotify::NativeSourceWatch;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 pub(crate) use tests::terminal_failure_watch;
 
 /// Known SDK control storage: Arc's two counters, alignment, and Rust payload.
@@ -266,4 +268,5 @@ mod observer;
 mod startup_failure;
 pub use observer::HeldRootWatch;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 mod tests;

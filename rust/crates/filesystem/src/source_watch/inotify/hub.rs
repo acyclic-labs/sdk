@@ -197,6 +197,7 @@ impl Hub {
     pub(super) fn subscribe(&'static self, watch: &Arc<Shared>) -> Result<(), DemandError> {
         self.start_threads()?;
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_mount_watch))]
         super::admission_tests::before_subscribe_lock()?;
         let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
         // Loss is recorded before taking this lock: an earlier subscription
@@ -206,6 +207,7 @@ impl Hub {
             .subscribers
             .insert(watch.subscriber, Arc::downgrade(watch));
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_mount_watch))]
         super::admission_tests::after_subscribe();
         Ok(())
     }

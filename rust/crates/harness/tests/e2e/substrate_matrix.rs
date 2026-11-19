@@ -1,9 +1,24 @@
 //! Shared scenario families over independently selected, constructible providers.
+use super::super::{case_workers, scenario_runtime, scenario_worker_budget, stall};
 use super::*;
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, LogicalObjectStore, StreamAuthorityStore,
 };
 use acyclic_objects::MemoryObjects;
+
+async fn scenario_trace<P, A, O>(case: &Value, files: Fs<A, O>, stream: Arc<P>) -> TestResult<Value>
+where
+    P: acyclic_harness::store::JournalProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    Ok(Value::Array(
+        execution::run_with_filesystem(Scenario::from_value(case.clone())?, files, stream)
+            .await?
+            .trace()
+            .await?,
+    ))
+}
 
 async fn row<P, A, O>(
     name: &str,
@@ -23,16 +38,7 @@ where
             let stream = stream.clone();
             async move {
                 let result = async {
-                    let observed = Value::Array(
-                        execution::run_with_filesystem(
-                            Scenario::from_value(case.clone())?,
-                            files,
-                            stream,
-                        )
-                        .await?
-                        .trace()
-                        .await?,
-                    );
+                    let observed = scenario_trace(case, files, stream).await?;
                     if &observed != expected {
                         return Err("scenario traces differ".into());
                     }
@@ -54,71 +60,113 @@ where
     Ok(())
 }
 
-async fn journals<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    name: &str,
-    files: Fs<A, O>,
-    streams: &(
-        Arc<MemoryStream>,
-        Arc<acyclic_stream::LocalStream>,
-        Arc<Client>,
-    ),
-    cases: &[(PathBuf, Value, Value)],
-) -> TestResult {
-    // Every scenario admits a distinct AgentId and OperationId through the
-    // original executor path, so provider rows have no ordering dependency.
-    // Join every row before releasing its filesystem or loopback server, even
-    // when another row reports an error.
-    let memory_name = format!("{name}/memory");
-    let disk_name = format!("{name}/disk");
-    let remote_name = format!("{name}/grpc");
-    let results = futures::join!(
-        row(&memory_name, files.clone(), streams.0.clone(), cases),
-        row(&disk_name, files.clone(), streams.1.clone(), cases),
-        row(&remote_name, files, streams.2.clone(), cases),
-    );
-    results.0?;
-    results.1?;
-    results.2
+type MatrixRun<'a> =
+    Box<dyn FnOnce() -> futures::future::LocalBoxFuture<'a, TestResult> + Send + 'a>;
+
+struct MatrixJob<'a> {
+    providers: &'a str,
+    run: MatrixRun<'a>,
 }
 
-#[tokio::test]
-async fn shared_families_with_independent_filesystem_and_journal_providers() -> TestResult {
+fn matrix_job<'a, P, A, O>(
+    name: &'a str,
+    files: Fs<A, O>,
+    stream: Arc<P>,
+    cases: &'a [(PathBuf, Value, Value)],
+) -> MatrixJob<'a>
+where
+    P: acyclic_harness::store::JournalProvider + 'a,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    MatrixJob {
+        providers: name,
+        run: Box::new(move || Box::pin(row(name, files, stream, cases))),
+    }
+}
+
+#[test]
+fn shared_families_with_independent_filesystem_and_journal_providers() -> TestResult {
     let cases = scenarios()?;
     assert_eq!(cases.len(), 27, "scenario inventory changed");
-    // The reference is independent of both selected providers. Each original
-    // scenario runs once here, then every matrix entry checks its exact trace.
-    let cases = futures::future::try_join_all(cases.into_iter().map(|(path, case)| async move {
-        let expected = trace(&case, Arc::new(MemoryStream::default()))
-            .await
-            .map_err(|error| format!("reference/{}: {error}", path.display()))?;
-        TestResult::<_>::Ok((path, case, expected))
-    }))
-    .await?;
+    const COMPARED_PAIRS: usize = 8;
+    let (services, drivers) = case_workers::layout(scenario_worker_budget(), COMPARED_PAIRS);
+    let runtime = scenario_runtime(services)?;
+    // Memory Filesystem and Stream run the scenario oracles and provide the
+    // reference trace compared by every other pair of providers.
+    let memory_files = Fs::memory();
+    let memory_stream = Arc::new(MemoryStream::default());
+    let cases = runtime.block_on(futures::future::try_join_all(cases.into_iter().map(
+        |(path, case)| {
+            let files = memory_files.clone();
+            let stream = memory_stream.clone();
+            async move {
+                let expected = scenario_trace(&case, files, stream)
+                    .await
+                    .map_err(|error| format!("memory/memory/{}: {error}", path.display()))?;
+                TestResult::<_>::Ok((path, case, expected))
+            }
+        },
+    )))?;
     let directory = tempfile::tempdir()?;
-    let disk =
-        Arc::new(acyclic_stream::LocalStream::open(directory.path(), Default::default()).await?);
-    let remote = loopback(Arc::new(MemoryStream::default())).await?;
-    let streams = (
-        Arc::new(MemoryStream::default()),
-        disk,
-        remote.client.clone(),
-    );
     let files_directory = tempfile::tempdir()?;
-    let local = Fs::local(acyclic_fs::LocalOptions::new(files_directory.path())).await?;
+    let (disk, remote, local, authority) = runtime.block_on(async {
+        let disk = Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default()).await?,
+        );
+        let remote = loopback(Arc::new(MemoryStream::default())).await?;
+        let local = Fs::local(acyclic_fs::LocalOptions::new(files_directory.path())).await?;
+        let authority = loopback(Arc::new(MemoryStream::default())).await?;
+        TestResult::<_>::Ok((disk, remote, local, authority))
+    })?;
+    let grpc = remote.client.clone();
     // Remote authority and local Objects are independently bound. Public remote
     // Objects batches and an Actors host are separate, explicit qualification gaps.
-    let authority = loopback(Arc::new(MemoryStream::default())).await?;
     let remote_authority = Fs::new(
         StreamAuthorityStore::new(authority.client.clone()),
         LogicalObjectStore::new(Arc::new(MemoryObjects::memory())),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
-    let results = futures::join!(
-        journals("memory", Fs::memory(), &streams, &cases),
-        journals("disk", local, &streams, &cases),
-        journals("grpc-authority", remote_authority, &streams, &cases),
-    );
-    results.0?;
-    results.1?;
-    results.2
+    // Each pair admits distinct agent and operation IDs. Schedule the pairs
+    // independently and join them before releasing the shared providers.
+    let jobs: [_; COMPARED_PAIRS] = [
+        matrix_job("disk/memory", local.clone(), memory_stream.clone(), &cases),
+        matrix_job("disk/disk", local.clone(), disk.clone(), &cases),
+        matrix_job("disk/grpc", local, grpc.clone(), &cases),
+        matrix_job("memory/disk", memory_files.clone(), disk.clone(), &cases),
+        matrix_job("memory/grpc", memory_files, grpc.clone(), &cases),
+        matrix_job(
+            "grpc-authority/memory",
+            remote_authority.clone(),
+            memory_stream,
+            &cases,
+        ),
+        matrix_job(
+            "grpc-authority/disk",
+            remote_authority.clone(),
+            disk,
+            &cases,
+        ),
+        matrix_job("grpc-authority/grpc", remote_authority, grpc, &cases),
+    ];
+    let mut guard = crate::progress_guard::Guard::new();
+    let io = guard.io.clone();
+    let registry = guard.registry.clone();
+    let results = case_workers::run(
+        &runtime,
+        jobs.into(),
+        COMPARED_PAIRS,
+        drivers,
+        &mut guard,
+        |job| {
+            stall::run(
+                io.clone(),
+                registry.clone(),
+                PathBuf::from(job.providers),
+                (job.run)(),
+            )
+        },
+        |_| {},
+    )?;
+    results.into_iter().collect()
 }

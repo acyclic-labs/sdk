@@ -8,7 +8,7 @@ use acyclic_fs::{
 use acyclic_fs_work::performance::WorkBudget;
 use std::error::Error;
 
-use crate::fixtures::fork_workspace;
+use crate::workspace_contracts::fixtures::fork_workspace;
 
 #[test]
 fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>> {

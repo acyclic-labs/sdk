@@ -23,7 +23,9 @@ impl Registry {
             output_shares_context: true,
         };
         for selection in &spec.models {
-            let (provider, name) = selection.split_once('/').expect("validated model identity");
+            let (provider, name) = selection
+                .split_once('/')
+                .ok_or_else(|| invalid("alloy members require provider/model"))?;
             let entry = self
                 .catalog()
                 .get(provider)

@@ -2338,4 +2338,5 @@ fn failed(error: GenerationMutationError) -> crate::FsError {
 
 #[cfg(test)]
 #[path = "tests/generation_mutation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

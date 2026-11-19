@@ -156,7 +156,9 @@ impl TaskContext {
             .tool_input());
         }
         if crate::live::feedback::is_sink(path) {
-            return Ok((self.tool_content(None), crate::live::feedback::PATH));
+            // Feedback is a per-agent observation. Publishing it on a project
+            // fork makes the same virtual path compete with ancestor reports.
+            return Ok((Some(&self.output_content), crate::live::feedback::PATH));
         }
         if let Some((binding, relative)) = self.private_content_path(path, io, true)? {
             return Ok((Some(binding), relative));

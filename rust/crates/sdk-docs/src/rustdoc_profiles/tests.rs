@@ -1,6 +1,6 @@
 use super::*;
 use rustdoc_types::FORMAT_VERSION;
-use std::{fs, path::PathBuf, process::Command};
+use std::fs;
 
 mod workspace;
 

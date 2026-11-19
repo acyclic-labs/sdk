@@ -558,4 +558,5 @@ pub(super) fn decode_binding_page<E: From<CanonicalDecodeError>>(
 
 #[cfg(test)]
 #[path = "tests/bindings.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -89,6 +89,7 @@ async fn raw_endpoint_paths_mode<
     };
     let result = crate::workspace::complete_changed_paths(
         endpoints.map(Some),
+        None,
         Some(maximum_entries),
         &mut accounting,
         cancellation,
@@ -308,9 +309,12 @@ async fn complete_creation_delta_matches_full_path_resolution_and_bounds()
         let original =
             crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
                 .map_err(|(error, _)| error)?;
-        let complete = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+        let mut complete = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
         let (resolved, resolved_guard) =
             raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+        complete
+            .value
+            .sort_by(|left, right| left.path.components().cmp(right.path.components()));
         assert_eq!(complete.value, resolved);
         assert_eq!(complete.value.len(), if linked { 2 } else { 3 });
         assert!(
@@ -357,7 +361,10 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
-    let paths = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+    let mut paths = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+    paths
+        .value
+        .sort_by(|left, right| left.path.components().cmp(right.path.components()));
     let names: Vec<_> = paths
         .value
         .iter()

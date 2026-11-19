@@ -5,6 +5,7 @@ use crate::demand::NativeMountAllocationCustody;
 #[cfg(test)]
 #[cfg(loom)]
 #[path = "model_checking.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod model_checking;
 
 pub(super) fn vector<T>(
@@ -109,11 +110,11 @@ pub(super) fn record(
         let plan = Plan::of(&map.read().unwrap_or_else(PoisonError::into_inner), key);
         if plan.tracked != 0 {
             #[cfg(test)]
-            #[cfg(all(loom))]
+            #[cfg(loom)]
             let broken_lock = model_checking::hold_map_while_charging(map);
             let charged = charge(carrier, scan_work(1));
             #[cfg(test)]
-            #[cfg(all(loom))]
+            #[cfg(loom)]
             drop(broken_lock.map(std::mem::ManuallyDrop::into_inner));
             charged?;
         }
@@ -122,7 +123,7 @@ pub(super) fn record(
             if plan.holds_for(&positions, key) {
                 let at = positions.latest.entry(key).or_insert(position.0);
                 #[cfg(test)]
-                #[cfg(all(loom))]
+                #[cfg(loom)]
                 if model_checking::overwrite_stamp() {
                     *at = position.0;
                     return Ok(());

@@ -16,24 +16,35 @@ pub(super) fn order_host_checkout_union(
         )?;
         Ok(left.0.cmp(&right.0))
     };
-    // Count before allocating: duplicate names must not reserve output credit.
-    let mut count = 0_usize;
-    acyclic_collections::page::merge::ordered(
-        observed.iter(),
-        checkout_paths.iter(),
-        |left, right| compare(left, right),
-        |_, _| {
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(1),
-            )?;
-            count = count.checked_add(1).ok_or(WorkError::Overflow)?;
-            if maximum.is_some_and(|maximum| count > maximum) {
-                return Err(CaptureError::InvalidOptions);
-            }
-            Ok(())
-        },
-    )?;
+    let count = if observed.is_empty() || checkout_paths.is_empty() {
+        // The input lengths already determine the output when there is no
+        // other side to overlap, as in the first capture of a workspace.
+        let count = observed.len().max(checkout_paths.len());
+        if maximum.is_some_and(|maximum| count > maximum) {
+            return Err(CaptureError::InvalidOptions);
+        }
+        count
+    } else {
+        // Count before allocating: duplicate names must not reserve output credit.
+        let mut count = 0_usize;
+        acyclic_collections::page::merge::ordered(
+            observed.iter(),
+            checkout_paths.iter(),
+            |left, right| compare(left, right),
+            |_, _| {
+                capture_charge(
+                    meter,
+                    crate::materializer::NativeResourceCredit::Items.delta(1),
+                )?;
+                count = count.checked_add(1).ok_or(WorkError::Overflow)?;
+                if maximum.is_some_and(|maximum| count > maximum) {
+                    return Err(CaptureError::InvalidOptions);
+                }
+                Ok(())
+            },
+        )?;
+        count
+    };
     let observed_bytes = vector_bytes(&observed);
     let checkout_bytes = vector_bytes(&checkout_paths);
     let mut observations = capture_vec(count, meter)?;
@@ -81,6 +92,7 @@ pub(super) fn order_host_checkout_union(
 
 #[cfg(test)]
 #[path = "union_properties.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod union_properties;
 
 pub(super) fn combined_path_count_exceeds(
@@ -180,6 +192,7 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
         }
         let move_leaf = entry.record.kind != FileKind::Directory;
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_host))]
         let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
         if move_leaf {
             meter.clone().check().map_err(capture_demand_error)?;

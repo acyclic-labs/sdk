@@ -14,7 +14,7 @@ pub use acyclic_auth::addressing;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_fs_wire::{AUTHORIZATION, FsMethod, authorization};
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
 #[cfg(test)]
@@ -70,6 +70,7 @@ pub use acyclic_stream::{
 pub mod accounting;
 #[cfg(test)]
 #[path = "tests/accounting/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod accounting_tests;
 pub mod async_storage;
 pub mod binding_contract;
@@ -101,6 +102,8 @@ pub use publication_changes::{
 };
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 mod fsevents;
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+pub use fsevents::stress_fixture as fsevents_test_support;
 pub mod git_compat;
 mod heap_future;
 #[doc(hidden)]

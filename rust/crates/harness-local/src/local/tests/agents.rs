@@ -222,6 +222,7 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
         .await?;
     let mut added = WorkspaceEntry::initial_volume(WorkspaceRole::User, "second".into(), added);
     added.root = "repo".into();
+    added.mode = crate::agent::WorkspaceMode::ReadOnly;
     let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
         version: 1,
         op: WorkspaceOp::Add,
@@ -562,7 +563,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         .map_err(agent)?;
     let (dispatched, mut requests) = tokio::sync::mpsc::unbounded_channel();
     let provider = Arc::new(
-        ScriptedModelProvider::new(
+        ScriptedModelProvider::routed(
             std::iter::once(super::ScriptedTurn::Events(vec![
                 crate::test_support::ScriptedEvent::Pending {},
             ]))
@@ -570,6 +571,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
                 ["prefix", "later", "free", "free", "free", "free"]
                     .map(|text| super::ScriptedTurn::Text(text.into())),
             ),
+            (0..3).map(|_| super::ScriptedTurn::Text("child reported settlement".into())),
         )
         .with_context_capacity(super::capacity())
         .with_dispatch_observer(move |_| {
@@ -613,10 +615,11 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
     let prefix = records(agents.provider(), root.conversation().map_err(agent)?).await?;
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
     assert!(saved.live_children);
-    workspace
+    let edit = workspace
         .write_text("/plan.md", "after cut")
         .await
         .map_err(agent)?;
+    assert!(matches!(edit, acyclic_fs::TransactionCommit::Committed(_)));
     parent.send("later", "later decision").await?;
 
     let override_item = ContinuationOverride::Assistant {
@@ -627,6 +630,19 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         }],
     };
     let source = format!("{root}@0");
+    let original_request = |entry: &ConversationEntry| {
+        let TurnInput::Message { body, .. } = &entry.input else {
+            return Err(Error::Invalid(
+                "continuation did not settle its original message".into(),
+            ));
+        };
+        provider
+            .requests()
+            .into_iter()
+            .rev()
+            .find(|request| input_content(request, body).is_ok())
+            .ok_or_else(|| Error::NotFound("continuation message has no original request".into()))
+    };
     for (operation, intervention) in [
         ("treatment", Some(override_item.clone())),
         ("control", None),
@@ -696,7 +712,10 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             forked
                 .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
                 .await
-                .map_err(|failure| agent(failure.error))?
+                .map_err(|failure| agent(format!(
+                    "{operation} checkout at the cut: {}",
+                    failure.error
+                )))?
                 .value
                 .as_ref(),
             b"at cut"
@@ -707,9 +726,13 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
                 serde_json::from_str(&client.conversation.text(file).await?).map_err(agent)?;
             assert_eq!(recorded, request);
         }
-        let entry = client.send(operation, "continue").await?;
-        let output: crate::executor::TurnOutput =
-            serde_json::from_str(&client.conversation.text(&entry.output).await?).map_err(agent)?;
+        let (sequence, entry) = client.send_at(operation, "continue").await?;
+        assert!(
+            entry.outcome.is_completed(),
+            "{operation}: {:?}",
+            entry.outcome
+        );
+        let output = client.conversation.output_at(sequence, &entry).await?;
         let has_text = |message: &crate::model::ModelMessage, expected: &str| {
             matches!(&message.content, ModelContent::Text(text) if text == expected)
                 || message.content.parts().iter().any(|part| {
@@ -731,8 +754,9 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             assert!(forced < free, "the override must precede continuation");
         }
         assert_eq!(output.text, "free");
-        let context =
-            super::request_text(&harness, &provider.last_request().expect("free request")).await?;
+        let context = super::request_text(&harness, &original_request(&entry)?)
+            .await
+            .inspect_err(|_| eprintln!("cannot read the original {operation} request"))?;
         assert!(context.contains("prefix"));
         assert!(!context.contains("later decision"));
         assert_eq!(
@@ -743,7 +767,10 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             forked
                 .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
                 .await
-                .map_err(|failure| agent(failure.error))?
+                .map_err(|failure| agent(format!(
+                    "{operation} checkout after continuation: {}",
+                    failure.error
+                )))?
                 .value
                 .as_ref(),
             if operation == "treatment" {
@@ -756,10 +783,9 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         assert_eq!(&history[..prefix.len()], prefix.as_slice());
         assert_eq!(history.len(), prefix.len() + 1);
         if operation == "treatment" {
-            client.send("second", "continue freely again").await?;
-            let context =
-                super::request_text(&harness, &provider.last_request().expect("second request"))
-                    .await?;
+            let entry = client.send("second", "continue freely again").await?;
+            assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+            let context = super::request_text(&harness, &original_request(&entry)?).await?;
             assert_eq!(
                 context.matches("FORCED_ACTION").count(),
                 1,
@@ -768,7 +794,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         }
     }
     assert_eq!(
-        provider.request_count(),
+        provider.input_requests(),
         7,
         "forced action must not dispatch a model request"
     );
@@ -786,7 +812,10 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         workspace
             .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
             .await
-            .map_err(|failure| agent(failure.error))?
+            .map_err(|failure| agent(format!(
+                "original checkout after continuation: {}",
+                failure.error
+            )))?
             .value
             .as_ref(),
         b"after cut"
@@ -850,7 +879,10 @@ async fn conversation_records_include_the_complete_committed_prefix() -> Result<
 
 /// The root's conversation once it has settled every input sent before
 /// this call, using the original actor checkpoint and runtime terminal event.
-pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+pub(in crate::local) async fn settled(
+    harness: &Arc<LocalHarness>,
+    root: &AgentPath,
+) -> Result<Vec<Vec<u8>>> {
     let (agents, _) = harness.agents().await?;
     let completion = harness
         .agents
@@ -1752,6 +1784,9 @@ fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
 }
 
 async fn a_shell_call_stages_its_output_on_the_journal_volume_world() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
     let waits = acyclic_native_runtime::obs::WaitReport::default();
     let _subscriber = tracing::subscriber::set_default(
@@ -1781,7 +1816,8 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume_world() -> Result<
         super::checked_commands::call(0, crate::tools::shell::PLATFORM.name, "echo staged"),
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
-    let mut config = super::checkout_config(directory.path(), (super::model()?, provider.clone()))?;
+    let (mut config, _clock) =
+        super::native_checkout_config(directory.path(), (super::model()?, provider.clone()))?;
     config.admission = admission.clone();
     let harness = Arc::new(super::open_scripted(config).await?);
     let (agents, root) = harness.agents().await?;
@@ -1942,7 +1978,7 @@ async fn observation(
             authority,
             path,
             authority.private.volume()?,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::new(acyclic_actors::local::SystemClock),
             None,
         )
         .await
@@ -2347,19 +2383,9 @@ async fn checkout_with(
     Arc<LocalHarness>,
     Arc<ScriptedModelProvider>,
 )> {
-    checkout_scripted(files, text()).await
-}
-
-async fn checkout_scripted(
-    files: &[(String, Vec<u8>)],
-    provider: Arc<ScriptedModelProvider>,
-) -> Result<(
-    tempfile::TempDir,
-    Arc<LocalHarness>,
-    Arc<ScriptedModelProvider>,
-)> {
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
+    let provider = text();
     let harness = Arc::new(
         super::open_scripted(super::checkout_config(
             directory.path(),
@@ -2599,7 +2625,12 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     // The model sees the prompt, then the text file as text and the image natively.
     let request = provider.last_request().expect("one model request");
     let context = super::request_text(&harness, &request).await?;
-    assert!(context.contains("<cwd>.</cwd>"), "{context}");
+    let environment = context
+        .split_once("<environment_context>")
+        .and_then(|(_, tail)| tail.split_once("</environment_context>"))
+        .map(|(environment, _)| environment)
+        .ok_or_else(|| Error::Invalid("model context has no environment".into()))?;
+    assert!(environment.contains("<cwd>.</cwd>"), "{environment}");
     for (_, root, _) in harness
         .workspace
         .as_ref()
@@ -2608,8 +2639,8 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         .native_mounts()
     {
         assert!(
-            !context.contains(root.to_string_lossy().as_ref()),
-            "model context advertised a host projection path: {context}"
+            !environment.contains(root.to_string_lossy().as_ref()),
+            "model environment advertised a host projection path: {environment}"
         );
     }
     let ModelContent::Parts(parts) = input_content(&request, body)? else {
@@ -2627,6 +2658,23 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     assert_eq!(policies, [Some(false), Some(false), Some(true)]);
     // A resend after its files changed or vanished replays the pinned
     // manifest, so it still matches the delivered message exactly.
+    let workspace = crate::filesystem::workspace_ref(
+        harness.project.provider().clone(),
+        &harness.project.storage_name(&mut None)?,
+    )?;
+    let cut = harness.files.resolve(&workspace, None).await?.generation;
+    harness
+        .files
+        .apply(
+            &workspace,
+            Some(&cut),
+            &[crate::filesystem::WorkspaceMutation::PutFile {
+                path: "/mention.txt".into(),
+                bytes: acyclic_stream::OwnedBytes::from_static(b"CHANGED\n"),
+            }],
+            &crate::IdempotencyKey::new("commit-mention-edit")?,
+        )
+        .await?;
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
     assert_eq!(
@@ -2771,7 +2819,23 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
     let inbox = observed.conversation.send("marker", "/marker now").await?;
     let entry = observed.settled(inbox).await?;
     let client = observed.conversation;
-    // The command, the skill catalog and the mentioned file are all gone.
+    // Remove the source from the workspace cut used for command admission.
+    let workspace = crate::filesystem::workspace_ref(
+        harness.project.provider().clone(),
+        &harness.project.storage_name(&mut None)?,
+    )?;
+    let cut = harness.files.resolve(&workspace, None).await?.generation;
+    let removed = ["/.claude/commands/marker.md", "/note.txt"]
+        .map(|path| crate::filesystem::WorkspaceMutation::Remove { path: path.into() });
+    harness
+        .files
+        .apply(
+            &workspace,
+            Some(&cut),
+            &removed,
+            &crate::IdempotencyKey::new("remove-command-source")?,
+        )
+        .await?;
     std::fs::remove_dir_all(checkout.join(".claude")).map_err(agent)?;
     std::fs::remove_file(checkout.join("note.txt")).map_err(agent)?;
     // Negative control: a new delivery reads the project as it is now.
@@ -2902,7 +2966,9 @@ async fn physical_siblings_use_the_original_shared_file_binding_world() -> Resul
         // Creation's initial idle status is not the brief's completion.
         // Wait for the child's actual turn record through its served follow.
         let conversation = Conversation::open(harness.attach(Some(child.clone()), true).await?);
-        let mut events = conversation.observe(Some(0)).await?;
+        let (agents, _) = harness.agents().await?;
+        let original = agents.state(&child).await.map_err(agent)?.conversation_base;
+        let mut events = conversation.observe(Some(original)).await?;
         let entry = loop {
             match events.next().await? {
                 crate::local::Event::Turn { entry, .. } => break entry,
@@ -3039,12 +3105,18 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             }),
         ])
     };
-    let provider = super::scripted([
-        write("child"),
-        ScriptedTurn::Text("child done".into()),
-        write("parent"),
-        ScriptedTurn::Text("parent done".into()),
-    ]);
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            [
+                write("child"),
+                ScriptedTurn::Text("child done".into()),
+                write("parent"),
+                ScriptedTurn::Text("parent done".into()),
+            ],
+            [ScriptedTurn::Text("child settlement acknowledged".into())],
+        )
+        .with_context_capacity(super::capacity()),
+    );
     // Model projections carry a path and opaque version. The authoritative
     // FileRef belongs to the original ToolCompleted journal observation.
     async fn publication(
@@ -3099,8 +3171,10 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         }
     }
     let catalog = |index| -> Result<Vec<crate::context::SkillSummary>> {
-        let request = provider
-            .request(index)
+        let (_, request) = provider
+            .input_exchanges()
+            .into_iter()
+            .nth(index)
             .ok_or_else(|| Error::NotFound("context request".into()))?;
         request
             .messages
@@ -3188,7 +3262,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         "child task must complete before inspecting its catalog and writes"
     );
     let child_state = agents.state(&child).await.map_err(agent)?;
-    assert_eq!(provider.request_count(), 2);
+    assert_eq!(provider.input_requests(), 2);
     let child_file = publication(&connection, &child, 0).await?;
     let child_project = child_state
         .volumes
@@ -3227,13 +3301,16 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         2
     );
 
-    let mut parent = ObservedConversation::open(&harness).await?;
+    let child_turn = crate::agent::turn_id(&child_state, &entry.input).map_err(agent)?;
+    let mut parent =
+        ObservedConversation::observe(Conversation::open(connection.clone()), Some(0)).await?;
+    parent.settled_child_notice(child_turn).await?;
     let parent_input = parent
         .conversation
         .send("parent-write", "write parent seed")
         .await?;
     parent.settled(parent_input).await?;
-    assert_eq!(provider.request_count(), 4);
+    assert_eq!(provider.input_requests(), 4);
     let parent_file = publication(&connection, &root, parent_input).await?;
     assert_eq!(parent_file.volume(), &project);
     // The second agent must not reuse the first agent's cached private pins.
@@ -3344,39 +3421,92 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     Ok(())
 }
 
-/// Each agent of a chain runs a command, which publishes its task view and so
-/// the volume alias it authored, then spawns the next below it. Every fork
-/// inherits its parent's alias to that parent's own binding; each depth must
-/// rebind it. Negative control: accepting only the root's binding as the
-/// alias to replace fails the second child with "volume alias names another
-/// binding".
+/// Each child reads the inherited file through its own announced native
+/// checkout while the turn holds that binding. The descendant is spawned only
+/// after this observation and the child's committed turn.
 #[test]
 fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
     super::seeded(a_spawn_chain_binds_its_volumes_at_every_depth_world)
 }
 
 async fn a_spawn_chain_binds_its_volumes_at_every_depth_world() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     use acyclic_harness_client::{AgentCommand, AgentReply};
     const DEPTH: usize = 6;
-    // Each settlement wakes its parent (#3773), and that turn's settlement
-    // wakes the next ancestor: depth `d` settling wakes its `d + 1` ancestors.
+    let recorded = Arc::new(std::sync::OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
+    let checkouts = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    let (source, observed) = (recorded.clone(), checkouts.clone());
+    // Park each settlement wake on its model stream. The actor still admits
+    // explicit spawns while a turn is pending. Settling these wake turns would
+    // propagate extra model turns through every ancestor of every child.
     let provider = Arc::new(
         ScriptedModelProvider::routed(
-            (0..DEPTH).flat_map(|depth| {
-                [
-                    super::checked_commands::call(
-                        depth,
-                        crate::tools::shell::PLATFORM.name,
-                        "echo depth",
-                    ),
-                    super::ScriptedTurn::Text(format!("depth {depth} done")),
-                ]
+            (0..DEPTH).map(|depth| super::ScriptedTurn::Text(format!("depth {depth} done"))),
+            (0..DEPTH).map(|_| {
+                super::ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}])
             }),
-            (0..DEPTH * (DEPTH + 1) / 2).map(|_| super::ScriptedTurn::Text("noted".into())),
         )
-        .with_context_capacity(super::capacity()),
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |dispatch| {
+            let source = source.clone();
+            let observed = observed.clone();
+            Box::pin(async move {
+                let provider = source
+                    .get()
+                    .and_then(std::sync::Weak::upgrade)
+                    .ok_or_else(|| Error::NotFound("live scripted provider".into()))?;
+                let Some(request) = provider
+                    .input_exchanges()
+                    .into_iter()
+                    .find_map(|(recorded, request)| (recorded == dispatch).then_some(request))
+                else {
+                    return Ok(());
+                };
+                let cwd = tokio::fs::canonicalize(announced_checkout(&request)?)
+                    .await
+                    .map_err(agent)?;
+                if tokio::fs::read(cwd.join("context-sentinel"))
+                    .await
+                    .map_err(agent)?
+                    != b"inherited"
+                {
+                    return Err(Error::Conflict(
+                        "child checkout lost its inherited file".into(),
+                    ));
+                }
+                if !observed.lock().map_err(agent)?.insert(cwd) {
+                    return Err(Error::Conflict(
+                        "child shares an ancestor's checkout".into(),
+                    ));
+                }
+                Ok(())
+            })
+        }),
     );
-    let (_directory, harness, provider) = checkout_scripted(&[], provider).await?;
+    recorded
+        .set(Arc::downgrade(&provider))
+        .map_err(|_| Error::Conflict("scripted provider already recorded".into()))?;
+    let directory = super::temporary_directory()?;
+    let state_directory = super::temporary_directory()?;
+    std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
+    std::fs::write(directory.path().join("context-sentinel"), b"inherited").map_err(agent)?;
+    let (config, _clock) =
+        super::native_checkout_config(directory.path(), (super::model()?, provider.clone()))?;
+    let signing = acyclic_native_runtime::signing_key::MemorySigningStore::new().map_err(agent)?;
+    let mut config = config
+        .state_directory(state_directory.path())
+        .signing_store(Arc::new(signing));
+    config.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(
+        state_directory,
+    ));
+    let harness = Arc::new(super::open_scripted(config).await?);
+    let root_path = harness
+        .workspace_path()
+        .ok_or_else(|| Error::NotFound("root checkout".into()))?;
+    let root_path = tokio::fs::canonicalize(root_path).await.map_err(agent)?;
+    checkouts.lock().map_err(agent)?.insert(root_path);
     let (agents, root) = harness.agents().await?;
     let (agents, mut parent) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -3386,7 +3516,7 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth_world() -> Result<()> {
                 parent: parent.clone(),
                 id: crate::agent::IntentId::try_from(format!("depth-{depth}").as_str())
                     .map_err(agent)?,
-                brief: crate::model::ModelContent::Text("run one command".into()),
+                brief: crate::model::ModelContent::Text("inspect your checkout".into()),
                 role: "worker".into(),
             })
             .await?
@@ -3394,29 +3524,57 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth_world() -> Result<()> {
             return Err(Error::Invalid("spawn was not delivered".into()));
         };
         let history = settled(&harness, &child).await?;
-        let entry = ConversationEntry::decode(
-            history
-                .last()
-                .ok_or_else(|| Error::NotFound("spawned command completion".into()))?,
-        )
+        let state = agents.state(&child).await.map_err(agent)?;
+        let entry = ConversationEntry::decode(history.last().ok_or_else(|| {
+            Error::Conflict(format!(
+                "depth {} has no completed checkout observation: {:?}",
+                depth + 1,
+                state.phase
+            ))
+        })?)
         .map_err(agent)?;
         assert_eq!(
             entry.outcome,
             crate::agent::TurnOutcome::Completed,
-            "depth {} must complete its original command: {entry:?}",
+            "depth {} must observe its checkout: {entry:?}",
             depth + 1,
         );
-        let state = agents.state(&child).await.map_err(agent)?;
         assert!(
             !matches!(state.phase, crate::agent::Phase::Done { .. }),
             "depth {} settled {:?}",
             depth + 1,
             state.phase
         );
+        assert_eq!(checkouts.lock().map_err(agent)?.len(), depth + 2);
         parent = child;
     }
-    assert_eq!(provider.input_requests(), 2 * DEPTH);
+    assert_eq!(provider.input_requests(), DEPTH);
     Ok(())
+}
+
+fn announced_checkout(request: &crate::model::ModelRequest) -> Result<std::path::PathBuf> {
+    request
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|message| message.content.parts().iter().rev())
+        .find_map(|part| {
+            let crate::model::ModelContentPart::Text { text, .. } = part else {
+                return None;
+            };
+            let document = serde_json::from_str::<serde_json::Value>(text).ok()?;
+            let name = document.get("default")?.as_str()?;
+            let workspace =
+                document.get("workspaces")?.as_array()?.iter().find(|row| {
+                    row.get("name").and_then(serde_json::Value::as_str) == Some(name)
+                })?;
+            workspace
+                .get("paths")?
+                .get("local")?
+                .as_str()
+                .map(std::path::PathBuf::from)
+        })
+        .ok_or_else(|| Error::Invalid("no default child workspace announced".into()))
 }
 
 #[tokio::test]
@@ -3426,63 +3584,71 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
     let recorded = Arc::new(std::sync::OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
     let parent_cwd = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
-    let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let checked = Arc::new(std::sync::OnceLock::<std::result::Result<(), String>>::new());
     let (source, parent, observed) = (recorded.clone(), parent_cwd.clone(), checked.clone());
     let provider = Arc::new(
-        ScriptedModelProvider::new(turns)
-            .with_context_capacity(super::capacity())
-            .with_dispatch_observer(move |_| {
-                let provider = source
-                    .get()
-                    .and_then(std::sync::Weak::upgrade)
-                    .expect("live provider");
-                if provider.request_count() != 1 {
-                    return Box::pin(async { Ok(()) });
-                }
-                let request = provider.last_request().expect("child request");
-                let cwd = request
-                    .messages
-                    .iter()
-                    .find_map(|message| match &message.content {
-                        crate::model::ModelContent::Text(text) => text
-                            .split_once("<cwd>")
-                            .and_then(|(_, tail)| tail.split_once("</cwd>"))
-                            .map(|(cwd, _)| cwd.to_owned()),
-                        content => content.parts().iter().find_map(|part| match part {
-                            crate::model::ModelContentPart::Text { text, .. } => text
-                                .split_once("<cwd>")
-                                .and_then(|(_, tail)| tail.split_once("</cwd>"))
-                                .map(|(cwd, _)| cwd.to_owned()),
-                            _ => None,
-                        }),
-                    })
-                    .expect("child environment cwd");
-                let parent = parent.get().expect("parent cwd").clone();
-                let observed = observed.clone();
-                Box::pin(async move {
-                    // Native projection must keep running while the actual
-                    // turn retains its mount and inspects the inherited file.
-                    let cwd = tokio::fs::canonicalize(&cwd).await.map_err(agent)?;
-                    assert_ne!(cwd, tokio::fs::canonicalize(parent).await.map_err(agent)?);
-                    assert_eq!(
-                        tokio::fs::read(cwd.join("context-sentinel"))
-                            .await
-                            .map_err(agent)?,
-                        b"inherited"
-                    );
-                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        ScriptedModelProvider::routed(
+            turns,
+            [super::ScriptedTurn::Text(
+                "parent noted child completion".into(),
+            )],
+        )
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |_| {
+            let provider = source
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .expect("live provider");
+            if provider.request_count() != 1 {
+                return Box::pin(async { Ok(()) });
+            }
+            let request = provider.last_request().expect("child request");
+            let workspace = announced_checkout(&request);
+            let parent = parent.get().expect("parent cwd").clone();
+            let observed = observed.clone();
+            Box::pin(async move {
+                // Native projection must keep running while the actual
+                // turn retains its mount and inspects the inherited file.
+                let result = async {
+                    let cwd = tokio::fs::canonicalize(workspace?).await.map_err(|error| {
+                        Error::Storage(format!("announced child workspace: {error}"))
+                    })?;
+                    if cwd == tokio::fs::canonicalize(parent).await.map_err(agent)? {
+                        return Err(Error::Conflict("child shares its parent's checkout".into()));
+                    }
+                    if tokio::fs::read(cwd.join("context-sentinel"))
+                        .await
+                        .map_err(|error| {
+                            Error::Storage(format!("child's inherited sentinel: {error}"))
+                        })?
+                        != b"inherited"
+                    {
+                        return Err(Error::Conflict(
+                            "child mount has different inherited bytes".into(),
+                        ));
+                    }
                     Ok(())
-                })
-            }),
+                }
+                .await;
+                observed
+                    .set(result.as_ref().map(|_| ()).map_err(ToString::to_string))
+                    .map_err(|_| Error::Conflict("child dispatch repeated".into()))?;
+                result
+            })
+        }),
     );
     recorded
         .set(Arc::downgrade(&provider))
         .expect("one provider binding");
-    let (_directory, harness, provider) = checkout_scripted(
-        &[("context-sentinel".into(), b"inherited".to_vec())],
-        provider,
-    )
-    .await?;
+    let directory = tempfile::tempdir().map_err(agent)?;
+    std::fs::write(directory.path().join("context-sentinel"), b"inherited").map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(super::checkout_config(
+            directory.path(),
+            (super::model()?, provider.clone()),
+        )?)
+        .await?,
+    );
     parent_cwd
         .set(
             harness
@@ -3549,8 +3715,13 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     assert!(context.contains(&format!("working for parent {root}")));
     assert!(context.contains("final message is your report"));
     assert!(context.contains(&format!("Use send with agent {root}")));
-    assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
+    checked
+        .get()
+        .ok_or_else(|| Error::Invalid("child dispatch was not observed".into()))?
+        .as_ref()
+        .map_err(|error| Error::Conflict(error.clone()))?;
     assert!(context.contains("<environment_context>"));
+    assert!(context.contains("<cwd>.</cwd>"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
         return Err(Error::Invalid(
@@ -3560,10 +3731,31 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     let read = Conversation::read(&connection, &child, ReadTarget::File { file: *file }).await?;
     assert!(read == brief.as_bytes());
     // Negative control: the child reads no other file of its parent's.
-    let client = conversation(&harness).await?;
-    client.send("other", "a parent's own prompt").await?;
-    let entries = settled(&harness, &root).await?;
-    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    // The child's settlement can wake its parent. Wait for that original
+    // turn before sending, so the proof's prompt opens its own input.
+    let mut client =
+        ObservedConversation::observe(Conversation::open(connection.clone()), Some(0)).await?;
+    loop {
+        match client.observer.next().await? {
+            super::Event::Turn { entry, .. }
+                if matches!(&entry.input, TurnInput::Notice { id, .. }
+                    if id.as_str().starts_with("child-settled:")) =>
+            {
+                assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+                break;
+            }
+            super::Event::Status(status)
+                if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+            {
+                return Err(Error::Conflict(format!(
+                    "parent ended before child notice: {:?}",
+                    status.phase
+                )));
+            }
+            _ => {}
+        }
+    }
+    let (sequence, entry) = client.send_at("other", "a parent's own prompt").await?;
     let TurnInput::Message { body, .. } = entry.input else {
         return Err(Error::Invalid(
             "the parent's input is not its prompt".into(),
@@ -3581,7 +3773,15 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         .is_err()
     );
     // The parent reads it, so the refusal is the grant's.
-    Conversation::read(&connection, &root, ReadTarget::File { file: *body }).await?;
+    Conversation::read(
+        &connection,
+        &root,
+        ReadTarget::Conversation {
+            sequence,
+            file: *body,
+        },
+    )
+    .await?;
     // A retried spawn names the same child.
     assert!(matches!(
         connection.execute(&spawn).await?,
@@ -4432,22 +4632,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments_wo
     use {acyclic_fs::CancellationToken, acyclic_fs_work::performance::WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
-    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
-        directory.path().join("filesystem"),
-    ))
-    .await
-    .map_err(agent)?;
-    let cancel = CancellationToken::new();
     let source = project.storage_name(&mut None)?;
-    let workspace = fs
-        .open_workspace(&source, WorkBudget::UNBOUNDED, &cancel)
-        .await
-        .map_err(|failure| agent(failure.error))?
-        .value;
-    workspace
-        .write_text("/plan.md", "selected files")
-        .await
-        .map_err(agent)?;
     let provider = super::scripted(
         (0..4).map(|index| crate::test_support::ScriptedTurn::Text(format!("answer {index}"))),
     );
@@ -4458,6 +4643,21 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments_wo
         )
         .await?,
     );
+    let fs = &harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("historical fork has no native workspace".into()))?
+        .filesystem;
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .open_workspace(&source, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    workspace
+        .write_text("/plan.md", "selected files")
+        .await
+        .map_err(agent)?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -4779,7 +4979,7 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     );
     let harness = Arc::new(
         super::open_scripted(
-            volume_config(directory.path(), project, provider)?
+            volume_config(directory.path(), project, provider.clone())?
                 .without_default_tools()
                 .tool(super::tool("example.echo"))
                 .compaction(crate::context::CompactionPolicy::Disabled),
@@ -4849,11 +5049,19 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     agents.pause(root, false).await.map_err(agent)?;
     let entry = observed.settled(sequences[0]).await?;
     assert!(
+        entry.outcome.is_completed(),
+        "{:?} after {} model requests",
+        entry.outcome,
+        provider.request_count()
+    );
+    assert!(
         entry
             .steering
             .as_ref()
             .is_some_and(|cut| cut.through > sequences[2]),
-        "the selected prefix must include the reserved gap for this control to prove admission"
+        "the reserved gap must be inside the selected prefix: {sequences:?}, steering={:?}, observed={}",
+        entry.steering.as_ref().map(|cut| cut.through),
+        entry.observed_through
     );
     entering.await.map_err(agent)?;
     let pending = observed.conversation.pending_inputs().await?;
@@ -5826,10 +6034,37 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
         .await?;
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
     let harness = Arc::new(open()?.await?);
+    let project = crate::filesystem::workspace_ref(
+        harness.project.provider().clone(),
+        &harness.project.storage_name(&mut None)?,
+    )?;
+    async fn publish_instruction(
+        harness: &LocalHarness,
+        project: &crate::resources::WorkspaceRef,
+        intent: &str,
+        bytes: &'static [u8],
+    ) -> Result<()> {
+        let cut = harness.files.resolve(project, None).await?.generation;
+        harness
+            .files
+            .apply(
+                project,
+                Some(&cut),
+                &[crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/AGENTS.md".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(bytes),
+                }],
+                &crate::IdempotencyKey::new(intent)?,
+            )
+            .await?;
+        Ok(())
+    }
+    publish_instruction(&harness, &project, "reopened-instructions", b"RULE_ONE\n").await?;
     let mut client = ObservedConversation::open(&harness).await?;
     client.send("three", "AFTER_REOPEN").await?;
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
+    publish_instruction(&harness, &project, "repeat-instructions", b"RULE_TWO\n").await?;
     client.send("four", "REPEAT_EDIT").await?;
     client.send("five", "UNCHANGED").await?;
     for (index, expected) in [
@@ -5883,26 +6118,29 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Res
     use acyclic_harness_client::{AgentCommand, AgentReply};
 
     let directory = tempfile::tempdir().map_err(agent)?;
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            ["child done", "sibling done", "parent still running"]
+                .map(|text| super::ScriptedTurn::Text(text.into())),
+            ["child acknowledged", "sibling acknowledged"]
+                .map(|text| super::ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(super::capacity()),
+    );
     let harness = Arc::new(
         super::open_scripted(
-            volume_config(
-                directory.path(),
-                volume(directory.path()).await?,
-                super::scripted([
-                    super::ScriptedTurn::Text("child done".into()),
-                    super::ScriptedTurn::Text("sibling done".into()),
-                    super::ScriptedTurn::Text("parent still running".into()),
-                ]),
-            )?
-            .without_default_tools()
-            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-            .compaction(crate::context::CompactionPolicy::Disabled),
+            volume_config(directory.path(), volume(directory.path()).await?, provider)?
+                .without_default_tools()
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?,
     );
     let connection = harness.connect().await?;
     let root = connection.root().clone();
     let (agents, _) = harness.agents().await?;
+    let mut observed =
+        ObservedConversation::observe(Conversation::open(connection.clone()), None).await?;
     for id in ["failed-child", "healthy-sibling"] {
         let AgentReply::Spawned { agent: child, .. } = connection
             .execute(&AgentCommand::Spawn {
@@ -5916,12 +6154,27 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Res
             return Err(Error::Invalid("child spawn refused".into()));
         };
         let entries = settled(&harness, &child).await?;
-        assert_eq!(entries.len(), 1);
-        let entry = crate::agent::ConversationEntry::decode(&entries[0]).map_err(agent)?;
+        let reports = entries
+            .iter()
+            .map(|bytes| ConversationEntry::decode(bytes).map_err(agent))
+            .collect::<Result<Vec<_>>>()?;
+        let mut briefs = reports
+            .iter()
+            .filter(|entry| matches!(entry.input, TurnInput::Brief { .. }));
+        let entry = briefs
+            .next()
+            .ok_or_else(|| Error::Conflict("child brief did not settle".into()))?;
+        assert!(
+            briefs.next().is_none(),
+            "child brief settled more than once"
+        );
         assert!(matches!(
             entry.outcome,
             crate::agent::TurnOutcome::Completed
         ));
+        let state = agents.state(&child).await.map_err(agent)?;
+        let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
+        observed.settled_child_notice(turn).await?;
         if id == "failed-child" {
             // A malformed retained input cannot enter a failure transition.
             // It must remain unconsumed, without stopping the serving loop.
@@ -5986,7 +6239,6 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Res
                 .map_err(agent)?
                 .await
                 .to_string();
-            let original = format!("{cause:?}");
             let status_failure = match selected
                 .session
                 .follow_records(acyclic_stream::FollowRequest::new(
@@ -6002,20 +6254,20 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Res
                     .expect_err("failed actor kept its status-only follow"),
             };
             assert!(
-                status_failure.to_string().contains(&original),
+                status_failure.to_string().contains(&cause),
                 "{status_failure}"
             );
             let lost = lost
                 .await
                 .err()
                 .ok_or_else(|| Error::Invalid("failed child kept a live follow".into()))?;
-            assert!(lost.to_string().contains(&original), "{lost}");
+            assert!(lost.to_string().contains(&cause), "{lost}");
             let child = Conversation::open(selected);
             let fenced =
                 child.wait_current_input().await.err().ok_or_else(|| {
                     Error::Invalid("failed child settled its original input".into())
                 })?;
-            assert!(fenced.to_string().contains(&original), "{fenced}");
+            assert!(fenced.to_string().contains(&cause), "{fenced}");
         }
         let runtime = &harness.agents.get().unwrap().runtime;
         assert!(runtime.failure().is_none());
@@ -6026,7 +6278,6 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Res
         ));
         harness.connect().await?;
     }
-    let mut observed = ObservedConversation::open(&harness).await?;
     let inbox = observed
         .conversation
         .send("parent-after-failure", "continue")
@@ -6039,9 +6290,8 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Res
     Ok(())
 }
 
-/// A lost model producer fails one attempt, not the actor (GC-217): its
-/// storage-class cause is retryable, so every waiter, live query and follow
-/// stays parked on the retained input until the actor's next event retries it.
+/// A lost model producer leaves every waiter attached to the original input
+/// while the actor's failure event reconciles its recorded request.
 #[tokio::test]
 async fn lost_model_producer_parks_actor_waiters_until_retry() -> Result<()> {
     lost_model_producer(false).await
@@ -6097,9 +6347,10 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
             Err(Error::Invalid("model gate unexpectedly released".into()))
         })
     });
+    let provider = Arc::new(provider);
     let harness = Arc::new(
         super::open_scripted(
-            volume_config(directory.path(), project, Arc::new(provider))?
+            volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?,
@@ -6146,7 +6397,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     } else {
         harness.connect().await?
     };
-    assert_lost_model_producer(harness, connection, entering, producer, wire).await?;
+    assert_lost_model_producer(harness, connection, entering, producer, &provider, wire).await?;
     if let Some((stop, serving)) = transport {
         let _ = stop.send(());
         eprintln!("producer-loss wire={wire}: stopping server");
@@ -6162,6 +6413,7 @@ async fn assert_lost_model_producer(
     connection: crate::local::Connection,
     entering: tokio::sync::oneshot::Receiver<()>,
     producer: tokio::sync::oneshot::Sender<()>,
+    provider: &ScriptedModelProvider,
     wire: bool,
 ) -> Result<()> {
     let client = Conversation::open(connection.clone());
@@ -6232,35 +6484,18 @@ async fn assert_lost_model_producer(
     );
     eprintln!("producer-loss wire={wire}: dropping model producer");
     drop(producer);
-    // Completion settles every in-flight delivery and reports the failed one.
+    // The original failure is a delivery event. It reopens the admitted
+    // request without closing the actor, requiring a wake, or redispatching.
     let hosted = harness.agents.get().unwrap();
-    assert!(matches!(
-        hosted.agents().runtime().complete().await,
-        Err(acyclic_actors::local::Error::CompletionFailed(_))
-    ));
-    eprintln!("producer-loss wire={wire}: failed attempt settled");
+    hosted.agents().runtime().complete().await.map_err(agent)?;
+    let dispatches = provider.dispatches();
+    assert_eq!(dispatches.len(), 2, "reconciliation redispatched the model");
+    assert_eq!(provider.reconciliations(), dispatches[1..]);
     let admitted = futures::poll!(&mut admission);
     assert!(
         admitted.is_pending(),
         "an attempt failure closed runtime admission: {admitted:?}"
     );
-    assert_eq!(
-        hosted
-            .agents()
-            .reply(
-                hosted.root(),
-                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
-                inbox
-            )
-            .await
-            .map_err(agent)?,
-        crate::agent::Reply::Pending,
-        "a failed attempt settled its input"
-    );
-    // The actor's next event retries the retained input. Every waiter parked
-    // before the loss observes that retry's outcome: on the old contract each
-    // had already failed with the attempt's storage cause.
-    hosted.agents().host(&root).map_err(agent)?;
     let observed = waiting.await;
     eprintln!("producer-loss wire={wire}: public settlement terminal");
     assert!(

@@ -191,6 +191,7 @@ impl<T: ?Sized> RetainedWeak<T> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests {
     use super::*;
 

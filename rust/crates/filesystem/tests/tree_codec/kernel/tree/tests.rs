@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, Child, DecodeLimits, FileKind, LogicalName, NameEncoding, TreeEntry,
-    TreePage, TreePageError, decode_tree_page, encode_tree_page,
+    CanonicalDecodeError, CanonicalInvariant, Child, DecodeLimits, FileKind, LogicalName,
+    NameEncoding, TreeEntry, TreePage, TreePageError, decode_tree_page, encode_tree_page,
 };
 use acyclic_fs_format::{
     identity::{Digest, FileId},
@@ -75,7 +75,9 @@ fn leaf_ordering_is_raw_byte_order_not_locale_aware() -> Result<(), Box<dyn std:
             |_| CanonicalDecodeError::AllocationFailed
         )
         .err(),
-        Some(invariant(TreePageError::NamesNotStrictlyOrdered)),
+        Some(CanonicalDecodeError::Invariant(CanonicalInvariant::Tree(
+            TreePageError::NamesNotStrictlyOrdered,
+        ))),
     );
     Ok(())
 }

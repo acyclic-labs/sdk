@@ -3,6 +3,7 @@ use super::*;
 use acyclic_stream::{ProviderOwner, StreamProviderExt as _};
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 #[cfg(all(feature = "fuzzing", not(loom)))]

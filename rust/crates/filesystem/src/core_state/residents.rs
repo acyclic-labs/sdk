@@ -607,9 +607,11 @@ impl Residents {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod index_integrity_tests {
     use super::*;
 

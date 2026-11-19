@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -56,13 +56,26 @@ test('policy entrypoints reject violations through symlinks and stay inert on im
   mkdirSync(join(root, 'scripts'));
   for (const name of ['check-cargo-callers.mjs', 'check-incremental.mjs', 'policy-core.mjs']) copyFileSync(new URL(`../${name}`, import.meta.url), join(root, 'scripts', name));
   writeFileSync(join(root, 'scripts/cargo-callers.json'), '[]');
-  copyFileSync(new URL('../fixtures/cargo-callers/recorded-log.txt', import.meta.url), join(root, 'scripts/violation.sh'));
+  const recorded = new URL('../fixtures/cargo-callers/recorded-log.txt', import.meta.url);
+  copyFileSync(recorded, join(root, 'scripts/violation.sh'));
+  const [program] = readFileSync(recorded, 'utf8').split(' ');
+  writeFileSync(join(root, 'download.bzl'), `def provision(ctx):
+    components = [("${program}", ctx.os.arch)]
+    ctx.execute(["rustc", "--version"])
+    return components
+`);
+  writeFileSync(join(root, 'execute.bzl'), `def build(ctx):
+    argv = [ctx.path("${program}"), "--version"]
+    ctx.execute(argv)
+`);
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['add', '.'], {cwd: root});
   symlinkSync(join(root, 'scripts/check-cargo-callers.mjs'), join(root, 'check.mjs'));
   const result = spawnSync(process.execPath, ['check.mjs'], {cwd: root, encoding: 'utf8'});
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /scripts\/violation.sh invokes Cargo/);
+  assert.match(result.stderr, /execute\.bzl invokes Cargo/);
+  assert.doesNotMatch(result.stderr, /download\.bzl invokes Cargo/);
   const imported = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import("./scripts/check-cargo-callers.mjs")'], {cwd: root, encoding: 'utf8'});
   assert.equal(imported.status, 0, imported.stderr);
   writeFileSync(join(root, 'scripts/incremental-disabled.sh'), 'CARGO_INCREMENTAL=0\n');

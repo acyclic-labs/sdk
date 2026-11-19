@@ -106,8 +106,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             ),
             TurnAdmission::LocalRoot,
             Arc::new(executors),
-            LIMITS,
-            acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+            (
+                LIMITS,
+                acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+            ),
         )
         .with_clock(clock.clone());
         let host = AgentHost::with_spawn_volumes(

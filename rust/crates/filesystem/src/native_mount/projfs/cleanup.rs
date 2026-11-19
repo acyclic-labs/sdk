@@ -127,13 +127,13 @@ pub(super) fn delete_root_tag(root_handle: &std::fs::File) -> std::io::Result<()
 /// served it is gone (stopped, or its process died).
 pub(in crate::native_mount) fn detach_root_by_path(root: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::fs::OpenOptionsExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_WRITE_ATTRIBUTES,
+    };
     // Backup semantics open the directory itself; no reparse follows.
     let handle = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(
-            windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS.0
-                | windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT.0,
-        )
+        .access_mode(FILE_WRITE_ATTRIBUTES.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
         .open(root)?;
     detach_root_handle(&handle)
 }
@@ -237,30 +237,55 @@ pub(in crate::native_mount) fn detach_dead_shared_root(
 ) -> Result<(), NativeMountError> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::Wdk::Storage::FileSystem::{
-        FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT, FILE_SYNCHRONOUS_IO_NONALERT,
     };
     use windows::Win32::Storage::FileSystem::{
-        FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
     };
 
     crate::native_host::require_leaf(name)?;
     let leaf: Vec<u16> = name.as_os_str().encode_wide().collect();
     let mut work = crate::native_host::ordinary_work();
-    match crate::native_host::open_windows_at(
+    // Request only the attributes needed to identify the directory and
+    // remove its reparse tag. Data access enters the projection and fails
+    // after the owning provider has exited.
+    let opened = crate::native_host::open_windows_at(
         &roots.root.directory(),
         &leaf,
-        FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
         FILE_OPEN,
-        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_DIRECTORY_FILE | FILE_OPEN_FOR_BACKUP_INTENT | FILE_SYNCHRONOUS_IO_NONALERT,
         &mut work,
-    ) {
+    );
+    let destination = roots.path().join(name);
+    match opened {
         Ok(handle) => {
-            let identity = roots.root.stat_file(&handle, &mut work)?.identity();
-            detach_root_handle(&handle)?;
-            roots.root.remove(&leaf, Some(identity), &mut work)?;
+            let (identity, _) = crate::native_host::file_identity_and_length(&handle, &mut work)
+                .map_err(|error| {
+                    NativeMountError::from(error)
+                        .during("identify dead shared ProjFS root", &destination)
+                })?;
+            detach_root_handle(&handle).map_err(|error| {
+                NativeMountError::host_operation(
+                    "detach dead shared ProjFS root",
+                    &destination,
+                    error,
+                )
+            })?;
+            roots
+                .root
+                .remove(&leaf, Some(identity), &mut work)
+                .map_err(|error| {
+                    NativeMountError::from(error)
+                        .during("remove dead shared ProjFS root", &destination)
+                })?;
         }
         Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            return Err(
+                NativeMountError::from(error).during("open dead shared ProjFS root", &destination)
+            );
+        }
     }
     let staging = super::staging_path(name);
     let staging: Vec<u16> = staging.as_os_str().encode_wide().collect();

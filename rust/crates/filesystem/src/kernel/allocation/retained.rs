@@ -655,6 +655,7 @@ impl<T> std::ops::Deref for Retained<T> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

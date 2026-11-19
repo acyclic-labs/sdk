@@ -175,6 +175,7 @@ pub(super) fn clone_namespace(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod allocation_properties;
 
 #[cfg(unix)]

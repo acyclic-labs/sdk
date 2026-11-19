@@ -1,3 +1,4 @@
+use super::output::OUTPUT_LIMIT_MESSAGE;
 use super::plan::Plan;
 use super::*;
 use crate::ProcessError;
@@ -84,7 +85,7 @@ impl Budget {
         }
         let cause = ProcessError::OutputLimit {
             exit_code: None,
-            message: "aggregate hook output limit exceeded",
+            message: OUTPUT_LIMIT_MESSAGE,
         };
         encoded_size(
             &Fallback {
@@ -365,7 +366,7 @@ pub(super) fn encoded_size(value: &impl Serialize, maximum: u64) -> Result<u64> 
 fn exceeded() -> Error {
     Error::Process(ProcessError::OutputLimit {
         exit_code: None,
-        message: "aggregate hook output limit exceeded".into(),
+        message: OUTPUT_LIMIT_MESSAGE.into(),
     })
 }
 

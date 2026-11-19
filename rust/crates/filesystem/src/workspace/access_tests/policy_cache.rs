@@ -140,7 +140,7 @@ async fn check_revision_reuse(keep_stale_revision: bool) -> Result<(), Box<dyn s
     assert_eq!(head_keyed.len(), 8);
     let old_view = binding(&first.value, "agent".into(), 256)?.0;
     assert!(old_view.decide(Action::Read, "secret", 10).allowed);
-    fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "secret")).await?;
+    fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "secret")?).await?;
     let mut checkout = owner
         .checkout(
             GenerationSelector::Head,

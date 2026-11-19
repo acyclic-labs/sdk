@@ -192,4 +192,13 @@ mod records;
 mod sparse;
 use records::mount_node;
 #[cfg(test)]
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_lazy,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace,
+    unit_test_mount_views
+))]
 pub(in crate::native_mount) mod tests;

@@ -102,7 +102,8 @@ pub mod codec_fuzz {
         Ok(seeds)
     }
 }
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod claim_tests;
 mod configuration;
 mod content;
@@ -111,13 +112,15 @@ mod context_publication;
 mod conversation;
 mod durability;
 mod indexed_publication;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod inline_tests;
 mod interactions;
 mod model_calls;
 mod observations;
 mod publication_authorization;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod request_prefix_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub use context_publication::{
@@ -164,7 +167,7 @@ pub(crate) const MAXIMUM_PAYLOAD_BYTES: u64 = crate::conversation::MAX_EXACT_JS_
 /// Durable observations and private payload references for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     cache_identity: crate::executor::ExecutionJournalCacheId,
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     traces: Option<(acyclic_stream::trace::Registry<P>, crate::agent::AgentPath)>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
@@ -180,6 +183,7 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     bound_selection: Option<crate::projection::SelectedModelContext>,
     /// Original admitted request of the immediately preceding selected turn.
     preceding_request: Option<FileRef>,
+    preceding_working_context: Option<crate::executor::WorkingContextPrefix>,
     /// An agent turn's stop signal, followed as the executor's cancellation.
     stop: Option<acyclic_actors::guest::CancellationToken>,
     clock: Option<Arc<dyn acyclic_actors::local::Clock>>,

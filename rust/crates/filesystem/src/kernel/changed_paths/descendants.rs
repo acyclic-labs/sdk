@@ -250,4 +250,5 @@ async fn unchanged_edge<S: AsyncObjectStore>(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

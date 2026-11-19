@@ -92,7 +92,11 @@ impl ResultCursor {
         Ok(())
     }
 
-    /// Admit this cursor against the original result and bound its next page by credit.
+    /// Selects the child indices covered by this cursor and page credit.
+    /// Returns the cursor for the next page when the original result has more children.
+    ///
+    /// # Errors
+    /// Rejects a different settlement or an index past the original result extent.
     pub fn interval(
         self,
         original: ResultCut,

@@ -299,7 +299,7 @@ fn executors(
         |_| false,
         extra
             .iter()
-            .map(|name| crate::integration_helpers::echo_tool(name))
+            .map(|name| crate::prefix_cache_cases::integration_helpers::echo_tool(name))
             .collect(),
     )?;
     let limits = Limits::default();
@@ -637,6 +637,8 @@ async fn run(
     if !forked {
         return Err("the shipped orchestrator template declares no context".into());
     }
+    let clock = std::time::Instant::now();
+    macro_rules! mark { ($($a:tt)*) => { eprintln!("MARK {:?} {}", clock.elapsed(), format!($($a)*)); } }
     let set_template = |agent: AgentPath| {
         let filesystem = filesystem.clone();
         let provider = &provider;
@@ -678,6 +680,7 @@ async fn run(
     };
     set_template(root.clone()).await?;
     agents.drain(&root).await?;
+    mark!("drain 1");
     let message = async |to: &AgentPath, name: &str, prompt: &str| {
         let body = bound
             .stage_text(to, "message", &user(), &intent(name), (prompt, prompt))
@@ -698,6 +701,7 @@ async fn run(
         )
         .await?;
     agents.drain(&root).await?;
+    mark!("drain 2");
     let notice = Notice {
         source: "filesystem".into(),
         kind: "files.changed".into(),
@@ -710,6 +714,7 @@ async fn run(
         .await?;
     agents.send(&root, &user(), &waking).await?;
     agents.drain(&root).await?;
+    mark!("drain 3");
     changing.changed.store(true, Ordering::SeqCst);
     agents
         .send(
@@ -719,6 +724,7 @@ async fn run(
         )
         .await?;
     agents.drain(&root).await?;
+    mark!("drain 4");
     let child: AgentPath = agents
         .resolve_spawn_name(&root, "kid")
         .await?
@@ -729,6 +735,7 @@ async fn run(
     set_template(child.clone()).await?;
     transport.label("child");
     agents.drain(&child).await?;
+    mark!("drain 5");
     agents
         .send(
             &child,
@@ -737,24 +744,30 @@ async fn run(
         )
         .await?;
     agents.drain(&child).await?;
+    mark!("drain 6");
     let Some(grandchild) = agents.resolve_spawn_name(&child, "grandkid").await?.live() else {
         let state = agents.state(&child).await?;
         return Err(format!("missing grandkid; child phase {:?}", state.phase).into());
     };
     transport.label("grandchild");
     agents.drain(&grandchild).await?;
+    mark!("drain 7");
     transport.label("child");
     agents.drain(&child).await?;
+    mark!("drain 8");
     transport.label("parent");
     agents.drain(&root).await?;
+    mark!("drain 9");
     // Turns that carry the parent's conversation across its first page cut.
     for name in ["m5", "m6", "m7", "m8", "m9", "m10", "m11"] {
         agents
             .send(&root, &user(), &message(&root, name, "Keep going").await?)
             .await?;
         agents.drain(&root).await?;
+        mark!("drain 10");
     }
 
+    mark!("turns done");
     let sent = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
     // Each input fits; their retained pair exceeds the window. Actual input
     // bytes drive both local admission bounds and the remote count, so the
@@ -780,6 +793,7 @@ async fn run(
             return Err("pressure input was not committed".into());
         };
         agents.drain(&root).await?;
+        mark!("drain 11");
         // R45: compare the durable, authenticated usage view to the provider's
         // reported cache reads, including the request following compaction.
         let mut after = 0;
@@ -829,10 +843,13 @@ async fn run(
             );
         }
     }
+    mark!("pressure done");
     let tight = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
     // The provider cache serves every request after the first: extensions,
     // forks, the page cut and the backstop eviction alike.
+    mark!("before hits");
     hits(family, sent.iter().chain(&tight))?;
+    mark!("after hits");
     let all = || sent.iter().chain(&tight);
     let implicit_chat = adapter == Adapter::Chat && prompt_cache == PromptCache::Native;
     assert!(
@@ -855,6 +872,7 @@ async fn run(
         control, 0,
         "{family}: requests without the cache form still hit"
     );
+    mark!("after replay");
     let bodies = |agent| -> Vec<&Bytes> {
         sent.iter()
             .filter(|sent| sent.agent == agent)
@@ -998,6 +1016,7 @@ async fn run(
         "{family}: the backstop rewrote the header at byte {kept} (messages at {start})"
     );
     extends(family, "the step after the backstop", evicted, continued)?;
+    mark!("end");
     Ok(())
 }
 

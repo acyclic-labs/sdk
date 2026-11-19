@@ -398,6 +398,7 @@ impl Index {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 #[test]
 fn invalid_spill_ranges_leave_the_index_unchanged() {
     let mut index = Index::default();
@@ -450,6 +451,7 @@ fn invalid_spill_ranges_leave_the_index_unchanged() {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 #[test]
 fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
     for erase_budget in [false, true] {
@@ -509,6 +511,7 @@ fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 #[test]
 fn exhausted_resident_incarnation_refuses_without_reusing_a_retired_slot() {
     let bytes = OwnedBytes::from_static(b"resident incarnation");
@@ -530,6 +533,7 @@ fn exhausted_resident_incarnation_refuses_without_reusing_a_retired_slot() {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 #[test]
 fn spill_range_simulation_preserves_bytes_across_reuse_and_promotion() {
     // Exercise the real staging index against a separate byte-addressed medium.

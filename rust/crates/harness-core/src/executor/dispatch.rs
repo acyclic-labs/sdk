@@ -45,26 +45,24 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let completion = super::phase::PreparedPhase::new(journal, self.io)?;
-        super::cost_operation(
-            "model_step",
-            completion.run(async {
-                // Construct and retire provider custody inside the completion body.
-                let cancellation = journal.model_cancellation();
-                let execution =
-                    self.dispatch_model_step(journal, input, step, request, purpose, phase);
-                futures::pin_mut!(execution);
-                match futures::future::select(cancellation, execution).await {
-                    Either::Left((result, _)) => {
-                        result?;
-                        Err(Error::InteractionRejected(
-                            crate::InteractionRejection::Cancelled,
-                        ))
-                    }
-                    Either::Right((result, _)) => result,
+        let execution = std::pin::pin!(async {
+            // Construct and retire provider custody inside the completion body.
+            let cancellation = journal.model_cancellation();
+            let dispatch = std::pin::pin!(
+                self.dispatch_model_step(journal, input, step, request, purpose, phase)
+            );
+            match futures::future::select(cancellation, dispatch).await {
+                Either::Left((result, _)) => {
+                    result?;
+                    Err(Error::InteractionRejected(
+                        crate::InteractionRejection::Cancelled,
+                    ))
                 }
-            }),
-        )
-        .await
+                Either::Right((result, _)) => result,
+            }
+        });
+        let completion = std::pin::pin!(completion.run(execution));
+        super::cost_operation("model_step", completion).await
     }
 
     /// Replays or resolves one model step.
@@ -834,10 +832,14 @@ impl StockExecution<'_> {
                 // Wait facts are durable now; response assembly needs none of them.
                 // Recovery loads its original ordered prefix from the journal.
                 if matches!(event, ModelEvent::Wait(_) | ModelEvent::Trace { .. }) {
-                    stock_retire_event(
-                        observed.pop().expect("the committed event is retained"),
-                        io,
-                    )?;
+                    let committed = observed.pop().ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "model observation was not retained",
+                        )
+                    })?;
+                    stock_retire_event(committed, io)?;
                 }
                 // The committed terminal event settles this step. Transport
                 // closure is independent and may never follow it.

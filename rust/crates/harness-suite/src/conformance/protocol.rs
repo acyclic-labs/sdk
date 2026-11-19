@@ -16,12 +16,13 @@ use acyclic_harness_core::{
     tool::ToolDefinition,
 };
 use acyclic_stream::{
-    BoxProviderFuture, ProviderPlatform, ReadRequest, StreamCategory, StreamError, StreamProvider,
+    BoxProviderFuture, ProviderOwner, ProviderPlatform, ReadRequest, StreamCategory, StreamError,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::json;
-use std::sync::Arc;
+use std::collections::BTreeSet;
 
 pub mod embedded;
 mod observations;
@@ -75,7 +76,7 @@ pub trait Endpoint: ProviderPlatform {
     /// Deliver this explicitly placed actor, without activating its children.
     fn drain<'a>(&'a self, agent: &'a AgentPath) -> BoxProviderFuture<'a, Result>;
     /// The same storage the real host reads and publishes to.
-    fn provider(&self) -> Arc<dyn StreamProvider>;
+    fn provider(&self) -> ProviderOwner<dyn StreamProvider>;
     /// Actual executions of the shared internal fixture tool.
     fn effects(&self) -> BoxProviderFuture<'_, Result<u64>>;
 }
@@ -93,8 +94,15 @@ pub async fn call(
         .await
 }
 
+async fn accepted(endpoint: &dyn Endpoint, command: &AgentCommand) -> Result<AgentReply> {
+    call(endpoint, command)
+        .await
+        .and_then(|reply| reply.map_err(Into::into))
+        .map_err(|error| format!("{} command: {error}", command.kind()).into())
+}
+
 async fn read(endpoint: &dyn Endpoint, agent: &AgentPath, target: ReadTarget) -> Result<Vec<u8>> {
-    let reply = call(
+    let reply = accepted(
         endpoint,
         &AgentCommand::Read {
             agent: agent.clone(),
@@ -102,7 +110,7 @@ async fn read(endpoint: &dyn Endpoint, agent: &AgentPath, target: ReadTarget) ->
             offset: 0,
         },
     )
-    .await??;
+    .await?;
     let (bytes, length) = reply.content()?;
     if bytes.len() as u64 != length {
         return Err("the shared protocol payload was truncated".into());
@@ -139,20 +147,22 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         } else {
             ApprovalPolicy::accept_all("conformance")
         };
-        let endpoint = backend.serving(policy).await?;
+        let endpoint = backend.serving(policy).await.map_err(|error| {
+            format!("opening hosted endpoint (manual approval {human}): {error}")
+        })?;
         let endpoint = endpoint.as_ref();
-        let AgentReply::Root { agent: root } = call(endpoint, &AgentCommand::Root {}).await??
+        let AgentReply::Root { agent: root } = accepted(endpoint, &AgentCommand::Root {}).await?
         else {
             return Err("Root did not reply with the admitted root".into());
         };
-        let AgentReply::Children { items, next } = call(
+        let AgentReply::Children { items, next } = accepted(
             endpoint,
             &AgentCommand::Children {
                 agent: root.clone(),
                 page: Default::default(),
             },
         )
-        .await??
+        .await?
         else {
             return Err("Children reply shape differs".into());
         };
@@ -167,20 +177,42 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             body: ModelContent::Text("Call the shared tool, then reply".into()),
         };
         let (first, concurrent) =
-            futures::try_join!(call(endpoint, &prompt), call(endpoint, &prompt))?;
-        let first = first?;
-        if serde_json::to_value(&first)? != serde_json::to_value(concurrent?)? {
+            futures::join!(accepted(endpoint, &prompt), accepted(endpoint, &prompt));
+        let (first, concurrent) = match (first, concurrent) {
+            (Ok(first), Ok(concurrent)) => (first, concurrent),
+            (first, concurrent) => {
+                let describe = |reply: Result<AgentReply>| {
+                    reply
+                        .err()
+                        .map_or_else(|| "committed".to_owned(), |error| error.to_string())
+                };
+                return Err(format!(
+                    "concurrent prompt submissions (manual approval {human}) returned {} and {}",
+                    describe(first),
+                    describe(concurrent),
+                )
+                .into());
+            }
+        };
+        if serde_json::to_value(&first)? != serde_json::to_value(concurrent)? {
             return Err("concurrent prompt retries changed their delivery receipt".into());
         }
-        endpoint.drain(&root).await?;
-        if serde_json::to_value(&first)? != serde_json::to_value(call(endpoint, &prompt).await??)? {
+        endpoint
+            .drain(&root)
+            .await
+            .map_err(|error| format!("delivering prompt (manual approval {human}): {error}"))?;
+        let replay = accepted(endpoint, &prompt)
+            .await
+            .map_err(|error| format!("replaying the prompt after delivery: {error}"))?;
+        if serde_json::to_value(&first)? != serde_json::to_value(replay)? {
             return Err("an exact prompt retry changed its delivery receipt".into());
         }
         let approvals = AgentCommand::Approvals {
             agent: root.clone(),
             page: Default::default(),
         };
-        let AgentReply::Approvals { mut items, next } = call(endpoint, &approvals).await?? else {
+        let AgentReply::Approvals { mut items, next } = accepted(endpoint, &approvals).await?
+        else {
             return Err("Approvals reply shape differs".into());
         };
         if next.is_some() || items.len() != usize::from(human) {
@@ -233,10 +265,13 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 return Err("a changed approval binding had an effect".into());
             }
             let exact = decision(action_digest);
-            let receipt = call(endpoint, &exact).await??;
-            endpoint.drain(&root).await?;
+            let receipt = accepted(endpoint, &exact).await?;
+            endpoint
+                .drain(&root)
+                .await
+                .map_err(|error| format!("delivering approval: {error}"))?;
             if serde_json::to_value(receipt)?
-                != serde_json::to_value(call(endpoint, &exact).await??)?
+                != serde_json::to_value(accepted(endpoint, &exact).await?)?
             {
                 return Err("a settled decision did not replay its exact receipt".into());
             }
@@ -253,7 +288,10 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 return Err("settlement changed the original approval request bytes".into());
             }
         }
-        endpoint.drain(&root).await?;
+        endpoint
+            .drain(&root)
+            .await
+            .map_err(|error| format!("finishing hosted turn (manual approval {human}): {error}"))?;
         if endpoint.effects().await? != 1 {
             return Err("a turn's tool did not run exactly once".into());
         }
@@ -268,7 +306,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             id: IntentId::try_from("prompt")?,
             inbox: entry.inbox,
         };
-        let answered = call(endpoint, &request_reply).await??;
+        let answered = accepted(endpoint, &request_reply).await?;
         let AgentReply::Reply {
             reply:
                 Reply::Answered {
@@ -283,7 +321,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         if *sequence != record.sequence
             || settled != &entry
             || serde_json::to_value(&answered)?
-                != serde_json::to_value(call(endpoint, &request_reply).await??)?
+                != serde_json::to_value(accepted(endpoint, &request_reply).await?)?
         {
             return Err("the committed prompt reply changed".into());
         }
@@ -346,8 +384,10 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("the owning session read changed its published conversation output".into());
         }
-        observations::verify(endpoint, &root, entry.inbox).await?;
-        let AgentReply::Approvals { items, next } = call(endpoint, &approvals).await?? else {
+        observations::verify(endpoint, &root, entry.inbox)
+            .await
+            .map_err(|error| format!("observing hosted turn: {error}"))?;
+        let AgentReply::Approvals { items, next } = accepted(endpoint, &approvals).await? else {
             return Err("Approvals reply shape differs after settlement".into());
         };
         if !items.is_empty() || next.is_some() {
@@ -361,15 +401,15 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             role: "worker".into(),
         };
         let (spawned, concurrent) =
-            futures::try_join!(call(endpoint, &spawn), call(endpoint, &spawn))?;
-        let spawned = spawned?;
-        if serde_json::to_value(&spawned)? != serde_json::to_value(concurrent?)? {
+            futures::try_join!(accepted(endpoint, &spawn), accepted(endpoint, &spawn))?;
+        if serde_json::to_value(&spawned)? != serde_json::to_value(concurrent)? {
             return Err("concurrent spawn retries changed their delivery receipt".into());
         }
         let AgentReply::Spawned { agent: child, .. } = &spawned else {
             return Err("Spawn reply shape differs".into());
         };
-        if serde_json::to_value(&spawned)? != serde_json::to_value(call(endpoint, &spawn).await??)?
+        if serde_json::to_value(&spawned)?
+            != serde_json::to_value(accepted(endpoint, &spawn).await?)?
         {
             return Err("an exact spawn retry changed its receipt".into());
         }
@@ -411,14 +451,14 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("a child ran before explicit placement".into());
         }
-        let AgentReply::Children { items, next } = call(
+        let AgentReply::Children { items, next } = accepted(
             endpoint,
             &AgentCommand::Children {
                 agent: root.clone(),
                 page: Default::default(),
             },
         )
-        .await??
+        .await?
         else {
             return Err("Children reply shape differs after spawn".into());
         };
@@ -429,66 +469,90 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("the committed child was not listed exactly once".into());
         }
-        let AgentReply::Spawned { agent: other, .. } = call(
-            endpoint,
-            &AgentCommand::Spawn {
-                parent: root.clone(),
-                id: IntentId::try_from("spawn-page")?,
-                brief: ModelContent::Text("Also wait for explicit placement".into()),
-                role: "worker".into(),
-            },
-        )
-        .await??
-        else {
-            return Err("second spawn reply shape differs".into());
-        };
+        // Both candidate prefixes must carry continuations. A terminal
+        // two-row page can be smaller than one row with an encrypted cursor.
+        let mut remaining = BTreeSet::from([child.clone()]);
+        for id in ["spawn-page", "spawn-page-tail"] {
+            let AgentReply::Spawned { agent, .. } = accepted(
+                endpoint,
+                &AgentCommand::Spawn {
+                    parent: root.clone(),
+                    id: IntentId::try_from(id)?,
+                    brief: ModelContent::Text("Also wait for explicit placement".into()),
+                    role: "worker".into(),
+                },
+            )
+            .await?
+            else {
+                return Err("pagination fixture spawn reply shape differs".into());
+            };
+            if !remaining.insert(agent) {
+                return Err("pagination fixture reused a child identity".into());
+            }
+        }
         let children = |items, bytes, cursor| {
             Ok::<_, acyclic_harness_client::CommandError>(AgentCommand::Children {
                 agent: root.clone(),
                 page: AgentPageRequest::new(items, bytes, cursor)?,
             })
         };
-        let first_command = children(1, AgentPageRequest::<String>::default().bytes(), None)?;
-        let first = Ok(call(endpoint, &first_command).await??);
+        let default_credit = AgentPageRequest::<String>::default().bytes();
+        let first_command = children(1, default_credit, None)?;
+        let first = Ok(accepted(endpoint, &first_command).await?);
         // The actual serving reply defines credit, including its opaque cursor
         // and canonical wire framing; the fixture invents neither encoding.
         let credit = u32::try_from(encode_agent_reply(&first, &first_command)?.len())?;
         let AgentReply::Children {
             items: first_items,
-            next: Some(cursor),
+            next: Some(item_cursor),
         } = first?
         else {
             return Err("one-row discovery omitted its continuation".into());
         };
         let first_child = first_items.first().ok_or("first children page is empty")?;
-        let AgentReply::Children { items, next } =
-            call(endpoint, &children(2, credit, None)?).await??
+        if !remaining.remove(&first_child.agent) {
+            return Err("first children page included an unknown child".into());
+        }
+        let byte_command = children(2, credit, None)?;
+        let bounded = Ok(accepted(endpoint, &byte_command).await?);
+        let size = u32::try_from(encode_agent_reply(&bounded, &byte_command)?.len())?;
+        if size != credit {
+            return Err(format!("children reply used {size} of its {credit} bytes").into());
+        }
+        let AgentReply::Children {
+            items,
+            next: Some(byte_cursor),
+        } = bounded?
         else {
             return Err("byte-credit children reply shape differs".into());
         };
         if items.len() != 1
             || items.first().map(|row| (&row.agent, &row.status))
                 != Some((&first_child.agent, &first_child.status))
-            || next.as_ref() != Some(&cursor)
         {
             return Err("children byte credit did not retain exactly its fitting prefix".into());
         }
-        let AgentReply::Children { items, next } =
-            call(endpoint, &children(2, credit, Some(cursor))?).await??
-        else {
-            return Err("continued children reply shape differs".into());
-        };
-        let last_child = items.first().ok_or("continued children page is empty")?;
-        if items.len() != 1
-            || next.is_some()
-            || first_child.agent == last_child.agent
-            || [child, &other]
-                .into_iter()
-                .any(|agent| agent != &first_child.agent && agent != &last_child.agent)
-            || last_child.status.as_ref().map(|status| &status.phase) != Some(&Phase::Idle)
-            || endpoint.effects().await? != 1
-        {
-            return Err("children continuation skipped, repeated or activated a child".into());
+        // Sealed cursors use independent nonces. Compare the resumed rows at
+        // the public serving boundary, where the continuation is observable.
+        for cursor in [item_cursor, byte_cursor] {
+            let AgentReply::Children { items, next } =
+                accepted(endpoint, &children(2, default_credit, Some(cursor))?).await?
+            else {
+                return Err("continued children reply shape differs".into());
+            };
+            let agents: BTreeSet<_> = items.iter().map(|item| &item.agent).collect();
+            if items.len() != remaining.len()
+                || next.is_some()
+                || !agents.into_iter().eq(remaining.iter())
+                || items.iter().any(|item| {
+                    item.status.as_ref().map(|status| &status.phase) != Some(&Phase::Idle)
+                })
+            {
+                return Err("children continuation skipped, repeated or activated a child".into());
+            }
+        }
+        if endpoint.effects().await? != 1 {
+            return Err("children continuation activated a child".into());
         }
         for bytes in [1, credit - 1] {
             if !matches!(

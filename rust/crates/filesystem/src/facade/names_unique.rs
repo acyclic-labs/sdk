@@ -141,6 +141,7 @@ fn retain_ambiguous_keys(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

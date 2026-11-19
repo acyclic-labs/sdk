@@ -7,12 +7,12 @@ mod stream;
 mod tests;
 
 use crate::{
-    AlloySpec, AlloyTurn, BrowserTransport, Credentials, ModelFeatures, ProviderSpec, Registry,
+    AlloySpec, AlloyTurn, BrowserTransport, Credentials, ModelFeatures, ProviderConfig, Registry,
     ResolvedAlloy, ResolvedModel,
 };
 use acyclic_harness_core::{
     conversation::Limits,
-    model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelBinding, ModelDispatch, ModelProvider, PreparedModelRequest},
 };
 use js_sys::{Function, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
@@ -112,10 +112,7 @@ impl WasmProviderRegistry {
         let keys: BTreeMap<String, String> = from_js(keys)?;
         let limits: Limits = from_js(limits)?;
         limits.validate(&mut None).map_err(error)?;
-        let transport = match fetch {
-            Some(fetch) => BrowserTransport::new(fetch),
-            None => BrowserTransport::global().map_err(error)?,
-        };
+        let transport = fetch.map_or_else(BrowserTransport::lazy_global, BrowserTransport::new);
         let mut registry =
             Registry::with_transport(Credentials::explicit(keys), Arc::new(transport));
         if let Some(reader) = reader {
@@ -142,16 +139,26 @@ impl WasmProviderRegistry {
     pub fn register(
         &mut self,
         provider: String,
-        #[wasm_bindgen(unchecked_param_type = "ProviderSpec")] config: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ProviderConfig")] config: JsValue,
     ) -> Result<(), JsValue> {
         self.registry
-            .register(provider, from_js::<ProviderSpec>(config)?)
+            .register_config(provider, from_js::<ProviderConfig>(config)?)
             .map_err(model_error)
     }
 
     pub fn resolve(&self, selection: &str) -> Result<WasmModelProvider, JsValue> {
+        let provider = match self
+            .registry
+            .scripted_binding(selection)
+            .map_err(model_error)?
+        {
+            Some(binding) => ConfiguredModel::Workspace(binding),
+            None => ConfiguredModel::Endpoint(Arc::new(
+                self.registry.resolve(selection).map_err(model_error)?,
+            )),
+        };
         Ok(WasmModelProvider {
-            provider: Arc::new(self.registry.resolve(selection).map_err(model_error)?),
+            provider,
             limits: self.limits,
         })
     }
@@ -202,14 +209,15 @@ impl WasmModelAlloy {
     ) -> Result<WasmModelProvider, JsValue> {
         let operation_id = acyclic_harness_core::OperationId::parse(operation_id).map_err(error)?;
         Ok(WasmModelProvider {
-            provider: self
-                .alloy
-                .select(AlloyTurn {
-                    operation_id,
-                    ordinal,
-                    role,
-                })
-                .clone(),
+            provider: ConfiguredModel::Endpoint(
+                self.alloy
+                    .select(AlloyTurn {
+                        operation_id,
+                        ordinal,
+                        role,
+                    })
+                    .clone(),
+            ),
             limits: self.limits,
         })
     }
@@ -218,8 +226,36 @@ impl WasmModelAlloy {
 /// Immutable selection implementing the public TypeScript model provider contract.
 #[wasm_bindgen]
 pub struct WasmModelProvider {
-    provider: Arc<ResolvedModel>,
+    provider: ConfiguredModel,
     limits: Limits,
+}
+
+enum ConfiguredModel {
+    Endpoint(Arc<ResolvedModel>),
+    Workspace(ModelBinding),
+}
+
+impl ConfiguredModel {
+    fn model(&self) -> &Model {
+        match self {
+            Self::Endpoint(endpoint) => endpoint.model(),
+            Self::Workspace((model, _)) => model,
+        }
+    }
+
+    fn provider(&self) -> &dyn ModelProvider {
+        match self {
+            Self::Endpoint(endpoint) => endpoint.as_ref(),
+            Self::Workspace((_, provider)) => provider.as_ref(),
+        }
+    }
+
+    fn binding(&self) -> ModelBinding {
+        match self {
+            Self::Endpoint(endpoint) => (endpoint.model().clone(), endpoint.clone()),
+            Self::Workspace(binding) => binding.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -238,12 +274,9 @@ impl WasmModelProvider {
         registry: &mut acyclic_harness::WasmAgentRegistry,
         #[wasm_bindgen(unchecked_param_type = "CompactionPolicy")] compaction: JsValue,
     ) -> Result<(), JsValue> {
+        let (model, provider) = self.provider.binding();
         registry
-            .bind_model(
-                self.provider.model().clone(),
-                self.provider.clone(),
-                from_js(compaction)?,
-            )
+            .bind_model(model, provider, from_js(compaction)?)
             .map_err(error)
     }
 
@@ -259,6 +292,7 @@ impl WasmModelProvider {
     ) -> Result<JsValue, JsValue> {
         let capacity = self
             .provider
+            .provider()
             .context_capacity(&from_js::<Model>(model)?)
             .map_err(error)?;
         to_js(&serde_json::json!({
@@ -271,11 +305,14 @@ impl WasmModelProvider {
         &self,
         #[wasm_bindgen(unchecked_param_type = "PublicProviderRequest")] request: JsValue,
     ) -> Result<WasmPreparedModelRequest, JsValue> {
-        let admitted = self.decode(&request)?;
+        let ConfiguredModel::Endpoint(provider) = &self.provider else {
+            return Err(error("workspace models require an admitted agent turn"));
+        };
+        let admitted = self.decode(&request, provider)?;
         let signal = Reflect::get(&request, &"signal".into())?;
         let prepared = cancel::run(
             async {
-                crate::prepared::PreparedInput::new(self.provider.clone(), admitted)
+                crate::prepared::PreparedInput::new(provider.clone(), admitted)
                     .await
                     .map_err(model_error)
             },
@@ -296,15 +333,19 @@ impl WasmModelProvider {
 }
 
 impl WasmModelProvider {
-    fn decode(&self, request: &JsValue) -> Result<PreparedModelRequest, JsValue> {
+    fn decode(
+        &self,
+        request: &JsValue,
+        endpoint: &ResolvedModel,
+    ) -> Result<PreparedModelRequest, JsValue> {
         let model: Model = from_js(Reflect::get(request, &"model".into())?)?;
-        self.provider.validate(&model).map_err(error)?;
+        endpoint.validate(&model).map_err(error)?;
         let bytes = Reflect::get(request, &"serializedInput".into())?
             .dyn_into::<Uint8Array>()
             .map_err(|_| error("serializedInput must be a Uint8Array"))?
             .to_vec();
         let prepared = PreparedModelRequest::decode(&bytes, self.limits, None).map_err(error)?;
-        self.provider
+        endpoint
             .validate(&prepared.request().model)
             .map_err(error)?;
         Ok(prepared)

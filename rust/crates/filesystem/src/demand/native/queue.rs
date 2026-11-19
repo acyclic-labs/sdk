@@ -153,6 +153,7 @@ impl NativeDemandSource {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod context_custody_tests {
     use super::*;
 

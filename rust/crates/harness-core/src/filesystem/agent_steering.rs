@@ -33,7 +33,7 @@ struct Admitted {
 }
 
 pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
-    pub stream: Arc<P>,
+    pub stream: acyclic_stream::ProviderOwner<P>,
     pub host: Arc<FilesystemHost<A, O>>,
     pub issuer: RuntimeAuthority,
     pub admission: TurnAdmission,
@@ -59,27 +59,25 @@ fn identity(operation: OperationId, step: u32, item: u64) -> OperationId {
 
 impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
     pub(super) fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
-        issuer: RuntimeAuthority,
-        admission: TurnAdmission,
+        authority: (RuntimeAuthority, TurnAdmission),
         agent: AgentState,
         identity: (OperationId, u64, u64),
-        files: Arc<AgentInternalFiles<A, O>>,
-        writer: Arc<dyn ContentPublisher>,
+        content: (Arc<AgentInternalFiles<A, O>>, Arc<dyn ContentPublisher>),
         maximum: Option<u64>,
     ) -> Self {
         Self {
             stream,
             host,
-            issuer,
-            admission,
+            issuer: authority.0,
+            admission: authority.1,
             agent,
             operation: identity.0,
             inbox: identity.1,
             initial_through: identity.2,
-            files,
-            writer,
+            files: content.0,
+            writer: content.1,
             maximum,
             admitted: Mutex::default(),
         }
@@ -237,7 +235,7 @@ where
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 None,
             )?;
-            let mut content = crate::agent::expand_attachments(content, &*reader).await?;
+            let content = crate::agent::expand_attachments(content, &*reader).await?;
             // The envelope delegates its validated immutable contents, not its
             // own exact-file grant. Derive those files under the same original
             // admission; an admitted caller's ceiling remains unchanged.
@@ -259,43 +257,7 @@ where
                     None,
                 )?;
             }
-            let parts = match &mut content {
-                ModelContent::Text(_) => &mut [][..],
-                ModelContent::Part(part) => std::slice::from_mut(part),
-                ModelContent::Parts(parts) => parts.as_mut_slice(),
-            };
-            // Validate every source under its original admission. Local roots
-            // pin newly authorized content into their prebound input route;
-            // admitted turns keep the immutable reference their fixed scope
-            // already reads, without requiring or issuing a journal grant.
-            for part in parts {
-                if let ModelContentPart::File { file, .. } = part {
-                    let bytes = reader
-                        .read(file, file.descriptor().byte_length(), None, None)?
-                        .await?;
-                    if matches!(&self.admission, TurnAdmission::Admitted { .. }) {
-                        continue;
-                    }
-                    let operation = self.operation;
-                    let id = identity(operation, step, item);
-                    let destination = format!("{TURN_INPUTS}/{operation}/{step:010}/{item:020}");
-                    let (published, _) = self
-                        .writer
-                        .stage_once(
-                            id,
-                            &destination,
-                            &bytes,
-                            file.descriptor().media_type(),
-                            "steering",
-                            ContentAccess::default(),
-                        )?
-                        .await?;
-                    *file = published;
-                    item = item
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Invalid("steering item overflow".into()))?;
-                }
-            }
+            let content = self.admit_parts(content, &*reader, step, &mut item).await?;
             messages.push(ModelMessage {
                 role: ModelRole::User,
                 content,
@@ -309,6 +271,84 @@ where
                 through: selection.through,
             },
             messages,
+        })
+    }
+    async fn admit_parts(
+        &self,
+        content: ModelContent,
+        reader: &dyn ContentResidencyVerifier,
+        step: u32,
+        item: &mut u64,
+    ) -> Result<ModelContent> {
+        // Validate every source under its original admission. Local roots
+        // pin newly authorized content into their prebound input route;
+        // admitted turns keep the immutable reference their fixed scope
+        // already reads, without requiring or issuing a journal grant.
+        let (parts, single) = match content {
+            ModelContent::Text(_) => return Ok(content),
+            ModelContent::Part(part) => (vec![part], true),
+            ModelContent::Parts(parts) => (parts, false),
+        };
+        let mut selected = Vec::with_capacity(parts.len());
+        for part in parts {
+            let mut part = part;
+            if let ModelContentPart::File { file, policy } = &mut part {
+                let bytes = reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await?;
+                // Raw text staged by the host on this journal is user
+                // input, not a file attachment. Forward its verified text
+                // from the committed inbox without exposing the journal
+                // path to a task whose signed scope closed before it arrived.
+                if *policy == crate::model::FileProjectionPolicy::BoundedFull
+                    && file.volume() == self.writer.volume()
+                    && file
+                        .path()
+                        .rsplit_once('/')
+                        .is_some_and(|(directory, _)| directory == "inputs")
+                    && file.descriptor().media_type() == "text/plain"
+                {
+                    let text = std::str::from_utf8(&bytes)
+                        .map_err(|_| Error::Invalid("staged steering text is not UTF-8".into()))?;
+                    if text.is_empty() {
+                        selected.push(ModelContentPart::text(String::new()));
+                    } else {
+                        selected.extend(ModelContent::bounded_text_parts(text, self.maximum)?);
+                    }
+                    continue;
+                }
+                if matches!(&self.admission, TurnAdmission::Admitted { .. }) {
+                    selected.push(part);
+                    continue;
+                }
+                let operation = self.operation;
+                let id = identity(operation, step, *item);
+                let destination = format!("{TURN_INPUTS}/{operation}/{step:010}/{item:020}");
+                let (published, _) = self
+                    .writer
+                    .stage_once(
+                        id,
+                        &destination,
+                        &bytes,
+                        file.descriptor().media_type(),
+                        "steering",
+                        ContentAccess::default(),
+                    )?
+                    .await?;
+                *file = published;
+                *item = item
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("steering item overflow".into()))?;
+            }
+            selected.push(part);
+        }
+        Ok(if single {
+            match <[ModelContentPart; 1]>::try_from(selected) {
+                Ok([part]) => ModelContent::Part(part),
+                Err(parts) => ModelContent::Parts(parts),
+            }
+        } else {
+            ModelContent::Parts(selected)
         })
     }
 }

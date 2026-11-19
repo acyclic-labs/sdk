@@ -183,36 +183,59 @@ impl<
                 return Err(LazyWorkspaceError::TooLarge);
             }
             let id = self.source_file_id(&node.file_identity, ctx)?;
-            match accounted!(ctx, |work, cancel| transaction
-                .checkout
-                .read_file_record_by_id(id, work, cancel))
-            {
-                Ok(record) => {
-                    let mut links = Owned::allocate(1, ctx)?;
-                    let namespace = namespace.take().ok_or(crate::FsError::InvalidDiff)?;
-                    crate::Transaction::<A, O>::push_mutation(
-                        &mut links,
-                        Owned::new(
-                            crate::kernel::Mutation::Restore {
-                                path: namespace.value,
-                                record,
-                            },
-                            namespace.allocation,
-                            namespace.bytes,
-                        ),
-                        ctx,
-                    )?;
-                    transaction
-                        .checkout
-                        .apply_mutations(links, ctx, cancellation(ctx))
-                        .await?;
-                    return Ok(true);
-                }
-                Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {}
-                Err(error) => return Err(error),
-            }
-            Ok(false)
+            let Some(record) = self.authored_source_record(transaction, id, ctx).await? else {
+                return Ok(false);
+            };
+            Self::restore_source_record(transaction, record, namespace, ctx).await?;
+            Ok(true)
         })
+    }
+
+    pub(super) async fn restore_source_record(
+        transaction: &mut crate::Transaction<A, O>,
+        record: FileRecord,
+        namespace: &mut Option<Owned<NamespacePath>>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        let mut links = Owned::allocate(1, ctx)?;
+        let namespace = namespace.take().ok_or(crate::FsError::InvalidDiff)?;
+        let insertion = crate::Transaction::<A, O>::push_mutation(
+            &mut links,
+            Owned::new(
+                crate::kernel::Mutation::Restore {
+                    path: namespace.value,
+                    record,
+                },
+                namespace.allocation,
+                namespace.bytes,
+            ),
+            ctx,
+        );
+        if let Err(error) = insertion {
+            links.retire(ctx)?;
+            return Err(error.into());
+        }
+        transaction
+            .checkout
+            .apply_mutations(links, ctx, cancellation(ctx))
+            .await?;
+        Ok(())
+    }
+
+    pub(super) async fn authored_source_record(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        id: FileId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<FileRecord>, LazyWorkspaceError> {
+        match accounted!(ctx, |work, cancel| transaction
+            .checkout
+            .read_file_record_by_id(id, work, cancel))
+        {
+            Ok(record) => Ok(Some(record)),
+            Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) async fn prepare_source_mutation(
@@ -231,22 +254,41 @@ impl<
             let mutation = async {
                 Ok::<_, LazyWorkspaceError>(match node.kind {
                     SourceNodeKind::RegularFile => {
-                        let content = self
-                            .stage_source_content(
-                                transaction,
-                                source,
-                                node,
-                                &namespace.value,
-                                maximum,
-                                ctx,
-                            )
-                            .await?;
+                        let length = node
+                            .logical_bytes
+                            .ok_or(LazyWorkspaceError::NotRegularFile)?;
+                        if length > maximum {
+                            return Err(LazyWorkspaceError::TooLarge);
+                        }
+                        let mut content = DemandBlobSource {
+                            provider: self.source.as_ref(),
+                            source,
+                            path: &namespace.value,
+                            version: node.version,
+                            offset: 0,
+                            length,
+                            work: None,
+                            failure: None,
+                            observation_error: None,
+                        };
                         let file_id = Some(self.source_file_id(&node.file_identity, ctx)?);
-                        AuthoredMutation::CreateFileFromContent {
-                            path: namespace.value,
-                            content,
-                            metadata,
-                            file_id,
+                        if length <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES as u64 {
+                            let bytes = content.read_inline(ctx).await?;
+                            AuthoredMutation::CreateFile {
+                                path: namespace.value,
+                                bytes,
+                                metadata,
+                                file_id,
+                            }
+                        } else {
+                            let content =
+                                Self::stage_source_content(transaction, &mut content, ctx).await?;
+                            AuthoredMutation::CreateFileFromContent {
+                                path: namespace.value,
+                                content,
+                                metadata,
+                                file_id,
+                            }
                         }
                     }
                     SourceNodeKind::Directory => unreachable!("source directory created above"),
@@ -310,35 +352,15 @@ impl<
     }
 
     async fn stage_source_content(
-        &self,
         transaction: &mut crate::Transaction<A, O>,
-        source: SourceReference,
-        node: SourceNode,
-        namespace: &NamespacePath,
-        maximum: u64,
+        source: &mut DemandBlobSource<'_, D>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::StagedContent, LazyWorkspaceError> {
         crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
-            let length = node
-                .logical_bytes
-                .ok_or(LazyWorkspaceError::NotRegularFile)?;
-            if length > maximum {
-                return Err(LazyWorkspaceError::TooLarge);
-            }
-            let mut source = DemandBlobSource {
-                provider: self.source.as_ref(),
-                source,
-                path: namespace,
-                version: node.version,
-                offset: 0,
-                length,
-                work: None,
-                failure: None,
-                observation_error: None,
-            };
+            let length = source.length;
             let staged = transaction
                 .checkout
-                .stage_content_with_accounting(&mut source, length.max(1), ctx, cancellation(ctx))
+                .stage_content_with_accounting(source, length, ctx, cancellation(ctx))
                 .await;
             if let Some(observation) = source.observation_error {
                 ctx.invalidate_receipt(observation);

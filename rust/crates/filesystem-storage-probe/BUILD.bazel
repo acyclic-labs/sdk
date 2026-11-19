@@ -16,6 +16,7 @@ rust_library(
         "//conditions:default": [],
     }),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -66,7 +67,7 @@ rust_test(
         "@sdk_crates//tempfile-3.27.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

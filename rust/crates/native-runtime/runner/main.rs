@@ -37,7 +37,7 @@ use request::{DESCRIPTORS, Mapped, Received, Slot, Spec, array4, spec};
 mod warden;
 
 use core::ffi::{CStr, c_char, c_void};
-use sys::{Errno, Fd, Pid};
+use sys::{Errno, Fd};
 
 /// The control socket, above the standard streams.
 const CONTROL: Fd = 3;
@@ -71,7 +71,7 @@ extern "C" fn start() -> ! {
     let code = match prepare() {
         Ok(()) => {
             if sys::is_listener(CONTROL).unwrap_or(false) {
-                return sys::exit(if packet_device::serve(CONTROL).is_ok() {
+                sys::exit(if packet_device::serve(CONTROL).is_ok() {
                     0
                 } else {
                     1
@@ -347,11 +347,21 @@ fn warden(spec: &Spec) -> ! {
 fn released(spec: &Spec, activity: Fd) -> ! {
     let result = (|| {
         sys::setpgid(0, 0)?;
+        sys::set_process_name(warden::EXIT_ACTION_NAME)?;
         // Loss of the dispatcher is independent of this admitted action.
         sys::close(CONTROL);
+        let owner = match watch_release_owner(spec) {
+            Ok(owner) => owner,
+            Err(Errno(error)) => {
+                report(spec.reply, FAILED, error);
+                return Err(Errno(error));
+            }
+        };
         report(spec.reply, STARTED, sys::getpid());
         sys::close(spec.reply);
-        let execute = released_byte(spec.directory)?;
+        let execute = await_release(spec.directory, owner);
+        sys::close(owner);
+        let execute = execute?;
         loop {
             match sys::read(activity, &mut [0; 256]) {
                 Ok(0) => break,
@@ -362,19 +372,60 @@ fn released(spec: &Spec, activity: Fd) -> ! {
         sys::close(spec.directory);
         sys::close(activity);
         if execute {
-            return Err(exec(spec));
+            // Keep the original trusted process in custody through cleanup.
+            // Replacing it with the cleanup executable lets the enclosing
+            // warden mistake it for abandoned application work and kill it.
+            let child = sys::fork()?;
+            if child == 0 {
+                let _ = exec(spec);
+                sys::exit(127);
+            }
+            loop {
+                match sys::wait(child, 0) {
+                    Ok((_, status)) => sys::exit(if status & 0x7f == 0 {
+                        status >> 8
+                    } else {
+                        128 + (status & 0x7f)
+                    }),
+                    Err(Errno(sys::EINTR)) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
         }
         Ok(())
     })();
     sys::exit(if result.is_ok() { 0 } else { 127 })
 }
 
-/// EOF releases the action; an explicit byte cancels it. Interrupted reads
-/// resume the same producer event, without probing or a timeout.
-fn released_byte(fd: Fd) -> Result<bool, Errno> {
+fn watch_release_owner(spec: &Spec) -> Result<Fd, Errno> {
+    sys::nonblocking(spec.directory)?;
+    // CLONE_PARENT makes the action the original owner's child. Check that
+    // relationship on both sides of pidfd_open so PID reuse cannot rebind it.
+    if sys::getppid() != spec.owner {
+        return Err(Errno(sys::ESRCH));
+    }
+    let owner = sys::pidfd(spec.owner)?;
+    if sys::getppid() != spec.owner {
+        sys::close(owner);
+        return Err(Errno(sys::ESRCH));
+    }
+    Ok(owner)
+}
+
+/// Either owner death or explicit release can authorize cleanup. A committed
+/// cancellation byte takes precedence, even if another process retained a
+/// forked copy of the release descriptor after the original owner exited.
+fn await_release(release: Fd, owner: Fd) -> Result<bool, Errno> {
+    let mut ready = [sys::PollFd::readable(release), sys::PollFd::readable(owner)];
     loop {
-        match sys::read(fd, &mut [0]) {
+        match sys::poll(&mut ready) {
+            Ok(_) => {}
+            Err(Errno(sys::EINTR)) => continue,
+            Err(error) => return Err(error),
+        }
+        match sys::read(release, &mut [0]) {
             Ok(count) => return Ok(count == 0),
+            Err(Errno(sys::EAGAIN)) if ready[1].ready() => return Ok(true),
             Err(Errno(sys::EINTR)) => {}
             Err(error) => return Err(error),
         }

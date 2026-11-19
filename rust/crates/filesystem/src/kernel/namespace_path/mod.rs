@@ -183,4 +183,5 @@ impl From<NamespacePathError> for crate::FsError {
 
 #[cfg(test)]
 #[path = "../tests/namespace_path.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

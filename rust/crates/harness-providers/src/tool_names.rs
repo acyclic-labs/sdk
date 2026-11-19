@@ -129,13 +129,13 @@ fn readable(name: &str) -> Option<String> {
 }
 
 /// Writes the salted digest alias into `buffer`, which holds `MAXIMUM` bytes.
-fn digest_into(
+fn digest_into<E>(
     buffer: &mut String,
     name: &str,
     salt: u32,
     built: &mut Built,
-    fund: &mut impl FnMut(u64) -> Result<()>,
-) -> Result<()> {
+    fund: &mut impl FnMut(u64) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
     let hashed = (DIGEST_DOMAIN.len() + size_of::<u32>() + name.len()) as u64;
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let skip = tests::SKIP_HASH_ADMISSION.with(std::cell::Cell::get);
@@ -172,10 +172,16 @@ fn exact(alias: &str) -> String {
 impl<'a> Names<'a> {
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
     pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
+        let result = Self::check_round_trip(request);
+        assert!(result.is_ok(), "tool name round trip failed: {result:?}");
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+    fn check_round_trip(request: &'a ModelRequest) -> Result<()> {
         let table = Self::new(request);
         let mut seen = std::collections::BTreeSet::new();
         for name in table.bindings.iter().map(|binding| binding.canonical) {
-            let wire = table.wire(name).unwrap();
+            let wire = table.wire(name)?;
             assert!(!wire.is_empty() && wire.len() <= 64);
             assert!(wire.as_bytes()[0].is_ascii_alphabetic() || wire.starts_with('_'));
             assert!(
@@ -193,19 +199,27 @@ impl<'a> Names<'a> {
                     serde_json::json!({}),
                 ),
             );
-            table.restore(&mut event).unwrap();
+            table.restore(&mut event)?;
             let acyclic_harness_core::model::ModelEvent::ToolCall(call) = event else {
                 unreachable!()
             };
             assert_eq!(call.name, name);
             let _ = table.canonical(name); // Also exercise malformed/untrusted alias strings.
         }
+        Ok(())
     }
 
     pub(crate) fn new(request: &'a ModelRequest) -> Self {
-        Self::build(request, names(request).count(), &mut |_| Ok(()))
-            .expect("unfunded tool-name construction cannot deny admission")
-            .0
+        Self::built(request).0
+    }
+
+    pub(crate) fn built(request: &'a ModelRequest) -> (Self, Built) {
+        match Self::build(request, names(request).count(), &mut |_| {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(result) => result,
+            Err(never) => match never {},
+        }
     }
 
     /// The native claim for a table over `count` names. Bytes: every binding,
@@ -229,11 +243,6 @@ impl<'a> Names<'a> {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn built(request: &'a ModelRequest) -> (Self, Built) {
-        Self::build(request, names(request).count(), &mut |_| Ok(())).unwrap()
-    }
-
     /// Each retained alias's length and capacity.
     #[cfg(test)]
     pub(crate) fn aliases(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -249,18 +258,20 @@ impl<'a> Names<'a> {
     #[cfg(test)]
     pub(crate) fn candidate(name: &str, salt: u32) -> String {
         let mut buffer = String::with_capacity(MAXIMUM);
-        digest_into(&mut buffer, name, salt, &mut Built::default(), &mut |_| {
-            Ok(())
-        })
-        .unwrap();
+        let result = digest_into(&mut buffer, name, salt, &mut Built::default(), &mut |_| {
+            Ok::<(), std::convert::Infallible>(())
+        });
+        if let Err(never) = result {
+            match never {}
+        }
         buffer
     }
 
-    fn build(
+    fn build<E>(
         request: &'a ModelRequest,
         count: usize,
-        fund: &mut impl FnMut(u64) -> Result<()>,
-    ) -> Result<(Self, Built)> {
+        fund: &mut impl FnMut(u64) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(Self, Built), E> {
         let mut built = Built::default();
         if count == 0 {
             return Ok((
@@ -432,7 +443,8 @@ impl<'a> Names<'a> {
     ) -> Result<(Self, acyclic_fs::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            let count = names(request).count() as u64;
+            let capacity = names(request).count();
+            let count = capacity as u64;
             let claim = Self::claim(count)
                 .ok_or_else(|| crate::invalid("tool name binding size overflow"))?;
             let custody = work.claim(
@@ -446,13 +458,14 @@ impl<'a> Names<'a> {
                     ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 },
             )?;
-            let (table, built) = Self::build(request, count as usize, &mut |bytes_hashed| {
-                work.charge(acyclic_fs_work::performance::WorkCounters {
-                    bytes_hashed,
-                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
+            let (table, built) =
+                Self::build(request, capacity, &mut |bytes_hashed| -> Result<()> {
+                    work.charge(acyclic_fs_work::performance::WorkCounters {
+                        bytes_hashed,
+                        ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
+                    })?;
+                    Ok(())
                 })?;
-                Ok(())
-            })?;
             // The claim is a bound the build must respect, not an estimate.
             if !built.within(&claim) {
                 return Err(crate::invalid("tool name table exceeded its native claim"));

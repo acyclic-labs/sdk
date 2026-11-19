@@ -22,6 +22,7 @@ pub(super) fn read<const N: usize>(reader: &mut impl Read) -> io::Result<[u8; N]
 thread_local! { static ALLOW_TRAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests {
     use super::*;
 

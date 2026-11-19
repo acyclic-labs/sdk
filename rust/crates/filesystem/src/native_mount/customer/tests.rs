@@ -75,7 +75,12 @@ async fn cancelled_retirement_keeps_contending_async_controls_off_the_executor()
     assert!(futures::poll!(&mut cleanup).is_pending());
     tokio::spawn(async move { release.send(()).unwrap() }).await?;
     completion.await?;
-    futures::try_join!(live, sync, cleanup)?;
+    live.await?;
+    cleanup.await?;
+    assert!(matches!(
+        sync.await,
+        Err(MountLifecycleError::Source(MountSourceError::Stale))
+    ));
     assert!(session.lock().unwrap().is_none());
     Ok(())
 }
@@ -311,17 +316,16 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
         ),
         "the immediate control must retain the original cancellation"
     );
-    let error = with_session_work(&session, source.as_ref(), |_, active| {
+    let result = with_session_work(&session, source.as_ref(), |_, active| {
         active.admit(crate::WorkCounters::UNCHARGED)?;
         Ok(())
-    })
-    .expect_err("a fresh context would lose the original cancellation");
+    });
     assert!(matches!(
-        error,
-        MountLifecycleError::Source(MountSourceError::Stale)
+        result,
+        Err(MountLifecycleError::Source(MountSourceError::Stale)
             | MountLifecycleError::Native(NativeMountError::Materialization(
                 crate::NativeTreeMaterializationError::Cancelled
-            ))
+            )))
     ));
     Ok(())
 }
@@ -622,7 +626,7 @@ async fn read_only_head_sources_refresh_without_mutation_or_advancing_exact_pins
             .await?;
         let file = native_test_path("file");
         let added = native_test_path("added");
-        assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), b"original");
+        assert_eq!(source.read_range(&file, 0, 8)?.as_ref(), b"original");
         assert!(source.lookup(&added)?.is_none());
         // The fixture permits every policy action: read-only checkout mode
         // itself must still reject mutation before and after a refresh.
@@ -635,17 +639,17 @@ async fn read_only_head_sources_refresh_without_mutation_or_advancing_exact_pins
                 ))
             ));
             assert_eq!(head(workspace, &work).await?, before);
-            assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), expected);
+            assert_eq!(source.read_range(&file, 0, 8)?.as_ref(), expected);
             if expected == b"original" {
                 workspace.write_text("/file", "new head").await?;
                 workspace.write_text("/added", "new name").await?;
-                assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), b"original");
+                assert_eq!(source.read_range(&file, 0, 8)?.as_ref(), b"original");
                 assert!(source.lookup(&added)?.is_none());
                 source.sync_async(PublicationPermit::Unrestricted).await?;
                 source.advance_to_head_async().await?;
                 // Receipt recovery can repeat the same clean advance.
                 source.advance_to_head_async().await?;
-                assert_eq!(source.read_range(&added, 0, 32)?.as_ref(), b"new name");
+                assert_eq!(source.read_range(&added, 0, 8)?.as_ref(), b"new name");
             }
         }
         assert!(matches!(
@@ -654,7 +658,7 @@ async fn read_only_head_sources_refresh_without_mutation_or_advancing_exact_pins
                 crate::FsError::RefreshNotAllowed
             ))
         ));
-        assert_eq!(pinned.read_range(&file, 0, 32)?.as_ref(), b"original");
+        assert_eq!(pinned.read_range(&file, 0, 8)?.as_ref(), b"original");
         assert!(pinned.lookup(&added)?.is_none());
         let before = head(workspace, &work).await?;
         pinned.sync_async(PublicationPermit::Unrestricted).await?;

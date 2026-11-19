@@ -138,7 +138,7 @@ impl ReasoningBlock {
 
 impl crate::filesystem::UploadRecord for super::ModelEvent {
     fn diagnostic_label_bytes() -> u64 {
-        super::preparation::MODEL_DIAGNOSTIC_LABEL_BYTES
+        <Self as crate::filesystem::PreparationRecord>::diagnostic_label_bytes()
     }
     fn logical_owned_bytes(&self) -> crate::Result<u64> {
         match self {

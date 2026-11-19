@@ -121,7 +121,7 @@ where
 
     /// Binds the journal with optional original preparation IO.
     pub fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
         binding: super::super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
@@ -187,6 +187,7 @@ where
             input_verifier: None,
             bound_selection: None,
             preceding_request: None,
+            preceding_working_context: None,
             stop: None,
             clock: None,
             boundary: None,
@@ -285,6 +286,15 @@ where
         Ok(self)
     }
 
+    pub(in crate::filesystem) fn with_preceding_working_context(
+        mut self,
+        context: Option<crate::executor::WorkingContextPrefix>,
+    ) -> Self {
+        self.preceding_working_context = context;
+        self.invalidate_execution_caches();
+        self
+    }
+
     /// Cancels model calls, tools and pending platform checkpoints when `stop` fires.
     #[must_use]
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
@@ -331,7 +341,7 @@ where
     #[cfg(test)]
     pub(super) fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             crate::distributed::execution_path(operation_id, &mut None)?.as_str(),
         )
         .map_err(|error| Error::Invalid(error.to_string()))

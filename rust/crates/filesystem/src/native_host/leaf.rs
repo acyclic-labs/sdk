@@ -25,6 +25,7 @@ thread_local! { static ACCEPT_NORMALIZED: std::cell::Cell<bool> = const { std::c
 
 #[cfg(test)]
 #[cfg(unix)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests {
     use super::*;
     use std::{ffi::OsStr, os::unix::ffi::OsStrExt};

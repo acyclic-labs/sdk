@@ -1222,11 +1222,13 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
 
 #[tokio::test]
 async fn a_repeating_reasoning_stream_settles_as_a_model_error() -> Result<()> {
-    let line = "Let me look at the same file again.\n";
+    // The progress tests cover single-line deltas. Here several chunks cross
+    // the same repetition threshold while exercising the real journal.
+    let chunk = "Let me look at the same file again.\n".repeat(256);
     let mut events = Vec::new();
-    for _ in 0..(64 * 1024 / line.len() + 1) {
+    for _ in 0..(64 * 1024 / chunk.len() + 1) {
         events.push(ScriptedEvent::Event(ModelEvent::Reasoning {
-            delta: line.into(),
+            delta: chunk.clone(),
         }));
     }
     events.push(ScriptedEvent::Event(ModelEvent::Completed {

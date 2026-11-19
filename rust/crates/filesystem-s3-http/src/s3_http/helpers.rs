@@ -236,10 +236,9 @@ fn s3_error(error: &S3Error) -> s3s::S3Error {
         }
         S3Error::MissingPart(_) => s3s::s3_error!(InvalidPart),
         S3Error::UnsupportedNamespace => s3s::s3_error!(NotImplemented),
-        S3Error::ForeignGeneration | S3Error::ForeignTransaction => {
-            s3s::s3_error!(AccessDenied)
-        }
-        S3Error::Workspace(acyclic_fs::WorkspaceError::AccessDenied) => {
+        S3Error::ForeignGeneration
+        | S3Error::ForeignTransaction
+        | S3Error::Workspace(acyclic_fs::WorkspaceError::AccessDenied) => {
             s3s::s3_error!(AccessDenied)
         }
         S3Error::InvalidObject | S3Error::Workspace(_) => s3s::s3_error!(InternalError),

@@ -43,8 +43,7 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
             ),
             TurnAdmission::LocalRoot,
             executors(model.clone())?,
-            LIMITS,
-            Default::default(),
+            (LIMITS, Default::default()),
         );
         let operation = OperationId::from_bytes([215; 16]);
         let input = ModelContent::Text("continue".into());
@@ -121,8 +120,7 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
         issuer.clone(),
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
-        LIMITS,
-        Default::default(),
+        (LIMITS, Default::default()),
     );
     let operation = OperationId::from_bytes([212; 16]);
     let input = ModelContent::Text("continue".into());

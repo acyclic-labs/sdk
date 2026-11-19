@@ -42,7 +42,7 @@ scan or readiness polling.
 Run the kept property or replay the actual fuzz corpus:
 
 ```sh
-cargo test --locked -p acyclic-fs-fuzz --test window_state persisted_window_records_preserve_fields_or_typed_corruption -- --exact
+cargo test --locked -p acyclic-fs-fuzz --test main window_state::persisted_window_records_preserve_fields_or_typed_corruption -- --exact
 cargo run --locked -p acyclic-fs-fuzz --features fuzz-targets --bin window_state -- rust/crates/filesystem/fuzz/corpus/window_state -runs=0
 ```
 

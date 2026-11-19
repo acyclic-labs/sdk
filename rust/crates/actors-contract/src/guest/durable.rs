@@ -2,6 +2,7 @@
 //! Cloud's and the local runtime's (`local::Sockets`).
 use super::{GuestError, SocketPayload};
 use crate::addressing::ActorReference;
+use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, sync::Arc};
@@ -34,6 +35,22 @@ pub trait SocketTerminal: acyclic_stream::ProviderPlatform {
     fn completion(
         self: Arc<Self>,
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<(), Arc<SocketTerminalError>>>;
+}
+
+impl<E> SocketTerminal for futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<E>>>>
+where
+    E: std::error::Error + ProviderPlatform + 'static,
+{
+    fn completion(
+        self: Arc<Self>,
+    ) -> BoxProviderFuture<'static, Result<(), Arc<SocketTerminalError>>> {
+        let result = self.as_ref().clone();
+        Box::pin(async move {
+            result
+                .await
+                .map_err(|error| error as Arc<SocketTerminalError>)
+        })
+    }
 }
 
 /// Hibernatable socket effects. A host keeps sockets, tags, attachments and the

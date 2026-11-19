@@ -17,8 +17,8 @@ use super::{
 use crate::{
     OperationId,
     agent::{
-        AgentHandler, AgentHost, AgentId, AgentPath, Delivered, Error, ExecutorDriver, ForkAdopted,
-        IntentId, Sender, Spawn, WorkspaceEntry,
+        AgentHandler, AgentHost, AgentId, AgentPath, AgentState, Delivered, Error, ExecutorDriver,
+        ForkAdopted, IntentId, Sender, Spawn, WorkspaceEntry,
     },
     approvals::ApprovalResponder,
     conversation::{ContentAccess, ContentPublisher, FileRef, VolumeRef},
@@ -233,6 +233,12 @@ impl Prepared {
             }
             FilesystemCommitOutcome::Rejected(_) => {
                 Err(Error::Record("agent exists with another creation"))
+            }
+            FilesystemCommitOutcome::Unknown {
+                error: acyclic_fs::AuthorityStoreError::NativeStream(error),
+                ..
+            } if error.category() == acyclic_stream::StreamCategory::IdempotencyMismatch => {
+                Err(Error::Stream(error))
             }
             FilesystemCommitOutcome::Unknown { commit, .. } => {
                 Ok(RootSubmission::Unknown(Self { child, commit }))
@@ -484,14 +490,13 @@ where
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let turner = FilesystemTurnHost::new(
-            Arc::clone(&stream),
+            stream.clone(),
             within.clone(),
             Arc::clone(&volumes),
             issuer.clone(),
             admission.clone(),
             turns.executors,
-            turns.limits,
-            turns.approval_policy,
+            (turns.limits, turns.approval_policy),
         )
         .with_trace_interest(traces.clone())
         .with_clock(turns.clock.clone())
@@ -530,7 +535,7 @@ where
             None,
         ));
         let control_composer: Arc<dyn acyclic_actors::guest::Composer> = composer.clone();
-        controls.bind_composer(Arc::downgrade(&control_composer));
+        controls.bind_composer(Arc::downgrade(&control_composer))?;
         let agents = AgentHost::hosting(
             acyclic_actors::guest::Requests::default(),
             stream,
@@ -979,6 +984,7 @@ where
                 if own_journal
                     && [
                         super::InternalContentClass::Conversation,
+                        super::InternalContentClass::Summary,
                         super::InternalContentClass::ToolOutput,
                     ]
                     .iter()
@@ -990,16 +996,8 @@ where
                 self.volumes.file_generation(file, None).map_err(turn)?;
                 std::slice::from_ref(file)
             }
-            (None, Some(file))
-                if file.volume().is_agent_journal()
-                    && !own_journal
-                    && state.adoption_grant(file).is_empty() =>
-            {
-                return Err(Error::Record(
-                    "journal file requires its selected agent or committed conversation proof",
-                ));
-            }
-            (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),
+            (None, Some(file)) => unsequenced_file_grant(&state, file)?,
+            (None, None) => &[],
         };
         let authority = agent_authority(
             &self.issuer,
@@ -1434,10 +1432,12 @@ where
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
-        let input_authority = if matches!(&input, StagedInput::Content(content)
-            if content.file_refs().next().is_some())
+        let input_authority = if let StagedInput::Content(content) = &input
+            && content.file_refs().next().is_some()
         {
+            for file in content.file_refs() {
+                unsequenced_file_grant(&state, file)?;
+            }
             Some(
                 agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
                     .await
@@ -1446,6 +1446,7 @@ where
         } else {
             None
         };
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         InputStager {
             volumes: &self.volumes,
             authority: &authority,
@@ -1665,6 +1666,19 @@ fn turn(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
 
+fn unsequenced_file_grant<'a>(
+    state: &AgentState,
+    file: &'a FileRef,
+) -> Result<&'a [FileRef], Error> {
+    let grant = state.adoption_grant(file);
+    if file.volume().is_agent_journal() && grant.is_empty() {
+        return Err(turn(crate::Error::Unauthorized(
+            "journal file requires adoption or a committed conversation proof".into(),
+        )));
+    }
+    Ok(grant)
+}
+
 /// One staging implementation for clients and host-owned file controls.
 struct InputStager<'a, P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: &'a Arc<Host<P, O>>,
@@ -1762,6 +1776,27 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
             None,
         )
         .map_err(turn)?;
+        // The provider owner supplies one live producer for an input key.
+        // Concurrent callers await its physical retirement, then compare the
+        // original durable receipt before any other write can be attempted.
+        let owner = if payload.is_some() {
+            match crate::executor::execution_claim::acquire(
+                self.volumes.filesystem.operation_claims(),
+                *blake3::hash(b"harness:staged-input:claim:v1").as_bytes(),
+                operation,
+                None,
+            )
+            .map_err(turn)?
+            {
+                crate::executor::ExecutionAttempt::Owned(owner) => Some(owner),
+                crate::executor::ExecutionAttempt::Observed(observation) => {
+                    observation.terminated().await;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let (staged, _) = publisher
             .observe_staged_once(
                 operation,
@@ -1790,8 +1825,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
             }
         }
         let Some((bytes, media_type)) = payload.filter(|_| staged.is_none()) else {
+            if let Some(owner) = owner {
+                owner.release();
+            }
             return Ok(staged);
         };
+        let owner = owner.ok_or_else(|| turn(crate::Error::Indeterminate(operation)))?;
         let staged = publisher
             .stage_once(
                 operation,
@@ -1804,6 +1843,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
             .map_err(turn)?
             .await
             .map_err(turn)?;
+        owner.release();
         Ok(Some(staged.0))
     }
 }

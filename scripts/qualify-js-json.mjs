@@ -43,7 +43,7 @@ if (args.some(arg => !["--red", "--retirement", "--bytes", "--metadata", "--arra
     "node scripts/qualify-js-json.mjs --array --red");
 }
 
-const production = new URL("../rust/crates/harness/src/wasm/json.rs", import.meta.url);
+const production = new URL("../rust/crates/harness-browser/src/wasm/json.rs", import.meta.url);
 const generated = "typescript/packages/harness/generated/wasm";
 function qualify(source) {
   let original;
@@ -138,7 +138,7 @@ function qualify(source) {
           if (!modules.has(path)) fail("reuse module", `missing artifact: ${path}`);
         }
         const sourceHash = createHash("sha256").update(readFileSync(production)).digest("hex");
-        if (sourceHash !== hashes.get("rust/crates/harness/src/wasm/json.rs")) fail("reuse source", "defining admission source differs");
+        if (sourceHash !== hashes.get("rust/crates/harness-browser/src/wasm/json.rs")) fail("reuse source", "defining admission source differs");
         reused = { source: receipt.source, tree: receipt.tree,
           receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
           qualification: "retained shipping module; no current-tree build or complete dependency parity inferred" };
@@ -184,7 +184,7 @@ function qualify(source) {
       if (result.status !== 0) fail(`source ${field}`, `exit ${result.status}`);
       return result.stdout.trim();
     };
-    const artifacts = [testFile, "rust/crates/harness/src/wasm/json.rs",
+    const artifacts = [testFile, "rust/crates/harness-browser/src/wasm/json.rs",
       "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js",
       "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm"];
     if (restoredBoundary) artifacts.push(retirementFile);
@@ -197,7 +197,7 @@ function qualify(source) {
     } catch (error) { fail("generated module dependencies", String(error)); }
     const retainedPath = path => {
       if (!artifactsCustody) return path;
-      const retained = path === "rust/crates/harness/src/wasm/json.rs" && !reused
+      const retained = path === "rust/crates/harness-browser/src/wasm/json.rs" && !reused
         ? join(artifactsCustody.directory, "json.rs")
         : path.startsWith(`${generated}/`) ? artifactsCustody.retained(join(root, path)) : undefined;
       return retained === undefined ? path : relative(root, retained).replaceAll("\\", "/");

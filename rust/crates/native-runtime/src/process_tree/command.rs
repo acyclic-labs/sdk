@@ -361,12 +361,16 @@ impl ProcessCommand {
     #[cfg(target_os = "macos")]
     pub(crate) fn sandbox_stdio(&self) -> [Option<std::os::fd::RawFd>; 3] {
         use std::os::fd::AsRawFd;
-        let streams = [&self.stdin, &self.stdout, &self.stderr];
-        std::array::from_fn(
-            |index| match streams[index].as_ref().map(|stream| &stream.0) {
+        [
+            (libc::STDIN_FILENO, &self.stdin),
+            (libc::STDOUT_FILENO, &self.stdout),
+            (libc::STDERR_FILENO, &self.stderr),
+        ]
+        .map(
+            |(descriptor, stream)| match stream.as_ref().map(|stream| &stream.0) {
                 Some(Stdio::Piped | Stdio::Null) => None,
                 Some(Stdio::Owned(fd)) => Some(fd.as_raw_fd()),
-                Some(Stdio::Inherit) | None => Some(index as std::os::fd::RawFd),
+                Some(Stdio::Inherit) | None => Some(descriptor),
             },
         )
     }

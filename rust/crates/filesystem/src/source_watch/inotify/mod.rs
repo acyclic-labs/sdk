@@ -205,4 +205,5 @@ impl Shared {
 
 #[cfg(test)]
 #[path = "tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 mod admission_tests;

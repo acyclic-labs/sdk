@@ -13,6 +13,7 @@ rust_shared_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -39,6 +40,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -76,7 +78,7 @@ rust_test(
     ],
     lint_config = "//:workspace_lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -105,6 +107,7 @@ rust_shared_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,
@@ -136,6 +139,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

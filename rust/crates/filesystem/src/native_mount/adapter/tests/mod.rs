@@ -1,12 +1,31 @@
 use super::*;
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 use crate::Fs;
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
 };
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 use crate::native_mount::ViewOrigin;
+#[cfg(all(unix, any(not(unit_test_split), unit_test_mount_driver)))]
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(
+    target_os = "macos",
+    any(not(unit_test_split), unit_test_mount_adapter)
+))]
 #[allow(unsafe_code, reason = "declares the NFS transport's C test hooks")]
 unsafe extern "C" {
     fn nfs4_test_exclusive_replay_identity() -> std::ffi::c_int;
@@ -15,6 +34,24 @@ unsafe extern "C" {
     fn nfs4_test_sync_acknowledgement() -> std::ffi::c_int;
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_lazy,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
+type MemorySource =
+    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 fn sources(
     profile: FilesystemProfile,
     consistency: ConsistencyMode,
@@ -27,6 +64,13 @@ fn sources(
     configured_sources(config, consistency, publication)
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 fn configured_sources(
     config: VolumeConfig,
     consistency: ConsistencyMode,
@@ -35,6 +79,13 @@ fn configured_sources(
     sources_with_fs(&Fs::memory(), config, consistency, publication)
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 fn sources_with_fs<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     fs: &Fs<A, O>,
     config: VolumeConfig,
@@ -87,6 +138,12 @@ pub(crate) fn native_test_path(name: &str) -> MountPath {
     })
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    all(unit_test_mount_driver, unix),
+    all(unit_test_mount_adapter_namespace, target_os = "linux"),
+    all(unit_test_mount_adapter, any(target_os = "linux", windows))
+))]
 fn mount_source(
     source: &Arc<MemorySource>,
     destination: &Path,
@@ -103,19 +160,64 @@ fn mount_source(
     )
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter))]
 include!("runtime.rs");
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter))]
 mod leases;
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    all(unit_test_mount_driver, target_os = "linux")
+))]
 pub(in crate::native_mount) mod policy_refresh;
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 pub(in crate::native_mount) mod return_fence;
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_lazy))]
+pub(in crate::native_mount) mod return_fence_control;
 include!("namespace.rs");
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter))]
 include!("lifecycle.rs");
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 include!("platform.rs");
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 include!("source_limits.rs");
 
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy, unit_test_mount_driver))]
+pub(in crate::native_mount) fn native_source_io_control(
+    borrowed: &MemorySource,
+    original: &crate::NativeMaterializationWork,
+) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
+    Ok(CheckoutMountSource::new_at_meter(
+        Arc::clone(&borrowed.checkout),
+        VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
+        NamespacePath::new(Vec::new(), borrowed.config.limits)?,
+        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+        original,
+        Some(original),
+    )?
+    .with_access_view(Arc::clone(
+        borrowed
+            .access_view
+            .as_ref()
+            .ok_or("missing fixture access")?,
+    ))?
+    .into_arc_meter(original)?)
+}
+
 pub(in crate::native_mount) mod access;
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 use access::bind_test_access;
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter))]
 mod clone_view;
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter))]
 mod command;
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter))]
 mod concurrent;
-#[cfg(unix)]
+#[cfg(all(unix, any(not(unit_test_split), unit_test_mount_adapter)))]
 mod policy;

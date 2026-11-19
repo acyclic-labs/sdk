@@ -229,7 +229,9 @@ mod codec;
 pub mod codec_fuzz;
 pub use codec::decode_published_generation;
 use codec::*;
-pub(crate) use codec::{OriginalEvidence, decode_publication_evidence_with_accounting};
+pub(crate) use codec::{
+    EVIDENCE_DOMAIN, OriginalEvidence, decode_publication_evidence_with_accounting,
+};
 mod combiner;
 pub(crate) use combiner::Volume as AuthorityActor;
 pub(crate) use combiner::authority_actor;
@@ -255,4 +257,5 @@ pub(crate) use api::publish_generation_async_guarded_with_native_work;
 
 #[cfg(test)]
 #[path = "../tests/publication/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;

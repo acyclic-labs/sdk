@@ -12,6 +12,9 @@ pub(super) struct LocalCase {
     /// A JSON value other than a string is written as its JSON encoding.
     #[serde(default)]
     pub home: BTreeMap<String, Value>,
+    /// The expected outcome requires executing a native lifecycle hook.
+    #[serde(default)]
+    pub requires_native_hook: bool,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
     pub expect: Expectations,

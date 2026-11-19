@@ -994,11 +994,14 @@ where
     }
 
     fn revalidate_foreign_conflicts(&self, actor: &ActorReference) -> bool {
+        // A supervision event can change the settlement cut without changing
+        // the actor checkpoint. The existing actor revalidation resumes the
+        // original delivery from its journal when that foreign guard moves.
         self.agents
             .companions
             .as_ref()
             .filter(|companions| companions.handles(actor))
-            .is_some_and(|companions| companions.revalidate_foreign_conflicts(actor))
+            .is_none_or(|companions| companions.revalidate_foreign_conflicts(actor))
     }
 
     fn subscription_filter(

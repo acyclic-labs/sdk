@@ -592,4 +592,5 @@ fn checked_increment(value: u64) -> Result<u64, ResidencySpeculatorError> {
 
 #[cfg(test)]
 #[path = "tests/residency.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

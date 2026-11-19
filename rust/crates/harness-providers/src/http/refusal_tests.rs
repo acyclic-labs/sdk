@@ -100,7 +100,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
             let hold = custody.as_ref().expect("original diagnostic custody");
             assert!(hold.work().shares_allocation_context(&work));
             assert_eq!(hold.bytes(), message.capacity() as u64);
-            assert_eq!(work.live_allocation_bytes(), baseline + hold.bytes());
+            assert_eq!(work.live_allocation_bytes()?, baseline + hold.bytes());
         } else {
             assert!(matches!(
                 native,
@@ -108,7 +108,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
             ));
         }
         drop(native);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     for drop_consumer in [false, true] {
         let (producer, terminal) = futures::channel::oneshot::channel::<()>();
@@ -126,7 +126,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
         };
         let mut refusal = Box::pin(crate::http_failure(response, 2048, Some(&work)));
         assert!(futures::poll!(refusal.as_mut()).is_pending());
-        assert!(work.live_allocation_bytes() > baseline);
+        assert!(work.live_allocation_bytes()? > baseline);
         if drop_consumer {
             drop(refusal);
             assert!(producer.is_canceled());
@@ -141,7 +141,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
                 }
             ));
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     let denied = NativeMaterializationWork::new(
         acyclic_fs_work::performance::work_budget(1_000_000, baseline),
@@ -160,6 +160,6 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
         crate::http_failure(response, 2048, Some(&denied)).await,
         Error::NativeWork { .. }
     ));
-    assert_eq!(denied.live_allocation_bytes(), baseline);
+    assert_eq!(denied.live_allocation_bytes()?, baseline);
     Ok(())
 }

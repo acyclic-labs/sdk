@@ -198,7 +198,7 @@ for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"
 }
 
 test("WASM builds reject manual JS byte copies outside the snapshot boundary", () => {
-  checkByteSnapshotBoundary("rust/crates/harness/src/wasm");
+  checkByteSnapshotBoundary("rust/crates/harness-browser/src/wasm");
   for (const expression of ["caller.to_vec()", "caller.copy_to(&mut bytes)", "Uint8Array::new(&caller)"]) {
     assert.throws(() => check("file_worker.rs", expression), /copy caller arrays through/);
   }

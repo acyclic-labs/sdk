@@ -937,7 +937,9 @@ fn shared_runtime_checkpoint_owner_loss_refuses_without_fabricating_custody() ->
 #[test]
 fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() -> Result<()> {
     block_on(async {
-        use crate::agent::{AgentPath, AgentState, ForkAdopted, TurnHost, WorkspaceEntry};
+        use crate::agent::{
+            AgentPath, AgentState, ForkAdopted, IntentId, TurnHost, WorkspaceEntry,
+        };
         use crate::conversation::{VolumeClass, VolumeRef};
         use crate::filesystem::{
             FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
@@ -977,6 +979,9 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
             None,
         )?);
         host.create_volume(&volume).await?;
+        let path = AgentPath::root(&agent);
+        let journal = crate::conversation::journal_volume(provider, &path.id())?;
+        host.create_volume(&journal).await?;
         let ceiling =
             acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
                 .to_scope_label()
@@ -990,25 +995,32 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
             Some(AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?;
-        let state = AgentState::adopted(
-            AgentPath::root(&agent),
-            &ForkAdopted {
-                profile: None,
-                agent,
-                parent: None,
-                forked_at: 0,
-                conversation_tail: 0,
-                checkpoint: None,
-                volumes: vec![WorkspaceEntry::initial_volume(
-                    crate::agent::WorkspaceRole::Private,
-                    PRIVATE_VOLUME.into(),
-                    volume,
-                )],
-                brief: None,
-                policy: None,
-            },
+        let adoption = ForkAdopted {
+            profile: None,
+            agent,
+            parent: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                volume,
+            )],
+            brief: None,
+            policy: None,
+        };
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let root_request = crate::agent::create_root(
+            &IntentId::try_from("derive-stop").map_err(Error::from)?,
+            adoption.clone(),
         )
-        .expect("adopts");
+        .map_err(Error::from)?;
+        assert!(matches!(
+            crate::agent::submit(&*stream, root_request.request).await?,
+            crate::agent::Submitted::Committed(_)
+        ));
+        let state = AgentState::adopted(path, &adoption).map_err(Error::from)?;
         let executors = Arc::new(Executed(AtomicUsize::new(0)));
         let input = crate::model::ModelContent::Text("turn".into());
         for held in [true, false] {
@@ -1016,7 +1028,7 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
             let (port, source, _native_owner) =
                 forwarded(&root, &caller, context, false, None, held)?;
             let turn_host = FilesystemTurnHost::new(
-                Arc::new(acyclic_stream::MemoryStream::default()),
+                Arc::clone(&stream),
                 acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
                     .expect("actor binding"),
                 Arc::clone(&host),
@@ -1026,11 +1038,13 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                     scope: source.native.public_scope()?,
                 },
                 executors.clone(),
-                TurnLimits {
-                    maximum_bytes: Some(u64::MAX),
-                    history_turns: u32::MAX,
-                },
-                Default::default(),
+                (
+                    TurnLimits {
+                        maximum_bytes: Some(u64::MAX),
+                        history_turns: u32::MAX,
+                    },
+                    Default::default(),
+                ),
             )
             .with_goals(None);
             let stop = acyclic_actors::guest::CancellationToken::new();

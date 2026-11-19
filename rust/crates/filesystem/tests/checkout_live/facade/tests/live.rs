@@ -70,8 +70,8 @@ async fn direct_live_conflicts_return_before_explicit_rebase() -> TestResult {
                     vec![Mutation::Write {
                         path: path("file")?,
                         offset,
-                        length: blob.logical_bytes,
-                        content: blob.root,
+                        length: blob.logical_bytes(),
+                        content: blob.root(),
                         content_offset: 0,
                     }],
                     B,

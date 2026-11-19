@@ -834,7 +834,7 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Directory next continues a page; each entry's cursor resumes immediately after that entry. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -1149,6 +1149,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -1170,26 +1174,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -1199,32 +1204,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -1989,6 +1994,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -2010,26 +2019,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -2039,32 +2049,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -2545,47 +2555,47 @@
             }
           ]
         },
-        "revision": "portable-14"
+        "revision": "portable-16"
       },
       "definition_digest": [
-        151,
-        163,
-        5,
-        194,
-        104,
-        67,
-        232,
-        249,
-        129,
-        25,
-        192,
-        185,
-        3,
-        3,
-        98,
-        169,
-        168,
-        221,
-        198,
-        178,
-        154,
-        195,
-        233,
-        128,
-        217,
-        254,
-        237,
-        175,
-        131,
-        92,
+        71,
+        107,
+        23,
+        37,
         238,
-        52
+        85,
+        57,
+        20,
+        230,
+        68,
+        2,
+        238,
+        23,
+        12,
+        53,
+        91,
+        239,
+        227,
+        177,
+        225,
+        230,
+        137,
+        7,
+        244,
+        177,
+        93,
+        230,
+        255,
+        66,
+        82,
+        224,
+        24
       ],
       "variant": "exact_read_full"
     },
     {
       "definition": {
-        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Directory next continues a page; each entry's cursor resumes immediately after that entry. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -2900,6 +2910,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -2921,26 +2935,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -2950,32 +2965,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -3740,6 +3755,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -3761,26 +3780,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -3790,32 +3810,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -4317,41 +4337,41 @@
             }
           ]
         },
-        "revision": "portable-14"
+        "revision": "portable-16"
       },
       "definition_digest": [
-        253,
-        141,
-        210,
-        91,
+        207,
+        58,
+        54,
+        148,
+        8,
+        69,
+        46,
         156,
-        245,
-        186,
-        120,
-        35,
-        228,
-        239,
-        129,
-        68,
-        180,
-        236,
-        250,
+        158,
+        155,
+        102,
+        134,
         87,
-        171,
+        193,
+        76,
+        27,
+        12,
+        179,
+        191,
         196,
-        65,
-        44,
-        230,
-        239,
-        217,
-        45,
-        7,
-        82,
-        135,
-        88,
-        111,
-        117,
-        235
+        240,
+        196,
+        139,
+        147,
+        21,
+        42,
+        9,
+        146,
+        118,
+        161,
+        37,
+        48
       ],
       "variant": "exact_read_reference"
     },
@@ -6703,7 +6723,7 @@
     },
     {
       "definition": {
-        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Directory next continues a page; each entry's cursor resumes immediately after that entry. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -7018,6 +7038,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -7039,26 +7063,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -7068,32 +7093,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -7858,6 +7883,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -7879,26 +7908,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -7908,32 +7938,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -8414,47 +8444,47 @@
             }
           ]
         },
-        "revision": "portable-14"
+        "revision": "portable-16"
       },
       "definition_digest": [
-        151,
-        163,
-        5,
-        194,
-        104,
-        67,
-        232,
-        249,
-        129,
-        25,
-        192,
-        185,
-        3,
-        3,
-        98,
-        169,
-        168,
-        221,
-        198,
-        178,
-        154,
-        195,
-        233,
-        128,
-        217,
-        254,
-        237,
-        175,
-        131,
-        92,
+        71,
+        107,
+        23,
+        37,
         238,
-        52
+        85,
+        57,
+        20,
+        230,
+        68,
+        2,
+        238,
+        23,
+        12,
+        53,
+        91,
+        239,
+        227,
+        177,
+        225,
+        230,
+        137,
+        7,
+        244,
+        177,
+        93,
+        230,
+        255,
+        66,
+        82,
+        224,
+        24
       ],
       "variant": "range_read_full"
     },
     {
       "definition": {
-        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Directory next continues a page; each entry's cursor resumes immediately after that entry. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -8769,6 +8799,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -8790,26 +8824,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -8819,32 +8854,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -9609,6 +9644,10 @@
               "additionalProperties": false,
               "description": "One selected name; its version does not confer authority.",
               "properties": {
+                "cursor": {
+                  "description": "Opaque continuation immediately after this entry in the selected directory.",
+                  "type": "string"
+                },
                 "kind": {
                   "$ref": "#/$defs/DirectoryEntryKind",
                   "description": "Selected namespace kind."
@@ -9630,26 +9669,27 @@
                 "name",
                 "path",
                 "kind",
-                "version"
+                "version",
+                "cursor"
               ],
               "type": "object"
             },
             "DirectoryEntryKind": {
-              "description": "A name's kind at the selected immutable generation.",
+              "description": "A discovered name's kind at its pinned namespace generation.",
               "oneOf": [
                 {
                   "const": "file",
-                  "description": "Regular file.",
+                  "description": "A named regular file; resolve its current immutable ref by path.",
                   "type": "string"
                 },
                 {
-                  "const": "dir",
-                  "description": "Child directory.",
+                  "const": "directory",
+                  "description": "A named child directory.",
                   "type": "string"
                 },
                 {
-                  "const": "symlink",
-                  "description": "Symbolic link, without following its target.",
+                  "const": "symbolic_link",
+                  "description": "Symbolic link; the listing does not follow its target.",
                   "type": "string"
                 },
                 {
@@ -9659,32 +9699,32 @@
                 },
                 {
                   "const": "socket",
-                  "description": "Local socket.",
+                  "description": "Socket node.",
                   "type": "string"
                 },
                 {
                   "const": "character_device",
-                  "description": "Character device node.",
+                  "description": "Character device.",
                   "type": "string"
                 },
                 {
                   "const": "block_device",
-                  "description": "Block device node.",
+                  "description": "Block device.",
                   "type": "string"
                 },
                 {
                   "const": "reparse_point",
-                  "description": "Windows reparse point other than a symbolic link.",
+                  "description": "Native reparse point.",
                   "type": "string"
                 },
                 {
                   "const": "mount_boundary",
-                  "description": "Another mount's root, which the listing does not cross.",
+                  "description": "Mounted namespace boundary.",
                   "type": "string"
                 },
                 {
                   "const": "unsupported",
-                  "description": "A kind this host does not report.",
+                  "description": "Source kind that cannot be projected losslessly.",
                   "type": "string"
                 }
               ]
@@ -10186,41 +10226,41 @@
             }
           ]
         },
-        "revision": "portable-14"
+        "revision": "portable-16"
       },
       "definition_digest": [
-        253,
-        141,
-        210,
-        91,
+        207,
+        58,
+        54,
+        148,
+        8,
+        69,
+        46,
         156,
-        245,
-        186,
-        120,
-        35,
-        228,
-        239,
-        129,
-        68,
-        180,
-        236,
-        250,
+        158,
+        155,
+        102,
+        134,
         87,
-        171,
+        193,
+        76,
+        27,
+        12,
+        179,
+        191,
         196,
-        65,
-        44,
-        230,
-        239,
-        217,
-        45,
-        7,
-        82,
-        135,
-        88,
-        111,
-        117,
-        235
+        240,
+        196,
+        139,
+        147,
+        21,
+        42,
+        9,
+        146,
+        118,
+        161,
+        37,
+        48
       ],
       "variant": "range_read_reference"
     },

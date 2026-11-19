@@ -84,11 +84,11 @@ pub(super) fn publish(
             .strip_prefix(&namespace.root)
             .map_err(|_| LocalCoreStateStoreError::Integrity)?;
         namespace.durable_directory(relative)?;
-        write_journaled(&paths, &journal.plan)?;
+        records::write_unacknowledged(&paths, &journal.plan)?;
     }
     for (index, image) in journal.preimages.iter().enumerate().skip(previous) {
         let paths = data_paths(namespace, operation, Some(index))?;
-        write_journaled(&paths, image)?;
+        records::write_unacknowledged(&paths, image)?;
     }
     Ok(())
 }

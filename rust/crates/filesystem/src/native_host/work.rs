@@ -225,6 +225,7 @@ impl<W: DemandWorkContext> NativeHostWork for W {
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;
 
 impl NativeHostWork for &NativeMaterializationWork {

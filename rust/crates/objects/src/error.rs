@@ -17,6 +17,16 @@ pub(crate) fn invalid() -> Error {
     wire::ErrorCode::InvalidArgument.into()
 }
 
+/// An authenticated range was larger than the caller's payload limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("read requires {observed} bytes, exceeding the requested limit {maximum}")]
+pub struct ReadLimitExceeded {
+    /// Exact size of the selected range.
+    pub observed: u64,
+    /// Maximum accepted payload size for the request.
+    pub maximum: u64,
+}
+
 /// Semantic service failure or the original local operation stop.
 ///
 /// Its `source` is the local stop or, for a remote failure, the server's

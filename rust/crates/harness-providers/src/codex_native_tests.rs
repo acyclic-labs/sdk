@@ -47,7 +47,7 @@ impl HttpTransport for NativeServer {
         acyclic_fs::NativeFutureBundle::new(work, || async move {
             self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
-                work.receipt().source_bytes_read > 0,
+                work.receipt()?.source_bytes_read > 0,
                 "credential reads use this ledger"
             );
             let (status, body) = self.inner.reply(request)?;
@@ -83,7 +83,7 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let server = Arc::new(NativeServer {
         inner: inner.clone(),
         work: work.clone(),
@@ -119,9 +119,9 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
     );
     assert_eq!(sent[3].headers["authorization"], "Bearer recovered-access");
     sent.clear();
-    assert_eq!(work.receipt().durability_operations, 2);
-    assert!(work.receipt().backend_read_operations > 0);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.receipt()?.durability_operations, 2);
+    assert!(work.receipt()?.backend_read_operations > 0);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -138,16 +138,16 @@ async fn unfunded_credential_reads_stop_before_reading_or_http() -> Result<()> {
         }
         let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
         let error = login
             .bearer(inner.as_ref(), None, Some(&mut custody))
             .await
             .expect_err("unfunded credential IO");
         drop((error, custody));
-        assert_eq!(work.receipt().source_bytes_read, 0);
+        assert_eq!(work.receipt()?.source_bytes_read, 0);
         assert!(inner.requests.lock().expect("fixture requests").is_empty());
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

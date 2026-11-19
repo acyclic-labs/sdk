@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[path = "ownership_backing_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod backing_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
@@ -213,7 +214,8 @@ impl NativeMountAllocationCustody {
     #[cfg(not(target_arch = "wasm32"))]
     fn claimed_bytes() -> u64 {
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
+        #[cfg(any(not(unit_test_split), unit_test_foundation))]
         if backing_tests::PAYLOAD_ONLY.get() {
             return std::mem::size_of::<MountAllocationCustody>() as u64;
         }
@@ -369,6 +371,7 @@ impl Drop for MountAllocationCustody {
 
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", windows)))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod properties {
     use super::*;
     use proptest::prelude::*;

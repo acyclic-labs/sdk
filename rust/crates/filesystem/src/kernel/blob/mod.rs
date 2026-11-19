@@ -161,5 +161,6 @@ use error::*;
 pub use error::{BlobBuildError, BlobBuildFailure, BlobReadError, BlobReadFailure};
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 #[path = "../tests/blob/mod.rs"]
 mod tests;

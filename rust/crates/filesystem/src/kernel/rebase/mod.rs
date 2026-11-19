@@ -320,4 +320,5 @@ pub(crate) use footprint::CommitFootprint;
 
 #[cfg(test)]
 #[path = "../tests/rebase.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -4,6 +4,7 @@ use crate::conformance::{
     vectors,
 };
 use acyclic_actors::{addressing::ActorReference, guest::*};
+use acyclic_stream::ProviderOwner;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitOutcome, CommitRequest, Record, StreamCategory, StreamError,
     StreamPath,
@@ -129,7 +130,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 
 async fn conflict(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let counts = Arc::new(Counts::default());
     let handler = backend.handler(Arc::new(Participating(vectors::handler(&provider)?)))?;
     let host = vectors::hosting(
@@ -161,7 +162,7 @@ async fn conflict(backend: &dyn Backend) -> Result {
 
 async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::capturing(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::capturing(storage.open().await?));
     let counts = Arc::new(Counts::default());
     let handler = backend.handler(Arc::new(Participating(vectors::handler(&provider)?)))?;
     let host = vectors::hosting(

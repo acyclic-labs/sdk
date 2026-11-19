@@ -278,7 +278,7 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     apply_attribute_mutations_with_accounting(
         store,
-        root,
+        Some(root),
         &mutations,
         limits,
         &mut accounting,
@@ -290,7 +290,7 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
 
 pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S,
-    root: ObjectId,
+    root: Option<ObjectId>,
     mutations: &[AttributeMutation],
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
@@ -300,7 +300,7 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
     for mutation in mutations {
         mutation.validate().map_err(crate::FsError::from)?;
     }
-    persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
+    persistent_btree::apply_optional_root_with_accounting::<S, AttributeFormat, AttributeMutation>(
         store,
         (root, None, None),
         mutations,
@@ -414,4 +414,5 @@ pub enum AttributeMutationError {
 
 #[cfg(test)]
 #[path = "tests/attribute_mutation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -72,4 +72,5 @@ mod diff;
 pub use diff::*;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests;

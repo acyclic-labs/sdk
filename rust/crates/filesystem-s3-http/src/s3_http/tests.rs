@@ -8,11 +8,8 @@ include!("access_tests.rs");
 async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cancellation = CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .map_err(|(error, _)| error)?;
+    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes().unwrap();
     let data = b"canonical HTTP chunk".to_vec();
     let allocation = {
@@ -20,7 +17,7 @@ async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
         work.claim(
             claim_bytes,
             u64::from(claim_bytes != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
+            WorkCounters::UNCHARGED,
         )
     }?;
     let carrier =
@@ -663,7 +660,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
                     maximum_uploads: Some(1),
                     ..S3MultipartRetentionLimits::default()
                 },
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -679,7 +676,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
                     maximum_object_bytes: Some(1),
                     ..S3MultipartRetentionLimits::default()
                 },
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -691,7 +688,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
         .active_multipart_objects(
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -747,7 +744,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -813,7 +810,7 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -838,7 +835,7 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -896,7 +893,7 @@ fn multipart_records_preserve_sealed_parts_and_completed_generations() -> Multip
         snapshot
             .parts
             .get(&1)
-            .expect("the stored part")
+            .ok_or(MultipartStorageError::Malformed)?
             .staged
             .root(),
         part
@@ -926,7 +923,8 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
         let records = (start..(start + 128).min(updates + 1))
             .map(|index| {
                 if index == 0 {
-                    encode_multipart_created("large/object", Some(2), Some(8), 1).map(Into::into)
+                    encode_multipart_created("large/object", Some(2), Some(8), 1)
+                        .map(acyclic_stream::OwnedBytes::from)
                 } else {
                     Ok(encode_multipart_part(
                         1,
@@ -938,6 +936,7 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
                     .into())
                 }
             })
+            .map(|result| result.map(acyclic_stream::AppendRecord::from))
             .collect::<MultipartStorageResult<Vec<_>>>()?;
         let result = provider
             .append(acyclic_stream::AppendRequest {
@@ -980,7 +979,9 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
         provider
             .append(acyclic_stream::AppendRequest {
                 path: path.clone(),
-                records: vec![conflict.into()],
+                records: vec![acyclic_stream::AppendRecord::from(
+                    acyclic_stream::OwnedBytes::from(conflict),
+                )],
                 if_tail: Some(tail),
                 idempotency_key: acyclic_stream::IdempotencyKey::new(
                     b"conflicting-old-identity".as_slice()
@@ -1007,9 +1008,10 @@ async fn create_retry_returns_the_existing_upload_validation_error() -> S3Result
     };
     S3::create_multipart_upload(&adapter, request(input())).await?;
     adapter.limits.maximum_multipart_parts = Some(1);
-    let error = S3::create_multipart_upload(&adapter, request(input()))
-        .await
-        .expect_err("the persisted upload exceeds the explicit replacement policy");
+    let result = S3::create_multipart_upload(&adapter, request(input())).await;
+    let Err(error) = result else {
+        panic!("the persisted upload exceeds the explicit replacement policy");
+    };
     assert_eq!(error.code(), &s3s::S3ErrorCode::InvalidRequest);
     Ok(())
 }

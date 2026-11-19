@@ -299,6 +299,7 @@ fn prefix(tree: &Tree, before: impl Fn(Key) -> bool) -> State {
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
 #[path = "registry/tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

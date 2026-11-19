@@ -95,8 +95,8 @@ impl AlloySpec {
                 // validate() established a nonzero sum that fits u64.
                 let sum: u64 = weights.iter().map(|&weight| u64::from(weight)).sum();
                 let phase = blake3::hash(&turn.operation_id.into_bytes());
-                let phase =
-                    u64::from_le_bytes(phase.as_bytes()[..8].try_into().expect("eight hash bytes"));
+                let &[a, b, c, d, e, f, g, h, ..] = phase.as_bytes();
+                let phase = u64::from_le_bytes([a, b, c, d, e, f, g, h]);
                 let mut slot =
                     ((u128::from(phase) + u128::from(turn.ordinal)) % u128::from(sum)) as u64;
                 for (index, &weight) in weights.iter().enumerate() {

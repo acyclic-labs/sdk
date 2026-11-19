@@ -198,8 +198,10 @@ pub(crate) async fn check_diagnostic_read(
         ),
         TurnAdmission::LocalRoot,
         Arc::new(inspect),
-        LIMITS,
-        acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+        (
+            LIMITS,
+            acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+        ),
     );
     let turn = OperationId::from_bytes([246; 16]);
     let input = ModelContent::Text("inspect".into());

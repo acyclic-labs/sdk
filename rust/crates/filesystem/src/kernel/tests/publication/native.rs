@@ -364,6 +364,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         );
         let (payload, fingerprint) = construct_publication_commit(
             request,
+            None,
             Some(intent.operation_context.ok_or("missing original context")?),
             decoded.original_evidence,
             &mut accounting,

@@ -4,16 +4,16 @@ import { dependencyBinding, requireBinding } from "@acyclic-labs/actors/guest";
 import type { StreamLedger, WasmObjectsPort } from "@acyclic-labs/harness/hosting";
 import type { AgentGuest, BrowserAgentOptions, BrowserMachinesWorkspaceAdmission,
   WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
-import type { CompactionPolicy, ModelCredentialResolver, ModelRegistry, ProviderSpec } from "@acyclic-labs/harness";
+import type { CompactionPolicy, ModelCredentialResolver, ModelRegistry, ProviderConfig } from "@acyclic-labs/harness";
 import { guestManifest, openGuest } from "./open.js";
 import { HARNESS_BINDINGS, MODEL_FETCH, HarnessActorError } from "./bindings.js";
 
 /** Owner-selected configuration, sealed into the artifact. */
 export interface HarnessActorConfig {
-  readonly options: Omit<BrowserAgentOptions, "children">;
+  readonly options: Omit<BrowserAgentOptions, "children"> & { readonly children?: boolean };
   readonly model: {
     readonly provider: string;
-    readonly spec: ProviderSpec;
+    readonly spec: ProviderConfig;
     readonly selection: string;
     readonly limits: ConstructorParameters<typeof ModelRegistry>[1];
     readonly compaction: CompactionPolicy;
@@ -27,11 +27,10 @@ interface Values {
   /** Admitted by request id inside onRecord, never while the heap opens. */
   workspace: BrowserMachinesWorkspaceAdmission;
 }
-export type Bound = Values & { model: ModelCredentialResolver };
+export type Bound = Values & { model?: ModelCredentialResolver };
 export type HarnessBindings = { readonly [K in keyof Values as (typeof HARNESS_BINDINGS)[K]]: Values[K] }
-  & { readonly [MODEL_FETCH]: ModelCredentialResolver };
-const required: readonly (readonly [keyof Bound, string])[] = [
-  ...(Object.entries(HARNESS_BINDINGS) as [keyof Values, string][]), ["model", MODEL_FETCH]];
+  & { readonly [MODEL_FETCH]?: ModelCredentialResolver };
+const required = Object.entries(HARNESS_BINDINGS) as [keyof Values, string][];
 /** Every selected binding is required. The Machines workspace is only ever
  * called at delivery admission, so any failure of it is that dependency's. */
 function bindings(env: Partial<HarnessBindings>): Bound {
@@ -51,7 +50,14 @@ export async function manifest(context?: Pick<GuestContext<HarnessBindings>, "en
     // A refused binding is retained as the heap's outcome, so every delivery
     // reports the same typed dependency instead of an unopened environment.
     const env = context.env;
-    heap = Promise.resolve().then(() => openGuest(bindings(env), HARNESS_ACTOR.config));
+    heap = Promise.resolve().then(() => {
+      const bound = bindings(env);
+      const { config } = HARNESS_ACTOR;
+      if (config.model.spec.adapter !== "scripted") {
+        bound.model = requireBinding<ModelCredentialResolver>(env, MODEL_FETCH);
+      }
+      return openGuest(bound, config);
+    });
   }
   return guestManifest(await heap);
 }

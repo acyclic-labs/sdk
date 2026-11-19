@@ -50,17 +50,22 @@ unsafe extern "C" {
         argc: c_int,
         argv: *const *const c_char,
         mountpoint: *const c_char,
-        context: usize,
+        context: CallbackAddress,
         mounted: unsafe extern "C" fn(*mut c_void),
         mounted_argument: *mut c_void,
         interrupted_before_namespace: *mut c_int,
+        owner_image: *const u8,
+        owner_image_len: usize,
+        fence: c_int,
     ) -> c_int;
     pub(super) fn acyclic_fs_darwin_mount_interrupt(session: *mut c_void);
+    #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+    pub(super) fn acyclic_fs_darwin_mount_owner_pid(session: *mut c_void) -> libc::pid_t;
     pub(super) fn acyclic_fs_darwin_mount_invalidate(
         session: *mut c_void,
         path: *const c_char,
     ) -> c_int;
-    #[cfg(test)]
+    #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
     pub(super) fn acyclic_fs_darwin_mount_attribute_timeout() -> u32;
     pub(super) fn acyclic_fs_darwin_mount_fill_directory(
         buffer: *mut c_void,

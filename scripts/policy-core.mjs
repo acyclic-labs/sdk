@@ -64,9 +64,18 @@ const manifests = new Map();
 // JavaScript object prototype, including implicit Cargo feature identities.
 export const parseJson = text => JSON.parse(text, (_, value) => value && typeof value === 'object' && !Array.isArray(value)
   ? Object.setPrototypeOf(value, null) : value);
+// The pinned tool a Bazel policy test hands in as `variable`. Under Bazel (TEST_SRCDIR) it must be there, so no
+// test ever falls back to the host's PATH; only a direct run outside Bazel uses the developer's own `name`.
+export function pinnedTool(variable, name) {
+  const tool = process.env[variable];
+  if (tool) return tool;
+  if (process.env.TEST_SRCDIR) throw Error(`${variable} is unset: the Bazel test must pass the pinned ${name}`);
+  return name;
+}
+const python = pinnedTool('PYTHON_BINARY', process.platform === 'win32' ? 'python' : 'python3');
 function pythonJson(source, input) {
   try {
-    return parseJson(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', source],
+    return parseJson(execFileSync(python, ['-I', '-c', source],
       {input: JSON.stringify(input), encoding: 'utf8', maxBuffer: Infinity, stdio: ['pipe', 'pipe', 'pipe']}));
   } catch (error) {
     if (error.stderr?.length) throw new Error(error.stderr.toString().trim());
@@ -100,12 +109,18 @@ json.dump(encode(documents), sys.stdout, allow_nan=False)
 }
 
 export function tomlFiles(root, files) {
-  const missing = files.filter(file => !manifests.has(resolve(root, file)));
-  if (missing.length) {
-    const parsed = parseToml(Object.fromEntries(missing.map(file => [file, readUtf8(resolve(root, file))])));
-    for (const [file, manifest] of Object.entries(parsed)) manifests.set(resolve(root, file), manifest);
+  const changed = new Map();
+  for (const file of files) {
+    const absolute = resolve(root, file);
+    const source = readUtf8(absolute);
+    if (manifests.get(absolute)?.source !== source) changed.set(absolute, source);
   }
-  return Object.fromEntries(files.map(file => [file, manifests.get(resolve(root, file))]));
+  if (changed.size) {
+    const parsed = parseToml(Object.fromEntries(changed));
+    for (const [file, manifest] of Object.entries(parsed))
+      manifests.set(file, {source: changed.get(file), manifest});
+  }
+  return Object.fromEntries(files.map(file => [file, manifests.get(resolve(root, file)).manifest]));
 }
 
 export const toml = (root, file) => tomlFiles(root, [file])[file];
@@ -256,6 +271,52 @@ export function testFeatureFindings(root) {
 }
 
 // Starlark is a Python syntax subset. Parse syntax, never execute repository code.
+// A toolchain may name a distributed component without running its executable.
+export function starlarkCargoCallers(sources) {
+  if (!Object.keys(sources).length) return [];
+  const basename = /^cargo(?:\.exe)?$/;
+  return pythonJson(String.raw`
+import ast, json, re, sys
+request = json.load(sys.stdin)
+basename = re.compile(request["basename"])
+callers = []
+for file, source in request["sources"].items():
+    tree = ast.parse(source, filename=file)
+    bindings = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings.setdefault(target.id, []).append(node.value)
+
+    def cargo(node, argv=False, seen=frozenset()):
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str) and basename.fullmatch(node.value.replace("\\", "/").rsplit("/", 1)[-1]) is not None
+        if isinstance(node, ast.Name):
+            return node.id not in seen and any(cargo(value, argv, seen | {node.id}) for value in bindings.get(node.id, []))
+        if isinstance(node, (ast.List, ast.Tuple)) and argv:
+            return bool(node.elts) and cargo(node.elts[0], False, seen)
+        if isinstance(node, ast.IfExp):
+            return cargo(node.body, argv, seen) or cargo(node.orelse, argv, seen)
+        return any(cargo(child, argv, seen) for child in ast.iter_child_nodes(node))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) else None
+        parameter = {"execute": "arguments", "run": "executable", "run_shell": "command", "genrule": "cmd"}.get(name)
+        if parameter is None:
+            continue
+        program = next((keyword.value for keyword in node.keywords if keyword.arg == parameter), None)
+        if name == "execute" and program is None and node.args:
+            program = node.args[0]
+        if program is not None and cargo(program, name == "execute"):
+            callers.append(file)
+            break
+json.dump(callers, sys.stdout)
+`, {sources, basename: basename.source});
+}
+
 // Literal pins and direct calls are mandatory: indirection cannot hide a fetch.
 export function bazelGitPins(root) {
   const files = trackedFiles(root).filter(file => file.endsWith('MODULE.bazel') || file.endsWith('.bzl'));

@@ -27,10 +27,11 @@ async fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
     let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
     let before = accounting.spent().unwrap();
     assert_eq!(before.allocation_operations, 1);
-    let failure = (put_blob_page(&mut batch, &page, options, &mut accounting, &cancellation))
-        .await
-        .err()
-        .ok_or("oversized blob page unexpectedly published")?;
+    let failure =
+        super::index::put_blob_page(&mut batch, &page, options, &mut accounting, &cancellation)
+            .await
+            .err()
+            .ok_or("oversized blob page unexpectedly published")?;
     assert!(matches!(
         failure,
         FsError::BlobBuild(BlobBuildError::PageTooLarge {

@@ -490,6 +490,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
             // Keep ordering after finish to preserve trailing-byte precedence.
             #[cfg(test)]
             #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+            #[cfg(any(not(unit_test_split), unit_test_kernel))]
             super::decode_probe::after_decode(&records, observe)?;
             Ok(FileTablePage::Leaf(records))
         }
@@ -626,4 +627,5 @@ pub(super) mod fuzz;
 #[cfg(test)]
 #[cfg(not(loom))]
 #[path = "../tests/file_table_decode.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

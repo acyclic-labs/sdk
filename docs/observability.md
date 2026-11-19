@@ -464,7 +464,7 @@ semantic crash point, prompts and provider response. Publication uses the shared
 private-file publisher, including durable no-replace publication.
 
 Set `SDK_DST_REPLAY_SEED` to the emitted `DST_REPLAY_SEED` path, then run
-`cargo test --locked -p acyclic-harness --features test-support --test main dst::recovery::live_f3_killed_head_accepts_a_new_prompt -- --exact`.
+`cargo test --locked -p acyclic-harness-dst --test main dst_cases::dst::recovery::live_f3_killed_head_accepts_a_new_prompt -- --exact`.
 The seed selects either supported crash phase. The retained world is not deleted
 automatically. Production-wide capture of arbitrary failed runs and their external
 nondeterministic inputs remains outstanding.

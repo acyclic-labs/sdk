@@ -220,6 +220,71 @@ fn composed_prefixes_reuse_only_the_published_baseline() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[test]
+fn stale_sibling_reuses_the_latest_published_proof_without_collection() -> Result<(), Box<dyn Error>>
+{
+    tokio::runtime::Builder::new_current_thread()
+        .build()?
+        .block_on(async {
+            let fs = Fs::memory();
+            let workspace = unbounded!(fs, create_workspace("sibling-proof"))?;
+            let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(seed, write("/left", bytes::Bytes::from_static(b"old")))?;
+            unbounded!(seed, write("/right", bytes::Bytes::from_static(b"old")))?;
+            unbounded!(
+                seed,
+                write("/unchanged", bytes::Bytes::from(vec![7; 8_192]))
+            )?;
+            assert!(matches!(
+                commit(&mut seed).await?,
+                TransactionCommit::Committed(_)
+            ));
+
+            let mut first = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+            let mut sibling = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(first, write("/left", bytes::Bytes::from_static(b"first")))?;
+            unbounded!(
+                sibling,
+                write("/right", bytes::Bytes::from_static(b"sibling"))
+            )?;
+            let TransactionCommit::Committed(published) = commit(&mut first).await? else {
+                return Err("first sibling did not commit".into());
+            };
+            let cancellation = CancellationToken::new();
+            let mut accounting =
+                crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let root = sibling
+                .checkout
+                .checkpoint_root_with_accounting(&mut accounting, &cancellation)
+                .await?;
+            let store = fs.objects();
+            let limits = crate::facade::closure_limits(workspace.volume.config);
+            let cache = Mutex::new(CachedProofs::default());
+            let meter = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)?;
+            let (_, _, pending) = ProofContext::new(store, limits, meter.clone())
+                .prove_cached(published.id().object_id(), Some(&cache))
+                .await?;
+            pending
+                .ok_or("missing published baseline")?
+                .publish(&committed(3));
+            let (increment, _, _) = ProofContext::new(store, limits, meter.clone())
+                .prove_cached(root, Some(&cache))
+                .await?;
+            let (full, _) = ProofContext::new(store, limits, meter).prove(root).await?;
+            assert_eq!(increment.root, full.root);
+            assert_eq!(increment.file_count, full.file_count);
+            assert_eq!(increment.logical_file_bytes, full.logical_file_bytes);
+            assert!(
+                increment
+                    .objects
+                    .iter()
+                    .all(|object| full.objects.contains(object))
+            );
+            assert!(increment.objects.len() < full.objects.len());
+            Ok(())
+        })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 

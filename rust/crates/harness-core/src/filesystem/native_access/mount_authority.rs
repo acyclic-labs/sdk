@@ -252,7 +252,7 @@ mod tests {
             .map_err(|error| Error::Invalid(error.to_string()))?
             .current()
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let now = crate::filesystem::access::access_now()?;
+        let now = crate::filesystem::access::access_now_at(admitted.verifier.now_unix_millis())?;
         assert!(
             view.decide(acyclic_fs::access::Action::Read, "public/file", now)
                 .allowed
@@ -382,6 +382,10 @@ mod tests {
             .mount_options(&workspace, None, "", false, &work)
             .await?;
         let observer = workspace.native_source(&observer_options).await?;
+        let observer_guard = observer
+            .native_callback_guard()
+            .ok_or_else(|| Error::Invalid("observer lost its caller guard".into()))?;
+        observer_guard.check(&work)?.await?;
         #[cfg(windows)]
         let name = "observed"
             .encode_utf16()
@@ -390,14 +394,13 @@ mod tests {
         #[cfg(not(windows))]
         let name = b"observed".to_vec();
         let path = acyclic_fs_native_contract::MountPath::root().child(name);
-        assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"before");
+        assert_eq!(observer.read_range(&path, 0, 6)?.as_ref(), b"before");
         workspace.write_text("/observed", "after").await?;
         observer
             .sync_async(acyclic_fs::PublicationPermit::Unrestricted)
             .await?;
         observer.advance_to_head_async().await?;
-        observer.advance_to_head_async().await?;
-        assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"after");
+        assert_eq!(observer.read_range(&path, 0, 5)?.as_ref(), b"after");
         assert!(matches!(
             observer.write_range(&path, 0, bytes::Bytes::from_static(b"denied")),
             Err(acyclic_fs::MountSourceError::ReadOnly)
@@ -413,6 +416,7 @@ mod tests {
         let before = work.receipt()?;
         assert!(caller_guard.check(&work)?.await.is_err());
         assert!(caller_guard.check_write(&work)?.await.is_err());
+        assert!(observer_guard.check(&work)?.await.is_err());
         assert_eq!(
             work.receipt()?.backend_read_operations,
             before.backend_read_operations
@@ -421,7 +425,6 @@ mod tests {
             work.receipt()?.backend_write_operations,
             before.backend_write_operations
         );
-        assert!(observer.read_range(&path, 0, 32).is_err());
         observer.cancel();
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.
@@ -438,12 +441,14 @@ mod tests {
             .ok_or_else(|| Error::Invalid("native source lost its authority guard".into()))?;
         guard.check(&work)?.await?;
         guard.check_write(&work)?.await?;
+        let bootstrap_view = bootstrap
+            .require_access_view()
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .current()
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let now = crate::filesystem::access::access_now_at(port.verifier.now_unix_millis())?;
         assert!(
-            bootstrap
-                .require_access_view()
-                .map_err(|e| Error::Invalid(e.to_string()))?
-                .current()
-                .map_err(|e| Error::Invalid(e.to_string()))?
+            bootstrap_view
                 .decide(acyclic_fs::access::Action::Write, "private/key", now)
                 .allowed
         );

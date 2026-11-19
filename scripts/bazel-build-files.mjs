@@ -242,6 +242,21 @@ const tracked = trackedFiles(root);
 const memberDirs = [...members].map(id => dir(packages.get(id))).sort((a, b) => b.length - a.length);
 const ownerOf = file => memberDirs.find(d => file.startsWith(`${d}/`)) ?? "";
 const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
+const rustByOwner = Map.groupBy(tracked.filter(file => file.endsWith(".rs")), ownerOf);
+const rustSourceBytes = new Map();
+function rustMemory(sources) {
+  let bytes = 0;
+  for (const file of new Set(sources)) {
+    if (!rustSourceBytes.has(file)) {
+      rustSourceBytes.set(file, Buffer.byteLength(fs.readFileSync(path.join(root, file), "utf8").replaceAll("\r\n", "\n")));
+    }
+    bytes += rustSourceBytes.get(file);
+  }
+  // Clippy peaks: filesystem-base 146 MB / 47 kB of Rust, auth 632 MB / 694 kB (bb2 sandbox),
+  // harness-core about 8.4 GB / 10.6 MB (ivar). Budget 128 MB of startup plus 800 MB per MB of
+  // Rust input, rounding up in 128 MB buckets to absorb measurement noise and small source edits.
+  return ["tags", q([`resources:memory:${128 * Math.ceil((128 + 800 * bytes / 1_000_000) / 128)}`])];
+}
 // The files one crate's compile reads, from its root: `mod` children, `#[path]` modules and
 // include!, include_str! or include_bytes! literals, followed through every Rust file reached.
 // `mod` children are taken from both module layouts; a candidate that exists but is unused is an
@@ -258,11 +273,12 @@ function fileLabel(file) {
   const owner = ownerOf(file);
   return `//${owner}:${within(owner, file)}`;
 }
-function closure(crateDir, rootFile) {
+function closure(crateDir, rootFile, unitArea) {
   const seen = new Set([rootFile]), queue = [rootFile];
   while (queue.length) {
     const file = queue.pop(), here = path.posix.dirname(file);
-    const text = fs.readFileSync(path.join(root, file), "utf8");
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    const text = unitArea === undefined ? source : activeUnitModules(source, unitArea);
     const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
     const found = [];
     for (const [, concat, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
@@ -360,10 +376,40 @@ function* attributes(text) {
       }
       const inner = text.slice(i + 2, j - 1);
       const head = /^\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*(?:\(([\s\S]*)\))?\s*$/.exec(inner);
-      if (head) yield { path: head[1].replace(/\s+/g, ""), args: head[2] ?? "" };
+      yield { path: head?.[1].replace(/\s+/g, "") ?? "", args: head?.[2] ?? "", start: i, end: j };
       i = j;
     } else i++;
   }
+}
+// Omit out-of-line modules gated to other areas from a partition's inputs.
+// Leave other cfgs to rustc, including the platform clauses inside area gates.
+function activeUnitModules(source, area) {
+  if (!source.includes("unit_test_split")) return source;
+  const areaFlag = `unit_test_${area}`;
+  const areaGate = /^(?:all\(\s*test\s*,\s*)?any\(\s*not\(unit_test_split\)\s*,\s*(unit_test_\w+(?:\s*,\s*unit_test_\w+)*)\s*,?\s*\)\s*\)?$/;
+  const pieces = [];
+  let start = 0, end = 0, from = 0, excluded = false;
+  const flush = () => {
+    if (!excluded) return;
+    const declaration = /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?\w+\s*;/.exec(source.slice(end));
+    if (!declaration) return;
+    pieces.push(source.slice(from, start));
+    from = end + declaration[0].length;
+  };
+  for (const attribute of attributes(source)) {
+    if (source.slice(end, attribute.start).trim()) {
+      flush();
+      start = attribute.start;
+      excluded = false;
+    }
+    end = attribute.end;
+    if (attribute.path === "cfg") {
+      const gate = areaGate.exec(attribute.args.trim());
+      if (gate) excluded ||= !gate[1].split(/\s*,\s*/).includes(areaFlag);
+    }
+  }
+  flush();
+  return pieces.length ? [...pieces, source.slice(from)].join("") : source;
 }
 // The crate's own unit tests, from the test attributes and #[cfg] expressions its library root
 // reaches. Only such a crate needs a test-config compile of its library; a crate whose tests all
@@ -486,14 +532,20 @@ function testTags(p) {
 }
 // The inputs a target reads beyond its globs, as srcs (Rust) and compile_data (other files):
 // same-package paths relative to the package, other packages' files by exported label.
-function extraInputs(crateDir, rootFile, covered) {
-  const srcs = [], data = [];
-  for (const file of [...closure(crateDir, rootFile)].sort()) {
+function extraInputs(crateDir, rootFile, covered, unitArea) {
+  const srcs = [], data = [], rustFiles = [];
+  for (const file of [...closure(crateDir, rootFile, unitArea)].sort()) {
     const owner = ownerOf(file);
     if (owner === crateDir && covered(within(owner, file))) continue;
-    (file.endsWith(".rs") ? srcs : data).push(owner === crateDir ? within(owner, file) : fileLabel(file));
+    const input = owner === crateDir ? within(owner, file) : fileLabel(file);
+    if (file.endsWith(".rs")) {
+      srcs.push(input);
+      rustFiles.push(file);
+    } else {
+      data.push(input);
+    }
   }
-  return { srcs, data };
+  return { srcs, data, rustFiles };
 }
 // Starlark rendering.
 const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
@@ -590,6 +642,12 @@ function profileWrapper(profile, settings, filter, refuse) {
   return { wrapper: line, wrapperData: [...new Set(siblings)].sort() };
 }
 const dev = cargo.profile?.dev ?? {};
+// rules_rust's codegen_units both passes -Ccodegen-units and books each compile at the CPUs its code
+// generators keep busy, so its declared resources are its real parallelism; a plain rustc flag books one.
+const codegenUnits = `common --@rules_rust//rust/settings:codegen_units=${dev["codegen-units"]}`;
+if (dev["codegen-units"] && !(fs.existsSync(bazelrc) && fs.readFileSync(bazelrc, "utf8").split("\n").includes(codegenUnits))) {
+  throw new Error(`STEP_FAILED bazel-build-files: .bazelrc lacks "${codegenUnits}" (Cargo.toml [profile.dev] codegen-units); recovery: add that line`);
+}
 // rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks
 // on at every opt-level, and opt as its release profile, with both off: Cargo's defaults. A profile that changes
 // either default, at the profile or in any of its package or build-override tables, has no Bazel rendering, so it
@@ -670,7 +728,7 @@ const wasmGraph = wasm && {nodes:[wasmNodes], roots:wasm.roots, suffix:"_wasm",
 // and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
 // used: they follow its default-features resolution, and aliases() drops the conditional aliases
 // of a package with more than one cfg condition.
-function edges(p, kinds, graph, variants = {}, names) {
+function edges(p, kinds, graph, names) {
   return (graph?.nodes ?? nodes).map(byId => {
     const deps = [], procMacros = [], aliases = {};
     for (const dep of byId.get(p.id)?.deps ?? []) {
@@ -678,11 +736,7 @@ function edges(p, kinds, graph, variants = {}, names) {
       const target = packages.get(dep.pkg);
       const lib = libOf(target);
       const targetGraph = kinds.includes("build") || lib.kind.includes("proc-macro") ? undefined : graph;
-      const variant = variants[target.name];
-      if (variant && (!members.has(dep.pkg) || target.metadata?.bazel?.["library-test-variant"] !== variant)) {
-        throw new Error(`Unknown unit-test library variant ${target.name}:${variant}`);
-      }
-      const targetSuffix = variant ? `_${variant}` : targetGraph?.suffix ?? "";
+      const targetSuffix = targetGraph?.suffix ?? "";
       const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}${targetSuffix}` : (targetGraph?.hubLabel ?? hubLabel)(dep.pkg);
       if (dep.name !== crateName(lib)) aliases[name] = dep.name;
       (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
@@ -693,22 +747,41 @@ function edges(p, kinds, graph, variants = {}, names) {
 
 function buildFile(p, graph) {
   const lib = libOf(p), script = p.targets.find(t => t.kind.includes("custom-build"));
+  const executables = !graph && workspace.has(p.id) ? p.targets : [];
+  const bazel = p.metadata?.bazel;
+  const linkedUnits = new Set(bazel?.["linked-unit-tests"] ?? []);
+  const integrationTests = executables.filter(target => target.kind.includes("test") && target.test);
+  const integrationRoots = integrationTests.filter(target => !linkedUnits.has(target.name));
+  if (integrationRoots.length > 1) {
+    throw new Error(`STEP_FAILED bazel-build-files: ${p.name} has multiple integration test roots (${integrationRoots.map(target => target.name).join(", ")}); place their cases under a single Cargo test target`);
+  }
+  const repeatedLibrary = lib && executables.find(target => target !== lib && target.src_path === lib.src_path &&
+    target.kind.some(kind => kind === "bin" || kind === "test" || kind === "example" || kind === "bench"));
+  if (repeatedLibrary) {
+    throw new Error(`STEP_FAILED bazel-build-files: ${p.name} target ${repeatedLibrary.name} uses the library as its crate root; link the package library or use its unit tests`);
+  }
   const manifest = path.relative(root, p.manifest_path).replaceAll("\\", "/");
   const inheritedLints = toml(root, manifest).lints?.workspace === true;
   const checkCfg = checkCfgFlags(manifest, Object.keys(p.features).sort());
-  const bazel = p.metadata?.bazel;
+  const unitAreas = bazel?.["unit-test-partitions"] ?? [];
+  if (!Array.isArray(unitAreas) || unitAreas.some(area => typeof area !== "string" || !/^[a-z][a-z0-9_]*$/.test(area))
+    || new Set(unitAreas).size !== unitAreas.length) {
+    throw new Error(`STEP_FAILED bazel-build-files: ${p.name} unit-test-partitions must name distinct Rust cfg areas`);
+  }
+  if (!graph && linkedUnits.size && (!lib?.test
+    || [...linkedUnits].some(name => !integrationTests.some(target => target.name === name)))) {
+    throw new Error(`STEP_FAILED bazel-build-files: ${p.name} linked-unit-tests must name test targets of a library suite`);
+  }
   const platformSources = Object.entries(bazel?.["platform-sources"] ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const platformSourcePatterns = platformSources.flatMap(([, sources]) => sources);
-  const configuredSources = graph || !platformSources.length ? undefined : `select({
-${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(sources, [])},`).join("\n")}
+  const configuredSources = (exclude, extra) => graph || !platformSources.length ? undefined : `select({
+${platformSources.map(([platform, sources]) =>
+    `        ${q(platform)}: ${plus(glob(sources, exclude), list(extra.filter(file => sources.some(pattern => path.posix.matchesGlob(file, pattern)))))},`).join("\n")}
         "//conditions:default": [],
     })`;
   const testOnlySources = bazel?.["unit-test-only-sources"] ?? [];
-  const libraryTestFeatures = bazel?.["library-test-features"] ?? [];
-  const libraryTestVariant = bazel?.["library-test-variant"];
-  const unitTestVariants = bazel?.["unit-test-dependency-variants"] ?? {};
   const features = (graph?.nodes ?? nodes).map(byId =>
-    [...(byId.get(p.id)?.features ?? [])].filter(feature => !libraryTestFeatures.includes(feature)).sort());
+    [...(byId.get(p.id)?.features ?? [])].sort());
   const suffix = graph?.suffix ?? "";
   const configured = graph ? (values, render) => render(values[0]) : perTriple;
   // A source path relative to the package, or the label of a file another package owns.
@@ -721,35 +794,49 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const libUnitTests = lib !== undefined && workspace.has(p.id) && hasUnitTests(dir(p), repoRelative(lib));
   // Library and binary globs: the package's files outside its test, bench and example trees.
   const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
-  const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
+  const ownRust = rustByOwner.get(dir(p)) ?? [];
+  const extras = (target, covered, unitArea) => extraInputs(dir(p), repoRelative(target), covered, unitArea);
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
-  const libInputs = (target, unitTest = false) => {
-    const extra = extras(target, libCovered);
-    const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
+  const libInputs = (target, unitTest = false, unitArea) => {
+    const testOnly = file => testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
+    const split = unitArea !== undefined;
+    const excludedTests = !unitTest || split ? testOnlySources : [];
+    const extra = extras(target, file => libCovered(file) && !(split && testOnly(file)), unitArea);
+    const platformInput = file => split
+      ? platformSourcePatterns.some(pattern => path.posix.matchesGlob(file, pattern))
+      : platformSourcePatterns.includes(file);
+    // A booking covers the union of platform sources for this compile target.
+    const globbedRust = ownRust.filter(file => {
+      const relative = within(dir(p), file);
+      return (libCovered(relative) || (!graph && platformSourcePatterns.some(pattern => path.posix.matchesGlob(relative, pattern))))
+        && (!excludedTests.length || !testOnly(relative));
+    });
+    const extraRust = extra.rustFiles.filter((_file, i) => unitTest || !testOnly(extra.srcs[i]));
     return [
       ["srcs", plus(
-        glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
-        list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
-        configuredSources,
+        glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...excludedTests]),
+        list(extra.srcs.filter(file => !platformInput(file) && (unitTest || !testOnly(file)))),
+        configuredSources(split ? excludedTests : [], split ? extra.srcs.filter(testOnly) : []),
       )],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
+      rustMemory([...globbedRust, ...extraRust]),
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
   const clippyConfig = fs.existsSync(path.join(path.dirname(p.manifest_path), "clippy.toml")) ? q("clippy.toml") : undefined;
-  const common = (target, features = graph ? "WASM_FEATURES" : "FEATURES") => [
+  const common = (target, features = graph ? "WASM_FEATURES" : "FEATURES", extraFlags = []) => [
     ["clippy_config", clippyConfig],
     ["edition", q(target.edition)],
     ["version", q(p.version)],
     ["crate_features", features],
     ["rustc_env", "PACKAGE_ENV"],
-    ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
+    ["rustc_flags", list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg, ...extraFlags])],
     ["lint_config", q(inheritedLints ? "//:workspace_lints" : ":lints")],
     ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : q(bazel?.["target-compatible-with"])],
   ];
   // Rendered dependencies of one target.
-  const deps = (kinds, extra = [], extraMacros = [], variants = {}, names) => {
-    const first = edges(p, kinds, graph, variants, names);
+  const deps = (kinds, extra = [], extraMacros = [], names) => {
+    const first = edges(p, kinds, graph, names);
     return [
       ["deps", plus(list(extra), configured(first, e => list(e.deps)))],
       ["proc_macro_deps", plus(list(extraMacros), configured(first, e => list(e.procMacros)))],
@@ -808,26 +895,28 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // A suite whose cases each start Cargo runs fewer at once, so they do not contend for the same
   // cores and exceed the per-case limit.
   const workers = p.metadata?.bazel?.["test-workers"];
-  const test = (wanted, attrs, reads, binaries, id, narrowRunfiles = false) => {
+  const test = (wanted, attrs, reads, binaries, id, narrowRunfiles = false, shards) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
     reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
     for (const { profile } of profiles) names.add(`${name}_${profile}`);
-    const tags = testTags(p);
+    const runtimeTags = testTags(p);
+    const tags = [...runtimeTags, ...JSON.parse(attrs.find(([key]) => key === "tags")[1])];
     // Host variables a package's tests read, from [package.metadata.bazel] test-env-inherit =
     // ["NAME"]: only those tests inherit them, so one test's host fact never keys every other test.
     const envInherit = p.metadata?.bazel?.["test-env-inherit"] ?? [];
     const isolated = (target, selection, extra, extraBinaries = {}) => {
       const all = { ...tools, ...extraBinaries };
-      return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
+      return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", runtimeTags.length || extra.length ? q([...extra, ...runtimeTags]) : undefined]]];
     };
     rules.push(
-      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
-      isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
+      ["rust_test", [["name", q(`${name}_cases`)], ...attrs.filter(([key]) => key !== "tags"), ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual", ...tags])]]],
+      isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined], ["shard_count", q(shards)]], []),
       ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"], wrapper ? { "@nodejs//:node": "node" } : {})),
     );
+    return name;
   };
   if (script) {
     const defaultInputs = p.metadata?.bazel?.["build-script-inputs"] === undefined;
@@ -836,6 +925,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["name", q(`build_script${suffix}`)],
       ["crate_root", q(local(script.src_path))],
       ["srcs", list(extra.srcs)],
+      rustMemory(extra.rustFiles),
       ["compile_data", plus(defaultInputs ? glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]) : undefined, list(extra.data))],
       ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
@@ -859,52 +949,55 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["visibility", q(["//visibility:public"])],
     ]]);
   }
+  let unitSuite;
   if (lib) {
     for (const kind of lib.kind) if (kind !== "cdylib") covered.add(`build ${kind} ${lib.name}`);
     const proc = lib.kind.includes("proc-macro");
+    const inputs = libInputs(lib);
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(`${crateName(lib)}${suffix}`)],
       ["crate_name", graph ? q(crateName(lib)) : undefined],
       ["crate_root", q(local(lib.src_path))],
-      ...libInputs(lib),
+      ...inputs,
       ...common(lib),
       ...deps([null], ownDeps),
       ["visibility", q(["//visibility:public"])],
     ]]);
-    if (!graph && libraryTestVariant) {
-      rules.push(["rust_library", [
-        ["name", q(`${crateName(lib)}_${libraryTestVariant}`)],
-        ["crate_name", q(crateName(lib))],
-        ["crate_root", q(local(lib.src_path))],
-        ...libInputs(lib),
-        ...common(lib, plus("FEATURES", list(libraryTestFeatures))),
-        ...deps([null], ownDeps),
-        ["visibility", q(["//visibility:public"])],
-        ["tags", q(["manual"])],
-      ]]);
-    }
-    // A crate with unit tests compiles its library again in test configuration; a crate whose
+    // A crate with unit tests compiles its library in test configuration; a crate whose
     // tests are all integration tests only links the library's rlib. rust_test does not inherit
     // compile_data.
-    if (!graph && lib.test && libUnitTests) {
-      const standalone = testOnlySources.length || Object.keys(unitTestVariants).length;
-      const attrs = standalone ? [
+    if (!graph && lib.test && (libUnitTests || linkedUnits.size)) {
+      const unitName = `${crateName(lib)}_test`;
+      const unitAttrs = area => [
         ["crate_name", q(crateName(lib))],
         ["crate_root", q(local(lib.src_path))],
-        ...libInputs(lib, true),
-        ...common(lib),
-        ...deps([null, "dev"], ownDeps, [], unitTestVariants),
-      ] : [
+        ...libInputs(lib, true, area),
+        ...common(lib, undefined, area === undefined ? [] : ["--cfg=unit_test_split", `--cfg=unit_test_${area}`]),
+        ...deps([null, "dev"], ownDeps),
+      ];
+      const linkedAttrs = () => [
         ["crate", q(`:${crateName(lib)}`)],
         ["compile_data", list(extras(lib, libCovered).data)],
+        inputs.find(([key]) => key === "tags"),
         ...common(lib).filter(([k]) => k !== "rustc_env"),
         ...deps(["dev"]),
       ];
       covered.add(`test ${lib.kind[0]} ${lib.name}`);
-      test(`${crateName(lib)}_test`, attrs, runtimeData(lib), {}, p.name);
+      const reads = runtimeData(lib);
+      if (!unitAreas.length && !linkedUnits.size) {
+        test(unitName, testOnlySources.length ? unitAttrs() : linkedAttrs(), reads, {}, p.name, false, bazel?.["unit-test-shards"]);
+      } else {
+        const data = [...reads, ...testData(p, unitName)];
+        const tools = testTools(p, unitName);
+        const areas = unitAreas.map(area => test(`${unitName}_${area}`, unitAttrs(area), data, tools, p.name));
+        if (!unitAreas.length && libUnitTests) {
+          areas.push(test(`${unitName}_internal`, testOnlySources.length ? unitAttrs() : linkedAttrs(), data, tools, p.name));
+        }
+        names.add(unitName);
+        unitSuite = { name: unitName, tests: areas };
+      }
     }
   }
-  const executables = !graph && workspace.has(p.id) ? p.targets : [];
   for (const bin of executables.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
     rules.push(["rust_binary", [
@@ -935,34 +1028,43 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const depVariable = key => `SEPARATE_${key.toUpperCase()}`;
   const separate = target => {
     const names = directTestDependencies(target);
-    const includeOwn = !standaloneTest(target);
+    const standalone = standaloneTest(target);
+    const includeOwn = target.kind.includes("test") || !standalone;
     const bazel = p.metadata?.bazel;
     const needsBuildScript = bazel?.["test-build-script"]?.includes(target.name)
-      || (includeOwn && !bazel?.["test-without-build-script"]?.includes(target.name));
+      || (!standalone && !bazel?.["test-without-build-script"]?.includes(target.name));
     const extraDeps = [...(includeOwn ? ownLib : []), ...(needsBuildScript ? ownDeps : [])];
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
     return [
       ["crate_root", q(crateRoot)],
       ["srcs", list(extra.srcs)],
+      rustMemory(extra.rustFiles),
       ["compile_data", list(extra.data)],
       ...common(target),
       ...(names ? deps([null, "dev"], extraDeps,
-        includeOwn ? ownMacro : [], {}, names)
+        includeOwn ? ownMacro : [], names)
         : sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
     ];
   };
   for (const target of executables.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
     covered.add(`test ${target.kind[0]} ${target.name}`);
-    // Cargo gives integration tests and benches the package's executables as CARGO_BIN_EXE_<name>.
-    const binaries = target.kind.includes("test") || target.kind.includes("bench")
+    // Cargo gives integration tests and benches the package executables. Suites
+    // that declare their exact executable fixtures in test-tools can omit them.
+    const packageBinaries = !p.metadata?.bazel?.["test-without-package-binaries"]?.includes(target.name);
+    const binaries = packageBinaries && (target.kind.includes("test") || target.kind.includes("bench"))
       ? Object.fromEntries(p.targets.filter(t => t.kind.includes("bin")).map(bin => [`:${bin.name}`, bin.name]))
       : {};
     const reads = runtimeData(target);
     const consumer = wasm?.testConsumers?.[p.name];
     if (consumer) reads.push(wasmNodeModulesTarget(consumer));
-    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`, narrowTestRunfiles(target));
+    const integration = target.kind.includes("test");
+    const linked = linkedUnits.has(target.name);
+    const id = linked ? p.name : integration ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`;
+    const name = test(target.name, separate(target), reads, binaries, id, narrowTestRunfiles(target), integration && !linked ? bazel?.["integration-test-shards"] : undefined);
+    if (linked) unitSuite.tests.push(name);
   }
+  if (unitSuite) rules.push(["test_suite", [["name", q(unitSuite.name)], ["tests", list(unitSuite.tests.map(name => `:${name}`))]]]);
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;
     while (names.has(name)) name += "_example";
@@ -976,7 +1078,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
 }
 function renderBuild(native, wasm) {
   const rules = [...native.rules, ...(wasm?.rules ?? [])];
-  const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
+  const loadable = [...new Set(rules.map(([kind]) => kind))].filter(kind => LOADS[kind]).sort();
+  const loads = Map.groupBy(loadable, kind => LOADS[kind]);
   const header = [
     HEADER,
     ...[...loads].sort().map(([file, kinds]) => `load(${q(file)}, ${kinds.map(q).join(", ")})\n`),
@@ -1110,7 +1213,7 @@ ${rule("cc_toolchain", [
 
 function rustcFlags() {
   const rustflags = toml(root, ".cargo/config.toml").target?.["cfg(all())"]?.rustflags ?? [];
-  return [...rustflags, ...(dev["codegen-units"] ? [`-Ccodegen-units=${dev["codegen-units"]}`] : []), ...(dev.lto === "off" ? ["-Clto=off"] : [])];
+  return [...rustflags, ...(dev.lto === "off" ? ["-Clto=off"] : [])];
 }
 
 function moduleFile() {
@@ -1223,7 +1326,7 @@ function moduleFile() {
           [lib.kind.includes("proc-macro") ? "override_target_proc_macro" : "override_target_lib", q(`${label(pkg)}:${crateName(lib)}${lib.kind.includes("proc-macro") ? "" : "_wasm"}`)]]);
       }),
       rule("crate.from_specs", [["name", q("wasm_crates")], ["lockfile", q("//:cargo-wasm-bazel-lock.json")],
-        ["cargo_lockfile", q("//:cargo-wasm-bazel.Cargo.lock")], ["supported_platform_triples", list([LINUX_GNU_TRIPLE, WASM_TRIPLE])]]),
+        ["cargo_lockfile", q("//:cargo-wasm-bazel.Cargo.lock")], ["supported_platform_triples", list([...TRIPLES, WASM_TRIPLE])]]),
     ] : []),
     ...[...staged].sort().map(([, { name, version, files }]) => `${rule("crate.annotation", [
       ["crate", q(name)],
@@ -1405,7 +1508,6 @@ if (wasm) {
   });
   files.set("wasm/BUILD.bazel", HEADER + '\nload("//:wasm.bzl", "wasm_bindings")\n\n' + modules.map(module =>
     rule("wasm_bindings", [["name", q(module.name)], ["module", q(module.module)], ["out_name", q(module.outName)],
-      ["exec_compatible_with", list(["@platforms//os:linux", "@platforms//cpu:x86_64"])],
       ["visibility", q(["//visibility:public"])]] )).join("\n"));
   files.set("wasm-targets.json", JSON.stringify(modules,null,2) + "\n");
   const {packageClosure} = await import(pathToFileURL(path.join(root,"scripts/package-closure.mjs")).href);

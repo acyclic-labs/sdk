@@ -79,7 +79,7 @@ pub(super) async fn read_selected_with_accounting<
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
     #[cfg(test)]
-    #[cfg(all(not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if matches!(selector, GenerationSelector::Head) {
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
     }
@@ -111,9 +111,10 @@ pub(super) async fn read_selected_with_accounting<
                 .await?;
             path.retire(&mut scope)?;
             checkout.retire(&mut scope)?;
-            Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(
+            Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::from_accounted_read(
                 read.bytes,
                 read.logical_owned_bytes,
+                &scope,
             ))
         }
         .await;
@@ -183,7 +184,9 @@ pub(super) async fn read_range<
             let bytes = read.logical_owned_bytes();
             path.retire(&mut scope)?;
             checkout.retire(&mut scope)?;
-            Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes))
+            Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::from_accounted_read(
+                read.bytes, bytes, &scope,
+            ))
         }
         .await;
         let result = authorize(workspace, result, &mut scope, cancellation).await;
@@ -196,28 +199,33 @@ pub(super) async fn read_range<
     work.finish(result, &accounting)
 }
 
+pub(super) enum ContentMatch<'a> {
+    Bytes { prefix: Option<u64> },
+    Payload,
+    Publication(&'a crate::kernel::AttributeName),
+}
+
 pub(super) async fn matches_content<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
     W: crate::facade::FsWork,
 >(
-    workspace: &Workspace<A, O>,
-    selected: GenerationId,
+    selected: &Generation<A, O>,
     original: GenerationId,
     path: &str,
-    exact_payload: bool,
+    comparison: ContentMatch<'_>,
     allow_absent: bool,
-    prefix: Option<u64>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<bool, WorkspaceError> {
+    let workspace = &selected.workspace;
     let mut accounting = work.accounting(cancellation);
     let result = async {
         let mut scope = accounting.allocation_scope()?;
         let result = async {
             let (mut checkout, path) = workspace
                 .open_read_path(
-                    GenerationSelector::Exact(selected),
+                    GenerationSelector::Exact(selected.id),
                     path,
                     &mut scope,
                     cancellation,
@@ -243,13 +251,42 @@ pub(super) async fn matches_content<
                 .await?
                 .0
                 .record;
-            let matches = match (record, expected) {
-                (Some(record), Some(expected)) if exact_payload => {
-                    record.file_id == expected.file_id
+            let matches = match (record, expected, comparison) {
+                (
+                    Some(record),
+                    Some(expected),
+                    comparison @ (ContentMatch::Payload | ContentMatch::Publication(_)),
+                ) => {
+                    let attributes_match = if let ContentMatch::Publication(attribute) = comparison
+                    {
+                        let before = original
+                            .value
+                            .named_attribute_value_with_accounting(
+                                expected.file_id,
+                                attribute,
+                                &mut scope,
+                                cancellation,
+                            )
+                            .await?;
+                        let after = checkout
+                            .value
+                            .named_attribute_value_with_accounting(
+                                record.file_id,
+                                attribute,
+                                &mut scope,
+                                cancellation,
+                            )
+                            .await?;
+                        before == after
+                    } else {
+                        true
+                    };
+                    attributes_match
+                        && record.file_id == expected.file_id
                         && record.kind == expected.kind
                         && record.payload == expected.payload
                 }
-                (Some(record), Some(expected)) => {
+                (Some(record), Some(expected), ContentMatch::Bytes { prefix }) => {
                     if let Some(bytes) = prefix {
                         crate::kernel::records_match_prefix(
                             workspace.volume.fs.objects(),
@@ -273,7 +310,8 @@ pub(super) async fn matches_content<
                         .await?
                     }
                 }
-                (None, None) => allow_absent,
+                (_, _, ContentMatch::Publication(_)) => return Err(WorkspaceError::NotFound),
+                (None, None, _) => allow_absent,
                 _ => false,
             };
             original.retire(&mut scope)?;
@@ -545,4 +583,5 @@ pub(super) async fn authorize<
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests;

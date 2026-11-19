@@ -989,7 +989,7 @@ async fn merge_directory_proposal_retirement<
     let cancellation = CancellationToken::new();
     // This existing observer funds the real standalone frame and retains a
     // lease on that same ledger; it supplies no provider responses.
-    let original = crate::workspace::accounting_tests::Prefunded {
+    let original = crate::workspace::Prefunded {
         budget: crate::performance::BOUNDARY_BUDGET,
         held: std::sync::Mutex::new(None),
     };

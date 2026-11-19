@@ -46,6 +46,55 @@ fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {
     Ok((request, dispatch))
 }
 
+#[tokio::test]
+async fn volume_script_replays_exact_bytes_after_provider_reopen() -> Result<()> {
+    use futures::TryStreamExt as _;
+    let replies = [
+        ModelEvent::Content {
+            delta: "hé".into()
+        },
+        ModelEvent::Content {
+            delta: "\nllo".into(),
+        },
+        ModelEvent::Completed {
+            metadata: json!({"finish_reason": "stop"}),
+        },
+    ];
+    let provider = || {
+        let mut provider = ScriptedModelProvider::new([]);
+        let events = replies.iter().cloned().map(ScriptedEvent::Event).collect();
+        provider.volume = Some(std::sync::Arc::new(VolumeScript::Bound(vec![
+            ScriptedTurn::Events(events),
+        ])));
+        provider
+    };
+    let (request, dispatch) = request()?;
+    let original = provider();
+    let mut generation = original.generate(&request, dispatch);
+    let first = generation.try_next().await?.expect("first event");
+    drop(generation);
+    drop(original);
+
+    let reopened = provider();
+    let mut events = vec![first];
+    let suffix = reopened
+        .reconcile(dispatch, &events)
+        .await?
+        .expect("recovered suffix");
+    events.extend(suffix);
+    assert_eq!(
+        crate::contract::canonical_json_bytes(&events)?,
+        crate::contract::canonical_json_bytes(&replies)?
+    );
+    assert!(
+        reopened
+            .reconcile(dispatch, &[ModelEvent::Restarted])
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
 #[test]
 fn selected_request_snapshots_do_not_copy_the_recorded_prefix() -> Result<()> {
     use acyclic_test_support::{AllocationInfo, measure};

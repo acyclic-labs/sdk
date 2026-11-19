@@ -15,8 +15,8 @@ use acyclic_harness::{
     },
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
+    model::scripted::ScriptedModelProvider,
     model::{Model, ModelContent},
-    test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
 use acyclic_stream::MemoryStream;
@@ -34,6 +34,7 @@ pub(super) struct Outcome<P, A: 'static = MemoryAuthorityBackend, O: 'static = M
 {
     storage: MemoryHarnessStorage<P, A, O>,
     operation: OperationId,
+    observations: Option<Vec<Value>>,
 }
 
 impl<
@@ -44,10 +45,12 @@ impl<
 {
     /// Event kinds and loaded model events: identical scenario data must
     /// replay the same observations on every Stream provider.
-    pub(super) async fn trace(&self) -> TestResult<Vec<Value>> {
-        let journal = self.storage.journal();
-        Ok(replay(journal.as_ref(), self.operation)
-            .await?
+    pub(super) async fn trace(self) -> TestResult<Vec<Value>> {
+        let observations = match self.observations {
+            Some(observations) => observations,
+            None => replay(self.storage.journal().as_ref(), self.operation).await?,
+        };
+        Ok(observations
             .into_iter()
             .map(|event| match event.get("kind").and_then(Value::as_str) {
                 Some("model") => serde_json::json!({"kind": "model", "event": event.get("event")}),
@@ -115,9 +118,13 @@ pub(super) async fn run_with_filesystem<
         }
     }
     check_provider(&case.expect, &provider, storage.content_reader()).await?;
-    check_events(&case.expect, journal.as_ref(), operation).await?;
+    let observations = check_events(&case.expect, journal.as_ref(), operation).await?;
     check_files(&case.expect.files, &storage).await?;
-    Ok(Outcome { storage, operation })
+    Ok(Outcome {
+        storage,
+        operation,
+        observations,
+    })
 }
 
 pub(super) async fn publish<
@@ -387,7 +394,7 @@ async fn check_events(
     expected: &Expectations,
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
     operation: OperationId,
-) -> TestResult {
+) -> TestResult<Option<Vec<Value>>> {
     if expected.events.is_some()
         || expected.model_events.is_some()
         || !expected.not_events.is_empty()
@@ -411,8 +418,9 @@ async fn check_events(
                 return Err(format!("forbidden event: {forbidden}").into());
             }
         }
+        return Ok(Some(events));
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Every journal observation of `operation`, with model events loaded.

@@ -33,7 +33,7 @@ async fn raw_transport_cannot_receive_a_chunk_beyond_its_allowance() -> Result<(
             &CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let received = Cell::new(0);
         let mut failure = None;
         let mut socket = Socket::new(
@@ -54,8 +54,8 @@ async fn raw_transport_cannot_receive_a_chunk_beyond_its_allowance() -> Result<(
             assert!(socket.read(&mut buffer).await.is_err());
         }
         assert_eq!(received.get() as u64, allowance.min(8192));
-        assert_eq!(work.receipt().source_bytes_read, received.get() as u64);
-        assert!(work.live_allocation_bytes() >= baseline + buffer.len() as u64);
+        assert_eq!(work.receipt()?.source_bytes_read, received.get() as u64);
+        assert!(work.live_allocation_bytes()? >= baseline + buffer.len() as u64);
         drop(socket);
         if allowance <= 8192 {
             assert!(
@@ -63,7 +63,7 @@ async fn raw_transport_cannot_receive_a_chunk_beyond_its_allowance() -> Result<(
                 "{failure:?}"
             );
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -84,7 +84,7 @@ async fn cancellation_and_retained_memory_denial_precede_transport_reads() -> Re
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let received = Cell::new(0);
         let mut failure = None;
         let mut socket = Socket::new(
@@ -99,10 +99,10 @@ async fn cancellation_and_retained_memory_denial_precede_transport_reads() -> Re
         }
         assert!(socket.read(&mut [0; 16_384]).await.is_err());
         assert_eq!(received.get(), 0);
-        assert_eq!(work.receipt().source_bytes_read, 0);
+        assert_eq!(work.receipt()?.source_bytes_read, 0);
         drop(socket);
         assert!(failure.is_some());
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

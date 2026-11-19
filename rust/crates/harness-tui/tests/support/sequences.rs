@@ -68,7 +68,7 @@ pub fn exercise(data: &[u8]) -> Editor {
                         None
                     };
                     recalled = selected.is_some();
-                    assert!(apply_history(
+                    assert!(recall(
                         &mut editor,
                         previous,
                         selected.as_deref(),
@@ -117,13 +117,13 @@ pub fn exercise(data: &[u8]) -> Editor {
 }
 
 /// Deliver one selected history value through the supported input boundary.
-pub fn recall(editor: &mut Editor, previous: bool, text: &str, at: u64) -> bool {
+pub fn recall(editor: &mut Editor, previous: bool, selected: Option<&str>, at: u64) -> bool {
     if !editor.selection().is_empty()
         || editor.cursor() != if previous { 0 } else { editor.text().len() }
     {
         return false;
     }
-    apply_history(editor, previous, Some(text), at)
+    apply_history(editor, previous, selected, at)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,6 +1,7 @@
 use super::*;
 
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn cleanup_retry_observes_the_retired_source_watch_failure()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -79,6 +80,7 @@ fn cleanup_retry_observes_the_retired_source_watch_failure()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn lookups_follow_changes_made_to_the_source_outside_the_view()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -122,6 +124,7 @@ fn lookups_follow_changes_made_to_the_source_outside_the_view()
     assert_eq!(size(&a)?, None);
     Ok(())
 }
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
@@ -147,6 +150,7 @@ fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std:
     assert!(view.lookup(&a)?.is_some());
     Ok(())
 }
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 #[test]
 fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let work =
@@ -248,6 +252,7 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
@@ -273,6 +278,7 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn an_open_handle_keeps_facts_when_its_parent_path_stops_resolving()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -304,6 +310,7 @@ fn an_open_handle_keeps_facts_when_its_parent_path_stops_resolving()
     assert!(handle.lookup_with_meter(&denied).is_err());
     Ok(())
 }
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>> {
     use crate::LocalCoreStateStore;
@@ -337,6 +344,7 @@ fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn st
     Ok(())
 }
 #[cfg(unix)]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::error::Error>> {
     let parent = tempfile::tempdir()?;
@@ -371,6 +379,7 @@ fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::
     );
     Ok(())
 }
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy))]
 #[test]
 fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;

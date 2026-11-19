@@ -3,6 +3,7 @@ use super::*;
 use crate::distributed::append::group::{GroupPreparation, group_first, merge_transaction};
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;
 
 /// Preparation of an ordered authority history in a caller's atomic commit.

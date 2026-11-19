@@ -74,7 +74,9 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let depth = usize::from(u16::MAX) + 1;
+    let t0 = std::time::Instant::now();
     let (generation, metadata) = deep_directory_fixture(&store, depth).await?;
+    eprintln!("TIMING fixture {:?}", t0.elapsed());
     let component = name("d")?;
     let config = config();
     let identity = |index: usize| -> Result<FileId, Box<dyn std::error::Error>> {
@@ -88,6 +90,7 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
     renamed.push(name("renamed")?);
     let renamed = NamespacePath::new(renamed, config.limits)?;
     let cancellation = CancellationToken::new();
+    let t1 = std::time::Instant::now();
     let lookup = lookup_path(
         &store,
         &generation,
@@ -97,6 +100,7 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
         &cancellation,
     )
     .await?;
+    eprintln!("TIMING lookup {:?}", t1.elapsed());
     assert_eq!(lookup.resolved_components, usize_to_u64(depth));
     assert_eq!(
         lookup.record.map(|record| record.file_id),
@@ -106,6 +110,7 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
     // directory and its absent child in one shared batch. Either count being
     // truncated makes the corresponding rename or create fail MissingParent.
     let child_id = identity(depth + 1)?;
+    let t2 = std::time::Instant::now();
     let receipt = apply_generation_mutations(
         &store,
         &generation,
@@ -133,6 +138,7 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
         &cancellation,
     )
     .await?;
+    eprintln!("TIMING apply {:?}", t2.elapsed());
     // Both removed names are gone from the deepest surviving directory. Its
     // record and entries are read by identity in logarithmic work: the counts
     // above already crossed the 16-bit boundary, and a second complete walk to

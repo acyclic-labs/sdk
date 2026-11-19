@@ -137,7 +137,8 @@ impl NativeResourceAllowance {
         bytes: u64,
     ) -> Result<(), DemandError> {
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
+        #[cfg(any(not(unit_test_split), unit_test_materializer))]
         if super::views::tests::skip_ancestor_check(self) {
             return Ok(());
         }
@@ -367,5 +368,6 @@ impl NativeResourceAllowance {
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod tests;

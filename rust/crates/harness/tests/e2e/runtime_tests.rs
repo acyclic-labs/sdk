@@ -90,8 +90,13 @@ pub(super) fn admission_capacity(count: usize) -> usize {
     ADMISSION_CAP.get().unwrap_or(count)
 }
 
-fn probe_admission(count: usize, capacity: usize, broken: bool) -> (usize, Vec<usize>) {
+fn probe_admission(
+    count: usize,
+    capacity: usize,
+    broken: bool,
+) -> Result<(usize, Vec<usize>), proptest::test_runner::TestCaseError> {
     use futures::{FutureExt as _, Stream as _, StreamExt as _, channel::oneshot};
+    use proptest::test_runner::TestCaseError;
     use std::{cell::Cell, pin::pin, rc::Rc, task::Context};
     struct Restore(Option<usize>);
     impl Drop for Restore {
@@ -111,8 +116,9 @@ fn probe_admission(count: usize, capacity: usize, broken: bool) -> (usize, Vec<u
             let entered = Rc::clone(&entered);
             async move {
                 entered.set(entered.get() + 1);
-                gate.await.expect("admission gate was discarded");
-                index
+                gate.await
+                    .map_err(|_| TestCaseError::fail("admission gate was discarded"))?;
+                Ok(index)
             }
         })
         .collect::<Vec<_>>();
@@ -121,14 +127,18 @@ fn probe_admission(count: usize, capacity: usize, broken: bool) -> (usize, Vec<u
     assert!(admitted.as_mut().poll_next(&mut context).is_pending());
     let started = entered.get();
     for release in releases {
-        release.send(()).expect("case was discarded");
+        release
+            .send(())
+            .map_err(|_| TestCaseError::fail("case was discarded"))?;
     }
     let mut results = admitted
         .collect::<Vec<_>>()
         .now_or_never()
-        .expect("all case gates were already released");
+        .ok_or_else(|| TestCaseError::fail("released admission gates did not settle"))?
+        .into_iter()
+        .collect::<Result<Vec<_>, TestCaseError>>()?;
     results.sort_unstable();
-    (started, results)
+    Ok((started, results))
 }
 
 proptest::proptest! {
@@ -136,7 +146,7 @@ proptest::proptest! {
     #[test]
     fn all_blocked_cases_are_admitted_before_any_finishes(count in 9usize..32) {
         for broken in [false, true] {
-            let (started, results) = probe_admission(count, count, broken);
+            let (started, results) = probe_admission(count, count, broken)?;
             proptest::prop_assert_eq!(results, (0..count).collect::<Vec<_>>());
             proptest::prop_assert_eq!(started, if broken { 8 } else { count });
             // Both paths finish every case; only the admission assertion rejects
@@ -149,7 +159,7 @@ proptest::proptest! {
     #[test]
     fn admission_fills_the_requested_capacity_without_exceeding_it(count in 9usize..32, capacity in 1usize..8) {
         for broken in [false, true] {
-            let (started, results) = probe_admission(count, capacity, broken);
+            let (started, results) = probe_admission(count, capacity, broken)?;
             proptest::prop_assert_eq!(results, (0..count).collect::<Vec<_>>());
             proptest::prop_assert_eq!(started, if broken { 8 } else { capacity });
             proptest::prop_assert_eq!(started == capacity, !broken);

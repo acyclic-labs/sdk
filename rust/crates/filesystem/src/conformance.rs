@@ -7,7 +7,7 @@ use crate::{
     Fs, Generation, IdempotencyKey, TransactionCommit, WorkBudget, WorkspaceError,
 };
 use acyclic_stream::{
-    ProviderPlatform, StreamProvider,
+    ProviderOwner, ProviderPlatform, StreamProvider,
     testing::{Counted, RequestLedger, Requests},
 };
 use bytes::Bytes;
@@ -74,10 +74,9 @@ pub fn from_providers<S: StreamProvider, O: acyclic_objects::Blobs>(
     crate::LogicalObjectStore<Counted<O>>,
 > {
     let requests = RequestLedger::new();
-    let authority = crate::distributed::StreamAuthorityStore::new(Arc::new(Counted::with_ledger(
-        stream,
-        requests.clone(),
-    )));
+    let authority = crate::distributed::StreamAuthorityStore::new(ProviderOwner::new(
+        Counted::with_ledger(stream, requests.clone()),
+    ));
     let objects =
         crate::LogicalObjectStore::new(Arc::new(Counted::with_ledger(objects, requests.clone())));
     Fixture::new(Fs::new(authority, objects, capabilities), requests)

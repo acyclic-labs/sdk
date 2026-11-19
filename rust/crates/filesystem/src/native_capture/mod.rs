@@ -19,13 +19,16 @@ use thiserror::Error;
 
 mod accounting;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod capture_policy_tests;
 mod entry;
 mod model;
 #[cfg(test)]
 #[cfg(unix)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod native_view_baseline_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod reserve_tests;
 use accounting::*;
 #[cfg(windows)]
@@ -38,18 +41,22 @@ mod paths;
 use paths::*;
 mod names;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod path_error_tests;
 use names::*;
 mod host_walk;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod leaf_path_tests;
 pub(crate) use host_walk::walk_watch_tree;
 use host_walk::*;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod host_observation_tests;
 mod inline_reuse;
 #[cfg(test)]
 #[cfg(all(any(windows, target_os = "linux")))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod inline_reuse_tests;
 mod reconcile;
 mod relocate;
@@ -67,48 +74,63 @@ mod stage;
 use stage::*;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod held_root_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux"))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod immutable_publication_tests;
 mod metadata;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod metadata_input_tests;
 #[cfg(test)]
 #[cfg(any(target_os = "linux", windows))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod rescan_probe_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod stat_probe_tests;
 pub(crate) use metadata::physical_metadata;
 use metadata::*;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod empty_stage_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod host_file_race_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod native_range_tests;
 #[cfg(test)]
 #[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod owner_allocation_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod reuse_properties;
 #[cfg(test)]
 #[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod root_capture_regression;
 #[cfg(test)]
 #[cfg(unix)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod unix_name_tests;
 #[cfg(test)]
 #[cfg(windows)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod windows_dense_tests;
 #[cfg(test)]
 #[cfg(windows)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod windows_name_tests;
 #[cfg(test)]
 #[cfg(windows)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod windows_sparse_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -128,4 +150,5 @@ pub use names::{host_path_to_namespace, namespace_to_host_path};
 pub(crate) use names::{namespace_component_wide, namespace_host_units_with_work};
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod materialized_view_tests;

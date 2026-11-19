@@ -207,6 +207,7 @@ fn radix_sort(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 pub(super) fn coordinate_index(

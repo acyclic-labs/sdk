@@ -113,7 +113,7 @@ fn copy_owned_text(
     let mut bytes = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
     let result = accounting.perform(copied, || {
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         model::completed(length as u64);
         bytes.value.extend_from_slice(prefix.as_bytes());
         bytes.value.extend_from_slice(text.as_bytes());
@@ -187,6 +187,7 @@ pub(super) fn workspace_allocation(
 }
 
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
 #[path = "paths_loom.rs"]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod model;

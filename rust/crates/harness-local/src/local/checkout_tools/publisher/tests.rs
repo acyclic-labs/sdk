@@ -1,5 +1,6 @@
 use super::super::capture::{KILL_BEFORE_CAPTURE, OWED_WRITE_UNAPPLIED};
 use super::*;
+use crate::local::tests::temporary_directory;
 
 mod admission_cost;
 #[cfg(target_os = "linux")]
@@ -36,26 +37,16 @@ impl Fixture {
     }
 }
 
-fn temporary_directory() -> Result<tempfile::TempDir> {
-    // Keep real native I/O and durability calls; Linux's memory-backed temporary
-    // directory avoids making logical publication tests depend on disk latency.
-    #[cfg(target_os = "linux")]
-    if Path::new("/dev/shm").is_dir() {
-        return tempfile::tempdir_in("/dev/shm").map_err(storage);
-    }
-    tempfile::tempdir().map_err(storage)
-}
-
 async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
     let directory = temporary_directory()?;
     let (fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
     Ok((directory, fixture, publisher))
 }
 
-async fn before_checkout_admission<T>(future: impl std::future::Future<Output = T>) -> T {
+async fn before_checkout_admission<T>(future: impl std::future::Future<Output = T>) -> Result<T> {
     tokio::time::timeout(std::time::Duration::from_secs(2), future)
         .await
-        .expect("file destination refusal waited behind the held checkout guard")
+        .map_err(|_| storage("file destination refusal waited behind the held checkout guard"))
 }
 
 #[tokio::test]
@@ -127,7 +118,7 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
             &changes,
             crate::conversation::ContentAccess { ceiling, io: None },
         )?)
-        .await;
+        .await?;
         let error = batch.err().expect("directory batch must refuse");
         assert_eq!(error.code(), code, "{error:?}");
         if code == crate::wire::ErrorCode::Invalid {
@@ -144,7 +135,7 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
             "directory",
             crate::conversation::ContentAccess { ceiling, io: None },
         )?)
-        .await;
+        .await?;
         let error = match result {
             Err(error) => error,
             Ok(_) => return Err(Error::Invalid("directory publication was accepted".into())),
@@ -186,7 +177,7 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
                 io: None,
             },
         )?)
-        .await;
+        .await?;
         assert_eq!(
             result.err().expect("directory batch must refuse").code(),
             code
@@ -298,7 +289,7 @@ async fn open_fixture_shared(
         CheckoutTools::new(
             workspace.clone(),
             &project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::new(acyclic_actors::local::SystemClock),
             &signed,
             &verifier,
             None,
@@ -395,7 +386,7 @@ async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> 
     CheckoutTools::new(
         workspace.clone(),
         &harness.project,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::new(acyclic_actors::local::SystemClock),
         &harness.signed,
         &harness.verifier,
         None,
@@ -801,6 +792,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                             crate::Capabilities::default()
                         };
                         let operation = OperationId::new();
+                        let path = format!("{operation}-{path}");
                         let (source, _) = publisher
                             .stage_once(
                                 operation,
@@ -1282,7 +1274,7 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
     CheckoutTools::new(
         workspace.clone(),
         &harness.project,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::new(acyclic_actors::local::SystemClock),
         &harness.signed,
         &harness.verifier,
         None,

@@ -9,7 +9,7 @@ use {
     acyclic_fs::{
         CancellationToken, FilesystemNativeSources, FilesystemSourceProvider, FilesystemWireLimits,
         FilesystemWireService, Fs, IdempotencyKey, ReconcileOutcome, SourceError, SourceOptions,
-        SourceState,
+        SourceState, WatchInvalidationReason,
     },
     acyclic_fs_work::performance::WorkBudget,
 };
@@ -38,6 +38,13 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
     ))
     .await?;
     let source = workspace.source().ok_or("source missing")?.clone();
+    if !matches!(source.reconcile().await?, ReconcileOutcome::Clean(_)) {
+        return Err(format!(
+            "could not establish watcher baseline: {:?}",
+            source.state().await
+        )
+        .into());
+    }
     let (fresh_schedule, _fresh_events) = Schedule::new();
     let fresh_store = acyclic_fs::Simulation::wrap(
         &fresh_schedule,
@@ -84,8 +91,20 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
     let fresh_before = fresh_schedule.site_calls().len();
     let mut bound = source.bind_workspace(admitted).await?;
     let key = IdempotencyKey::new();
-    let ReconcileOutcome::Clean(generation) = bound.reconcile_with_key(key).await? else {
-        return Err("retained watcher interval was not reconciled".into());
+    let (generation, replayed) = match bound.reconcile_with_key(key).await? {
+        ReconcileOutcome::Clean(generation) => (generation, bound.reconcile_with_key(key).await?),
+        ReconcileOutcome::NeedsRescan(WatchInvalidationReason::NativeRescanRequired) => {
+            assert!(matches!(
+                bound.reconcile_with_key(key).await?,
+                ReconcileOutcome::NeedsRescan(WatchInvalidationReason::NativeRescanRequired)
+            ));
+            let rescan = IdempotencyKey::new();
+            let ReconcileOutcome::Clean(generation) = bound.rescan_with_key(rescan).await? else {
+                return Err(format!("retained watcher rescan failed: {:?}", bound.state()).into());
+            };
+            (generation, bound.rescan_with_key(rescan).await?)
+        }
+        _ => return Err(format!("retained watcher interval failed: {:?}", bound.state()).into()),
     };
     assert_eq!(
         generation
@@ -95,7 +114,7 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
             .value,
         acyclic_stream::OwnedBytes::from_static(b"after")
     );
-    let ReconcileOutcome::Clean(replayed) = bound.reconcile_with_key(key).await? else {
+    let ReconcileOutcome::Clean(replayed) = replayed else {
         return Err("source retry lost its original outcome".into());
     };
     assert_eq!(generation.id(), replayed.id());

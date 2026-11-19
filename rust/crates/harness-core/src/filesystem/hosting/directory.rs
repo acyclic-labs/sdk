@@ -182,12 +182,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .map_err(|(error, _)| turn(crate::Error::from(error)))?;
-            let io = super::super::PreparationIo::from_native_work(&work).map_err(turn)?;
+            let io = super::super::PreparationIo::for_unmeasured(&cancellation).map_err(turn)?;
             let Some(mut current) = binding
                 .host
                 .private_current_generation(&binding.volume, after, &io)
@@ -202,6 +197,11 @@ where
             if &current != after {
                 return Ok(current);
             }
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .map_err(|(error, _)| turn(crate::Error::from(error)))?;
             let mut source = binding.host.private_changes(&work).map_err(turn)?;
             let reference = super::super::bounded_io::content_workspace(
                 &self.volumes.provider,

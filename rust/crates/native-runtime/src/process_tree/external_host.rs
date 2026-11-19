@@ -771,14 +771,18 @@ mod tests {
             phase_host_fixture(Path::new(&root));
         }
         assert_root_admission_failures();
-        for version in ["2", "3"] {
-            for mode in ["exit", "input", "eof"]
-                .into_iter()
-                .chain(cfg!(unix).then_some("failed"))
-            {
-                phase_case(version, mode);
+        // Each phase owns its own root, custody and child, so the independent
+        // cases run at once instead of serially spawning one fixture at a time.
+        std::thread::scope(|scope| {
+            for version in ["2", "3"] {
+                for mode in ["exit", "input", "eof"]
+                    .into_iter()
+                    .chain(cfg!(unix).then_some("failed"))
+                {
+                    scope.spawn(move || phase_case(version, mode));
+                }
             }
-        }
+        });
     }
     fn phase_host_fixture(root: &Path) -> ! {
         #[cfg(unix)]

@@ -251,7 +251,7 @@ fn drive(index: &Mutex<Index>, waiter: &dyn Wait, now: impl Fn() -> u64) {
     }
 }
 
-fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {

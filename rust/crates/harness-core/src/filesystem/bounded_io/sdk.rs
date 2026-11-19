@@ -1,6 +1,7 @@
 //! Filesystem operations on the preparation context.
 use super::*;
 use crate::resources::ResourceRef;
+use acyclic_fs_work::performance::WorkError;
 use {acyclic_fs::Generation, acyclic_fs_format::object_reference::GenerationId};
 
 impl acyclic_fs::facade::FsWork for &PreparationIo {
@@ -214,14 +215,25 @@ pub(in crate::filesystem) fn file_version(
     }
 }
 
-/// Parses a FileRef version (format v1, see [`file_version`]) into the exact
-/// `GenerationRef` it names. Unknown formats and non-canonical spellings are
-/// refused.
-pub(in crate::filesystem) fn version_generation(
-    provider: &ProviderRef,
-    version: &str,
+pub(in crate::filesystem) enum FileVersion<'a> {
+    Authored(GenerationId),
+    Private(&'a str),
+}
+
+fn invalid_file_version(io: Option<&PreparationIo>) -> Error {
+    stock_boundary(
+        io,
+        crate::wire::ErrorCode::Invalid,
+        "file version is not a canonical Filesystem generation",
+    )
+}
+
+/// Validates the exact cut named by the FileRef version without allocating
+/// the wire representation of the reference.
+pub(in crate::filesystem) fn parse_file_version<'a>(
+    version: &'a str,
     io: Option<&PreparationIo>,
-) -> Result<crate::resources::GenerationRef> {
+) -> Result<FileVersion<'a>> {
     if let Some(io) = io {
         io.charge(WorkCounters {
             source_bytes_read: version.len() as u64,
@@ -229,16 +241,10 @@ pub(in crate::filesystem) fn version_generation(
             ..Default::default()
         })?;
     }
-    let invalid = || {
-        stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "file version is not a canonical Filesystem generation",
-        )
-    };
-    let (format, key) = match version.split_once(':') {
-        None => (None, version),
-        Some((PRIVATE_CUT_FORMAT, key)) => (Some(PRIVATE_CUT_FORMAT), key),
+    let invalid = || invalid_file_version(io);
+    let (private, key) = match version.split_once(':') {
+        None => (false, version),
+        Some((PRIVATE_CUT_FORMAT, key)) => (true, key),
         Some(_) => return Err(invalid()),
     };
     if key.is_empty()
@@ -249,20 +255,33 @@ pub(in crate::filesystem) fn version_generation(
     {
         return Err(invalid());
     }
-    let Some(format) = format else {
-        let mut bytes = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
-        let decoded = bytes.get_mut(..key.len() / 2).ok_or_else(invalid)?;
-        hex::decode_to_slice(key, decoded).map_err(|_| invalid())?;
-        let generation = GenerationId::from_bytes(decoded).ok_or_else(invalid)?;
-        return generation_ref(provider, generation, io);
+    if private {
+        return Ok(FileVersion::Private(key));
+    }
+    let mut bytes = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
+    let decoded = bytes.get_mut(..key.len() / 2).ok_or_else(invalid)?;
+    hex::decode_to_slice(key, decoded).map_err(|_| invalid())?;
+    let generation = GenerationId::from_bytes(decoded).ok_or_else(invalid)?;
+    Ok(FileVersion::Authored(generation))
+}
+
+/// Converts a canonical FileRef version to a `GenerationRef` for the wire.
+pub(in crate::filesystem) fn version_generation(
+    provider: &ProviderRef,
+    version: &str,
+    io: Option<&PreparationIo>,
+) -> Result<crate::resources::GenerationRef> {
+    let key = match parse_file_version(version, io)? {
+        FileVersion::Authored(generation) => return generation_ref(provider, generation, io),
+        FileVersion::Private(key) => key,
     };
     crate::executor::with_history_io(io, |work| {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let provider = crate::core::copy_provider(provider, &mut quota)?;
         let mut decoded = crate::core::reserve_copy_vector(key.len() / 2, &mut quota)?;
         decoded.resize(key.len() / 2, 0);
-        hex::decode_to_slice(key, &mut decoded).map_err(|_| invalid())?;
-        let version = crate::core::copy_text(format, &mut quota)?;
+        hex::decode_to_slice(key, &mut decoded).map_err(|_| invalid_file_version(io))?;
+        let version = crate::core::copy_text(PRIVATE_CUT_FORMAT, &mut quota)?;
         let resource = ResourceRef::new(
             crate::resources::ResourceKind::Generation,
             provider,
@@ -283,35 +302,37 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     acyclic_differential::record(("retain", 0u64));
     use acyclic_fs::LazyWorkspaceError as LazyError;
-    let reference = generation.id().to_bytes();
-    let hex_bytes = reference.len() * 2;
-    let label_bytes = 19 + hex_bytes;
-    let encoding = WorkCounters {
-        bytes_encoded: hex_bytes as u64,
-        bytes_copied: label_bytes as u64,
-        ..Default::default()
+    const PREFIX: &[u8] = b"harness-generation-";
+    let mut storage =
+        [0_u8; PREFIX.len() + 2 * acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
+    let buffer = &mut storage;
+    let identity = move |work: &mut acyclic_fs::kernel::KernelAccounting<'_>| {
+        let buffer = buffer;
+        let reference = generation.id().to_bytes();
+        let hex_bytes = reference.len() * 2;
+        let label_bytes = PREFIX.len() + hex_bytes;
+        work.charge(WorkCounters {
+            bytes_encoded: hex_bytes as u64,
+            bytes_copied: label_bytes as u64,
+            ..Default::default()
+        })?;
+        let (prefix, tail) = buffer.split_at_mut(PREFIX.len());
+        prefix.copy_from_slice(PREFIX);
+        let key = tail.get_mut(..hex_bytes).ok_or(WorkError::Overflow)?;
+        hex::encode_to_slice(reference.as_slice(), key)
+            .map_err(|error| WorkspaceError::Path(error.to_string()))?;
+        let label = buffer.get(..label_bytes).ok_or(WorkError::Overflow)?;
+        std::str::from_utf8(label).map_err(|error| WorkspaceError::Path(error.to_string()))
     };
-    if let Some(io) = io {
-        io.preflight(encoding).map_err(LazyError::Filesystem)?;
-    }
-    let mut storage = [0_u8; 19 + 2 * acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
-    let label = &mut storage[..label_bytes];
-    label[..19].copy_from_slice(b"harness-generation-");
-    hex::encode_to_slice(reference.as_slice(), &mut label[19..])
-        .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
-    let label = std::str::from_utf8(label)
-        .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
     let Some(io) = io else {
         return generation
-            .retain_if_unpublished(label, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .retain_if_unpublished(identity, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map(|_| ())
             .map_err(|failure| LazyError::WorkspaceCause(failure.error));
     };
-    io.spent(encoding).map_err(LazyError::Filesystem)?;
-    io.remaining().map_err(LazyError::Filesystem)?;
     let (result, recorded) = generation
-        .retain_if_unpublished(label, io, io.cancellation())
+        .retain_if_unpublished(identity, io, io.cancellation())
         .await;
     match result {
         Err(source) => Err(LazyError::WorkspaceCause(source)),

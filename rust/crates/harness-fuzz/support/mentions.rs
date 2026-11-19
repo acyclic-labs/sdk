@@ -109,17 +109,15 @@ pub fn observe<E>(
 }
 
 pub fn check(input: &CommandResolution) {
-    observe::<std::convert::Infallible>(
+    let result = observe(
         input,
         |_, _| {},
         |event| {
             for (name, invariant) in INVARIANTS {
-                if let Err(detail) = invariant(&event) {
-                    panic!("{name}: {detail}");
-                }
+                invariant(&event).map_err(|detail| format!("{name}: {detail}"))?;
             }
-            Ok(())
+            Ok::<_, String>(())
         },
-    )
-    .unwrap_or_else(|never| match never {});
+    );
+    assert!(result.is_ok(), "file mention invariant failed: {result:?}");
 }

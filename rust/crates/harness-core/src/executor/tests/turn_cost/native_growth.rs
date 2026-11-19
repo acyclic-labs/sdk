@@ -54,7 +54,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
             let page = replay.await?;
             if !page.is_empty() {
                 *self.copied_after_page.lock().unwrap() = io
-                    .map(|io| io.receipt()?.map(|receipt| receipt.bytes_copied))
+                    .map(|io| io.receipt().map(|receipt| receipt.bytes_copied))
                     .transpose()?;
             }
             Ok(page)

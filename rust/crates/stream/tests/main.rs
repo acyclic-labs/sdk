@@ -35,3 +35,14 @@ mod credential_javascript;
 
 #[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "test-support"))]
 mod trust_credentials;
+
+#[path = "follow_contracts.rs"]
+mod follow_contracts;
+#[cfg(feature = "conformance")]
+#[path = "provider_contracts.rs"]
+mod provider_contracts;
+#[cfg(all(feature = "wasm", feature = "conformance"))]
+#[path = "read_selectors.rs"]
+mod read_selectors;
+#[path = "session_contracts.rs"]
+mod session_contracts;

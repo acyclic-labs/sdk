@@ -289,6 +289,10 @@ pub async fn load_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
         .read(reference, reference.descriptor().byte_length(), None, io)?
         .await?;
     if let Some(io) = io {
+        #[cfg(not(target_arch = "wasm32"))]
+        if io.original_native_work().is_some() {
+            io.guard_bytes(&bytes)?;
+        }
         let items = decode_attachment_manifest(reference, &bytes, Some(item_count), Some(io))?;
         let retained = std::mem::size_of::<Vec<Attachment>>() as u64
             + manifest_owned_bytes(&items, items.capacity())?;

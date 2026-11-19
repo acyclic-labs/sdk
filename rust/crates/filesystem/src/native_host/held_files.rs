@@ -26,6 +26,7 @@ pub type PublishedPair<const A: usize, const B: usize> = ([u8; A], [u8; B]);
 
 #[cfg(test)]
 #[cfg(all(target_os = "linux", loom))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 pub(crate) mod models;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod record;
@@ -349,6 +350,7 @@ impl HostRoot {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod pair_tests;
 
 #[cfg(any(test, not(target_arch = "wasm32")))]

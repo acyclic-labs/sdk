@@ -337,6 +337,13 @@ async fn exactification_enforces_the_entry_bound_before_returning_a_complete_gen
         .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
         .await
         .unwrap();
+    let sealed = root.state(accounting!()).await.unwrap();
+    let warm = root
+        .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(warm.id(), exact.id());
+    assert_eq!(root.state(accounting!()).await.unwrap(), sealed);
     assert_eq!(
         exact
             .read(

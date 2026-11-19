@@ -373,6 +373,17 @@ mod original {
             );
         });
     }
+
+    fn live_after_poison(work: &mut DemandWork) -> Result<u64, crate::WorkError> {
+        assert!(matches!(
+            work.live_allocation_bytes(),
+            Err(crate::WorkObservationError::Poisoned)
+        ));
+        // The public receipt is invalid, but the physical owner must still
+        // publish retirement to its original allocation ledger.
+        work.reconcile_cancellation_registry()?;
+        Ok(work.allocation_parts().0.live_bytes())
+    }
     #[test]
     fn native_birth_denies_the_known_final_drop_plan_before_the_first_native_owner() -> TestResult {
         let (_root, held) = held()?;
@@ -489,7 +500,7 @@ mod original {
         let retired = observe_retirement(&completion);
         let reads = completion.lock_reads();
         let before = birth.with_original_leaf(|work| work.work);
-        let live = birth.with_original_leaf(|work| work.live_allocation_bytes().unwrap());
+        let live = birth.with_original_leaf(|work| work.live_allocation_bytes())?;
         cancellation.cancel();
         birth.with_original_leaf(DemandWork::poison_native_original_work);
         drop(reads);
@@ -501,13 +512,15 @@ mod original {
         wait_retired(&completion);
         no_growth(&birth, before, budget);
         birth.with_original_leaf(|work| {
-            assert!(work.live_allocation_bytes().unwrap() > 0);
-            assert!(work.live_allocation_bytes().unwrap() < live);
+            let remaining = live_after_poison(work)?;
+            assert!(remaining > 0);
+            assert!(remaining < live);
             assert!(matches!(
                 work.take_native_io_failure(),
                 Some(DemandError::OriginalWorkPoisoned)
             ));
-        });
+            Ok::<_, crate::WorkError>(())
+        })?;
         Ok(())
     }
     #[test]
@@ -670,8 +683,9 @@ mod original {
         wait_retired(&completion);
         birth.with_original_leaf(|work| {
             assert_eq!(work.budget, budget);
-            assert!(work.live_allocation_bytes().unwrap() > 0);
-        });
+            assert!(live_after_poison(work)? > 0);
+            Ok::<_, crate::WorkError>(())
+        })?;
         drop(completion);
         assert!(completed.recv().is_err(), "original watch payload retired");
         assert!(owner.upgrade().is_none());

@@ -24,19 +24,15 @@ pub const INVARIANTS: [(&str, Check); 1] = [("roundtrip", |seen| {
     }
 })];
 
-/// Fuzz entry: every invariant, as panics.
+/// Fuzz entry for the protobuf round-trip invariants.
 pub fn check(data: &[u8]) {
     let judged = observe(data, |_| {}, &mut |seen| {
         for (name, check) in INVARIANTS {
-            if let Err(detail) = check(&seen) {
-                panic!("{name}: {detail}");
-            }
+            check(&seen).map_err(|detail| format!("{name}: {detail}"))?;
         }
-        Ok::<(), std::convert::Infallible>(())
+        Ok::<(), String>(())
     });
-    if let Err(never) = judged {
-        match never {}
-    }
+    assert!(judged.is_ok(), "wire input invariant failed: {judged:?}");
 }
 
 /// Records every round trip of `data`; `tamper` sees the decoded generated

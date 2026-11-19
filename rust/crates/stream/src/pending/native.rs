@@ -1,6 +1,7 @@
 use super::*;
 use crate::{NativeProviderFuture, NativeStreamOutput, NativeStreamResult};
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+use std::sync::Arc;
 
 /// The same pending completion, retaining the original native result and ledger.
 pub type NativePending<H = ReadAllocation> =

@@ -658,10 +658,10 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
         )
     };
     let original = command(executable, "argument", "secret", &root)?;
-    let binding = native::command_binding(&original, &config);
+    let binding = native::command_binding(&original, &config)?;
     assert_eq!(
         binding,
-        native::command_binding(&command(executable, "argument", "secret", &root)?, &config)
+        native::command_binding(&command(executable, "argument", "secret", &root)?, &config)?
     );
     for changed in [
         command(other, "argument", "secret", &root)?,
@@ -669,11 +669,11 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
         command(executable, "argument", "new-secret", &root)?,
         command(executable, "argument", "secret", &root.join("child"))?,
     ] {
-        assert_ne!(binding, native::command_binding(&changed, &config));
+        assert_ne!(binding, native::command_binding(&changed, &config)?);
     }
     let mut codex = config;
     codex.dialect = Dialect::Codex;
-    assert_ne!(binding, native::command_binding(&original, &codex));
+    assert_ne!(binding, native::command_binding(&original, &codex)?);
     Ok(())
 }
 

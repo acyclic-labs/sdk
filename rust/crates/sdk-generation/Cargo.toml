@@ -9,19 +9,22 @@ publish = false
 default-run = "sdk-generation"
 
 [package.metadata.bazel]
-test-workers = 1
+# Every case is an independent real-binary end-to-end run with its own private
+# fixture, CARGO_HOME and temporary directory, so the suite uses the whole CPU
+# reservation its isolated_test declares instead of running one case at a time.
+test-workers = 2
 # The cli_regressions harness selects the pinned rustup toolchains and their
 # installed targets; these are the host facts the package's tests read.
 test-env-inherit = ["PATH", "RUSTUP_HOME", "CARGO_HOME"]
 
 [package.metadata.bazel.test-tools.sdk_generation_test]
-CARGO = "//:toolchain_cargo"
-rustc = "//:rustc"
+CARGO = "@sdk_compilers//:cargo"
+rustc = "@sdk_compilers//:rustc"
 rustup = "@sdk_compilers//:rustup"
 
 [package.metadata.bazel.test-tools.main]
-CARGO = "//:toolchain_cargo"
-rustc = "//:rustc"
+CARGO = "@sdk_compilers//:cargo"
+rustc = "@sdk_compilers//:rustc"
 rustup = "@sdk_compilers//:rustup"
 
 [package.metadata.bazel.test-data.main]
@@ -39,6 +42,7 @@ flate2 = "1"
 tempfile = "=3.27.0"
 
 [dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-test-support = { path = "../test-support" }
 hex.workspace = true
 sha2 = "0.11"

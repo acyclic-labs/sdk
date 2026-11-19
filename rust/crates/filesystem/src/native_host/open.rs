@@ -227,16 +227,46 @@ fn open_native_leaf<W: NativeHostWork>(
             #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
-        let file = open_unix(
-            parent.as_raw_fd(),
-            name,
-            mode | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            work,
-        )?;
+        let open = |mode, work: &mut W| {
+            open_unix(
+                parent.as_raw_fd(),
+                name,
+                mode | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                work,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let file = if matches!(options, NativeOpenOptions::ReadWriteCreate) {
+            open_or_create_unix(open, work)?
+        } else {
+            open(mode, work)?
+        };
+        #[cfg(not(target_os = "macos"))]
+        let file = open(mode, work)?;
         if fstat(file.as_raw_fd(), c"", work)?.st_mode & libc::S_IFMT != libc::S_IFREG {
             return Err(W::invalid_request());
         }
         Ok(file)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_or_create_unix<W: NativeHostWork>(
+    open: impl Fn(i32, &mut W) -> Result<File, W::Error>,
+    work: &mut W,
+) -> Result<File, W::Error> {
+    match open(libc::O_RDWR, work) {
+        Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
+        result => return result,
+    }
+    // Darwin can report ENOENT for concurrent nonexclusive O_CREAT calls
+    // with O_NOFOLLOW. Exclusive creation reports whether another writer
+    // won, and both existing-file opens retain the no-follow guarantee.
+    match open(libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, work) {
+        Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {
+            open(libc::O_RDWR, work)
+        }
+        result => result,
     }
 }
 
@@ -470,6 +500,7 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod regular_file_tests {
     use super::*;
 
@@ -661,7 +692,8 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod prepared_leaf_tests {
     use super::*;
 

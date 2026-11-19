@@ -220,13 +220,13 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         let mut steering = crate::executor::working_tail::retirement::SteeringHistory::default();
         steering.admit(2..4, None)?;
         session
-            .retire_working_history(&mut tail, Some(&mut steering))
+            .retire_working_history(input.operation_id, &mut tail, Some(&mut steering))
             .await?;
         assert_eq!(tail.as_slice(), &prior[3..]);
         // The cut splits the admitted steering range. Repeating that cut
         // must neither lose its retired prefix nor duplicate the live suffix.
         session
-            .retire_working_history(&mut tail, Some(&mut steering))
+            .retire_working_history(input.operation_id, &mut tail, Some(&mut steering))
             .await?;
         let transcript =
             session.settled_transcript(steering.into_retired(), tail.clone(), false, "final")?;

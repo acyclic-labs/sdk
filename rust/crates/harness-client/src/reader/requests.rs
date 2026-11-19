@@ -32,11 +32,22 @@ impl Requests {
         self.by_id.first_key_value()
     }
 
-    pub(super) fn dispatch(&mut self, id: &u64, demand: &mut Demands, next_ticket: &mut u64) {
-        if let Some(flight) = self.by_id.get_mut(id) {
-            flight.paging = demand.dispatch(&flight.key, *next_ticket);
+    pub(super) fn dispatch(
+        &mut self,
+        id: &u64,
+        demand: &mut Demands,
+        next_ticket: &mut u64,
+    ) -> bool {
+        if let Some(flight) = self.by_id.get_mut(id)
+            && let Some(paging) = demand.dispatch(&flight.key, *next_ticket)
+        {
+            flight.paging = paging;
             flight.ticket = *next_ticket;
             *next_ticket += 1;
+            true
+        } else {
+            self.remove(id);
+            false
         }
     }
 
@@ -47,20 +58,13 @@ impl Requests {
     }
 
     pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) -> Option<u64> {
-        if let Some(id) = self.keys.get(key) {
-            let flight = self
-                .by_id
-                .get_mut(id)
-                .expect("live operation owns its request");
-            if flight.priority != priority {
-                self.prefetch -= usize::from(flight.priority == Priority::Prefetch);
-                flight.priority = priority;
-                self.prefetch += usize::from(priority == Priority::Prefetch);
-            }
-            Some(flight.ticket)
-        } else {
-            None
+        let flight = self.by_id.get_mut(self.keys.get(key)?)?;
+        if flight.priority != priority {
+            self.prefetch -= usize::from(flight.priority == Priority::Prefetch);
+            flight.priority = priority;
+            self.prefetch += usize::from(priority == Priority::Prefetch);
         }
+        Some(flight.ticket)
     }
 
     pub(super) fn remove(&mut self, id: &u64) -> Option<InFlight> {
@@ -71,7 +75,7 @@ impl Requests {
 
     pub(super) fn withdraw_prefetch(&mut self, key: &OpKey) -> Option<u64> {
         let id = *self.keys.get(key)?;
-        if self.by_id[&id].priority != Priority::Prefetch {
+        if self.by_id.get(&id)?.priority != Priority::Prefetch {
             return None;
         }
         self.remove(&id);
@@ -117,10 +121,5 @@ impl Requests {
         let flight = by_id.remove(id)?;
         *prefetch -= usize::from(flight.priority == Priority::Prefetch);
         Some(flight)
-    }
-
-    #[cfg(test)]
-    pub(super) fn values(&self) -> impl Iterator<Item = &InFlight> {
-        self.by_id.values()
     }
 }

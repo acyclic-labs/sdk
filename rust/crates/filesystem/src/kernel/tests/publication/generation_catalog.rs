@@ -301,7 +301,7 @@ async fn fixture_with_fence(
             PublicationChanges::proposed(
                 objects,
                 (&base, creation.initial_generation_root),
-                &candidate,
+                (&candidate, &[]),
                 request,
                 config,
                 &mut accounting,
@@ -900,8 +900,14 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
             let mut work = measured(native, &original, &cancel);
             if count == 1 {
                 assert!(
-                    matches!(store.compare_and_append(first.clone(), &mut work, None::<&mut ()>).await?,
-                    crate::AppendOutcome::Conflict { actual } if actual == first.expected),
+                    matches!(
+                        store
+                            .compare_and_append(first.clone(), &mut work, None::<&mut ()>)
+                            .await,
+                        Err(crate::AuthorityError::Authority(
+                            crate::AuthorityStoreError::PublicationConditionFailed
+                        ))
+                    ),
                     "cached locator bypassed its atomic identity fence"
                 );
             } else {

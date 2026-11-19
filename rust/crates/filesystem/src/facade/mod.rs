@@ -1,7 +1,5 @@
 //! Thin embedded `Fs`/`Volume`/`Checkout` composition over the two durable stores.
 
-#[cfg(test)]
-use crate::foundation::Epoch;
 use acyclic_stream::ProviderTask;
 
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
@@ -116,6 +114,12 @@ mod fork_selection;
 
 #[cfg(test)]
 #[path = "../tests/facade/mod.rs"]
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_facade,
+    unit_test_facade_checkout,
+    unit_test_facade_recovery
+))]
 mod tests;
 
 mod access_policy;
@@ -191,9 +195,10 @@ pub use crate::kernel::{DirectoryBindingChange, FileRecordChange, GenerationDiff
 #[cfg(test)]
 pub(crate) use access_policy::policy_confirmation;
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
 pub(crate) use access_policy::policy_revision_is_current;
 pub use attributes::NamedAttributeWriteMode;
+pub(crate) use attributes::change_attribute;
 pub(crate) use attributes::{ATTRIBUTE_PAGE_ENTRIES, AttributePageSize};
 use authored_compile::clone_authored_path;
 #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]

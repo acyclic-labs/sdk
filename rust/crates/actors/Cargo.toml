@@ -13,9 +13,6 @@ readme = "README.md"
 [package.metadata.bazel]
 build-script-inputs = []
 
-[package.metadata.bazel.unit-test-dependency-variants]
-acyclic-actors-contract = "socket_test_support"
-
 [features]
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["dep:loom", "acyclic-actors-contract/model-checking", "acyclic-stream/model-checking"]

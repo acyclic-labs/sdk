@@ -646,6 +646,16 @@ pub struct ExecutionJournalCut {
     pub sequence: u64,
 }
 
+/// An authenticated working checkpoint and the conversation prefix it covers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct WorkingContextPrefix {
+    pub(crate) checkpoint: FileRef,
+    pub(crate) operation: OperationId,
+    pub(crate) messages: u64,
+    pub(crate) selection: [u8; 32],
+}
+
 /// Terminal result produced by an executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct TurnOutput {
@@ -673,6 +683,10 @@ pub struct TurnOutput {
     /// them costs no extra write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript: Vec<ModelMessage>,
+    /// Compacted base from this agent's original history, when it covers an
+    /// exact prefix of the next turn's selected conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_context: Option<WorkingContextPrefix>,
 }
 
 impl TurnOutput {
@@ -688,6 +702,7 @@ impl TurnOutput {
             metadata,
             steps,
             transcript: Vec::new(),
+            working_context: None,
         }
     }
 }

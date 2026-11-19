@@ -79,6 +79,32 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
             .is_some_and(|start| domain::SubscriptionStart::try_from(start.clone()).is_ok())
 }
 
+pub(crate) fn declared_subscription_id(id: &str) -> bool {
+    !id.is_empty() && id != crate::invocation::HOST_INBOX
+}
+
+/// Validate an actor manifest's initial bindings, including the host-reserved
+/// invocation ID, unique declared IDs and at most one placement anchor.
+pub fn validate_subscription_manifest(
+    subscriptions: &[wire::SubscriptionSpec],
+) -> Result<(), ContractError> {
+    let mut names = HashSet::new();
+    let mut anchors = 0;
+    for item in subscriptions {
+        if !declared_subscription_id(&item.subscription_id) || !subscription(item) {
+            return Err(ContractError::InvalidArgument);
+        }
+        if !names.insert(&item.subscription_id) {
+            return Err(ContractError::DuplicateName);
+        }
+        anchors += usize::from(item.placement_anchor);
+    }
+    if anchors > 1 {
+        return Err(ContractError::InvalidArgument);
+    }
+    Ok(())
+}
+
 fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
     source.is_none_or(|source| {
         source.entry == name
@@ -131,21 +157,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut names = HashSet::new();
-    let mut anchors = 0;
-    for item in &request.subscriptions {
-        if !subscription(item) {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.subscription_id) {
-            return Err(ContractError::DuplicateName);
-        }
-        anchors += usize::from(item.placement_anchor);
-    }
-    if anchors > 1 {
-        return Err(ContractError::InvalidArgument);
-    }
-    drop(names);
+    validate_subscription_manifest(&request.subscriptions)?;
     validate_configuration(
         &request.bindings,
         &request.secrets,
@@ -223,7 +235,9 @@ pub fn validate_add_subscription(
 ) -> Result<(), ContractError> {
     if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id)
         || !valid_idempotency_key(&request.idempotency_key)
-        || !request.subscription.as_ref().is_some_and(subscription)
+        || !request.subscription.as_ref().is_some_and(|spec| {
+            declared_subscription_id(&spec.subscription_id) && subscription(spec)
+        })
     {
         return Err(ContractError::InvalidArgument);
     }
@@ -394,6 +408,29 @@ mod tests {
         fs, io,
         path::{Path, PathBuf},
     };
+
+    #[test]
+    fn manifest_keeps_authored_inbox_and_refuses_host_invocation_id() {
+        use super::{ContractError, validate_subscription_manifest, wire};
+
+        let mut binding = wire::SubscriptionSpec {
+            subscription_id: "inbox".into(),
+            stream_path: "harness/inbox".into(),
+            start: Some(wire::SubscriptionStart {
+                start: Some(wire::subscription_start::Start::Cursor(0)),
+            }),
+            placement_anchor: true,
+        };
+        assert_eq!(
+            validate_subscription_manifest(std::slice::from_ref(&binding)),
+            Ok(())
+        );
+        binding.subscription_id = crate::invocation::HOST_INBOX.into();
+        assert_eq!(
+            validate_subscription_manifest(&[binding]),
+            Err(ContractError::InvalidArgument)
+        );
+    }
 
     fn snapshot(root: &Path, directory: &Path) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
         let mut entries = Vec::new();

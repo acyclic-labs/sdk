@@ -26,6 +26,7 @@ pub(super) use decision::cached_binding_decision;
 mod proofs {
     use super::cached_binding_matches;
 
+    #[cfg(any(kani, not(unit_test_split), unit_test_mount))]
     #[cfg_attr(kani, kani::proof)]
     #[cfg_attr(not(kani), test)]
     fn projection_copy_releases_its_mutex_and_preserves_lease_errors() {

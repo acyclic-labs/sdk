@@ -70,6 +70,7 @@ fn remove_known_files(directory: &Path, fail_fast: bool) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests {
     use super::*;
     use std::sync::Arc;

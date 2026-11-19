@@ -1,17 +1,6 @@
 //! Exhaustive schedules through the production native directory cache.
 #![cfg(loom)]
-use acyclic_fs::kernel;
-use {
-    acyclic_fs::{CancellationToken, FsError, OperationClaims},
-    acyclic_fs_format::identity::{Digest, VolumeId},
-    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
-    acyclic_fs_work::performance::WorkError,
-};
-
-// The included sources name the filesystem's loom facade, including its InlineMutex.
-mod sync {
-    pub(crate) use loom::sync::{Mutex as InlineMutex, *};
-}
+use super::{Digest, ObjectId, ObjectKind};
 
 fn key(byte: u8) -> ObjectId {
     ObjectId {

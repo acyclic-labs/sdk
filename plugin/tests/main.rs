@@ -11,3 +11,6 @@ mod identity_contract;
 
 mod execution;
 mod native_input;
+
+#[path = "cli.rs"]
+mod cli;

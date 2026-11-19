@@ -1,5 +1,15 @@
 use super::*;
 
+/// The C bridge transports a borrowed callback target as a `uintptr_t`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub(super) struct CallbackAddress(usize);
+
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+impl CallbackAddress {
+    pub(super) const ABSENT: Self = Self(0);
+}
+
 /// One native loop borrows this owner through every callback. A shared root
 /// selects a leased view before any source guard, meter or origin is entered.
 #[derive(Clone)]
@@ -9,6 +19,10 @@ pub(super) enum CallbackTarget {
 }
 
 impl CallbackTarget {
+    pub(super) fn address(&self) -> CallbackAddress {
+        CallbackAddress(ptr::from_ref(self) as usize)
+    }
+
     pub(super) fn close(&self) {
         if let Self::Shared(views) = self {
             views.close();
@@ -50,13 +64,13 @@ impl CallbackTarget {
     }
 }
 
-fn target(address: usize) -> Result<&'static CallbackTarget, i32> {
-    if address == 0 {
+fn target(address: CallbackAddress) -> Result<&'static CallbackTarget, i32> {
+    if address.0 == 0 {
         return Err(libc::ESTALE);
     }
     // SAFETY: the synchronous native loop retains this typed target until all
     // native callbacks have joined. Tests retain the same owner through calls.
-    Ok(unsafe { &*(address as *const CallbackTarget) })
+    Ok(unsafe { &*(address.0 as *const CallbackTarget) })
 }
 
 fn run_view<T>(
@@ -70,7 +84,7 @@ fn run_view<T>(
 }
 
 pub(super) fn ffi_path<T: From<i32>>(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
     authored_write: bool,
@@ -82,7 +96,7 @@ pub(super) fn ffi_path<T: From<i32>>(
 }
 
 pub(super) fn ffi_path_with_root<T: From<i32>>(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
     authored_write: bool,
@@ -117,7 +131,7 @@ pub(super) fn ffi_path_with_root<T: From<i32>>(
 }
 
 pub(super) fn ffi_pair<T: From<i32>>(
-    address: usize,
+    address: CallbackAddress,
     source: *const c_char,
     destination: *const c_char,
     operation: impl FnOnce(

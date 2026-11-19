@@ -698,15 +698,18 @@ pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_path_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod path_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_lease_path_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod lease_path_tests;
 
 /// Exact canonical encoding into either inline scratch or funded spill storage.

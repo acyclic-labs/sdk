@@ -190,14 +190,14 @@ fn ansi16([red, green, blue]: [u8; 3], light: bool) -> Color {
         },
     )
 }
-fn color(color: ThemeColor, depth: ColourDepth, light: bool) -> Color {
+fn color(color: &ThemeColor, depth: ColourDepth, light: bool) -> Color {
     if depth == ColourDepth::Monochrome {
         return Color::Reset;
     }
     let rgb = match color {
         ThemeColor::Default => return Color::Reset,
-        ThemeColor::Ansi(index) => return COLORS.get(index).copied().unwrap_or(Color::Reset),
-        ThemeColor::Rgb(rgb) => rgb,
+        ThemeColor::Ansi(index) => return COLORS.get(*index).copied().unwrap_or(Color::Reset),
+        ThemeColor::Rgb(rgb) => *rgb,
     };
     match depth {
         ColourDepth::TrueColour => {
@@ -247,7 +247,7 @@ fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
         ColourDepth::Ansi16 => Style::new()
             .fg(if light { Color::Black } else { Color::White })
             .bg(if light { Color::White } else { Color::Black }),
-        depth => Style::new().bg(color(ThemeColor::Rgb(band), depth, light)),
+        depth => Style::new().bg(color(&ThemeColor::Rgb(band), depth, light)),
     };
     ThemeStyles(
         Token::ALL.map(|token| {
@@ -255,7 +255,7 @@ fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
                 .as_str()
                 .and_then(ThemeColor::parse)
                 .unwrap_or(ThemeColor::Default);
-            let style = Style::new().fg(color(color_value, profile.colour, light));
+            let style = Style::new().fg(color(&color_value, profile.colour, light));
             if profile.colour == ColourDepth::Monochrome && token == Token::Muted {
                 style.add_modifier(Modifier::DIM)
             } else {

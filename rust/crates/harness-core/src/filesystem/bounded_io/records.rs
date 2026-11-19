@@ -94,6 +94,39 @@ impl PreparationRecord for crate::executor::ResponseProjection {
     }
 }
 impl PreparationRecord for crate::model::ModelEvent {
+    fn diagnostic_label_bytes() -> u64 {
+        // Serde can name the closed event tags, fields and their typed
+        // children. The decoder accounts input-dependent diagnostic text
+        // separately. Do not reserve the full preparation vocabulary for
+        // each streamed token.
+        concat!(
+            "`kind`, `restarted`, `wait`, `trace`, `counted`, `content`, ",
+            "`message_completed`, `text_part`, `reasoning`, `reasoning_block`, ",
+            "`tool_call`, `completed`, `record`, `count`, `delta`, `text`, `native`, ",
+            "`block`, `metadata`, `call_id`, `callId`, `name`, `arguments`, ",
+            "`state`, `admission_started`, `admission_changed`, `admission_finished`, ",
+            "`started`, `finished`, `cause`, `waited_for`, `admitted_at`, `delay`, ",
+            "`retry_after`, `elapsed`, `cooldown`, `credit`, `until`, `secs`, `nanos`, ",
+            "`status`, `connect`, `timeout`, `tls`, `interrupted`, ",
+            "`request_digest`, `input_tokens`, `fixed_tokens`, `message_tokens`, ",
+            "`origin`, `provider`, `model`, `credential_scope`, `continuity`, ",
+            "`readable`, `summary`, `encrypted`, `redacted`, `signature`, `opaque`, ",
+            "`outcome`, `preserved-readable`, `preserved-opaque`, `missing-content`, ",
+            "`unsupported-shape`, `version`, `1`, `span`, `event`, `id`, `process`, ",
+            "`sequence`, `coverage`, `suppressed`, `compared`, `comparison`, `parent`, ",
+            "`mechanism`, `at_ns`, `guarantee`, `bytes`, `result`, `succeeded`, `failed`, ",
+            "`cancelled`, `unsettled`, `request`, `output`, `cache_prefix`, `previous`, ",
+            "`previous_digest`, `current_digest`, `stream`, `commit_id`, `path`, `key`, ",
+            "`round_trip`, `fsync`, `lock`, `auth_check`, `copy`, `provider_call`, ",
+            "`tool_call`, `wait`, `queue`, `commit`, `io`, `actor_delivery`, ",
+            "ModelEvent, ModelWait, ModelAdmissionCause, ModelTransportFailure, ",
+            "ModelTokenCount, ToolCall, NativePart, ReasoningBlock, ReasoningOrigin, ",
+            "ReasoningKind, ReasoningOutcome, TraceRecord, SpanEvent, SpanId, ",
+            "Mechanism, Outcome, Comparison, ComparisonKind, RetainedRecord, Duration",
+        )
+        .len() as u64
+    }
+
     fn json_value_schema() -> &'static Schema {
         Schema::MODEL_EVENT
     }

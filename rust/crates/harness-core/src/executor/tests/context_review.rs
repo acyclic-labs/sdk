@@ -101,11 +101,12 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
                 .await?;
             Ok(ExecutionProgress::Ready(()))
         };
+        let worker = std::pin::pin!(old_caller);
+        let reviewed =
+            std::pin::pin!(execution.with_context_review(journal, &control_input, worker));
         let (result, trace) =
-            acyclic_test_support::differential::observe_async::<_, (&'static str, u64)>(
-                execution.with_context_review(journal, &control_input, old_caller),
-            )
-            .await;
+            acyclic_test_support::differential::observe_async::<_, (&'static str, u64)>(reviewed)
+                .await;
         result?;
         let constructed: Vec<_> = trace
             .into_iter()
@@ -687,11 +688,10 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
         assert_eq!(provider.request_count(), 6);
         Ok(ExecutionProgress::Ready(()))
     };
+    let worker = std::pin::pin!(replay);
+    let reviewed = std::pin::pin!(reopened.with_context_review(journal, &input, worker));
     let (result, trace) =
-        acyclic_test_support::differential::observe_async::<_, (&'static str, u64)>(
-            reopened.with_context_review(journal, &input, replay),
-        )
-        .await;
+        acyclic_test_support::differential::observe_async::<_, (&'static str, u64)>(reviewed).await;
     result?;
     assert_eq!(
         trace

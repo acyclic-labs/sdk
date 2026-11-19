@@ -1,7 +1,7 @@
 //! Lazy summary entries and incremental immutable-page publication.
 use super::*;
 use acyclic_stream::OwnedBytes;
-use persistent_index::{NodeRef, Reader, Writer};
+use persistent_index::{NodeCache, NodeRef, Reader, Writer};
 use summary_map::{SummaryKey, SummaryMap};
 
 pub(super) mod model_cell;
@@ -209,6 +209,7 @@ where
         retry: &str,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
+        cache: Option<&mut NodeCache>,
     ) -> Result<bool> {
         if sequence > state.tail {
             return Ok(false);
@@ -223,7 +224,7 @@ where
             cache: None,
         };
         let key = crate::model::hash_bytes(retry.as_bytes(), io)?;
-        let cell = retry_entry(&reader, state, key)
+        let cell = retry_entry(&reader, state, key, cache)
             .await?
             .ok_or_else(|| changed(io))?;
         let digest = crate::executor::with_history_io(io, |work| {
@@ -396,13 +397,14 @@ where
     }
 }
 
-pub(super) async fn retry_entry<P: crate::store::JournalProvider + ?Sized>(
+async fn retry_entry<P: crate::store::JournalProvider + ?Sized>(
     reader: &Reader<'_, P>,
     state: checkpoint::IndexState,
     retry: [u8; 32],
+    cache: Option<&mut NodeCache>,
 ) -> Result<Option<(u64, [u8; 32])>> {
     let io = reader.io;
-    let Some(read) = reader.get(state.roots[0], &retry).await? else {
+    let Some(read) = reader.get_with_cache(state.roots[0], &retry, cache).await? else {
         return Ok(None);
     };
     let persistent_index::node::Node::Leaf {

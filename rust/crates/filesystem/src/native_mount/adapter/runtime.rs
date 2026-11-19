@@ -309,6 +309,7 @@ pub(super) fn invoke<T, F: Future<Output = Result<T, MountSourceError>>>(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod future_custody_tests {
     use super::*;
     use std::cell::Cell;

@@ -166,7 +166,8 @@ mod changes;
 mod generation_seek;
 mod head_payload;
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;
@@ -190,6 +191,7 @@ mod state_error;
 pub mod state_record;
 pub use state_error::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod state_tests;
 pub use placement::AuthorityPlacement;
 mod records;
@@ -201,9 +203,12 @@ use records::*;
 mod accounting;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod append_retry_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod head_record_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;

@@ -481,6 +481,9 @@ impl OperationService {
         Ok(())
     }
 }
+const SCRIPTED_OPERATION: OperationId = OperationId::from_digest([0x42; 32]);
+const SCRIPTED_MACHINE: MachineId = MachineId::from_digest([0x43; 32]);
+
 fn scripted_operation_service(
     watches: Vec<WatchReply>,
     inspections: Vec<Result<wire::OperationState, Code>>,
@@ -489,9 +492,7 @@ fn scripted_operation_service(
     std::sync::Arc<std::sync::Mutex<ObservationScript>>,
     MachineId,
 ) {
-    let key = IdempotencyKey::from_bytes(Uuid::from_u128(0x41).into_bytes()).unwrap();
-    let operation = OperationId::from_bytes(Uuid::from_u128(0x42).into_bytes()).unwrap();
-    let machine = MachineId::from_bytes(Uuid::from_u128(0x43).into_bytes()).unwrap();
+    let key = IdempotencyKey::from_digest([0x41; 32]);
     let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
         results: None,
         watches: watches.into(),
@@ -505,10 +506,10 @@ fn scripted_operation_service(
     (
         OperationService {
             watch: WatchReply::Script(script.clone()),
-            ..OperationService::new(key, operation, machine)
+            ..OperationService::new(key, SCRIPTED_OPERATION, SCRIPTED_MACHINE)
         },
         script,
-        machine,
+        SCRIPTED_MACHINE,
     )
 }
 

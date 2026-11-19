@@ -172,4 +172,5 @@ use metadata::*;
 use promotion::*;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_lazy, unit_test_mount_driver))]
 pub(in crate::native_mount) mod tests;

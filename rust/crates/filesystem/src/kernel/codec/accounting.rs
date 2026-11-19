@@ -113,7 +113,7 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             // fields. Those nested checks cover the same outstanding effects;
             // only the deficit above existing credit needs another reservation.
             #[cfg(test)]
-            #[cfg(all(loom))]
+            #[cfg(loom)]
             let reuse = !model_checking::additive_reservation();
             #[cfg(not(all(test, loom)))]
             let reuse = true;
@@ -177,7 +177,9 @@ impl Drop for EncodeAccounting<'_, '_> {
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod model_checking;
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

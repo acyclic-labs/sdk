@@ -902,8 +902,10 @@ impl AllocationError {
 
 #[cfg(test)]
 #[path = "tests/allocation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod snapshot_tests;

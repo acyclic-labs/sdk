@@ -321,7 +321,7 @@ pub async fn serve<C: Composition>(
                     .await
             }
             (Listener::Local(_), Some(_)) => {
-                unreachable!("local TLS was refused before opening the host")
+                return Err(Error::Invalid("TLS requires a TCP listener".into()));
             }
         }
         .map_err(failed)

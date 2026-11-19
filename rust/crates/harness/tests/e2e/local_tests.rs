@@ -130,6 +130,9 @@ async fn read_family_rejects_a_valid_but_wrong_selected_range() -> crate::TestRe
 
 #[tokio::test]
 async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() -> crate::TestResult {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     reject_changed_command(
         "default-tools/bash/stdout.json",
         if cfg!(windows) {
@@ -166,9 +169,9 @@ async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult 
     super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;
     broken["turns"][0][0]["arguments"]["command"] = command.into();
-    let error = super::drivers::run(broken)
-        .await
-        .expect_err("a different command passed unchanged family expectations");
+    let Err(error) = super::drivers::run(broken).await else {
+        return Err("a different command passed unchanged family expectations".into());
+    };
     assert!(error.to_string().contains("model tool result"), "{error}");
     Ok(())
 }

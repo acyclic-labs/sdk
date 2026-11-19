@@ -2,6 +2,9 @@ use super::*;
 
 #[tokio::test]
 async fn stop_checks_writes_from_settlement_continuations() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     for (repair, candidate_reply) in [(true, true), (false, true), (false, false)] {
         let error = |error: std::io::Error| Error::Storage(error.to_string());
         let directory = tempfile::tempdir().map_err(error)?;

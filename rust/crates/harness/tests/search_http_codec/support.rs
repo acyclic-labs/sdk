@@ -8,13 +8,13 @@ mod oracle;
 
 // Both codec paths agree with the independent oracle, and a funded native
 // decode returns every byte it charged to its ledger.
-pub fn check(bytes: Vec<u8>, exa: bool) {
+pub fn check(bytes: Vec<u8>, exa: bool) -> Result<(), Box<dyn std::error::Error>> {
     let work = NativeMaterializationWork::new(
         acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &CancellationToken::new(),
     )
-    .unwrap();
-    let baseline = work.live_allocation_bytes();
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes()?;
     let expected = oracle::expected(&bytes, exa);
     let ordinary = decode_search_http_response(&bytes, 5, exa, None);
     assert!(
@@ -32,20 +32,26 @@ pub fn check(bytes: Vec<u8>, exa: bool) {
     );
     match result {
         Ok((response, custody)) => {
-            assert!(custody.as_ref().unwrap().work().shares_ledger(&work));
-            let encoded = serde_json::to_vec(&response).unwrap();
-            let ordinary = serde_json::from_slice::<SearchResponse>(&encoded).unwrap();
+            assert!(
+                custody
+                    .as_ref()
+                    .is_some_and(|hold| hold.work().shares_ledger(&work)),
+                "native decoding did not retain custody on the supplied ledger"
+            );
+            let encoded = serde_json::to_vec(&response)?;
+            let ordinary = serde_json::from_slice::<SearchResponse>(&encoded)?;
             assert_eq!(ordinary, response);
             drop((response, custody));
         }
         Err(error) => assert!(matches!(error, Error::ToolRejected { .. }), "{error:?}"),
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
-pub fn fuzz_response(data: &[u8]) -> Vec<u8> {
+pub fn fuzz_response(data: &[u8]) -> serde_json::Result<Vec<u8>> {
     let Some(data) = data.strip_prefix(&[0xff]) else {
-        return data.to_vec();
+        return Ok(data.to_vec());
     };
     let depth = u16::from_le_bytes([
         data.first().copied().unwrap_or(0),
@@ -74,9 +80,14 @@ pub fn fuzz_response(data: &[u8]) -> Vec<u8> {
 
 // Iterative construction explores depth independently of allocation/stack
 // limits in serde_json::Value. Scalar size includes the HTTP byte boundary.
-pub fn response(depth: usize, size: usize, shape: u8, leaf: &serde_json::Value) -> Vec<u8> {
-    let leaf = serde_json::to_string(leaf).unwrap();
-    let text = serde_json::to_string(&leaf).unwrap();
+pub fn response(
+    depth: usize,
+    size: usize,
+    shape: u8,
+    leaf: &serde_json::Value,
+) -> serde_json::Result<Vec<u8>> {
+    let leaf = serde_json::to_string(leaf)?;
+    let text = serde_json::to_string(&leaf)?;
     let mut body = match shape % 6 {
         0 => r#"{"results":[],"metadata":"#.to_owned(),
         1 | 4 | 5 => {
@@ -104,5 +115,5 @@ pub fn response(depth: usize, size: usize, shape: u8, leaf: &serde_json::Value) 
         body.push(if level % 2 == 0 { ']' } else { '}' });
     }
     body.push('}');
-    body.into_bytes()
+    Ok(body.into_bytes())
 }

@@ -48,14 +48,22 @@ fn child_fixture_path_key(
 
 #[cfg(feature = "test-support")]
 fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
+    fixture_times_from(metadata, physical_source_metadata(metadata))
+}
+
+#[cfg(feature = "test-support")]
+fn fixture_times_from(
+    metadata: &HostStat,
+    physical: SourceMetadata,
+) -> Option<acyclic_native_runtime::testing::NativeTimes> {
     use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
     let identity = metadata.identity();
     let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
     let times = NativeTimes {
-        created_ns: nanos(metadata.birth_time().and_then(system_time_nanos)),
-        modified_ns: nanos(metadata.modified().ok().and_then(system_time_nanos)),
-        accessed_ns: nanos(metadata.accessed().ok().and_then(system_time_nanos)),
-        changed_ns: nanos(source_metadata(metadata).changed_ns),
+        created_ns: nanos(physical.created_ns),
+        modified_ns: nanos(physical.modified_ns),
+        accessed_ns: nanos(physical.accessed_ns),
+        changed_ns: nanos(physical.changed_ns),
     };
     capture_native_times(NativeMetadataInput {
         device: identity.device,
@@ -222,6 +230,21 @@ fn windows_file_identity(volume: u64, index: u64) -> [u8; 32] {
 }
 
 fn source_metadata(metadata: &HostStat) -> SourceMetadata {
+    let physical = physical_source_metadata(metadata);
+    #[cfg(feature = "test-support")]
+    if let Some(times) = fixture_times_from(metadata, physical) {
+        return SourceMetadata {
+            created_ns: times.created_ns.map(i128::from),
+            modified_ns: times.modified_ns.map(i128::from),
+            accessed_ns: times.accessed_ns.map(i128::from),
+            changed_ns: times.changed_ns.map(i128::from),
+            ..physical
+        };
+    }
+    physical
+}
+
+fn physical_source_metadata(metadata: &HostStat) -> SourceMetadata {
     let mut result = SourceMetadata {
         created_ns: metadata.birth_time().and_then(system_time_nanos),
         modified_ns: metadata.modified().ok().and_then(system_time_nanos),

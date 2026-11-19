@@ -58,16 +58,18 @@ impl HttpTransport for RetryTransport {
                 reason: "timer admission refused",
             });
         }
-        let before = work.live_allocation_bytes();
-        let mut timer = None;
-        let allocated = acyclic_test_support::measure(|| {
-            timer = Some(self.platform.delay_with_native_work(wait, work).unwrap());
-        });
+        let before = work.live_allocation_bytes()?;
+        let allocated =
+            acyclic_test_support::measure(|| self.platform.delay_with_native_work(wait, work));
+        let timer = allocated.output?;
         assert_eq!(allocated.count_total, 1);
-        assert_eq!(allocated.bytes_total, work.live_allocation_bytes() - before);
+        assert_eq!(
+            allocated.bytes_total,
+            work.live_allocation_bytes()? - before
+        );
         self.timer_allocations
-            .store(work.receipt().allocation_operations, Ordering::SeqCst);
-        Ok(timer.unwrap())
+            .store(work.receipt()?.allocation_operations, Ordering::SeqCst);
+        Ok(timer)
     }
 
     fn send_with_native_work<'a>(
@@ -144,7 +146,7 @@ proptest! {
             let (request, dispatch) = request(&provider).unwrap();
             let cancel = CancellationToken::new();
             let work = super::native_tests::work(&cancel).unwrap();
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().unwrap();
             let cancelled = cancel_backoff && failures > 0 && !reject_timer;
             let result = {
                 let exchange = async {
@@ -164,10 +166,10 @@ proptest! {
                     assert!(exchange.as_mut().poll(&mut context).is_pending());
                     // The original platform timer is pending; no retry-local waiter is needed.
                     let allocations = transport.timer_allocations.load(Ordering::SeqCst);
-                    assert_eq!(work.receipt().allocation_operations, allocations);
+                    assert_eq!(work.receipt().unwrap().allocation_operations, allocations);
                     // Negative control: restoring the former waiter adds an allocation here.
                     drop(work.cancellation_wait().unwrap());
-                    assert!(work.receipt().allocation_operations > allocations);
+                    assert!(work.receipt().unwrap().allocation_operations > allocations);
                     wake.0.store(false, Ordering::SeqCst);
                     cancel.cancel();
                     assert!(wake.0.load(Ordering::SeqCst));
@@ -192,13 +194,13 @@ proptest! {
                 assert_eq!(result.is_ok(), failures == 0 || !reject_timer);
             }
             drop(result);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
             // Negative control: the former retry path allocates a portable timer with no claim.
             let allocated = acyclic_test_support::measure(|| {
                 drop(transport.delay(Duration::from_millis(1)));
             });
             assert!(allocated.bytes_total > 0);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
             assert_eq!(transport.portable.load(Ordering::SeqCst), 1);
         });
     }

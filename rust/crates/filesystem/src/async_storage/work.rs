@@ -6,7 +6,8 @@ use crate::{
 use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProviderExt as _};
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod commit_tests;
 
 mod frame;
@@ -27,7 +28,8 @@ pub(crate) fn authority_parts<T>(owned: crate::kernel::Owned<T>) -> (T, Authorit
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod custody_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};

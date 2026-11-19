@@ -397,6 +397,13 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
             .map_err(|_| invalid("binding"))?,
         limits: domain::ActorLimits::try_from(limits).map_err(|_| invalid("limits"))?,
     };
+    if !manifest
+        .subscriptions
+        .iter()
+        .all(|id| crate::contract::declared_subscription_id(id))
+    {
+        return Err(invalid("subscription id"));
+    }
     manifest.validate_interrupts()?;
     Ok(manifest)
 }

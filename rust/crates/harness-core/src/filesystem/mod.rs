@@ -65,11 +65,11 @@ mod stock_turns;
 pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_steering;
 mod agent_turns;
-pub(crate) use agent_turns::ceiling_grants;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
     TurnExecutors, TurnLimits, agent_authority, agent_journal_authority, private_volume,
 };
+pub(crate) use agent_turns::{ceiling_grants, inherited_workload_grants};
 pub(crate) mod bounded_io;
 mod tool_resource;
 pub use tool_resource::TOOL_OUTPUT;
@@ -138,18 +138,12 @@ pub use content_verifier::FilesystemContentVerifier;
 pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &Generation<A, O>,
 ) -> Result<()> {
-    generation
-        .retain_if_unpublished(
-            format!(
-                "harness-generation-{}",
-                hex::encode(generation.id().to_bytes().as_slice())
-            ),
-            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
+    bounded_io::retain(generation, None)
         .await
-        .map(|_| ())
-        .map_err(|failure| map_error(failure.error))
+        .map_err(|error| match error {
+            acyclic_fs::LazyWorkspaceError::WorkspaceCause(error) => map_error(error),
+            error => error.into(),
+        })
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -596,14 +590,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&bounded_io::PreparationIo>,
     ) -> Result<Charged<acyclic_stream::OwnedBytes>> {
         // Keep the Result temporary across await for the original admitted caller frame.
-        (if io.is_none() {
-            crate::conversation::BoundedContentFuture::new(None, || {
+        (match io {
+            None => crate::conversation::BoundedContentFuture::new(None, || {
                 self.read_pinned_unmetered(reference, maximum_bytes, pinned_read::bytes_only)
-            })
-        } else {
-            crate::conversation::BoundedContentFuture::new(io, || {
-                self.read_pinned_metered(reference, maximum_bytes, io)
-            })
+            }),
+            Some(io) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = io.original_native_work() {
+                    return crate::conversation::BoundedContentFuture::new(Some(io), || {
+                        self.read_pinned_native(reference, maximum_bytes, io, original)
+                    })?
+                    .await;
+                }
+                crate::conversation::BoundedContentFuture::new(Some(io), || {
+                    self.read_pinned_finite(reference, maximum_bytes, io)
+                })
+            }
         })?
         .await
     }
@@ -685,146 +687,135 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
-    fn read_pinned_metered<'a>(
-        &'a self,
-        reference: &'a FileRef,
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_pinned_native(
+        &self,
+        reference: &FileRef,
         maximum_bytes: u64,
-        io: Option<&'a bounded_io::PreparationIo>,
-    ) -> impl std::future::Future<Output = Result<Charged<acyclic_stream::OwnedBytes>>>
-    + acyclic_stream::ProviderTask
-    + 'a {
-        async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some((caller, original)) =
-                io.and_then(|io| io.original_native_work().map(|work| (io, work)))
-            {
-                let scratch = PreparationIo::from_native_work(original)?;
-                let io = &scratch;
-                reference.validate(&mut Some(&mut io.history_io()))?;
-                if reference.volume().provider() != &self.provider
-                    || reference.descriptor().byte_length() > maximum_bytes
-                {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "content provider or size limit mismatch",
-                    });
-                }
-                let generation = self.file_generation(reference, Some(io))?;
-                let workspace =
-                    bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
-                let rendered = original
-                    .display(&format_args!("/{}", reference.path()))
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
-                let path_custody = rendered.1;
-                let path = rendered.0;
-                let opened = (self).open(&workspace, Some(io)).await?;
-                if self.selects_private_cut(&opened, &generation) {
-                    let (bytes, _) = Box::pin(self.read_pinned_private(
-                        &opened,
-                        &generation,
-                        reference,
-                        maximum_bytes,
-                        true,
-                        io,
-                    ))
-                    .await?;
-                    crate::executor::with_history_io(Some(io), |work| {
-                        reference.descriptor().verify(&bytes, work)
-                    })?;
-                    return Ok(bytes);
-                }
-                let pinned = self.generation(&opened, &generation, Some(io)).await?;
-                #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-                acyclic_differential::record(("read", maximum_bytes));
-                let bytes = pinned
-                    .read(&path, maximum_bytes, original, io.cancellation())
-                    .await
-                    .map_err(|source| Error::NativeWorkspace {
-                        source: Box::new(source),
-                        custody: None,
-                    })?;
-                bounded_io::retain(&pinned, Some(io)).await?;
-                crate::executor::with_history_io(Some(io), |work| {
-                    reference.descriptor().verify(&bytes, work)
-                })?;
-                drop(path);
-                drop(path_custody);
-                // Native bytes already carry their original allocation.
-                return caller.retain_read_bytes(bytes);
-            }
+        io: &bounded_io::PreparationIo,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Charged<acyclic_stream::OwnedBytes>> {
+        let ((path, path_custody), pinned) = {
+            let scratch = PreparationIo::from_native_work(original)?;
+            let io = &scratch;
+            reference.validate(&mut Some(&mut io.history_io()))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
             {
-                return Err(Error::Invalid(
-                    "content provider or size limit mismatch".into(),
-                ));
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "content provider or size limit mismatch",
+                });
             }
-            if let Some(io) = io {
-                io.retain_owned((reference.path().len() + 1) as u64)?;
+            let generation = self.file_generation(reference, Some(io))?;
+            let workspace =
+                bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
+            let path = original
+                .display(&format_args!("/{}", reference.path()))
+                .map_err(|cause| Error::NativeWork {
+                    cause,
+                    custody: None,
+                })?;
+            let opened = self.open(&workspace, Some(io)).await?;
+            if self.selects_private_cut(&opened, &generation) {
+                let (bytes, _) = Box::pin(self.read_pinned_private(
+                    &opened,
+                    &generation,
+                    reference,
+                    maximum_bytes,
+                    true,
+                    io,
+                ))
+                .await?;
+                crate::executor::with_history_io(Some(io), |work| {
+                    reference.descriptor().verify(&bytes, work)
+                })?;
+                return Ok(bytes);
             }
-            let _path_hold = io
-                .map(|io| io.guard_owned((reference.path().len() + 1) as u64))
-                .transpose()?;
-            let generation = self.file_generation(reference, io)?;
-            let generation_hold = io
-                .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
-                .transpose()?;
-            let workspace = bounded_io::content_workspace(&self.provider, reference.volume(), io)?;
-            let _workspace_hold = io
-                .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
-                .transpose()?;
-            let path = format!("/{}", reference.path());
-            let bytes = match io {
-                Some(io) => {
-                    let opened = (self).open(&workspace, Some(io)).await?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if self.selects_private_cut(&opened, &generation) {
-                        let (bytes, _) = Box::pin(self.read_pinned_private(
-                            &opened,
-                            &generation,
-                            reference,
-                            maximum_bytes,
-                            true,
-                            io,
-                        ))
-                        .await?;
-                        crate::executor::with_history_io(Some(io), |work| {
-                            reference.descriptor().verify(&bytes, work)
-                        })?;
-                        return Ok(bytes);
-                    }
-                    let pinned = self.generation(&opened, &generation, Some(io)).await?;
-                    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-                    acyclic_differential::record(("read", maximum_bytes));
-                    let bytes = io.receive(
-                        pinned
-                            .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
-                            .await,
-                    )?;
-                    // The charge lives exactly as long as the returned bytes.
-                    let bytes = io.retain_read_bytes(bytes)?;
-                    bounded_io::retain(&pinned, Some(io)).await?;
-                    bytes
-                }
-                None => {
-                    let unmeasured =
-                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    unmeasured.retain_read_bytes(
-                        self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                            .await?,
-                    )?
-                }
-            };
-            crate::executor::with_history_io(io, |work| {
+            let pinned = self.generation(&opened, &generation, Some(io)).await?;
+            // The authenticated generation owns its proof. Retire the
+            // temporary selectors before admitting the file data.
+            (path, pinned)
+        };
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("read", maximum_bytes));
+        let bytes = pinned
+            .read(&path, maximum_bytes, original, io.cancellation())
+            .await
+            .map_err(|source| Error::NativeWorkspace {
+                source: Box::new(source),
+                custody: None,
+            })?;
+        drop(path);
+        drop(path_custody);
+        bounded_io::retain(&pinned, Some(io)).await?;
+        crate::executor::with_history_io(Some(io), |work| {
+            reference.descriptor().verify(&bytes, work)
+        })?;
+        // Native bytes already carry their original allocation.
+        io.retain_read_bytes(bytes)
+    }
+
+    async fn read_pinned_finite(
+        &self,
+        reference: &FileRef,
+        maximum_bytes: u64,
+        io: &bounded_io::PreparationIo,
+    ) -> Result<Charged<acyclic_stream::OwnedBytes>> {
+        if reference.volume().provider() != &self.provider
+            || reference.descriptor().byte_length() > maximum_bytes
+        {
+            return Err(Error::Invalid(
+                "content provider or size limit mismatch".into(),
+            ));
+        }
+        let path_bytes = (reference.path().len() + 1) as u64;
+        io.retain_owned(path_bytes)?;
+        let path_hold = io.guard_owned(path_bytes)?;
+        let generation = self.file_generation(reference, Some(io))?;
+        let generation_hold = io.guard_owned(generation.logical_owned_bytes()?)?;
+        let workspace =
+            bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
+        let workspace_hold = io.guard_owned(workspace.logical_owned_bytes()?)?;
+        let path = format!("/{}", reference.path());
+        let opened = self.open(&workspace, Some(io)).await?;
+        drop(workspace);
+        drop(workspace_hold);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.selects_private_cut(&opened, &generation) {
+            let (bytes, _) = Box::pin(self.read_pinned_private(
+                &opened,
+                &generation,
+                reference,
+                maximum_bytes,
+                true,
+                io,
+            ))
+            .await?;
+            crate::executor::with_history_io(Some(io), |work| {
                 reference.descriptor().verify(&bytes, work)
             })?;
-            drop(generation);
-            drop(generation_hold);
-            Ok(bytes)
+            return Ok(bytes);
         }
+        let pinned = self.generation(&opened, &generation, Some(io)).await?;
+        drop(generation);
+        drop(generation_hold);
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("read", maximum_bytes));
+        let bytes = io.receive(
+            pinned
+                .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
+                .await,
+        )?;
+        drop(path);
+        drop(path_hold);
+        // The charge lives exactly as long as the returned bytes.
+        let bytes = io.retain_read_bytes(bytes)?;
+        bounded_io::retain(&pinned, Some(io)).await?;
+        crate::executor::with_history_io(Some(io), |work| {
+            reference.descriptor().verify(&bytes, work)
+        })?;
+        Ok(bytes)
     }
 }
 

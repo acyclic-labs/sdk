@@ -137,8 +137,10 @@ fn require_preparation_contents(
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod crash_tests;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_materializer))]
 mod tests;
 
 /// Creates shared staging ancestors through held directories before journaling the operation.

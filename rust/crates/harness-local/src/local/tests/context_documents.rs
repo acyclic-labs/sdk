@@ -1,7 +1,8 @@
 use super::{
-    ObservedConversation, ScriptedTurn, request_text, scripted, settings, volume, volume_config,
+    ObservedConversation, ScriptedTurn, open_scripted, request_text, scripted, settings, volume,
+    volume_config,
 };
-use crate::{Error, LocalHarness, Result};
+use crate::{Error, Result};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -10,7 +11,7 @@ async fn notes_and_nested_pins_append_across_five_turns_without_changing_the_fro
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider = scripted((0..5).map(|_| ScriptedTurn::Text("done".into())));
     let harness = Arc::new(
-        LocalHarness::open(
+        open_scripted(
             volume_config(
                 directory.path(),
                 volume(directory.path()).await?,
@@ -109,25 +110,56 @@ async fn managed_context_preserves_success_and_reduces_total_input_across_follow
     let mut totals = Vec::new();
     for managed in [false, true] {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let mut turns = vec![ScriptedTurn::Text("a".repeat(20_000))];
-        if managed {
-            turns.push(ScriptedTurn::Text(
-                r#"{"version":1,"drop_through":2,"summary":"RETAINED_FACT_BLUE"}"#.into(),
-            ));
-        }
-        turns.extend([
-            ScriptedTurn::Text("SECOND_DONE".into()),
-            ScriptedTurn::Text("THIRD_DONE".into()),
-        ]);
+        let turns = std::sync::Mutex::new(
+            [
+                ScriptedTurn::Text("a".repeat(20_000)),
+                ScriptedTurn::Text("SECOND_DONE".into()),
+                ScriptedTurn::Text("THIRD_DONE".into()),
+            ]
+            .into_iter(),
+        );
         let provider = Arc::new(
-            super::ScriptedModelProvider::new(turns)
-                .with_context_capacity(crate::context::ModelContextCapacity {
-                    context_tokens: 100_000,
-                    output_tokens: Some(50_000),
-                    output_shares_context: false,
-                })
-                .with_token_counter(input_cost)
-                .reading_content(),
+            super::ScriptedModelProvider::responding(move |request| {
+                if request.summary {
+                    let source_count = request
+                        .messages
+                        .iter()
+                        .find_map(|message| {
+                            let crate::model::ModelContent::Text(text) = &message.content else {
+                                return None;
+                            };
+                            text.lines().find_map(|line| {
+                                line.strip_prefix("Source count: ")?
+                                    .strip_suffix('.')?
+                                    .parse::<u32>()
+                                    .ok()
+                            })
+                        })
+                        .ok_or_else(|| {
+                            Error::Invalid("manager request has no source count".into())
+                        })?;
+                    return Ok(ScriptedTurn::Text(
+                        serde_json::json!({
+                            "version": 1,
+                            "drop_through": source_count,
+                            "summary": "RETAINED_FACT_BLUE"
+                        })
+                        .to_string(),
+                    ));
+                }
+                turns
+                    .lock()
+                    .map_err(|error| Error::Conflict(error.to_string()))?
+                    .next()
+                    .ok_or_else(|| Error::Invalid("unexpected worker request".into()))
+            })
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 100_000,
+                output_tokens: Some(50_000),
+                output_shares_context: false,
+            })
+            .with_token_counter(input_cost)
+            .reading_content(),
         );
         let policy = if managed {
             crate::context::CompactionPolicy::default()
@@ -135,7 +167,7 @@ async fn managed_context_preserves_success_and_reduces_total_input_across_follow
             crate::context::CompactionPolicy::Disabled
         };
         let harness = Arc::new(
-            LocalHarness::open(
+            open_scripted(
                 volume_config(
                     directory.path(),
                     volume(directory.path()).await?,
@@ -163,10 +195,27 @@ async fn managed_context_preserves_success_and_reduces_total_input_across_follow
             requests.iter().filter(|request| !request.summary).count(),
             3
         );
-        assert_eq!(
-            requests.iter().filter(|request| request.summary).count(),
-            usize::from(managed)
-        );
+        let mut summaries = requests.iter().filter(|request| request.summary);
+        if managed {
+            let first = summaries
+                .next()
+                .ok_or_else(|| Error::Invalid("the manager did not run".into()))?;
+            assert!(
+                request_text(&harness, first)
+                    .await?
+                    .contains("oooooooooooooooo")
+            );
+            for next in summaries.by_ref() {
+                assert!(
+                    !request_text(&harness, next)
+                        .await?
+                        .contains("oooooooooooooooo"),
+                    "a later rewrite reloaded the retired source"
+                );
+            }
+        } else {
+            assert!(summaries.next().is_none());
+        }
         let last = requests
             .last()
             .ok_or_else(|| Error::NotFound("final worker request".into()))?;

@@ -302,27 +302,30 @@ async fn sweep_prepared_prefix(
     )?;
     let orphan = crate::HashedObject::new(ObjectKind::GenerationRoot, encoded.into());
     let orphan_id = orphan.object_id();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-    fs.objects().put_hashed(orphan, &mut work).await?;
-    drop(
-        fs.objects()
-            .flush_before_publish(
-                crate::PublicationScope {
-                    root: None,
-                    related_root: None,
-                    related_objects: &[],
-                    objects: &[orphan_id],
-                    proven_at: 0,
-                },
-                &mut work,
-            )
-            .await?,
-    );
+    {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
+        fs.objects().put_hashed(orphan, &mut work).await?;
+        drop(
+            fs.objects()
+                .flush_before_publish(
+                    crate::PublicationScope {
+                        root: None,
+                        related_root: None,
+                        related_objects: &[],
+                        objects: &[orphan_id],
+                        proven_at: fs.objects().collection_sweeps(),
+                    },
+                    &mut work,
+                )
+                .await?,
+        );
+    }
     let collected = fs.collect_local_garbage(None, cancellation).await?;
     assert!(
         collected.removed > 0,
         "collector did not sweep a durable orphan"
     );
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
     assert!(!fs.objects().contains(orphan_id, &mut work).await?);
     assert!(
         fs.objects().contains(prefix, &mut work).await?,

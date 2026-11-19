@@ -10,11 +10,11 @@ use std::path::{Component, Path};
 #[path = "../../crates/harness-core/src/tools/git/path.rs"]
 mod path;
 
-fuzz_target!(|bytes: &[u8]| {
-    let Ok(argument) = std::str::from_utf8(bytes) else {
-        return;
-    };
+fn check(argument: &str) -> serde_json::Result<()> {
+    #[cfg(unix)]
     let root = Path::new("/workspace");
+    #[cfg(windows)]
+    let root = Path::new(r"C:\workspace");
     let destination = Path::new(argument);
     if let Ok(paths) = acyclic_fs::native_mount_control_paths(destination) {
         assert!(destination.is_absolute());
@@ -27,7 +27,7 @@ fuzz_target!(|bytes: &[u8]| {
             assert_eq!(path.parent(), destination.parent());
         }
         let restored: std::path::PathBuf =
-            serde_json::from_slice(&serde_json::to_vec(destination).unwrap()).unwrap();
+            serde_json::from_slice(&serde_json::to_vec(destination)?)?;
         assert_eq!(
             acyclic_fs::native_mount_control_paths(&restored).ok(),
             Some(paths)
@@ -46,5 +46,16 @@ fuzz_target!(|bytes: &[u8]| {
             .to_str()
             .and_then(|argument| path::workspace_path_argument(root, argument).ok());
         assert_eq!(restored.as_deref(), Some(parsed.as_str()));
+    }
+    Ok(())
+}
+
+fuzz_target!(|bytes: &[u8]| {
+    if let Ok(argument) = std::str::from_utf8(bytes) {
+        let result = check(argument);
+        assert!(
+            result.is_ok(),
+            "mount path JSON round trip failed: {result:?}"
+        );
     }
 });

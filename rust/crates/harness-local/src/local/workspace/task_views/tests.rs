@@ -647,6 +647,11 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     drop(second);
     assert!(original.upgrade().is_some());
     drop(third);
+    assert!(
+        original.upgrade().is_some(),
+        "the remounted table must retain the binding it exposes"
+    );
+    drop(remounted);
     assert!(original.upgrade().is_none());
     workspace
         .bound_task_view(

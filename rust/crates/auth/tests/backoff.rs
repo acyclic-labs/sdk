@@ -1,3 +1,5 @@
+//! Properties of transport backoff bounds, jitter, and reset behavior.
+
 #[path = "../src/operation/backoff.rs"]
 mod backoff;
 

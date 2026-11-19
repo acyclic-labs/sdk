@@ -23,6 +23,7 @@ rust_library(
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-distinct-max",
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-zero",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -62,7 +63,7 @@ rust_test(
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-zero",
         "//rust/crates/filesystem:src/operation_window/lease_path/encoding.rs",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

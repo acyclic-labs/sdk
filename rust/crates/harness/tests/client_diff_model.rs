@@ -54,8 +54,8 @@ impl ContentResidencyVerifier for Content {
 // all interleavings. Lock order: the provider gate is the sole model lock; it
 // must be released before waking the consumer or performing provider I/O.
 #[test]
-fn follow_has_no_lost_wakeup_or_torn_publication_across_cancellation() {
-    run_model(true);
+fn follow_has_no_lost_wakeup_or_torn_publication_across_cancellation() -> Result<()> {
+    run_model(true)
 }
 
 // A missing provider wake must be observable, rather than a model that silently
@@ -63,21 +63,18 @@ fn follow_has_no_lost_wakeup_or_torn_publication_across_cancellation() {
 #[test]
 #[should_panic(expected = "deadlock! blocked tasks")]
 fn follow_model_detects_a_dropped_provider_wakeup() {
-    run_model(false);
+    let result = run_model(false);
+    assert!(result.is_ok(), "model fixture failed: {result:?}");
 }
 
-fn run_model(wake: bool) {
+fn run_model(wake: bool) -> Result<()> {
     let (content, publication, original) = futures::executor::block_on(async {
-        let fixture = Fixture::new().await.expect("fixture");
-        let base = fixture.source("a.txt").await.expect("base");
-        fixture.put("a.txt", "added\n", "add").await.expect("write");
-        let current = fixture.source("a.txt").await.expect("current");
-        let (file, bytes) = current
-            .read(fixture.reader.as_ref(), 1024)
-            .await
-            .expect("pinned content");
-        let view =
-            DiffView::new(fixture.root.volume.clone(), base.generation.clone()).expect("view");
+        let fixture = Fixture::new().await?;
+        let base = fixture.source("a.txt").await?;
+        fixture.put("a.txt", "added\n", "add").await?;
+        let current = fixture.source("a.txt").await?;
+        let (file, bytes) = current.read(fixture.reader.as_ref(), 1024).await?;
+        let view = DiffView::new(fixture.root.volume.clone(), base.generation.clone())?;
         let publication = DiffPublication {
             previous: base.generation,
             generation: current.generation.clone(),
@@ -90,8 +87,8 @@ fn run_model(wake: bool) {
             }],
         };
         let bytes = bytes.bytes().clone();
-        (Content { file, bytes }, publication, view)
-    });
+        Ok::<_, Error>((Content { file, bytes }, publication, view))
+    })?;
     let content = Arc::new(content);
     for cancel in [false, true] {
         let content = content.clone();
@@ -104,7 +101,7 @@ fn run_model(wake: bool) {
                     let gate = gate.clone();
                     shuttle::thread::spawn(move || {
                         let waker = {
-                            let mut state = gate.lock().expect("gate");
+                            let mut state = gate.lock().unwrap_or_else(|error| error.into_inner());
                             state.0 = true;
                             state.1.take()
                         };
@@ -116,7 +113,7 @@ fn run_model(wake: bool) {
                 let pause = || -> futures::future::BoxFuture<'static, ()> {
                     let gate = gate.clone();
                     Box::pin(poll_fn(move |cx| {
-                        let mut state = gate.lock().expect("gate");
+                        let mut state = gate.lock().unwrap_or_else(|error| error.into_inner());
                         if state.0 {
                             Poll::Ready(())
                         } else {
@@ -151,15 +148,19 @@ fn run_model(wake: bool) {
                             follow.next().await
                         }
                     };
-                    assert_eq!(delivered.expect("publication").expect("diff"), ["a.txt"]);
+                    assert!(
+                        matches!(&delivered, Some(Ok(paths)) if paths == &["a.txt"]),
+                        "expected one diff publication for a.txt: {delivered:?}"
+                    );
                     assert_eq!(follow.view().generation(), &publication.generation);
                     assert_eq!(follow.view().line_counts(), (1, 0));
                     assert_eq!(follow.view().files().len(), 1);
                     assert!(follow.next().await.is_none());
                 }));
-                producer.join().expect("producer");
+                assert!(producer.join().is_ok(), "provider model thread failed");
             },
             None,
         );
     }
+    Ok(())
 }

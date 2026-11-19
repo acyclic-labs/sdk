@@ -19,6 +19,7 @@ use serde_json::json;
 use std::{path::Path, sync::Arc};
 
 mod agents;
+pub(super) use agents::settled;
 mod context;
 mod context_documents;
 mod history_retry;
@@ -34,6 +35,16 @@ mod transcripts;
 pub(super) fn seeded<F: Future<Output = Result<()>>>(world: impl FnOnce() -> F) -> Result<()> {
     acyclic_native_runtime::testing::seeded_test(0x4841_524e, world)
         .map_err(|error| Error::Storage(error.to_string()))?
+}
+
+pub(in crate::local) fn temporary_directory() -> Result<tempfile::TempDir> {
+    // Preserve native filesystem and durability calls without making
+    // checkout proofs depend on the shared disk's latency.
+    #[cfg(target_os = "linux")]
+    if Path::new("/dev/shm").is_dir() {
+        return tempfile::tempdir_in("/dev/shm").map_err(super::storage);
+    }
+    tempfile::tempdir().map_err(super::storage)
 }
 
 pub(super) fn scripted(
@@ -52,7 +63,7 @@ pub(super) async fn open_scripted(config: LocalHarnessConfig) -> Result<LocalHar
 }
 
 /// One conversation and its observation, which reports each settled entry.
-struct ObservedConversation {
+pub(super) struct ObservedConversation {
     conversation: Arc<Conversation>,
     observer: crate::local::Observer,
 }
@@ -65,7 +76,10 @@ impl ObservedConversation {
         Self::observe(conversation, None).await
     }
 
-    async fn observe(conversation: Arc<Conversation>, from: Option<u64>) -> Result<Self> {
+    pub(super) async fn observe(
+        conversation: Arc<Conversation>,
+        from: Option<u64>,
+    ) -> Result<Self> {
         let observer = conversation.observe(from).await?;
         Ok(Self {
             conversation,
@@ -81,9 +95,16 @@ impl ObservedConversation {
 
     /// As [`Self::settled`], with the entry's committed conversation sequence.
     async fn settled_at(&mut self, inbox: u64) -> Result<(u64, ConversationEntry)> {
+        self.settled_where(|entry| entry.inbox == inbox).await
+    }
+
+    async fn settled_where(
+        &mut self,
+        accepts: impl Fn(&ConversationEntry) -> bool,
+    ) -> Result<(u64, ConversationEntry)> {
         loop {
             match self.observer.next().await? {
-                Event::Turn { sequence, entry } if entry.inbox == inbox => {
+                Event::Turn { sequence, entry } if accepts(&entry) => {
                     return Ok((sequence, entry));
                 }
                 Event::Status(status) => {
@@ -96,9 +117,33 @@ impl ObservedConversation {
         }
     }
 
-    async fn send(&mut self, id: &str, prompt: &str) -> Result<ConversationEntry> {
+    pub(super) async fn settled_child_notice(
+        &mut self,
+        turn: crate::OperationId,
+    ) -> Result<ConversationEntry> {
+        let notice = format!("child-settled:{turn}");
+        let (_, entry) = self
+            .settled_where(|entry| {
+                matches!(&entry.input, crate::agent::TurnInput::Notice { id, .. }
+                if id.as_str() == notice.as_str())
+            })
+            .await?;
+        if !entry.outcome.is_completed() {
+            return Err(Error::Conflict(format!(
+                "parent could not handle child settlement: {:?}",
+                entry.outcome
+            )));
+        }
+        Ok(entry)
+    }
+
+    pub(super) async fn send(&mut self, id: &str, prompt: &str) -> Result<ConversationEntry> {
+        Ok(self.send_at(id, prompt).await?.1)
+    }
+
+    async fn send_at(&mut self, id: &str, prompt: &str) -> Result<(u64, ConversationEntry)> {
         let inbox = self.conversation.send(id, prompt).await?;
-        self.settled(inbox).await
+        self.settled_at(inbox).await
     }
 }
 
@@ -242,6 +287,19 @@ fn checkout_config(
         .compaction(crate::context::CompactionPolicy::Disabled))
 }
 
+fn native_checkout_config(
+    workspace: &Path,
+    model: (Model, Arc<dyn ModelProvider>),
+) -> Result<(LocalHarnessConfig, acyclic_actors::local::ClockControl)> {
+    // Keep authority time under the fixture's control while the seeded
+    // executor waits for native checkout I/O.
+    let (clock, control) = acyclic_actors::local::ControlledClock::new(1_700_000_000_000);
+    Ok((
+        checkout_config(workspace, model)?.clock(Arc::new(clock)),
+        control,
+    ))
+}
+
 pub(super) mod checked_commands {
     use crate::{
         model::{ModelEvent, ToolCall},
@@ -327,6 +385,7 @@ pub(super) fn volume_config(
         (model()?, provider),
     )?
     .volume(volume)
+    .private_file_signing()
     .state_directory(state))
 }
 

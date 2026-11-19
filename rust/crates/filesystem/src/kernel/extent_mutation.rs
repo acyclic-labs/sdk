@@ -842,4 +842,5 @@ impl From<AllocationError> for ExtentMutationError {
 
 #[cfg(test)]
 #[path = "tests/extent_mutation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

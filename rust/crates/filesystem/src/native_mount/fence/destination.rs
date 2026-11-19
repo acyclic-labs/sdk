@@ -2,9 +2,11 @@ use super::*;
 
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(loom)))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod retry_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(loom)))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests;
 
 fn cleanup_work(_name: &[crate::native_host::NativeUnit]) -> crate::WorkCounters {

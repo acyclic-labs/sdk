@@ -33,6 +33,7 @@ def _bun_repository_impl(ctx):
     )
     executable = "bun.exe" if os == "windows" else "bun"
     build = 'exports_files(["%s"], visibility = ["//visibility:public"])\n' % executable
+    build += 'filegroup(name = "bun_tool", srcs = ["%s"], visibility = ["//visibility:public"])\n' % executable
     if os == "windows":
         build += 'alias(name = "bun", actual = ":bun.exe", visibility = ["//visibility:public"])\n'
     ctx.file("BUILD.bazel", build)

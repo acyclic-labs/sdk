@@ -15,11 +15,13 @@ mod supervision;
 
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 #[tokio::test]
-async fn physical_private_state_needs_no_global_mount_registry() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
-    let plugins = task_plugins(&fixture);
+async fn physical_private_state_needs_no_global_mount_registry() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
     let unavailable = fixture._directory.path().join("unavailable-global-state");
     std::fs::write(&unavailable, "a file cannot contain a mount registry").unwrap();
     let mut command = graphcoder_command(&fixture);
@@ -37,7 +39,7 @@ async fn physical_private_state_needs_no_global_mount_registry() {
         .arg("--home-file")
         .arg(&plugins)
         .args(["--model", "fixture/tiny", "exec", "answer"]);
-    let output = capture(command, "").await;
+    let output = capture(command, "").await?;
     assert!(
         output.status.success(),
         "{}",
@@ -45,7 +47,8 @@ async fn physical_private_state_needs_no_global_mount_registry() {
     );
     assert_eq!(model.generated(), 1);
     assert!(unavailable.is_file());
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[test]
@@ -67,9 +70,9 @@ fn graphcoder_version_flags_name_the_graphcoder_product() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn explicit_schema_links_are_refused_before_model_dispatch() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn explicit_schema_links_are_refused_before_model_dispatch() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     let schema = fixture._directory.path().join("schema.json");
     let link = fixture._directory.path().join("schema-link.json");
     std::fs::write(&schema, br#"{"type":"object"}"#).unwrap();
@@ -89,7 +92,7 @@ async fn explicit_schema_links_are_refused_before_model_dispatch() {
         ],
         "",
     )
-    .await;
+    .await?;
     assert!(!refused.status.success());
     let failure: Value = serde_json::from_str(
         String::from_utf8_lossy(&refused.stdout)
@@ -100,28 +103,29 @@ async fn explicit_schema_links_are_refused_before_model_dispatch() {
     .unwrap();
     assert_eq!(failure["step"], "prepare_output");
     assert_eq!(model.generated(), 0);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[path = "../examples/embedded.rs"]
 mod embedded;
 
-/// A loopback Responses endpoint; it records every generation request body.
+/// A loopback Responses endpoint that records requests for scripted worker responses.
 struct Model {
     catalog: PathBuf,
     requests: Arc<Mutex<Vec<Value>>>,
     stop: tokio::sync::oneshot::Sender<()>,
-    server: tokio::task::JoinHandle<()>,
+    server: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
-async fn model(directory: &Path) -> Model {
+async fn model(directory: &Path) -> TestResult<Model> {
     model_response(directory, axum::http::StatusCode::OK, ANSWER).await
 }
 
 #[tokio::test]
-async fn explicit_home_module_configures_the_first_model_call() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn explicit_home_module_configures_the_first_model_call() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     let source = fixture._directory.path().join("initial-settings.ts");
     std::fs::write(
         &source,
@@ -129,7 +133,7 @@ async fn explicit_home_module_configures_the_first_model_call() {
     )
     .unwrap();
     let input = format!("agent.ts={}", source.display());
-    let plugins = task_plugins(&fixture);
+    let plugins = task_plugins(&fixture)?;
     let mut endpoint = graphcoder_command(&fixture);
     endpoint.args([
         "--endpoint",
@@ -139,7 +143,7 @@ async fn explicit_home_module_configures_the_first_model_call() {
         "-p",
         "reply",
     ]);
-    let refused = capture(endpoint, "").await;
+    let refused = capture(endpoint, "").await?;
     assert!(!refused.status.success());
     let refusal = String::from_utf8_lossy(&refused.stderr);
     assert!(
@@ -163,20 +167,21 @@ async fn explicit_home_module_configures_the_first_model_call() {
         ],
         "",
     )
-    .await;
+    .await?;
     succeeded(&output);
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["model"], "tiny");
     assert_eq!(requests[0]["temperature"], json!(0.25));
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn home_model_selection_preserves_explicit_requirements_and_credentials() {
+async fn home_model_selection_preserves_explicit_requirements_and_credentials() -> TestResult {
     for (explicit, credentials_available) in [(false, true), (true, true), (false, false)] {
-        let fixture = fixture();
-        let model = model(fixture._directory.path()).await;
+        let fixture = fixture()?;
+        let model = model(fixture._directory.path()).await?;
         let mut catalog: Value =
             serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
         catalog["fixture"]["authentication"] = json!("api_key");
@@ -216,7 +221,7 @@ async fn home_model_selection_preserves_explicit_requirements_and_credentials() 
         if explicit {
             command.args(["--model", "fixture/tiny"]);
         }
-        let output = capture(command, "").await;
+        let output = capture(command, "").await?;
         if !credentials_available {
             assert!(!output.status.success());
             assert!(
@@ -236,14 +241,15 @@ async fn home_model_selection_preserves_explicit_requirements_and_credentials() 
             succeeded(&output);
             assert_eq!(model.requests.lock().unwrap()[0]["model"], "drifted");
         }
-        model.close().await;
+        model.close().await?;
     }
+    Ok(())
 }
 async fn model_response(
     directory: &Path,
     status: axum::http::StatusCode,
     response: &'static str,
-) -> Model {
+) -> TestResult<Model> {
     model_adapter(directory, status, response, "responses").await
 }
 
@@ -252,14 +258,18 @@ async fn model_adapter(
     status: axum::http::StatusCode,
     response: &'static str,
     adapter: &str,
-) -> Model {
+) -> TestResult<Model> {
     model_with_status(directory, adapter, status, response, move |_, _, _| {
         response.to_owned()
     })
     .await
 }
 
-async fn model_responses(directory: &Path, responses: Vec<String>, adapter: &str) -> Model {
+async fn model_responses(
+    directory: &Path,
+    responses: Vec<String>,
+    adapter: &str,
+) -> TestResult<Model> {
     assert!(!responses.is_empty());
     model_with(directory, adapter, move |_, _, index| {
         responses[index.min(responses.len() - 1)].clone()
@@ -267,7 +277,7 @@ async fn model_responses(directory: &Path, responses: Vec<String>, adapter: &str
     .await
 }
 
-async fn model_with<F>(directory: &Path, adapter: &str, reply: F) -> Model
+async fn model_with<F>(directory: &Path, adapter: &str, reply: F) -> TestResult<Model>
 where
     F: Fn(&axum::http::HeaderMap, &Value, usize) -> String + Clone + Send + Sync + 'static,
 {
@@ -280,12 +290,12 @@ async fn model_with_status<F>(
     status: axum::http::StatusCode,
     response: &'static str,
     reply: F,
-) -> Model
+) -> TestResult<Model>
 where
     F: Fn(&axum::http::HeaderMap, &Value, usize) -> String + Clone + Send + Sync + 'static,
 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
     let requests = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&requests);
     let app = Router::new()
@@ -307,9 +317,20 @@ where
             },
             post(
                 move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
-                    let mut recorded = recorded.lock().unwrap();
-                    let response = reply(&headers, &body, recorded.len());
-                    recorded.push(body);
+                    let response = if status.is_success() && context_review_request(&body) {
+                        // The review has its own protocol and does not advance
+                        // the fixture's script of worker responses.
+                        const KEEP_CONTEXT: &str =
+                            r#"{"version":1,"summary":null,"review_at_input_tokens":128}"#;
+                        ANSWER.replace("\"fixture answer\"", &json!(KEEP_CONTEXT).to_string())
+                    } else {
+                        let mut recorded = recorded
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let response = reply(&headers, &body, recorded.len());
+                        recorded.push(body);
+                        response
+                    };
                     async move { (status, [("content-type", "text/event-stream")], response) }
                 },
             ),
@@ -321,7 +342,6 @@ where
                 let _ = stopped.await;
             })
             .await
-            .unwrap();
     });
     let catalog = directory.join("catalog.json");
     let mut document = json!({"fixture":{
@@ -333,39 +353,53 @@ where
         "token_counter": (adapter != "chat").then(|| json!({"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}))
     }});
     document["default_model"] = json!("fixture/tiny");
-    std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
-    Model {
+    std::fs::write(&catalog, serde_json::to_vec(&document)?)?;
+    Ok(Model {
         catalog,
         requests,
         stop,
         server,
-    }
+    })
+}
+
+fn context_review_request(body: &Value) -> bool {
+    // The Responses projection ends the review request with its instruction.
+    body.get("input")
+        .and_then(Value::as_array)
+        .and_then(|input| input.last())
+        .is_some_and(|instruction| {
+            instruction
+                .to_string()
+                .contains("You manage this worker's context outside its turns.")
+        })
 }
 
 #[tokio::test]
-async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices() {
+async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices() -> TestResult {
+    settings_policy_cases(&["automatic", "argument", "file"]).await
+}
+
+#[tokio::test]
+async fn explicit_chat_settings_override_invalid_defaults() -> TestResult {
+    settings_policy_cases(&["explicit_model", "explicit_compaction", "explicit_both"]).await
+}
+
+#[tokio::test]
+async fn invalid_chat_settings_refuse_before_generation() -> TestResult {
+    settings_policy_cases(&["invalid_file", "invalid_model"]).await
+}
+
+async fn settings_policy_cases(choices: &[&str]) -> TestResult {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-    for (choice, session_client) in [
-        "automatic",
-        "argument",
-        "file",
-        "invalid_file",
-        "explicit_model",
-        "explicit_compaction",
-        "explicit_both",
-        "invalid_model",
-    ]
-    .into_iter()
-    .flat_map(|choice| [false, true].map(|session| (choice, session)))
-    {
-        let fixture = fixture();
+    for &choice in choices {
+        let fixture = fixture()?;
         let model = model_adapter(
             fixture._directory.path(),
             axum::http::StatusCode::OK,
             CHAT,
             "chat",
         )
-        .await;
+        .await?;
         let compaction = match choice {
             "file" | "explicit_model" | "invalid_model" => "\n[compaction]\nkind = 'disabled'\n",
             "invalid_file" | "explicit_compaction" | "explicit_both" => {
@@ -382,29 +416,30 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
         std::fs::write(
             fixture.settings.join(".codex/config.toml"),
             format!("model = '{default_model}'\nmodel_provider = 'fixture'\n{compaction}"),
-        )
-        .unwrap();
-        let mut command = graphcoder_command(&fixture);
-        let plugins = task_plugins(&fixture);
-        command
-            .arg("--home-file")
-            .arg(&plugins)
-            .arg("--settings-root")
-            .arg(&fixture.settings)
-            .arg("--catalog")
-            .arg(&model.catalog);
-        if matches!(choice, "argument" | "explicit_compaction" | "explicit_both") {
-            command.arg("--no-compaction");
-        }
-        if matches!(choice, "explicit_model" | "explicit_both") {
-            // Launch requirements name the effective model: role policy wins
-            // over the requested fallback even when that fallback is explicit.
-            let selected = acyclic_harness::templates::root()
-                .unwrap()
-                .model
-                .unwrap_or_else(|| "fixture/tiny".into());
-            command.arg("--model").arg(selected);
-        }
+        )?;
+        let plugins = task_plugins(&fixture)?;
+        // Launch requirements name the effective model: role policy wins
+        // over the requested fallback even when that fallback is explicit.
+        let selected = acyclic_harness::templates::root()?
+            .model
+            .unwrap_or_else(|| "fixture/tiny".into());
+        let configured = || {
+            let mut command = graphcoder_command(&fixture);
+            command
+                .arg("--home-file")
+                .arg(&plugins)
+                .arg("--settings-root")
+                .arg(&fixture.settings)
+                .arg("--catalog")
+                .arg(&model.catalog);
+            if matches!(choice, "argument" | "explicit_compaction" | "explicit_both") {
+                command.arg("--no-compaction");
+            }
+            if matches!(choice, "explicit_model" | "explicit_both") {
+                command.arg("--model").arg(&selected);
+            }
+            command
+        };
         let valid = matches!(
             choice,
             "automatic"
@@ -414,137 +449,160 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
                 | "explicit_compaction"
                 | "explicit_both"
         );
-        let (service, mut command) = if valid {
-            (
-                Some(start_service(command).await),
-                graphcoder_command(&fixture),
-            )
+        let service = if valid {
+            Some(start_service(configured()).await?)
         } else {
-            (None, command)
+            None
         };
-        command.args(["--operation", "settings-policy", "-p", "hello"]);
-        if session_client {
-            command.arg("--new-session");
-        }
-        let output = capture(command, "").await;
-        if valid {
-            assert!(
-                output.status.success(),
-                "{choice} session={session_client}: {output:?}"
-            );
-            assert_eq!(succeeded(&output), "fixture answer\n");
-            let selected = acyclic_harness::templates::root()
-                .unwrap()
-                .model
-                .unwrap_or_else(|| "fixture/tiny".into());
-            let wire_model = selected.split_once('/').unwrap().1;
-            assert_eq!(
-                model.requests.lock().unwrap()[0]["model"],
-                wire_model,
-                "{choice} session={session_client}: effective model was ignored"
-            );
-            // Query the original owner policy through ordinary execution admission.
-            // Exact replay never generates, but an incorrect automatic/disabled
-            // choice changes whether --no-compaction can attach to this owner.
-            let mut admission = graphcoder_command(&fixture);
-            admission.args([
-                "--operation",
-                "settings-policy",
-                "--model",
-                &selected,
-                "--no-compaction",
-                "-p",
-                "hello",
-            ]);
-            let checked = capture(admission, "").await;
-            assert_eq!(
-                checked.status.success(),
-                choice != "automatic",
-                "{choice} session={session_client}: compaction admission {checked:?}"
-            );
-            if choice == "automatic" {
-                assert!(String::from_utf8_lossy(&checked.stderr).contains("--no-compaction"));
+        for (session_client, operation) in [
+            (false, "settings-policy"),
+            (true, "settings-policy-new-session"),
+        ] {
+            let before = model.generated();
+            let mut command = if service.is_some() {
+                graphcoder_command(&fixture)
+            } else {
+                configured()
+            };
+            command.args(["--operation", operation, "-p", "hello"]);
+            if session_client {
+                command.arg("--new-session");
             }
-            assert_eq!(
-                model.generated(),
-                1,
-                "policy preflight or replay generated again"
-            );
-        } else {
-            assert!(
-                !output.status.success(),
-                "{choice} session={session_client}: {output:?}"
-            );
-            assert!(
-                String::from_utf8_lossy(&output.stderr).contains(match choice {
+            let output = capture(command, "").await?;
+            if valid {
+                assert!(
+                    output.status.success(),
+                    "{choice} session={session_client}: {output:?}"
+                );
+                assert_eq!(succeeded(&output), "fixture answer\n");
+                let (_, wire_model) = selected.split_once('/').ok_or("missing provider")?;
+                {
+                    let requests = model
+                        .requests
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    assert_eq!(
+                        requests
+                            .get(before)
+                            .and_then(|request| request.get("model")),
+                        Some(&json!(wire_model)),
+                        "{choice} session={session_client}: effective model was ignored"
+                    );
+                }
+                // Query the original owner policy through ordinary execution
+                // admission. A replay must keep the original model request.
+                let mut admission = graphcoder_command(&fixture);
+                admission.args([
+                    "--operation",
+                    operation,
+                    "--model",
+                    &selected,
+                    "--no-compaction",
+                    "-p",
+                    "hello",
+                ]);
+                let checked = capture(admission, "").await?;
+                assert_eq!(
+                    checked.status.success(),
+                    choice != "automatic",
+                    "{choice} session={session_client}: compaction admission {checked:?}"
+                );
+                if choice == "automatic" {
+                    assert!(String::from_utf8_lossy(&checked.stderr).contains("--no-compaction"));
+                }
+                assert_eq!(
+                    model.generated(),
+                    before + 1,
+                    "policy preflight or replay generated again"
+                );
+            } else {
+                assert!(
+                    !output.status.success(),
+                    "{choice} session={session_client}: {output:?}"
+                );
+                let diagnostic = match choice {
                     "invalid_file" => "compaction",
                     "invalid_model" => "model must be a nonempty string",
-                    _ => unreachable!("only invalid selected defaults refuse startup"),
-                }),
-                "{output:?}"
-            );
-            assert_eq!(
-                model.generated(),
-                0,
-                "counted negative control never generates"
-            );
+                    _ => return Err("unrecognized invalid settings case".into()),
+                };
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+                    "{output:?}"
+                );
+                assert_eq!(
+                    model.generated(),
+                    0,
+                    "counted negative control never generates"
+                );
+            }
         }
         drop(service);
-        model.close().await;
+        model.close().await?;
     }
+    Ok(())
 }
 
 impl Model {
     fn generated(&self) -> usize {
-        self.requests.lock().unwrap().len()
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
-    async fn close(self) {
-        self.stop.send(()).unwrap();
-        self.server.await.unwrap();
+    async fn close(self) -> TestResult {
+        let stopping = self.stop.send(());
+        self.server.await??;
+        stopping.map_err(|()| "fixture model already stopped".into())
     }
 }
 
 struct Fixture {
     custody: acyclic_native_runtime::signing_key::FixtureCustody,
     _directory: tempfile::TempDir,
+    keychain_service: String,
     workspace: PathBuf,
     settings: PathBuf,
     home: PathBuf,
 }
 
-fn fixture() -> Fixture {
-    let directory = tempfile::tempdir().unwrap();
+fn fixture() -> TestResult<Fixture> {
+    let directory = tempfile::tempdir()?;
+    let name = directory
+        .path()
+        .file_name()
+        .ok_or("fixture directory has no name")?;
+    let keychain_service = format!("e2e-cli-{}", name.to_string_lossy());
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
     let home = directory.path().join("read-only-home");
-    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&home)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500))?;
     }
-    std::fs::create_dir_all(&workspace).unwrap();
-    std::fs::create_dir_all(settings.join(".codex")).unwrap();
-    Fixture {
-        custody: acyclic_native_runtime::signing_key::FixtureCustody::new().unwrap(),
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::create_dir_all(settings.join(".codex"))?;
+    Ok(Fixture {
+        custody: acyclic_native_runtime::signing_key::FixtureCustody::new()?,
         _directory: directory,
+        keychain_service,
         workspace,
         settings,
         home,
-    }
+    })
 }
 
 // These finite scripts prove original task execution, not settlement feedback.
 // Use the existing Home plugin setting, as local open_scripted fixtures do.
-fn task_plugins(fixture: &Fixture) -> String {
+fn task_plugins(fixture: &Fixture) -> std::io::Result<String> {
     let source = fixture._directory.path().join("task-plugins.ts");
     std::fs::write(
         &source,
         "export default base => ({ ...base, feedback: { ...base.feedback, enabled: false } });",
-    )
-    .unwrap();
-    format!("plugins.ts={}", source.display())
+    )?;
+    Ok(format!("plugins.ts={}", source.display()))
 }
 
 fn graphcoder_command(fixture: &Fixture) -> Command {
@@ -571,22 +629,16 @@ fn cli_command(fixture: &Fixture, executable: PathBuf) -> Command {
         .current_dir(&fixture.workspace)
         .arg("--workspace")
         .arg(&fixture.workspace)
-        .env(
-            "ACYCLIC_KEYCHAIN_SERVICE",
-            format!(
-                "e2e-cli-{}",
-                fixture
-                    ._directory
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-            ),
-        );
+        .env("ACYCLIC_KEYCHAIN_SERVICE", &fixture.keychain_service);
     command
 }
 
-async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
+async fn graphcoder(
+    fixture: &Fixture,
+    catalog: &Path,
+    args: Vec<&str>,
+    stdin: &str,
+) -> TestResult<Output> {
     let mut command = graphcoder_command(fixture);
     command
         .arg("--settings-root")
@@ -600,7 +652,7 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
 
 /// Runs the binary through the shared native capture, exit and physical-close
 /// owner, retaining the original outer deadline without readiness polling.
-async fn capture(mut command: Command, stdin: &str) -> Output {
+async fn capture(mut command: Command, stdin: &str) -> TestResult<Output> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -609,7 +661,7 @@ async fn capture(mut command: Command, stdin: &str) -> Output {
 }
 
 /// Own the shipping service across separately captured client process trees.
-async fn start_service(mut command: Command) -> acyclic_native_runtime::ProcessTree {
+async fn start_service(mut command: Command) -> TestResult<acyclic_native_runtime::ProcessTree> {
     use acyclic_native_runtime::{
         ProcessPipeReader, ProcessTree, ServiceReadiness, ServiceStartOutcome,
     };
@@ -621,21 +673,21 @@ async fn start_service(mut command: Command) -> acyclic_native_runtime::ProcessT
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut service = ProcessTree::spawn(&mut command).unwrap();
+    let mut service = ProcessTree::spawn(&mut command)?;
     drop(command);
-    let mut readiness = ProcessPipeReader::take_stdout(&mut service).unwrap();
+    let mut readiness = ProcessPipeReader::take_stdout(&mut service)?;
     assert_eq!(
-        ServiceReadiness::wait_from(&mut readiness).await.unwrap(),
+        ServiceReadiness::wait_from(&mut readiness).await?,
         ServiceStartOutcome::Ready
     );
-    service
+    Ok(service)
 }
 
-async fn capture_configured(mut command: Command, stdin: Option<&str>) -> Output {
+async fn capture_configured(mut command: Command, stdin: Option<&str>) -> TestResult<Output> {
     let stdin = stdin.map(str::to_owned);
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> TestResult<Output> {
         use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTree};
-        let mut child = ProcessTree::spawn(&mut command).expect("spawn GraphCoder process tree");
+        let mut child = ProcessTree::spawn(&mut command)?;
         drop(command);
         child
             .wait_with_output(
@@ -650,18 +702,18 @@ async fn capture_configured(mut command: Command, stdin: Option<&str>) -> Output
                 None,
                 None,
             )
-            .unwrap_or_else(|failure| {
-                panic!(
+            .map_err(|failure| {
+                format!(
                     "GraphCoder capture failed: {}; physical_tree_retired={}; stdout={}; stderr={}",
                     failure.error,
                     failure.cleanup_completed,
                     String::from_utf8_lossy(&failure.stdout),
                     String::from_utf8_lossy(&failure.stderr)
                 )
+                .into()
             })
     })
-    .await
-    .unwrap()
+    .await?
 }
 
 fn succeeded(output: &Output) -> String {
@@ -675,20 +727,20 @@ fn succeeded(output: &Output) -> String {
     stdout
 }
 
-fn verify_execution_payloads(lines: &[Value]) {
+fn verify_execution_payloads(lines: &[Value]) -> TestResult {
     // Reconstruct only captured binary output, never a hand-authored
     // provider fixture. Every referenced field must have exact bytes.
     let mut payloads = std::collections::BTreeMap::new();
     for line in lines.iter().filter(|line| line["kind"] == "execution") {
         let record: acyclic_harness::executor::ExecutionRecord =
-            serde_json::from_value(line["record"].clone()).unwrap();
+            serde_json::from_value(line["record"].clone())?;
         for (field, reference) in
             acyclic_harness::executor::ExecutionPayloadField::fields(&record.event)
         {
             let key = (
                 record.operation_id.to_string(),
                 record.sequence,
-                serde_json::to_string(&field).unwrap(),
+                serde_json::to_string(&field)?,
             );
             assert!(
                 payloads
@@ -701,45 +753,47 @@ fn verify_execution_payloads(lines: &[Value]) {
         .iter()
         .filter(|line| line["kind"] == "execution_payload")
     {
-        let turn: acyclic_harness::OperationId =
-            serde_json::from_value(line["turn"].clone()).unwrap();
+        let turn: acyclic_harness::OperationId = serde_json::from_value(line["turn"].clone())?;
         let key = (
             turn.to_string(),
-            line["sequence"].as_u64().unwrap(),
-            serde_json::to_string(&line["field"]).unwrap(),
+            line["sequence"].as_u64().ok_or("chunk sequence missing")?,
+            serde_json::to_string(&line["field"])?,
         );
         let (reference, body) = payloads
             .get_mut(&key)
-            .expect("chunk has no original observation");
+            .ok_or("chunk has no original observation")?;
         let original: acyclic_harness::conversation::FileRef =
-            serde_json::from_value(line["file"].clone()).unwrap();
+            serde_json::from_value(line["file"].clone())?;
         assert_eq!(&original, reference);
-        assert_eq!(line["offset"].as_u64().unwrap(), body.len() as u64);
+        assert_eq!(line["offset"].as_u64(), Some(body.len() as u64));
         let (bytes, _) = acyclic_harness::client::AgentReply::Content {
-            data: line["data"].as_str().unwrap().into(),
+            data: line["data"].as_str().ok_or("chunk data missing")?.into(),
             length: reference.descriptor().byte_length(),
         }
-        .content()
-        .unwrap();
+        .content()?;
         assert!(bytes.len() as u64 <= acyclic_harness::client::MAX_READ_BYTES);
         assert!(!bytes.is_empty() || reference.descriptor().byte_length() == 0);
         body.extend_from_slice(&bytes);
     }
     assert!(!payloads.is_empty());
     for (_, (reference, bytes)) in payloads {
-        reference.descriptor().verify(&bytes, &mut None).unwrap();
+        reference.descriptor().verify(&bytes, &mut None)?;
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn forced_continuation_launches_independent_runs_from_a_trace_cut() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn forced_continuation_launches_independent_runs_from_a_trace_cut() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
     let trace = succeeded(
         &graphcoder(
             &fixture,
             &model.catalog,
             vec![
+                "--home-file",
+                &plugins,
                 "--output-format",
                 "jsonl",
                 "--operation",
@@ -749,8 +803,31 @@ async fn forced_continuation_launches_independent_runs_from_a_trace_cut() {
             ],
             "",
         )
-        .await,
+        .await?,
     );
+    assert_eq!(
+        model.generated(),
+        1,
+        "the original trace dispatches one request"
+    );
+    let continuation = "Resume exactly at the selected history cut";
+    // The parent can sample while consuming a child's completion. Count
+    // requests carrying the continuation's own user input.
+    let sampled_continuations = || {
+        model
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|request| {
+                request["input"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["role"] == "user" && item["content"].to_string().contains(continuation)
+                    })
+                })
+            })
+            .count()
+    };
     let cut = trace
         .lines()
         .find_map(|line| {
@@ -772,6 +849,8 @@ async fn forced_continuation_launches_independent_runs_from_a_trace_cut() {
             &fixture,
             &model.catalog,
             vec![
+                "--home-file",
+                &plugins,
                 "--fork-from",
                 &cut,
                 "--override",
@@ -779,46 +858,49 @@ async fn forced_continuation_launches_independent_runs_from_a_trace_cut() {
                 "--operation",
                 operation,
                 "exec",
-                "continue",
+                continuation,
             ],
             "",
         )
-        .await;
+        .await?;
         assert_eq!(succeeded(&output), "forced answer\n");
+        assert_eq!(
+            sampled_continuations(),
+            0,
+            "forced action or replay sampled at {operation}"
+        );
     }
-    assert_eq!(
-        model.generated(),
-        1,
-        "forced actions and operation replay never sample"
-    );
     let control = graphcoder(
         &fixture,
         &model.catalog,
         vec![
+            "--home-file",
+            &plugins,
             "--fork-from",
             &cut,
             "--operation",
             "control",
             "exec",
-            "continue",
+            continuation,
         ],
         "",
     )
-    .await;
+    .await?;
     assert_eq!(succeeded(&control), "fixture answer\n");
-    assert_eq!(model.generated(), 2);
-    model.close().await;
+    assert_eq!(sampled_continuations(), 1);
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
-    let fixture = fixture();
+async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() -> TestResult {
+    let fixture = fixture()?;
     // The actual CLI processes share only the parent's in-memory fixture store;
     // they cannot use HOME for a credential or transaction-lock fallback.
     #[cfg(unix)]
     assert!(std::fs::write(fixture.home.join("must-not-write"), b"refused").is_err());
-    let model = model(fixture._directory.path()).await;
-    let plugins = task_plugins(&fixture);
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
     let mut owner = graphcoder_command(&fixture);
     owner
         .arg("--catalog")
@@ -828,7 +910,7 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         .arg("--home-file")
         .arg(&plugins)
         .args(["--model", "fixture/tiny"]);
-    let _owner = start_service(owner).await;
+    let _owner = start_service(owner).await?;
     let run = |operation: &'static str| {
         let mut command = graphcoder_command(&fixture);
         command.arg("--catalog").arg(&model.catalog).args([
@@ -841,14 +923,14 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         ]);
         capture(command, "")
     };
-    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first").await?), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
-    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first").await?), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // Another operation is a new message to the same root agent.
-    assert_eq!(succeeded(&run("second").await), "fixture answer\n");
+    assert_eq!(succeeded(&run("second").await?), "fixture answer\n");
     assert_eq!(model.generated(), 2);
     // Invalid user settings cannot become an implicit model or tool source in
     // default-config mode. Ordinary MCP loading still rejects these same bytes.
@@ -856,12 +938,12 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     // A fresh explicit owner must use its selected file custody on the first
     // process and reopen that same custody on replay, ignoring the configured
     // fixture backend as well as the malformed ambient settings.
-    let explicit = self::fixture();
+    let explicit = self::fixture()?;
     std::fs::write(explicit.settings.join(".codex/config.toml"), "[invalid\n").unwrap();
     let usage = explicit._directory.path().join("usage.jsonl");
     let transcripts = explicit._directory.path().join("transcripts");
     let mut previous_transcript = None;
-    let explicit_plugins = task_plugins(&explicit);
+    let explicit_plugins = task_plugins(&explicit)?;
     let explicit_owner_command = || {
         let mut owner = graphcoder_command(&explicit);
         owner
@@ -874,7 +956,7 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             .arg(&explicit_plugins);
         owner
     };
-    let explicit_owner = start_service(explicit_owner_command()).await;
+    let explicit_owner = start_service(explicit_owner_command()).await?;
     for _ in 0..2 {
         let mut command = graphcoder_command(&explicit);
         command
@@ -885,7 +967,7 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             .arg("--transcripts")
             .arg(&transcripts)
             .args(["--operation", "explicit-defaults", "-p", "hello"]);
-        assert_eq!(succeeded(&capture(command, "").await), "fixture answer\n");
+        assert_eq!(succeeded(&capture(command, "").await?), "fixture answer\n");
         assert_eq!(model.generated(), 3);
         let files = std::fs::read_dir(&transcripts)
             .unwrap()
@@ -942,7 +1024,7 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         assert!(row["latency_ns"].as_u64().is_some());
     }
     drop(explicit_owner);
-    let _reopened_owner = start_service(explicit_owner_command()).await;
+    let _reopened_owner = start_service(explicit_owner_command()).await?;
     let mut command = graphcoder_command(&explicit);
     command.arg("--catalog").arg(&model.catalog).args([
         "--model",
@@ -954,19 +1036,20 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         "-p",
         "hello",
     ]);
-    let streamed = capture(command, "").await;
+    let streamed = capture(command, "").await?;
     let row: Value = serde_json::from_str(succeeded(&streamed).trim()).unwrap();
     assert_eq!(row["usage"]["completed"], true);
     assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
     assert_eq!(model.generated(), 3);
     drop(_reopened_owner);
     drop(_owner);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn failed_prompt_and_replay_report_the_original_cause() {
-    let fixture = fixture();
+async fn failed_prompt_and_replay_report_the_original_cause() -> TestResult {
+    let fixture = fixture()?;
     let model = model_response(
         fixture._directory.path(),
         axum::http::StatusCode::OK,
@@ -975,7 +1058,7 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":403}}}\n\n",
         ),
     )
-    .await;
+    .await?;
     // Native dispatch retains the admitted diagnostic, without the host's
     // typed Display prefix. Prompt output must preserve those original bytes.
     let cause = "model HTTP status 403";
@@ -986,24 +1069,25 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
             vec!["--operation", "failed-prompt", "-p", "hello"],
             "",
         )
-        .await;
+        .await?;
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert_eq!(output.stdout, b"fixture partial\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(stderr.trim_end(), format!("acyclic: {cause}"));
         assert_eq!(model.generated(), 1, "replay dispatched model work");
     }
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 /// The shipping readiness path checks prerequisites without changing any
 /// configured state, checkout metadata or signing custody, even on refusal.
 #[tokio::test]
 #[cfg(unix)]
-async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
+async fn doctor_selects_report_mode_from_each_original_terminal_stream() -> TestResult {
     use std::{fs::File, io::Read as _};
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     for (input_tty, output_tty, prompt) in [
         (true, false, false),
         (false, true, false),
@@ -1049,7 +1133,7 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
                 String::from_utf8(bytes).unwrap()
             })
         });
-        let result = capture_configured(command, (!input_tty).then_some("")).await;
+        let result = capture_configured(command, (!input_tty).then_some("")).await?;
         // An input-only terminal keeps its live controller until capture ends.
         drop(controller);
         let stdout = match terminal_output {
@@ -1090,7 +1174,8 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
         }
     }
     assert_eq!(model.generated(), 0);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1099,45 +1184,46 @@ enum SnapshotEntry {
     Link(PathBuf),
     Node(std::fs::FileType),
 }
-fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, SnapshotEntry> {
+fn snapshot(root: &Path) -> TestResult<std::collections::BTreeMap<PathBuf, SnapshotEntry>> {
     fn visit(
         root: &Path,
         path: &Path,
         result: &mut std::collections::BTreeMap<PathBuf, SnapshotEntry>,
-    ) {
-        for entry in std::fs::read_dir(path).unwrap() {
-            let entry = entry.unwrap();
+    ) -> TestResult {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
             let path = entry.path();
-            let kind = entry.file_type().unwrap();
+            let kind = entry.file_type()?;
             let directory = kind.is_dir();
             result.insert(
-                path.strip_prefix(root).unwrap().to_owned(),
+                path.strip_prefix(root)?.to_owned(),
                 if kind.is_file() {
-                    SnapshotEntry::File(std::fs::read(&path).unwrap())
+                    SnapshotEntry::File(std::fs::read(&path)?)
                 } else if kind.is_symlink() {
-                    SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
+                    SnapshotEntry::Link(std::fs::read_link(&path)?)
                 } else {
                     SnapshotEntry::Node(kind)
                 },
             );
             if directory {
-                visit(root, &path, result);
+                visit(root, &path, result)?;
             }
         }
+        Ok(())
     }
     let mut result = std::collections::BTreeMap::new();
-    visit(root, root, &mut result);
-    result
+    visit(root, root, &mut result)?;
+    Ok(result)
 }
 
 #[tokio::test]
-async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
-    let plugins = task_plugins(&fixture);
-    let original = snapshot(fixture._directory.path());
+async fn doctor_lists_the_startup_refusals_of_the_same_flags() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
+    let original = snapshot(fixture._directory.path())?;
     // Installation pipes both streams and has no prompt or terminal.
-    let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await?;
     let report: serde_json::Value = serde_json::from_str(&succeeded(&ready)).unwrap();
     assert_eq!(report["version"], 1);
     assert_eq!(report["kind"], "doctor");
@@ -1159,10 +1245,10 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         ],
         "",
     )
-    .await;
+    .await?;
     assert!(succeeded(&flagged).contains("provider network: reachable"));
     assert_eq!(
-        snapshot(fixture._directory.path()),
+        snapshot(fixture._directory.path())?,
         original,
         "doctor changed fresh state or signing authority"
     );
@@ -1173,13 +1259,13 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         vec!["--home-file", &plugins, "-p", "hello"],
         "",
     )
-    .await;
+    .await?;
     succeeded(&ran);
-    let existing = snapshot(fixture._directory.path());
-    let reopened = graphcoder(&fixture, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
+    let existing = snapshot(fixture._directory.path())?;
+    let reopened = graphcoder(&fixture, &model.catalog, vec!["-p", "hello", "doctor"], "").await?;
     succeeded(&reopened);
     assert_eq!(
-        snapshot(fixture._directory.path()),
+        snapshot(fixture._directory.path())?,
         existing,
         "doctor changed existing state or signing authority"
     );
@@ -1191,7 +1277,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let mut remote = graphcoder_command(&fixture);
     remote.args(["--endpoint", "http://127.0.0.1:1", "doctor"]);
     for command in [host, remote] {
-        let refused = capture(command, "").await;
+        let refused = capture(command, "").await?;
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert_eq!(refused.status.code(), Some(1), "{stderr}");
         assert!(stderr.contains("doctor checks local startup"), "{stderr}");
@@ -1201,12 +1287,12 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let nested = Fixture {
         workspace: fixture.workspace.clone(),
         settings: fixture.workspace.join("state"),
-        ..self::fixture()
+        ..self::fixture()?
     };
     std::fs::create_dir_all(nested.settings.join(".codex")).unwrap();
-    let nested_original = snapshot(nested._directory.path());
-    let checkout_original = snapshot(&fixture.workspace);
-    let refused = graphcoder(&nested, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
+    let nested_original = snapshot(nested._directory.path())?;
+    let checkout_original = snapshot(&fixture.workspace)?;
+    let refused = graphcoder(&nested, &model.catalog, vec!["-p", "hello", "doctor"], "").await?;
     let stdout = String::from_utf8_lossy(&refused.stdout);
     assert_eq!(refused.status.code(), Some(1), "{stdout}");
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -1219,23 +1305,24 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "{stdout}"
     );
     assert_eq!(
-        snapshot(nested._directory.path()),
+        snapshot(nested._directory.path())?,
         nested_original,
         "refused doctor changed state"
     );
     assert_eq!(
-        snapshot(&fixture.workspace),
+        snapshot(&fixture.workspace)?,
         checkout_original,
         "refused doctor changed checkout"
     );
     assert_eq!(model.generated(), 1);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     // Each aggregated refusal retains the cause its original producer reported.
     let malformed = fixture._directory.path().join("invalid.json");
     std::fs::write(&malformed, b"{").unwrap();
@@ -1271,8 +1358,8 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
             catalog_error,
         ),
     ] {
-        let before = snapshot(fixture._directory.path());
-        let refused = graphcoder(&fixture, catalog, arguments, "").await;
+        let before = snapshot(fixture._directory.path())?;
+        let refused = graphcoder(&fixture, catalog, arguments, "").await?;
         assert!(!refused.status.success());
         let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
         assert!(
@@ -1296,7 +1383,7 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
             "unrelated producer failure became model repair advice: {report}"
         );
         assert_eq!(
-            snapshot(fixture._directory.path()),
+            snapshot(fixture._directory.path())?,
             before,
             "refused doctor changed state"
         );
@@ -1306,7 +1393,7 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
         .needs_credentials("fixture/undefined")
         .unwrap_err()
         .to_string();
-    let before = snapshot(fixture._directory.path());
+    let before = snapshot(fixture._directory.path())?;
     let mut unknown = graphcoder_command(&fixture);
     unknown
         .arg("--settings-root")
@@ -1314,7 +1401,7 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
         .arg("--catalog")
         .arg(&model.catalog)
         .args(["--model", "fixture/undefined", "doctor"]);
-    let refused = capture(unknown, "").await;
+    let refused = capture(unknown, "").await?;
     assert!(!refused.status.success());
     let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert!(
@@ -1328,7 +1415,7 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
         "missing selected model cause {expected}: {report}"
     );
     assert_eq!(
-        snapshot(fixture._directory.path()),
+        snapshot(fixture._directory.path())?,
         before,
         "refused doctor changed state"
     );
@@ -1345,7 +1432,7 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
     .configured_model()
     .unwrap_err()
     .to_string();
-    let before = snapshot(fixture._directory.path());
+    let before = snapshot(fixture._directory.path())?;
     let mut configured = graphcoder_command(&fixture);
     configured
         .arg("--settings-root")
@@ -1353,7 +1440,7 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
         .arg("--catalog")
         .arg(&model.catalog)
         .arg("doctor");
-    let refused = capture(configured, "").await;
+    let refused = capture(configured, "").await?;
     assert!(!refused.status.success());
     let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert!(
@@ -1367,18 +1454,19 @@ async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
         "missing model settings cause {expected}: {report}"
     );
     assert_eq!(
-        snapshot(fixture._directory.path()),
+        snapshot(fixture._directory.path())?,
         before,
         "refused doctor changed state"
     );
     assert_eq!(model.generated(), 0);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     for versioned in [false, true] {
         let mut args = vec![
             "--operation",
@@ -1396,7 +1484,7 @@ async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
             ("", false),
             ("{\"prompt\":\"/gone\",\"id\":\"refused\"}\n", true),
         ] {
-            let output = graphcoder(&fixture, &model.catalog, args.clone(), input).await;
+            let output = graphcoder(&fixture, &model.catalog, args.clone(), input).await?;
             let records = String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -1426,13 +1514,76 @@ async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
             assert_eq!(model.generated(), 0, "refusal dispatched model work");
         }
     }
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn jsonl_replay_preserves_two_separately_settled_turns() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
+    let input = "{\"prompt\":\"first ordered prompt\",\"id\":\"first\"}\n{\"prompt\":\"second ordered prompt\",\"id\":\"second\"}\n";
+    let args = || {
+        vec![
+            "--operation",
+            "ordered-jsonl",
+            "--output-format",
+            "jsonl",
+            "--home-file",
+            plugins.as_str(),
+            "exec",
+        ]
+    };
+    // Exiting one invocation joins its settlement before the second input is
+    // admitted. Both invocations select the same conversation and operation.
+    for prompt in input.split_inclusive('\n') {
+        let output = graphcoder(&fixture, &model.catalog, args(), prompt).await?;
+        let events = succeeded(&output)
+            .lines()
+            .map(serde_json::from_str::<Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(events.iter().any(|event| event["kind"] == "result"));
+        assert!(
+            events
+                .last()
+                .is_some_and(|event| event["kind"] == "completed")
+        );
+    }
+    assert_eq!(model.generated(), 2);
+    let output = graphcoder(&fixture, &model.catalog, args(), input).await?;
+    let events = succeeded(&output)
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let turns = events.iter().filter(|event| {
+        event["kind"] == "record"
+            && event["resource"]
+                .as_str()
+                .is_some_and(|resource| resource.ends_with("/conversation"))
+    });
+    assert_eq!(turns.count(), 2);
+    let mut replies = events
+        .iter()
+        .filter(|event| event["kind"] == "result")
+        .map(|event| (event["id"].as_str(), event["text"].as_str()))
+        .collect::<Vec<_>>();
+    replies.sort_unstable();
+    assert_eq!(
+        replies,
+        [
+            (Some("first"), Some("fixture answer")),
+            (Some("second"), Some("fixture answer"))
+        ]
+    );
+    assert_eq!(model.generated(), 2, "replay dispatched new model work");
+    model.close().await
+}
+
+#[tokio::test]
+async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     for (args, diagnostic) in [
         (vec!["exec"], "recovery: acyclic"),
         (vec!["--output-format", "jsonl"], "no task or JSONL input"),
@@ -1468,7 +1619,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             "stdout is reserved for events",
         ),
     ] {
-        let refused = graphcoder(&fixture, &model.catalog, args, "").await;
+        let refused = graphcoder(&fixture, &model.catalog, args, "").await?;
         assert!(!refused.status.success());
         assert!(
             String::from_utf8_lossy(&refused.stderr).contains(diagnostic),
@@ -1495,7 +1646,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             ],
             input,
         )
-        .await;
+        .await?;
         assert!(!refused.status.success());
         let records = String::from_utf8_lossy(&refused.stdout)
             .lines()
@@ -1524,7 +1675,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         ],
         "",
     )
-    .await;
+    .await?;
     assert!(!refused.status.success());
     let failure: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(failure["kind"], "error");
@@ -1537,13 +1688,17 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     );
     assert_eq!(model.generated(), 0, "invalid input dispatched model work");
     let input = "{\"prompt\":\"hello\"}\n{\"prompt\":\"again\",\"id\":\"second\"}\n";
-    let output = graphcoder(
-        &fixture,
-        &model.catalog,
+    let plugins = task_plugins(&fixture)?;
+    let run = async |args: Vec<&str>, stdin: &str| {
+        let mut configured = vec!["--home-file", plugins.as_str()];
+        configured.extend(args);
+        graphcoder(&fixture, &model.catalog, configured, stdin).await
+    };
+    let output = run(
         vec!["--operation", "jsonl", "--output-format", "jsonl", "exec"],
         input,
     )
-    .await;
+    .await?;
     let lines = succeeded(&output)
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -1555,6 +1710,12 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         .collect::<Vec<_>>();
     ids.sort_by_key(Value::to_string);
     assert_eq!(ids, [json!("jsonl-1"), json!("second")]);
+    let inboxes = lines
+        .iter()
+        .filter(|line| line["kind"] == "result")
+        .filter_map(|line| line["inbox"].as_u64())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(inboxes.len(), ids.len());
     assert!(
         lines
             .iter()
@@ -1562,32 +1723,51 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             .all(|line| line["text"] == "fixture answer")
     );
     assert_eq!(lines.last().unwrap()["kind"], "completed");
-    assert!(
-        lines.iter().any(|line| line["kind"] == "execution"
-            && line["record"]["event"]["kind"] == "model_started")
-    );
+    let model_started = |line: &Value| {
+        line["kind"] == "execution" && line["record"]["event"]["kind"] == "model_started"
+    };
+    let carries_usage =
+        |line: &Value| line["kind"] == "execution" && !line["record"]["event"]["usage"].is_null();
+    let original_starts = lines.iter().filter(|line| model_started(line)).count();
+    let original_usage = lines.iter().filter(|line| carries_usage(line)).count();
+    assert!(original_starts > 0);
+    assert!(original_usage > 0);
+    let original_turns = lines
+        .iter()
+        .filter(|line| {
+            line["kind"] == "record"
+                && line["resource"]
+                    .as_str()
+                    .is_some_and(|resource| resource.ends_with("/conversation"))
+        })
+        .count();
+    assert!((1..=ids.len()).contains(&original_turns));
+    let original_response_operations = lines
+        .iter()
+        .filter(|line| model_started(line))
+        .filter_map(|line| line["record"]["operation_id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     let requests = model.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2);
-    // The later turn's model context carries the earlier settled turn.
+    let original_calls = requests.len();
+    assert!((original_turns..=ids.len()).contains(&original_calls));
+    // The later prompt can steer the active turn or start its own turn. The
+    // model sees it in the conversation that carries the first prompt.
     let later = requests
         .iter()
         .find(|body| body.to_string().contains("again"))
         .unwrap();
     assert!(later.to_string().contains("hello"), "{later}");
-    let replayed = graphcoder(
-        &fixture,
-        &model.catalog,
-        vec!["--operation", "jsonl", "exec"],
-        input,
-    )
-    .await;
+    let replayed = run(vec!["--operation", "jsonl", "exec"], input).await?;
     assert_eq!(succeeded(&replayed).lines().count(), 2);
-    assert_eq!(model.generated(), 2, "replay dispatched new model work");
+    assert_eq!(
+        model.generated(),
+        original_calls,
+        "replay dispatched new model work"
+    );
     let cursor = fixture._directory.path().join("events.cursor.json");
     for resumed in [false, true] {
-        let exported = graphcoder(
-            &fixture,
-            &model.catalog,
+        let exported = run(
             vec![
                 "--operation",
                 "jsonl",
@@ -1599,7 +1779,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             ],
             input,
         )
-        .await;
+        .await?;
         let lines = succeeded(&exported)
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -1621,7 +1801,11 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
                         .is_some_and(|resource| resource.ends_with("/conversation"))
             })
             .count();
-        assert_eq!(turns, if resumed { 0 } else { 2 });
+        assert_eq!(
+            turns,
+            if resumed { 0 } else { original_turns },
+            "resumed={resumed}, original turns={original_turns}, original operations={original_response_operations}"
+        );
         let execution = lines
             .iter()
             .filter(|line| line["kind"] == "execution")
@@ -1645,36 +1829,28 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
                 *previous = sequence;
             }
             assert_eq!(
-                execution
-                    .iter()
-                    .filter(|line| line["record"]["event"]["kind"] == "model_started")
-                    .count(),
-                2
+                execution.iter().filter(|line| model_started(line)).count(),
+                original_starts
             );
             assert_eq!(
-                execution
-                    .iter()
-                    .filter(|line| !line["record"]["event"]["usage"].is_null())
-                    .count(),
-                2
+                execution.iter().filter(|line| carries_usage(line)).count(),
+                original_usage
             );
-            verify_execution_payloads(&lines);
+            verify_execution_payloads(&lines)?;
         }
         assert!(cursor.exists());
         let checkpoint: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
         assert_eq!(checkpoint["execution"]["position"]["after"], 0);
         assert_eq!(
             model.generated(),
-            2,
+            original_calls,
             "event export dispatched new model work"
         );
     }
     std::fs::write(&schema, b"{\"type\":\"object\"}").unwrap();
     let artifact = fixture._directory.path().join("final-output.json");
     std::fs::write(&artifact, b"previous complete output").unwrap();
-    let refused = graphcoder(
-        &fixture,
-        &model.catalog,
+    let refused = run(
         vec![
             "--operation",
             "jsonl",
@@ -1688,7 +1864,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         ],
         input,
     )
-    .await;
+    .await?;
     assert!(!refused.status.success());
     let failure: Value = serde_json::from_str(
         String::from_utf8_lossy(&refused.stdout)
@@ -1711,7 +1887,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     );
     assert_eq!(
         model.generated(),
-        2,
+        original_calls,
         "schema projection dispatched model work"
     );
     // Mutate only the real export's saved continuation. A refused resume must
@@ -1739,9 +1915,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     for invalid in invalid_execution.chain(invalid_sources) {
         let bytes = serde_json::to_vec(&invalid).unwrap();
         std::fs::write(&cursor, &bytes).unwrap();
-        let refused = graphcoder(
-            &fixture,
-            &model.catalog,
+        let refused = run(
             vec![
                 "--operation",
                 "jsonl",
@@ -1754,7 +1928,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             ],
             "",
         )
-        .await;
+        .await?;
         assert!(!refused.status.success());
         let failure: Value = serde_json::from_str(
             String::from_utf8_lossy(&refused.stdout)
@@ -1766,12 +1940,14 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         assert_eq!(failure["kind"], "error");
         assert_eq!(failure["step"], "execute");
         assert_eq!(std::fs::read(&cursor).unwrap(), bytes);
-        assert_eq!(model.generated(), 2, "refused resume dispatched model work");
+        assert_eq!(
+            model.generated(),
+            original_calls,
+            "refused resume dispatched model work"
+        );
     }
     std::fs::write(&cursor, &checkpoint).unwrap();
-    let admitted = graphcoder(
-        &fixture,
-        &model.catalog,
+    let admitted = run(
         vec![
             "--operation",
             "jsonl",
@@ -1784,7 +1960,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         ],
         "",
     )
-    .await;
+    .await?;
     let lines = succeeded(&admitted)
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -1802,22 +1978,23 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             .count(),
         1
     );
-    verify_execution_payloads(&lines);
+    verify_execution_payloads(&lines)?;
     let saved: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
     assert_eq!(saved["execution"]["position"]["input"], inbox + 1);
     assert_eq!(saved["execution"]["position"]["after"], 0);
     assert_eq!(
         model.generated(),
-        3,
+        original_calls + 1,
         "corrected cursor did not admit its input"
     );
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn selected_agent_queries_use_the_explicit_owner_state() {
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
+async fn selected_agent_queries_use_the_explicit_owner_state() -> TestResult {
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
     let state = fixture._directory.path().join("owner-state");
     let mut command = graphcoder_command(&fixture);
     command
@@ -1834,7 +2011,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .arg(&model.catalog)
         .arg("--host-state-directory")
         .arg(&state);
-    let service = start_service(command).await;
+    let service = start_service(command).await?;
     let directory =
         acyclic_harness::local::service::Directory::for_workspace(&fixture.workspace, Some(&state))
             .unwrap();
@@ -1853,7 +2030,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         process
     };
     for (command, peers) in [("sessions", true), ("history", false)] {
-        let output = capture(query(&agent, command, peers), "").await;
+        let output = capture(query(&agent, command, peers), "").await?;
         let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
         if command == "history" {
             assert_eq!(reply["kind"], "history");
@@ -1881,7 +2058,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         )
         .await
         .unwrap();
-        let output = capture(query(&selected_agent, "sessions", true), "").await;
+        let output = capture(query(&selected_agent, "sessions", true), "").await?;
         let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
         let rows = reply["items"].as_array().unwrap();
         assert_eq!(rows.len(), 1, "{reply}");
@@ -1899,20 +2076,21 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
     assert_eq!(model.generated(), 0, "observation dispatched model work");
     drop((owner, selected, other));
     drop(service);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
+async fn cli_and_embedding_share_the_selected_model_and_tool_contract() -> TestResult {
     use acyclic_harness_providers::{Credentials, Registry};
-    let fixture = fixture();
+    let fixture = fixture()?;
     std::fs::write(
         fixture.workspace.join("AGENTS.md"),
         "Preserve Unicode Ï€ and retain the complete answer in this checkout.\n",
     )
     .unwrap();
-    let model = model(fixture._directory.path()).await;
-    let plugins = task_plugins(&fixture);
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
     let mut command = graphcoder_command(&fixture);
     command.arg("--home-file").arg(&plugins);
     command.arg("--catalog").arg(&model.catalog).args([
@@ -1922,7 +2100,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         "-p",
         "hello",
     ]);
-    assert_eq!(succeeded(&capture(command, "").await), "fixture answer\n");
+    assert_eq!(succeeded(&capture(command, "").await?), "fixture answer\n");
     let configured = |selected: Option<&str>, state: &str| {
         let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
         registry.load_catalog(&model.catalog).unwrap();
@@ -1999,12 +2177,13 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         }
         assert!(!same_contract(&cli, &actual), "{actual}");
     }
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn catalog_errors_exit_with_their_cause_on_stderr() {
-    let fixture = fixture();
+async fn catalog_errors_exit_with_their_cause_on_stderr() -> TestResult {
+    let fixture = fixture()?;
     let catalog = fixture.settings.join("catalog.json");
     for document in [
         None,
@@ -2013,7 +2192,7 @@ async fn catalog_errors_exit_with_their_cause_on_stderr() {
         if let Some(document) = document {
             std::fs::write(&catalog, document).unwrap();
         }
-        let output = graphcoder(&fixture, &catalog, vec!["-p", "hello"], "").await;
+        let output = graphcoder(&fixture, &catalog, vec!["-p", "hello"], "").await?;
         assert!(!output.status.success());
         // The host API returns the typed error; the text CLI renders it once,
         // never the empty stderr that left callers without a cause.
@@ -2025,22 +2204,23 @@ async fn catalog_errors_exit_with_their_cause_on_stderr() {
         );
         assert_eq!(stderr.matches("acyclic: ").count(), 1, "{stderr:?}");
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn execution_recorded_provider_refusal_settles_through_the_shipping_binary() {
+async fn execution_recorded_provider_refusal_settles_through_the_shipping_binary() -> TestResult {
     // Unmodified llama.cpp HTTP 401 captured on 2026-10-26; its request,
     // response headers, digest and provenance remain beside the original body.
     let refusal =
         include_str!("../../rust/crates/conformance/fixtures/inference/llamacpp/auth.body");
     for versioned in [false, true] {
-        let fixture = fixture();
+        let fixture = fixture()?;
         let model = model_response(
             fixture._directory.path(),
             axum::http::StatusCode::UNAUTHORIZED,
             refusal,
         )
-        .await;
+        .await?;
         let mut args = vec![
             "run",
             "--operation",
@@ -2057,7 +2237,7 @@ async fn execution_recorded_provider_refusal_settles_through_the_shipping_binary
             args,
             "{\"id\":\"refused\",\"prompt\":\"hello\"}\n",
         )
-        .await;
+        .await?;
         assert!(!output.status.success(), "{output:?}");
         let records = String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -2082,6 +2262,7 @@ async fn execution_recorded_provider_refusal_settles_through_the_shipping_binary
             0,
             "count refusal must prevent generation"
         );
-        model.close().await;
+        model.close().await?;
     }
+    Ok(())
 }

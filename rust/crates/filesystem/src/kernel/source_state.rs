@@ -228,6 +228,7 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
 
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests {
     use super::*;
     #[test]

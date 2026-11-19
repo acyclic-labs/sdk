@@ -49,14 +49,21 @@ pub async fn publish_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
 }
 
 /// Builds a policy with a deny rule for the requested action and path.
-pub fn denied(action: super::Action, path: &str) -> super::Policy {
-    let mut policy: super::Policy = serde_json::from_slice(super::INITIAL_POLICY).unwrap();
+pub fn denied(action: super::Action, path: &str) -> Result<super::Policy, serde_json::Error> {
+    let mut policy: super::Policy = serde_json::from_slice(super::INITIAL_POLICY)?;
     policy.version += 1;
-    let mut rule = policy.layers[0][0].clone();
+    let rules = policy
+        .layers
+        .first_mut()
+        .ok_or_else(|| serde::de::Error::custom("the initial policy has no rule layer"))?;
+    let mut rule = rules
+        .first()
+        .cloned()
+        .ok_or_else(|| serde::de::Error::custom("the initial policy has no rule to restrict"))?;
     rule.id = "restricted".into();
     rule.effect = super::Effect::Deny;
     rule.actions = [action].into_iter().collect();
     rule.resource.path = path.into();
-    policy.layers[0].push(rule);
-    policy
+    rules.push(rule);
+    Ok(policy)
 }

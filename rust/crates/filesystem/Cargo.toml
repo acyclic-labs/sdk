@@ -15,8 +15,31 @@ categories = ["filesystem", "data-structures"]
 
 # Tests that reach the FUSE mounts run outside Bazel's linux-sandbox.
 [package.metadata.bazel]
+integration-test-shards = 16
 mounts-fuse = true
 share-separate-deps = true
+linked-unit-tests = ["acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress"]
+unit-test-partitions = [
+    "mount",
+    "mount_driver",
+    "mount_lazy",
+    "mount_adapter",
+    "mount_adapter_namespace",
+    "mount_views",
+    "mount_watch",
+    "host",
+    "workspace",
+    "workspace_accounting",
+    "workspace_merge",
+    "workspace_recovery",
+    "materializer",
+    "facade",
+    "facade_checkout",
+    "facade_recovery",
+    "publication",
+    "kernel",
+    "foundation",
+]
 unit-test-only-sources = [
     "src/access/trie/shared/tests.rs",
     "src/async_storage/work/frame/tests.rs",
@@ -69,77 +92,11 @@ unit-test-only-sources = [
     "src/workspace/accounting_tests.rs",
     "src/workspace/read_core/tests.rs",
     "src/workspace/retention_accounting_tests.rs",
+    "src/workspace/test_work.rs",
     "tests/support/**",
 ]
 build-script-inputs = []
 
-test-build-script = ["operation_claim_model"]
-test-without-build-script = [
-    "export_codec",
-    "generation_transfer",
-    "extent_clone",
-    "blob_io",
-    "extent_codec",
-    "metadata_codec",
-    "tree_codec",
-    "directory_tree",
-    "checkout_cancellation",
-    "checkout_content",
-    "checkout_live",
-    "checkout_merge",
-    "checkout_profiles",
-    "checkout_publication",
-    "checkout_read",
-    "checkout_reconciliation",
-    "checkout_tracking",
-    "checkout_transactions",
-    "git_history",
-    "memory_authority",
-    "memory_objects",
-    "mount_routing",
-    "workspace_append",
-    "workspace_context_contracts",
-    "workspace_contracts",
-    "workspace_fork_selection",
-    "workspace_join_history",
-    "workspace_merge",
-    "workspace_rebase",
-    "workspace_restore",
-    "workspace_transactions",
-]
-test-narrow-runfiles = [
-    "export_codec",
-    "generation_transfer",
-    "extent_clone",
-    "blob_io",
-    "extent_codec",
-    "metadata_codec",
-    "tree_codec",
-    "directory_tree",
-    "checkout_cancellation",
-    "checkout_content",
-    "checkout_live",
-    "checkout_merge",
-    "checkout_profiles",
-    "checkout_publication",
-    "checkout_read",
-    "checkout_reconciliation",
-    "checkout_tracking",
-    "checkout_transactions",
-    "git_history",
-    "memory_authority",
-    "memory_objects",
-    "mount_routing",
-    "workspace_append",
-    "workspace_context_contracts",
-    "workspace_contracts",
-    "workspace_fork_selection",
-    "workspace_join_history",
-    "workspace_merge",
-    "workspace_rebase",
-    "workspace_restore",
-    "workspace_transactions",
-]
 
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]
@@ -151,288 +108,23 @@ test-narrow-runfiles = [
     "tests/projfs_metadata_support.rs",
 ]
 
-[package.metadata.bazel.unit-test-dependency-variants]
-acyclic-fs-work = "observations"
-
 [package.metadata.bazel.test-tools.acyclic_fs_test]
-rustc = "//:rustc"
+rustc = "@sdk_compilers//:rustc"
+rustup = "@sdk_compilers//:rustup"
 
-[package.metadata.bazel.test-dependencies]
-export_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
-generation_transfer = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
-blob_io = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "tokio"]
-extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
-extent_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
-metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
-metadata_stamps = ["acyclic_fs_format", "proptest"]
-tree_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
-directory_tree = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
-memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
-memory_objects = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
-mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
-checkout_cancellation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_transactions = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_content = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_live = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_profiles = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_tracking = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_publication = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "futures", "tokio"]
-checkout_read = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-checkout_reconciliation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
-local_facade = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_objects", "acyclic_stream", "tempfile", "tokio"]
-creation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tempfile", "tokio"]
-native_source = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tempfile", "tokio"]
-operation_claim = ["acyclic_fs", "acyclic_stream"]
-operation_claim_model = ["acyclic_stream", "loom"]
-git_history = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "futures", "proptest", "serde_json", "thiserror", "tokio"]
-git_marker_contracts = ["proptest"]
-merge_driver_contracts = ["acyclic_fs_base", "acyclic_fs_format", "acyclic_fs_merge"]
-native_root_identity = ["acyclic_fs_native_contract"]
-native_view_table = []
-local_commit_model = []
-native_checkpoint = ["acyclic_auth", "acyclic_fs_native_contract", "thiserror"]
-wire_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_wire", "prost", "serde_json"]
-wire_error_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_auth", "acyclic_fs_native_contract", "acyclic_fs_wire", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "bytes", "prost_reflect", "tokio", "tonic"]
-wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
-source_lifecycle = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tempfile", "tokio"]
-s3_contracts = ["acyclic_fs", "acyclic_fs_work", "bytes", "tokio"]
-workspace_append = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "futures", "proptest", "tempfile", "tokio"]
-workspace_context_contracts = ["acyclic_fs", "tokio"]
-workspace_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "sha2", "tokio", "unicode_normalization"]
-workspace_creation_race = ["acyclic_fs", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio"]
-workspace_join_history = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
-workspace_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
-workspace_materialization = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "tempfile", "tokio"]
-workspace_simulation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "tempfile", "tokio"]
-workspace_fork_selection = ["acyclic_fs", "acyclic_fs_work", "bytes", "futures", "proptest", "tokio"]
-workspace_rebase = ["acyclic_fs", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "bytes", "tokio"]
-workspace_restore = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_work", "acyclic_stream", "tokio"]
-workspace_transactions = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "thiserror", "tokio"]
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
 
 [[test]]
-name = "native_source"
-path = "tests/measured_native_source.rs"
+name = "acyclic_fs_test_facade_rounds"
+path = "tests/facade_rounds.rs"
 
 [[test]]
-name = "creation"
-path = "tests/measured_creation.rs"
-
-[[test]]
-name = "operation_claim"
-path = "tests/operation_claim.rs"
-
-[[test]]
-name = "browser_commit"
-path = "tests/browser_commit.rs"
-required-features = ["browser"]
-
-[[test]]
-name = "browser_blob_custody"
-path = "tests/browser_blob_custody.rs"
-required-features = ["browser"]
-
-[[test]]
-name = "wire_contracts"
-path = "tests/wire_contracts.rs"
-
-[[test]]
-name = "git_history"
-path = "tests/git_history.rs"
-
-[[test]]
-name = "git_marker_contracts"
-path = "tests/git_marker_contracts.rs"
-
-[[test]]
-name = "merge_driver_contracts"
-path = "tests/merge_driver_contracts.rs"
-
-[[test]]
-name = "source_lifecycle"
-path = "tests/source_lifecycle.rs"
-
-[[test]]
-name = "s3_contracts"
-path = "tests/s3_contracts.rs"
-
-[[test]]
-name = "workspace_append"
-path = "tests/workspace_append.rs"
-
-[[test]]
-name = "workspace_contracts"
-path = "tests/workspace_contracts.rs"
-
-[[test]]
-name = "workspace_creation_race"
-path = "tests/workspace_creation_race.rs"
-
-[[test]]
-name = "workspace_join_history"
-path = "tests/workspace_join_history.rs"
-
-[[test]]
-name = "workspace_fork_selection"
-path = "tests/workspace_fork_selection.rs"
-
-[[test]]
-name = "workspace_rebase"
-path = "tests/workspace_rebase.rs"
-
-[[test]]
-name = "workspace_restore"
-path = "tests/workspace_restore.rs"
-
-[[test]]
-name = "workspace_transactions"
-path = "tests/workspace_transactions.rs"
-
-[[test]]
-name = "workspace_merge"
-path = "tests/workspace_merge.rs"
-
-[[test]]
-name = "workspace_materialization"
-path = "tests/workspace_materialization.rs"
-
-[[test]]
-name = "workspace_simulation"
-path = "tests/workspace_simulation.rs"
-
-[[test]]
-name = "local_facade"
-path = "tests/local_facade.rs"
-
-[[test]]
-name = "checkout_merge"
-path = "tests/checkout_merge.rs"
-
-[[test]]
-name = "checkout_read"
-path = "tests/checkout_read.rs"
-
-[[test]]
-name = "checkout_profiles"
-path = "tests/checkout_profiles.rs"
-
-[[test]]
-name = "mount_routing"
-path = "tests/mount_routing.rs"
-
-[[test]]
-name = "memory_authority"
-path = "tests/memory_authority.rs"
-
-[[test]]
-name = "memory_objects"
-path = "tests/memory_objects.rs"
-
-[[test]]
-name = "extent_codec"
-path = "tests/extent_codec.rs"
-
-[[test]]
-name = "export_codec"
-path = "tests/export_codec.rs"
+name = "acyclic_fs_test_host_fsevents_stress"
+path = "tests/fsevents_stress.rs"
 required-features = ["test-support"]
-
-[[test]]
-name = "generation_transfer"
-path = "tests/generation_transfer.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "extent_clone"
-path = "tests/extent_clone.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "blob_io"
-path = "tests/blob_io.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "metadata_codec"
-path = "tests/metadata_codec.rs"
-
-[[test]]
-name = "metadata_stamps"
-path = "tests/metadata_stamps.rs"
-
-[[test]]
-name = "tree_codec"
-path = "tests/tree_codec.rs"
-
-[[test]]
-name = "directory_tree"
-path = "tests/directory_tree.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "checkout_cancellation"
-path = "tests/checkout_cancellation.rs"
-
-[[test]]
-name = "checkout_transactions"
-path = "tests/checkout_transactions.rs"
-
-[[test]]
-name = "checkout_reconciliation"
-path = "tests/checkout_reconciliation.rs"
-
-[[test]]
-name = "checkout_content"
-path = "tests/checkout_content.rs"
-
-[[test]]
-name = "checkout_tracking"
-path = "tests/checkout_tracking.rs"
-
-[[test]]
-name = "checkout_live"
-path = "tests/checkout_live.rs"
-
-[[test]]
-name = "checkout_publication"
-path = "tests/checkout_publication.rs"
-
-[[test]]
-name = "workspace_context_contracts"
-path = "tests/workspace_context_contracts.rs"
-
-[[test]]
-name = "wire_error_contracts"
-path = "tests/wire_error_contracts.rs"
-
-[[test]]
-name = "wire_rpc"
-path = "tests/wire_rpc.rs"
-
-[[test]]
-name = "native_checkpoint"
-path = "tests/native_checkpoint.rs"
-
-[[test]]
-name = "native_root_identity"
-path = "tests/native_root_identity.rs"
-
-[[test]]
-name = "native_view_table"
-path = "tests/native_view_table.rs"
-
-[[test]]
-name = "local_commit_model"
-path = "tests/local_commit_model.rs"
-
-[[test]]
-name = "operation_claim_model"
-path = "tests/operation_claim_model.rs"
-required-features = ["model-checking"]
 
 [[bench]]
 name = "lease_paths"
@@ -489,6 +181,7 @@ acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 
 [dev-dependencies]
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format", features = ["test-support"] }
+acyclic-fs-test-support = { path = "../filesystem-test-support" }
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
@@ -576,7 +269,7 @@ windows = { version = "0.62.2", features = [
 [features]
 tooling = []
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance"]
-test-support = ["acyclic-auth/test-support", "acyclic-fs-darwin-bridge/test-support", "acyclic-fs-format/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects/test-support", "bytes/serde"]
+test-support = ["acyclic-auth/test-support", "acyclic-fs-darwin-bridge/test-support", "acyclic-fs-format/test-support", "acyclic-fs-work/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects/test-support", "bytes/serde"]
 fuzzing = ["acyclic-native-runtime/test-support"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 browser = ["acyclic-stream/wasm", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]

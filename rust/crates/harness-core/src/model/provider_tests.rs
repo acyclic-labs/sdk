@@ -18,12 +18,12 @@ impl ArcWake for WakeCount {
     }
 }
 
-fn stalled_source(end: u8, omit_cancellation_event: bool) {
+fn stalled_source(end: u8, omit_cancellation_event: bool) -> Result<()> {
     let work = NativeMaterializationWork::new(
         acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
         &acyclic_fs::CancellationToken::new(),
     )
-    .expect("original work");
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     let (producer, mut receiver) = futures::channel::oneshot::channel::<()>();
     let polls = AtomicUsize::new(0);
@@ -39,8 +39,7 @@ fn stalled_source(end: u8, omit_cancellation_event: bool) {
                 }))),
             }
         })
-    })
-    .unwrap();
+    })?;
     if omit_cancellation_event {
         // Restore the former remaining()-then-source-poll mechanism.
         drop(stream.cancelled.take());
@@ -68,13 +67,15 @@ fn stalled_source(end: u8, omit_cancellation_event: bool) {
         }
         _ => {
             drop(stream);
-            assert!(producer.unwrap().is_canceled());
+            assert!(producer.is_some_and(|producer| producer.is_canceled()));
             assert_eq!(work.live_allocation_bytes(), baseline);
-            return;
+            return Ok(());
         }
     };
     let Poll::Ready(Some(Err(error))) = Pin::new(&mut stream).poll_next(&mut cx) else {
-        panic!("the original event did not terminate its pending stream");
+        return Err(Error::Invalid(
+            "the original event did not terminate its pending stream".into(),
+        ));
     };
     assert_eq!(error.code(), expected);
     if end == 0 {
@@ -102,19 +103,22 @@ fn stalled_source(end: u8, omit_cancellation_event: bool) {
         assert!(producer.is_canceled());
     }
     assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
 }
 
 #[test]
-fn pending_native_streams_keep_original_cancellation_and_producer_events() {
+fn pending_native_streams_keep_original_cancellation_and_producer_events() -> Result<()> {
     for end in 0..3 {
-        stalled_source(end, false);
+        stalled_source(end, false)?;
     }
+    Ok(())
 }
 
 #[test]
 #[should_panic(expected = "cancellation did not wake the stalled stream")]
 fn negative_control_rejects_the_former_poll_only_cancellation_check() {
-    stalled_source(0, true);
+    let result = stalled_source(0, true);
+    assert!(result.is_ok(), "invalid cancellation control: {result:?}");
 }
 
 #[test]

@@ -17,11 +17,17 @@ pub fn split_device(device: u64) -> (u32, u32) {
 /// host representation are reinterpreted without loss.
 #[cfg(target_os = "macos")]
 pub fn split_device(device: u64) -> (u32, u32) {
-    let native = device as libc::dev_t;
+    let native = narrow(device);
     (
         libc::major(native).cast_unsigned(),
         libc::minor(native).cast_unsigned(),
     )
+}
+
+#[cfg(target_os = "macos")]
+fn narrow(device: u64) -> libc::dev_t {
+    let [a, b, c, d, ..] = device.to_le_bytes();
+    libc::dev_t::from_le_bytes([a, b, c, d])
 }
 
 /// Joins `(major, minor)` into a host `dev_t`, failing with `EOVERFLOW` when
@@ -57,7 +63,7 @@ fn widen(device: libc::dev_t) -> u64 {
 
 #[cfg(all(target_os = "macos", any(test, feature = "fuzzing")))]
 fn widen(device: libc::dev_t) -> u64 {
-    device as u64
+    i64::from(device).cast_unsigned()
 }
 
 /// Checks arbitrary native bit patterns and component pairs against the OS codec.
@@ -81,10 +87,13 @@ pub fn check_device_codec(input: &[u8]) {
     #[cfg(target_os = "linux")]
     let expected = (libc::major(native), libc::minor(native));
     #[cfg(target_os = "macos")]
-    let expected = (
-        libc::major(native as libc::dev_t).cast_unsigned(),
-        libc::minor(native as libc::dev_t).cast_unsigned(),
-    );
+    let expected = {
+        let device = narrow(native);
+        (
+            libc::major(device).cast_unsigned(),
+            libc::minor(device).cast_unsigned(),
+        )
+    };
     assert_eq!(components, expected);
     assert!(matches!(join_device(components.0, components.1), Ok(joined)
         if split_device(widen(joined)) == components));
@@ -106,10 +115,6 @@ pub fn check_device_codec(input: &[u8]) {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/device.rs"]
-mod tests;
-
 /// Decodes a native special node request into its kind and optional device number.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn special_mount_node(
@@ -130,3 +135,7 @@ pub fn special_mount_node(
     .then(|| split_device(device));
     Ok((kind, device))
 }
+
+#[cfg(test)]
+#[path = "tests/device.rs"]
+mod tests;

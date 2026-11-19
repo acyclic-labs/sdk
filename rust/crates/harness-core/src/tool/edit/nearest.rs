@@ -11,11 +11,8 @@ fn quoted(text: &str) -> impl Iterator<Item = (usize, char, usize)> + '_ {
         let (start, mut character) = characters.next()?;
         let mut end = start + character.len_utf8();
         if character == '\\'
-            && characters
-                .peek()
-                .is_some_and(|(_, c)| matches!(c, '\'' | '"'))
+            && let Some((offset, quoted)) = characters.next_if(|(_, c)| matches!(c, '\'' | '"'))
         {
-            let (offset, quoted) = characters.next().expect("peeked quote");
             character = quoted;
             end = offset + quoted.len_utf8();
         }
@@ -192,7 +189,7 @@ fn ranked_window(
         .count()
         + 1;
     let mut incoming = source.split_inclusive('\n');
-    let mut outgoing = source.split_inclusive('\n');
+    let outgoing = source.split_inclusive('\n');
     let (mut start, mut end) = (0, 0);
     for line in incoming.by_ref().take(lines) {
         window.update(line, true, work)?;
@@ -205,10 +202,7 @@ fn ranked_window(
             .ok_or_else(|| capacity_overflow(work))?,
         start..end,
     );
-    for line in incoming {
-        let removed = outgoing
-            .next()
-            .expect("incoming window has an outgoing line");
+    for (line, removed) in incoming.zip(outgoing) {
         window.update(removed, false, work)?;
         start += removed.len();
         window.update(line, true, work)?;

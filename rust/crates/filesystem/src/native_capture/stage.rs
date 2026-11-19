@@ -6,6 +6,7 @@ use acyclic_native_runtime::ReadAllocationReservation;
 pub(super) struct StagedRegularBody {
     pub(super) ranges: Vec<(HostDataRange, StagedContent)>,
     pub(super) inline: Option<[u8; crate::kernel::MAXIMUM_INLINE_FILE_BYTES]>,
+    pub(super) inline_content: Option<acyclic_stream::OwnedBytes>,
 }
 
 type NativeSourceStorage = (Vec<u8>, (KernelOwnedAllocation, ReadAllocationReservation));
@@ -35,7 +36,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostStat,
-    maximum_extent_spans: Option<u32>,
+    (maximum_extent_spans, capture_inline): (Option<u32>, bool),
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<StagedRegularBody, CaptureError> {
@@ -64,6 +65,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         .then_some([0; crate::kernel::MAXIMUM_INLINE_FILE_BYTES]);
     let skip_import = ranges.as_ref().is_some_and(Vec::is_empty);
     #[cfg(test)]
+    #[cfg(any(not(unit_test_split), unit_test_host))]
     let skip_import = super::empty_stage_tests::after_ranges(skip_import);
     if skip_import {
         let staged = capture_vec(0, meter)?;
@@ -75,11 +77,14 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         return Ok(StagedRegularBody {
             ranges: staged,
             inline,
+            inline_content: (capture_inline && metadata.is_empty())
+                .then(acyclic_stream::OwnedBytes::new),
         });
     }
     let native = native_positional_file(file, meter)?;
     #[cfg(test)]
     #[cfg(all(any(windows, target_os = "linux")))]
+    #[cfg(any(not(unit_test_split), unit_test_host))]
     let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
     let ranges = match ranges {
@@ -93,6 +98,36 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         length: metadata.len(),
     }];
     let data_ranges = ranges.as_deref().unwrap_or(&full);
+    if capture_inline && inline.is_some() && data_ranges == full.as_slice() {
+        // Transfer the original buffer to the inline comparison or creation.
+        // There is no immutable blob to stage until an actual change needs it.
+        let length = usize::try_from(metadata.len()).map_err(|_| WorkError::Overflow)?;
+        let chunk = {
+            let mut source = acyclic_native_runtime::AsyncRangeReader::new(
+                std::borrow::Borrow::<acyclic_native_runtime::NativeFile>::borrow(&native),
+                0,
+                metadata.len(),
+            );
+            crate::kernel::AsyncBlobSource::read_owned_with_native_work(
+                &mut source,
+                length,
+                meter,
+                meter.cancellation(),
+            )
+            .await?
+            .ok_or(crate::FsError::SourceSnapshotStale)?
+        };
+        finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
+        let bytes = ranges.as_ref().map_or(0, vector_bytes);
+        drop(ranges);
+        drop(native);
+        meter.clone().release(bytes).map_err(capture_demand_error)?;
+        return Ok(StagedRegularBody {
+            ranges: Vec::new(),
+            inline: None,
+            inline_content: Some(chunk.bytes),
+        });
+    }
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
         let mut bounded = super::inline_reuse::observed_range(
@@ -128,6 +163,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     Ok(StagedRegularBody {
         ranges: staged,
         inline,
+        inline_content: None,
     })
 }
 
@@ -139,6 +175,7 @@ pub(super) fn finish_regular_capture(
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     #[cfg(test)]
+    #[cfg(any(not(unit_test_split), unit_test_host))]
     if super::empty_stage_tests::omit_finish() {
         return Ok(());
     }

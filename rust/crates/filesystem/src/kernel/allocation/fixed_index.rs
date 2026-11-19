@@ -124,4 +124,5 @@ impl<V, const N: usize> FixedIndex<V, N> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

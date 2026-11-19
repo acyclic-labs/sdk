@@ -12,7 +12,7 @@ unit-test-only-sources = ["src/credential_tests.rs", "src/tests/**"]
 
 [features]
 javascript = ["dep:js-sys", "dep:prost", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-test-support = ["acyclic-machines/test-support"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

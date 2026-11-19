@@ -262,26 +262,29 @@ fn cell_path(agent: &AgentPath, run: OperationId, key: &[u8; 32]) -> Result<Stre
 fn signal_key_text(
     run: OperationId,
     kind: Kind,
-) -> arrayvec::ArrayString<
-    {
-        "runs/".len()
-            + 36
-            + "/status/supervision/".len()
-            + Kind::ValidationLoop.name().len()
-            + ".json".len()
-    },
+) -> Result<
+    arrayvec::ArrayString<
+        {
+            "runs/".len()
+                + 36
+                + "/status/supervision/".len()
+                + Kind::ValidationLoop.name().len()
+                + ".json".len()
+        },
+    >,
 > {
     use std::fmt::Write as _;
     // Derive literal segment sizes: prefix, UUID, namespace, longest Kind, suffix.
     // No user-provided component or variable-size history occupies this buffer.
     let mut text = arrayvec::ArrayString::new();
-    write!(text, "runs/{run}/status/supervision/{}.json", kind.name())
-        .expect("supervision key fits its fixed schema");
-    text
+    write!(text, "runs/{run}/status/supervision/{}.json", kind.name()).map_err(invalid)?;
+    Ok(text)
 }
 
-fn signal_key(run: OperationId, kind: Kind) -> Bytes {
-    Bytes::copy_from_slice(signal_key_text(run, kind).as_bytes())
+fn signal_key(run: OperationId, kind: Kind) -> Result<Bytes> {
+    Ok(Bytes::copy_from_slice(
+        signal_key_text(run, kind)?.as_bytes(),
+    ))
 }
 
 async fn tail<P: StreamProvider + ?Sized>(provider: &P, path: StreamPath) -> Result<Option<u64>> {
@@ -721,7 +724,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
                         headers: acyclic_stream::RecordHeaders::new(
                             vec![
                                 Bytes::from_static(CURRENT_RUN_KEY).into(),
-                                signal_key(run, signal.kind).into(),
+                                signal_key(run, signal.kind)?.into(),
                             ],
                             vec![acyclic_stream::Attribute {
                                 name: "attention".into(),
@@ -762,7 +765,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         let record = match provider
             .latest_before(
                 path(agent)?,
-                Some(signal_key(run, kind).into()),
+                Some(signal_key(run, kind)?.into()),
                 before,
                 at_least,
             )

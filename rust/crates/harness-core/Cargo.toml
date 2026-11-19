@@ -34,39 +34,20 @@ path = "examples/config-types.rs"
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "computed_ui_records"
-path = "tests/computed_ui_records.rs"
-
-[[test]]
-name = "contract_error_cases"
-path = "tests/contract_error_cases.rs"
-
-[[test]]
-name = "projection_selection"
-path = "tests/projection_selection.rs"
-
-[[test]]
-name = "conversation_contract"
-path = "tests/conversation_contract.rs"
-
-[[test]]
-name = "model_usage_cost"
-path = "tests/model_usage_cost.rs"
-
 [package.metadata.bazel]
-test-narrow-runfiles = ["conversation_contract", "model_usage_cost"]
+integration-test-shards = 6
+# These sources are reached only by cfg(test) module declarations.
+unit-test-only-sources = [
+    "src/executor/tests/**",
+    "src/filesystem/memory/tests.rs",
+    "src/filesystem/memory/tests/**",
+]
 
-[package.metadata.bazel.test-dependencies]
-contract_error_cases = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "acyclic_stream", "acyclic_test_support", "proptest", "prost", "serde_json", "tempfile", "tracing", "tracing_subscriber"]
-conversation_contract = ["acyclic_harness_core", "serde_json", "uuid"]
-model_usage_cost = ["acyclic_harness_core", "acyclic_test_support", "proptest", "serde_json"]
-projection_selection = ["acyclic_harness_core", "tokio", "uuid"]
 
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance"]
-test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-fs-format/test-support"]
 model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-harness-model-cache/wasm", "acyclic-stream/wasm", "dep:tsify"]

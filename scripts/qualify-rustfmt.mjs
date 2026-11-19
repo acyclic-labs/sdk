@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { parseToml, repositoryRoot, trackedFiles } from "./policy-core.mjs";
+import { parseToml, pinnedTool, repositoryRoot, trackedFiles } from "./policy-core.mjs";
 
 const VENDORED = ":(exclude)rust/vendor/**";
 // capture.json, review.json and sources.json within this evidence archive bind
@@ -97,9 +97,10 @@ export async function qualifyRustfmt(root, { write = false } = {}) {
       ]);
     }
   }
+  const rustfmt = pinnedTool("RUSTFMT_BINARY", "rustfmt");
   let status = 0, output = "", next = 0;
   const check = (args) => new Promise((done) => {
-    const child = spawn("rustfmt", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(rustfmt, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
     let text = "";
     child.stdout.on("data", (chunk) => { text += chunk; });
     child.stderr.on("data", (chunk) => { text += chunk; });

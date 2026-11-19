@@ -251,4 +251,5 @@ fn ordered(changes: &GenerationDiff, budget: &mut QueryBudget) -> Result<bool, W
 
 #[cfg(test)]
 #[path = "tests/footprint.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

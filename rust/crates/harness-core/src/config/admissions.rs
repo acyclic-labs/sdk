@@ -448,5 +448,6 @@ fn invalid(error: acyclic_stream::StreamError) -> Error {
     Error::Invalid(error.to_string())
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;

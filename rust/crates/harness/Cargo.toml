@@ -12,24 +12,15 @@ description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 
+[package.metadata.bazel]
+build-script-data = ["tests/scenarios"]
+integration-test-shards = 4
+test-env-inherit = ["ACYCLIC_FS_GUEST_ARTIFACTS"]
+
 [[test]]
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "dst"
-path = "tests/dst_cases.rs"
-
-[[test]]
-name = "native_receipt"
-path = "tests/native_receipt.rs"
-
-[[test]]
-name = "plan-markdown"
-path = "tests/plan_markdown_cases.rs"
-
-[package.metadata.bazel.test-dependencies]
-plan-markdown = ["acyclic_harness_client", "acyclic_test_support", "proptest"]
 
 [[bin]]
 name = "acyclic-virtiofsd"
@@ -53,11 +44,11 @@ consumer-features = [{ features = ["browser"], target = "wasm32-unknown-unknown"
 [features]
 research = ["acyclic-harness-core/research"]
 conformance = ["dep:acyclic-harness-suite", "acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
-test-support = ["acyclic-harness-hosting/test-support", "acyclic-harness-local/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
+test-support = ["acyclic-harness-hosting/test-support", "acyclic-harness-local/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-harness-search/test-support", "acyclic-machines-grpc/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
-browser = ["wasm", "acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]
+browser = ["wasm", "acyclic-harness-browser/browser"]
 wasm-journal = ["browser", "acyclic-stream/wasm-journal"]
-wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:serde-wasm-bindgen", "dep:tsify", "acyclic-harness-core/wasm"]
+wasm = ["dep:acyclic-harness-browser"]
 
 [dependencies]
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
@@ -104,8 +95,6 @@ tracing.workspace = true
 toml = { workspace = true }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 uuid.workspace = true
-serde-wasm-bindgen = { workspace = true, optional = true }
-tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 
@@ -169,6 +158,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support", "conformance"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-harness-browser = { version = "=0.2.0", path = "../harness-browser", optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-machines-grpc = { version = "=0.2.0", path = "../machines-grpc", features = ["javascript"] }
 # Rust SDK execution uses the real browser event loop even without exports.

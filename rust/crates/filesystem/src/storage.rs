@@ -174,6 +174,9 @@ pub enum AuthorityStoreError {
     /// Fixed canonical rejection reason needs no owned diagnostic buffer.
     #[error("authority backend rejected operation: {0}")]
     RejectedStatic(&'static str),
+    /// A required publication condition failed without changing the head.
+    #[error("publication condition failed without advancing the authority")]
+    PublicationConditionFailed,
     /// The authority does not exist.
     #[error("authority does not exist")]
     Missing,
@@ -659,6 +662,7 @@ pub enum ObjectStoreError {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod object_id_codec_tests {
     use super::*;
 

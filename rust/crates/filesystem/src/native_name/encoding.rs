@@ -468,4 +468,5 @@ pub(crate) fn host_name_bytes(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;

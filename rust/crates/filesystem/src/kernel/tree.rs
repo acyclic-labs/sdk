@@ -375,4 +375,5 @@ fn invariant(error: TreePageError) -> CanonicalDecodeError {
 
 #[cfg(test)]
 #[path = "tests/tree.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

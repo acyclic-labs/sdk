@@ -146,7 +146,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
         let work = work(&CancellationToken::new())?;
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes().unwrap();
         {
             assert!(provider.supports_native_model(&work)?);
             let (count, custody) = provider
@@ -160,9 +160,12 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             }))
             .expect("fixture count encoding")
             .len();
-            assert_eq!(work.receipt().source_bytes_read, count_bytes as u64);
+            assert_eq!(
+                work.receipt().unwrap().source_bytes_read,
+                count_bytes as u64
+            );
             drop((count, custody));
-            let source_before = work.receipt().source_bytes_read;
+            let source_before = work.receipt().unwrap().source_bytes_read;
             let mut stream = provider
                 .generate_with_native_work(&request, dispatch, &work)?
                 .await?;
@@ -193,7 +196,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             }
             assert_eq!((calls, completed), (1, 1));
             assert_eq!(
-                work.receipt().source_bytes_read - source_before,
+                work.receipt().unwrap().source_bytes_read - source_before,
                 response.len() as u64
             );
             assert!(futures::stream::FusedStream::is_terminated(&stream));
@@ -203,7 +206,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             assert!(stream.next().await.is_none());
         }
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
-        assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
+        assert_eq!(work.live_allocation_bytes().unwrap(), before, "{adapter:?}");
     }
     Ok(())
 }
@@ -240,7 +243,7 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
             crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
         let work = work(&CancellationToken::new())?;
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes().unwrap();
         let mut calls = 0;
         let mut completed = 0;
         let mut restarts = 0;
@@ -277,7 +280,7 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
             fixture.sent.load(Ordering::SeqCst),
             1 + usize::from(interrupted)
         );
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes().unwrap(), before);
     }
     Ok(())
 }
@@ -309,7 +312,7 @@ async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies
         );
         let (request, dispatch) = request(&provider)?;
         let work = work(&cancel)?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let result = async {
             let mut stream = provider
                 .generate_with_native_work(&request, dispatch, &work)?
@@ -337,7 +340,7 @@ async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies
             result.unwrap_err().code(),
             acyclic_harness_core::wire::ErrorCode::Cancelled
         );
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }
@@ -377,7 +380,7 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
         );
 
         let work = work(&CancellationToken::new())?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         {
             let mut stream = provider
                 .generate_with_native_work(&request, dispatch, &work)?
@@ -405,7 +408,11 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
             assert!(stream.next().await.is_none());
             drop(error);
         }
-        assert_eq!(work.live_allocation_bytes(), baseline, "{adapter:?}");
+        assert_eq!(
+            work.live_allocation_bytes().unwrap(),
+            baseline,
+            "{adapter:?}"
+        );
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 2, "{adapter:?}");
     }
     Ok(())
@@ -421,7 +428,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     );
     let (request, dispatch) = request(&provider)?;
     let work = work(&CancellationToken::new())?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     {
         let mut stream = provider
             .generate_with_native_work(&request, dispatch, &work)?
@@ -437,7 +444,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
         );
         drop(error);
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     let transport = Arc::new(Fixture::new(CHAT));
     provider.transport =
         crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
@@ -482,7 +489,7 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
         crate::TimeoutSpec::DEFAULT,
     );
     let (request, _) = request(&provider)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let result = provider.counted_with_native_work(&request, 0, &work)?.await;
     assert!(matches!(
         result,
@@ -492,7 +499,7 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
         })
     ));
     drop(result);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -520,13 +527,13 @@ mod source_accounting {
             provider.transport = crate::deadline::Bounded::new(Arc::new(Fixture { response: Bytes::from(response), ..Fixture::new(CHAT) }), crate::TimeoutSpec::DEFAULT);
             let (request, dispatch) = request(&provider).unwrap();
             let work = work(&CancellationToken::new()).unwrap();
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().unwrap();
             futures::executor::block_on(async {
                 let mut stream = provider.generate_with_native_work(&request, dispatch, &work).unwrap().await.unwrap();
                 while let Some(event) = stream.next().await { drop(event.unwrap()); }
             });
-            prop_assert_eq!(work.receipt().source_bytes_read, expected);
-            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            prop_assert_eq!(work.receipt().unwrap().source_bytes_read, expected);
+            prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         }
     }
 }

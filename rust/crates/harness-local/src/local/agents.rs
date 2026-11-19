@@ -407,7 +407,7 @@ impl TurnContext for LocalContext {
                         .context
                         .workspace
                         .as_ref()
-                        .and_then(|workspace| workspace.mounts.native_root_for_entry(entry.id))
+                        .and_then(|workspace| workspace.announced_path(entry.id))
                         .map(|path| path.to_string_lossy().into_owned());
                     #[cfg(not(any(test, not(target_arch = "wasm32"))))]
                     let path: Option<String> = None;
@@ -478,7 +478,7 @@ struct CompletionTarget {
     verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
     owner: super::workspace::owner::AgentOwner,
-    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     capture: (acyclic_fs::CaptureOptions, acyclic_fs::CapturePolicy),
     turn: OperationId,
 }
@@ -550,6 +550,15 @@ impl LocalHarness {
     /// is idle, else before the parent's next command reads it.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
+        // A continuation's parent identifies the historical source of the
+        // experiment. Publishing back to it would change the original run.
+        if agent
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.continuation.is_some())
+        {
+            return Ok(());
+        }
         let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
             return Ok(());
         };
@@ -992,6 +1001,7 @@ impl LocalHarness {
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
+        let clock = acyclic_actors::local::SystemClock::bind(self.clock.clone());
         let turns = Turns {
             executors: self.executors(),
             limits: TurnLimits {
@@ -999,7 +1009,7 @@ impl LocalHarness {
                 history_turns: HISTORY_TURNS,
             },
             actors: ActorLimits::default(),
-            clock: self.clock.clone(),
+            clock,
             approval_policy: self.preset.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {

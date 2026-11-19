@@ -493,7 +493,7 @@ impl<'a> KernelAccounting<'a> {
                 work, cancellation, ..
             } => {
                 #[cfg(test)]
-                #[cfg(all(loom))]
+                #[cfg(loom)]
                 if charge_model::split_charge() {
                     work.admit(WorkCounters::UNCHARGED)?;
                     cancellation.check()?;
@@ -701,7 +701,8 @@ impl<'a> KernelAccounting<'a> {
 
     pub(crate) fn spent(&self) -> Result<WorkCounters, crate::WorkObservationError> {
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
+        #[cfg(any(not(unit_test_split), unit_test_kernel))]
         super::snapshot_tests::observe();
         match self {
             Self::Standalone {
@@ -726,12 +727,15 @@ impl<'a> KernelAccounting<'a> {
 
 #[cfg(test)]
 #[path = "accounting_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(loom)))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod charge_tests;
 
 #[cfg(test)]
 #[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod charge_model;

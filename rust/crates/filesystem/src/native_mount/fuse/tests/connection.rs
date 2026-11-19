@@ -38,22 +38,25 @@ fn linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control()
     let mut mount = super::super::mount::Mount::default();
     let mut device = None;
     let fence = std::fs::File::open("/dev/null")?;
-    mount.open_into(
-        &root,
-        true,
-        || {
-            assert!(
-                std::env::var_os(REQUIRE_DIRECT).is_none(),
-                "qualified direct mount must not discover fusermount"
-            );
-            super::super::lifecycle::fuse_recovery_helper(&work)
-        },
-        &mut device,
-        &fence,
-        &work,
-    )?;
-    // Closing the only device descriptor is the exact kernel disconnect event;
-    // the mount remains in the namespace, but has no FUSE server.
+    mount
+        .open_into(
+            &root,
+            true,
+            || {
+                assert!(
+                    std::env::var_os(REQUIRE_DIRECT).is_none(),
+                    "qualified direct mount must not discover fusermount"
+                );
+                super::super::lifecycle::fuse_recovery_helper(&work)
+            },
+            &mut device,
+            &fence,
+            &work,
+        )
+        .map_err(|error| format!("starting the raw FUSE mount: {error}"))?;
+    // Simulate external loss of the auto-unmount helper to exercise recovery
+    // of a disconnected namespace. Normal owner death retains that helper.
+    mount.kill_auto_unmount_for_recovery_test()?;
     drop(device.take());
     let failed = std::fs::metadata(&root).unwrap_err();
     assert_eq!(
@@ -61,9 +64,9 @@ fn linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control()
         Some(libc::ENOTCONN),
         "old startup stat negative control"
     );
-    // The first owner is gone. Restart through the public startup entry, so
-    // recovery must happen before its first stat, not just inside a helper.
-    mount.cancel_exit_action()?;
+    // Restart through the public startup entry, so recovery must happen
+    // before its first stat. The raw fixture keeps its cleanup armed until
+    // the recovered session has stopped, including if startup fails.
     let (source, _) = shared_sources(posix_config())?;
     let volume_id = source.volume_id()?;
     let mut session = crate::mount_native(
@@ -75,15 +78,21 @@ fn linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control()
             shared: false,
         },
         Arc::new(source),
-    )?;
+    )
+    .map_err(|error| format!("starting the public mount over the disconnected root: {error}"))?;
     std::fs::write(root.join("child"), b"restarted")?;
     assert_eq!(std::fs::read(root.join("child"))?, b"restarted");
-    assert!(session.stop()?);
+    assert!(
+        session
+            .stop()
+            .map_err(|error| format!("retiring the recovered Linux mount: {error}"))?
+    );
     let after = std::fs::metadata(&root)?;
     assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
     assert!(!crate::recover_disconnected_native_mount_destination(
         &root
     )?);
+    mount.cancel_exit_action()?;
     Ok(())
 }
 

@@ -196,6 +196,13 @@ pub(crate) fn finish_physical_cuts<F: FnOnce() -> usize + Send>(jobs: Vec<F>) ->
     acyclic_test_support::physical_cuts::run(jobs, acyclic_native_runtime::InlineBlocking::enter)
 }
 
+/// The supervisors one physical-cut batch runs on, so a caller can size a batch
+/// to a single round instead of guessing.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn physical_cut_workers() -> usize {
+    acyclic_test_support::physical_cuts::workers()
+}
+
 #[path = "support/objects.rs"]
 mod objects;
 pub(crate) use objects::{

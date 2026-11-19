@@ -20,6 +20,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     pkg_name = "acyclic-stream-publication-models",
     edition = "2024",
     version = "0.0.0",
@@ -92,7 +93,7 @@ rust_test(
         "change.rs",
         "interest.rs",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

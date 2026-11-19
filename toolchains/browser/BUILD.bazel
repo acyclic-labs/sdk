@@ -1,3 +1,4 @@
+load("@platforms//host:constraints.bzl", "HOST_CONSTRAINTS")
 load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen_toolchain")
 load("//:wasm_cc_toolchain.bzl", "wasm_cc_toolchain")
 
@@ -10,7 +11,8 @@ rust_wasm_bindgen_toolchain(
 
 toolchain(
     name = "sdk_wasm_bindgen_toolchain",
-    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    # @wasm_bindgen is the host's own release archive.
+    exec_compatible_with = HOST_CONSTRAINTS,
     toolchain = ":sdk_wasm_bindgen_toolchain_impl",
     toolchain_type = "@rules_rust_wasm_bindgen//:toolchain_type",
 )

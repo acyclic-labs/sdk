@@ -1,7 +1,7 @@
 mod tests {
     use crate::{
         NativeRootIdentity,
-        codec::{WindowsUsnCheckpoint, WindowsUsnError},
+        native_checkpoint::codec::{WindowsUsnCheckpoint, WindowsUsnError},
     };
     #[test]
     fn checkpoint_encoding_is_canonical_versioned_and_bounded() {

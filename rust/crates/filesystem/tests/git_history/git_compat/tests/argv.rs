@@ -3,7 +3,7 @@ use acyclic_fs::git_compat::{
     MemoryGitCompatStore, MemoryGitCompatStoreError, parse_git_argv,
 };
 
-use crate::fixtures::{tree, workspace};
+use crate::git_history::fixtures::{tree, workspace};
 
 #[tokio::test]
 async fn argv_covers_local_history_and_rejects_transport() {

@@ -199,4 +199,5 @@ pub enum AttributeLookupError {
 
 #[cfg(test)]
 #[path = "tests/attribute_access.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -192,5 +192,6 @@ pub(crate) use retention::callback_is_terminal as stops_mount;
 #[cfg(any(test, windows))]
 pub(crate) use retention::source_is_terminal as source_stops_mount;
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests;

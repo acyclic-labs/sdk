@@ -1,5 +1,11 @@
-use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid};
-use acyclic_harness_core::{Result, model::Model};
+use crate::{
+    Authentication, Credentials, HttpTransport, ProviderConfig, ProviderSpec, ResolvedModel,
+    invalid,
+};
+use acyclic_harness_core::{
+    Result,
+    model::{Model, ModelBinding, scripted::ScriptedModelProvider},
+};
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
 mod selection;
@@ -10,6 +16,7 @@ use catalog_update::Changes;
 #[derive(Clone)]
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
+    scripted: BTreeMap<String, (String, Arc<ScriptedModelProvider>)>,
     default_model: Option<String>,
     inputs: Arc<CredentialInputs>,
     transport: Arc<dyn HttpTransport>,
@@ -34,6 +41,7 @@ impl Registry {
             .collect();
         Self {
             providers,
+            scripted: BTreeMap::new(),
             default_model: None,
             inputs: Arc::new(CredentialInputs::new(credentials)),
             transport,
@@ -98,6 +106,10 @@ impl Registry {
         let (provider, model) = selection
             .split_once('/')
             .ok_or_else(|| invalid("expected provider/model"))?;
+        if self.scripted.contains_key(provider) {
+            self.resolve_binding(selection)?;
+            return Ok(false);
+        }
         let spec = self
             .providers
             .get(provider)
@@ -143,7 +155,52 @@ impl Registry {
 
     /// Adds or replaces one endpoint. Local models require their configured capacities.
     pub fn register(&mut self, provider: String, config: ProviderSpec) -> Result<()> {
+        if self.scripted.contains_key(&provider) {
+            return Err(invalid("provider name already selects a volume script"));
+        }
         self.update_catalog(Changes::One(provider, config), None)
+    }
+
+    /// Registers either a volume script or a streaming endpoint under one
+    /// address. Scripted models use the model name `default`.
+    pub fn register_config(&mut self, provider: String, config: ProviderConfig) -> Result<()> {
+        match config {
+            ProviderConfig::Endpoint(config) => self.register(provider, config),
+            ProviderConfig::Scripted(spec) => {
+                if provider.contains('/') || self.providers.contains_key(&provider) {
+                    return Err(invalid("invalid scripted provider registration"));
+                }
+                let revision = format!("script-v1:{}", spec.script.sha256);
+                Model::new(provider.clone(), "default".into(), revision.clone())?;
+                let scripted = ScriptedModelProvider::from_volume(spec.script)?;
+                self.scripted
+                    .insert(provider, (revision, Arc::new(scripted)));
+                Ok(())
+            }
+        }
+    }
+
+    /// Resolves any registered adapter to the ordinary harness model binding.
+    pub fn resolve_binding(&self, selection: &str) -> Result<ModelBinding> {
+        if let Some(scripted) = self.scripted_binding(selection)? {
+            return Ok(scripted);
+        }
+        let provider = Arc::new(self.resolve(selection)?);
+        Ok((provider.model().clone(), provider))
+    }
+
+    pub(crate) fn scripted_binding(&self, selection: &str) -> Result<Option<ModelBinding>> {
+        let (provider, name) = selection
+            .split_once('/')
+            .ok_or_else(|| invalid("expected provider/model"))?;
+        let Some((revision, scripted)) = self.scripted.get(provider) else {
+            return Ok(None);
+        };
+        if name != "default" {
+            return Err(invalid("the scripted adapter provides model default"));
+        }
+        let model = Model::new(provider.into(), name.into(), revision.clone())?;
+        Ok(Some((model, scripted.clone())))
     }
 
     /// Loads endpoint, credential policy and exact capacities from a JSON catalog.
@@ -364,10 +421,7 @@ impl Registry {
     pub fn into_model_resolver(self) -> acyclic_harness_core::model::ModelResolver {
         acyclic_harness_core::model::ModelResolver::new(
             self.default_model().to_owned(),
-            move |selection| {
-                let provider = Arc::new(self.resolve(selection)?);
-                Ok((provider.model().clone(), provider))
-            },
+            move |selection| self.resolve_binding(selection),
         )
     }
 }

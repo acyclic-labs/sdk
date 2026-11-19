@@ -6,7 +6,7 @@ use acyclic_fs::{
 use acyclic_fs_work::performance::WorkBudget;
 use acyclic_stream::OwnedBytes;
 
-use crate::transaction::commit;
+use crate::git_history::transaction::commit;
 
 #[tokio::test]
 async fn tree_walk_and_grep_are_generation_bound_and_portable()

@@ -293,6 +293,7 @@ impl ProjFsSession {
         }
         let callbacks = callbacks();
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_mount_driver))]
         let callbacks = super::tests::read_bindings::registered_callbacks(callbacks);
         let context = (&mut &*work).attempt_io(WriteOperations.delta(1), || {
             // SAFETY: this Arc allocation is stable until SDK stop drains callbacks.

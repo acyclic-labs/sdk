@@ -210,7 +210,7 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let index = Bindings::new(&cancellation)?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let key = *blake3::hash(b"original binding").as_bytes();
         let (original, producer) = Bindings::select(&index, key, [0; 32], &work, &cancellation)?;
         let producer =
@@ -227,7 +227,7 @@ mod tests {
                 &cancellation,
             )?);
         }
-        let before = work.receipt().items_examined;
+        let before = work.receipt()?.items_examined;
         let (observer, duplicate) = Bindings::select(&index, key, [0; 32], &work, &cancellation)?;
         assert!(
             duplicate.is_none(),
@@ -235,7 +235,7 @@ mod tests {
         );
         assert!(std::ptr::eq(old.as_ptr(), &*observer.binding));
         assert!(
-            work.receipt().items_examined - before <= 9 * 32 + 1,
+            work.receipt()?.items_examined - before <= 9 * 32 + 1,
             "binding lookup grew beyond the fixed-width path"
         );
         {
@@ -274,7 +274,7 @@ mod tests {
         drop(old);
         drop(peers);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline,
             "retired binding generations retained original allocation credit"
         );
@@ -286,8 +286,9 @@ fn failure(
     work: &NativeMaterializationWork,
     cause: acyclic_fs::NativeTreeMaterializationError,
 ) -> Error {
-    Error::NativeConstruction {
-        cause,
-        work: Box::new(work.receipt()),
-    }
+    work.receipt()
+        .map_or_else(Error::from, |work| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })
 }

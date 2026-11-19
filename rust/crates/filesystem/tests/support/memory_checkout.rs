@@ -5,9 +5,12 @@ use acyclic_fs::{
 };
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget};
 
-pub(crate) type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;
-pub(crate) type TestCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
-pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+/// A volume whose authority and objects use in-memory providers.
+pub type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;
+/// A checkout whose authority and objects use in-memory providers.
+pub type TestCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
+/// An error propagated from a case or fixture.
+pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 pub(crate) async fn volume(
     config: VolumeConfig,
@@ -19,11 +22,12 @@ pub(crate) async fn volume(
         .value)
 }
 
-pub(crate) async fn open_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+/// Opens the volume head in the given mode and returns the checkout from its receipt.
+pub async fn open_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     mode: CheckoutMode,
     cancel: &CancellationToken,
-) -> Result<Checkout<A, O>, OperationFailure<FsError>> {
+) -> Result<Checkout<A, O>, Box<OperationFailure<FsError>>> {
     volume
         .checkout(
             GenerationSelector::Head,
@@ -33,4 +37,5 @@ pub(crate) async fn open_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map(|receipt| receipt.value)
+        .map_err(Box::new)
 }

@@ -363,4 +363,5 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
 
 #[cfg(test)]
 #[path = "tests/transfer.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

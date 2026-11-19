@@ -34,8 +34,7 @@ struct Held(u16, &'static Location<'static>);
 impl Held {
     #[track_caller]
     fn check(rank: u16) {
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, loom))]
         if model::fault() == model::Fault::MissingCheck {
             return;
         }
@@ -175,8 +174,7 @@ fn wait_plain<G>(
     Held::check(rank);
     let wrap = |inner| {
         let held = Held(rank, site);
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, loom))]
         let held = if model::fault() == model::Fault::MissingRestore {
             held
         } else {
@@ -195,4 +193,5 @@ fn wait_plain<G>(
 #[cfg(test)]
 #[cfg(loom)]
 #[path = "checked/model.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod model;

@@ -11,6 +11,7 @@ use crate::{
     test_support::{ScriptedEvent, ScriptedTurn},
     tool::{Tool, ToolExecutor, ToolInvocation, ToolResult},
 };
+use acyclic_native_runtime::{owner_record::SecretBytes, private_file};
 use acyclic_stream::BoxProviderFuture;
 use std::sync::{Arc, Mutex};
 
@@ -63,7 +64,7 @@ impl Divergences {
 /// slot identities must stay fixed; arbitrary discovery text is never normalized.
 struct ReplayFixture {
     _directory: tempfile::TempDir,
-    owner: std::path::PathBuf,
+    owner: SecretBytes,
     signing: Arc<acyclic_native_runtime::signing_key::MemorySigningStore>,
 }
 
@@ -78,8 +79,8 @@ impl ReplayFixture {
             volume_config(directory.path(), project, super::text())?.signing_store(signing.clone());
         let state = config.resolved_state_directory()?;
         let harness = super::open_scripted(config).await?;
-        let owner = directory.path().join("initial-owner");
-        std::fs::copy(state.join(super::super::owner::RECORD), &owner).map_err(agent)?;
+        let owner =
+            private_file::read(&state.join(super::super::owner::RECORD), 65_536).map_err(agent)?;
         harness.disconnect().await?;
         Ok(Self {
             _directory: directory,
@@ -107,8 +108,11 @@ impl ReplayFixture {
             .compaction(crate::context::CompactionPolicy::Disabled)
             .tool(tool);
         let state = config.resolved_state_directory()?;
-        std::fs::create_dir_all(&state).map_err(agent)?;
-        std::fs::copy(&self.owner, state.join(super::super::owner::RECORD)).map_err(agent)?;
+        private_file::create_directory_all(&state).map_err(agent)?;
+        let mut owner =
+            private_file::create(&state.join(super::super::owner::RECORD)).map_err(agent)?;
+        acyclic_native_runtime::write_file_all(&mut owner, &self.owner.0).map_err(agent)?;
+        drop(owner);
         let harness = Arc::new(super::open_scripted(config).await?);
         let mut client = ObservedConversation::open(&harness).await?;
         for input in inputs {

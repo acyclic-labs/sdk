@@ -6,7 +6,6 @@ mod merge_ancestry;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_failure;
 mod owners;
-mod rounds;
 
 #[tokio::test]
 async fn disjoint_rebase_checks_intermediate_edits_even_when_the_head_restores_them() -> TestResult

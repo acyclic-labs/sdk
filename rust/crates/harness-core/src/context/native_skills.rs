@@ -238,6 +238,8 @@ impl NativeSkills {
         };
         let mut key = [0; 32];
         volume == &self.journal
+            && generation.as_resource().provider() == volume.provider()
+            && generation.as_resource().version().is_none()
             && hex::decode_to_slice(digest, &mut key).is_ok()
             && key.as_slice() == generation.as_resource().key()
     }

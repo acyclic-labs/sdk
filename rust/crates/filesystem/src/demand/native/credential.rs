@@ -570,4 +570,5 @@ impl CredentialSource for NativeCredentialSource {
 
 #[cfg(test)]
 #[cfg(all(any(target_os = "linux", windows)))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

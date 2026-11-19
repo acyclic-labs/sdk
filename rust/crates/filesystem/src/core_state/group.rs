@@ -176,4 +176,5 @@ fn flush_through(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;

@@ -55,6 +55,37 @@ impl LocalCoreStateStore {
         file_id: crate::FileId,
         metadata: crate::WorkspaceMetadata,
     ) -> Result<(), LocalCoreStateStoreError> {
+        self.update_materialized_metadata(root, file, |_| {
+            Some(Fact {
+                version: 1,
+                file_id,
+                metadata,
+            })
+        })
+    }
+
+    /// Refreshes the host defaults after the exact recorded allocation moves.
+    pub(crate) fn refresh_materialized_metadata(
+        &self,
+        root: crate::NativeRootIdentity,
+        file: crate::NativeRootIdentity,
+        metadata: crate::WorkspaceMetadata,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        self.update_materialized_metadata(root, file, |current| {
+            current.map(|fact| Fact {
+                version: fact.version,
+                file_id: fact.file_id,
+                metadata,
+            })
+        })
+    }
+
+    fn update_materialized_metadata(
+        &self,
+        root: crate::NativeRootIdentity,
+        file: crate::NativeRootIdentity,
+        change: impl FnOnce(Option<&Fact>) -> Option<Fact>,
+    ) -> Result<(), LocalCoreStateStoreError> {
         if self.inspection {
             return Err(LocalCoreStateStoreError::Integrity);
         }
@@ -68,12 +99,10 @@ impl LocalCoreStateStore {
                 if current.as_ref().is_some_and(|(fact, _)| fact.version != 1) {
                     return Err(LocalCoreStateStoreError::Integrity);
                 }
-                let next = Fact {
-                    version: 1,
-                    file_id,
-                    metadata,
-                };
-                if current.as_ref().is_none_or(|(fact, _)| *fact != next) {
+                let current = current.as_ref().map(|(fact, _)| fact);
+                if let Some(next) = change(current)
+                    && current != Some(&next)
+                {
                     write_journaled(paths, &next)?;
                 }
                 Ok(())

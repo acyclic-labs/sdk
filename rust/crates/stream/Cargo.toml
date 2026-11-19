@@ -15,6 +15,7 @@ categories = ["api-bindings", "data-structures"]
 build = "build.rs"
 
 [package.metadata.bazel]
+integration-test-shards = 5
 build-script-inputs = []
 unit-test-only-sources = [
     "src/filtered_follow_fixture.rs",
@@ -63,10 +64,6 @@ unit-test-only-sources = [
     "src/trace/query/tests.rs",
 ]
 
-[package.metadata.bazel.test-dependencies]
-follow-contracts = ["acyclic_stream", "acyclic_stream_wire", "futures", "tempfile", "tokio"]
-provider-contracts = ["acyclic_stream", "tempfile", "tokio"]
-session-contracts = ["acyclic_stream", "acyclic_stream_wire", "bytes", "futures", "proptest", "prost", "tokio"]
 
 [package.metadata.acyclic]
 consumer-features = [
@@ -75,11 +72,6 @@ consumer-features = [
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-
-[[test]]
-name = "read-selectors"
-path = "tests/read_selectors.rs"
-required-features = ["wasm", "conformance"]
 
 [[example]]
 name = "wave1-conformance"
@@ -205,15 +197,3 @@ required-features = ["conformance"]
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "session-contracts"
-path = "tests/session_contracts.rs"
-
-[[test]]
-name = "provider-contracts"
-path = "tests/provider_contracts.rs"
-required-features = ["conformance"]
-
-[[test]]
-name = "follow-contracts"
-path = "tests/follow_contracts.rs"

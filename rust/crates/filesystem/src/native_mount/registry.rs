@@ -422,6 +422,7 @@ fn profile_base() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests;
 
 // The lock precedes the read and is transferred, never reacquired by name.
@@ -450,6 +451,7 @@ fn locked_destination(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod recovery_record_tests {
     use super::*;
 

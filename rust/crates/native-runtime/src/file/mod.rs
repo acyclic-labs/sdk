@@ -172,7 +172,10 @@ thread_local! {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-pub(crate) fn file_identity_from_metadata(metadata: &std::fs::Metadata) -> FileIdentity {
+/// Device and inode from existing metadata, with no additional filesystem query.
+#[inline]
+#[must_use]
+pub fn file_identity_from_metadata(metadata: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt as _;
     (metadata.dev(), metadata.ino())
 }

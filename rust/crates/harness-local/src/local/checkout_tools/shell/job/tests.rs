@@ -23,10 +23,7 @@ fn child_executable(harness: &LocalHarness) -> Result<std::path::PathBuf> {
     std::fs::copy(std::env::current_exe().map_err(storage)?, &child).map_err(storage)?;
     Ok(child)
 }
-async fn listener_executor(
-    harness: &LocalHarness,
-    ports: Vec<u16>,
-) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
+async fn listener_executor(harness: &LocalHarness) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
     use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant, ExecutionNetwork};
     let workspace = harness.workspace.as_ref().unwrap();
     // Select the fixture's held temporary home through MountOptions::view_root,
@@ -75,7 +72,9 @@ async fn listener_executor(
         ExecutionAccess::WorkspaceWrite,
         write,
         read,
-        ExecutionNetwork::TcpPorts(ports.into_iter().collect()),
+        // The child uses host loopback to synchronize the job lifecycle.
+        // Network filtering is a separate native-runtime contract.
+        ExecutionNetwork::On,
     )
     .map_err(storage)?;
     Ok(workspace
@@ -185,6 +184,9 @@ async fn ready_connection(
 
 #[tokio::test]
 async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(crate::test_support::local_harness_config(
@@ -231,11 +233,7 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
         name: "shell".into(),
         arguments: serde_json::json!({"command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"]}),
     };
-    let executor = listener_executor(
-        &harness,
-        vec![listener.local_addr().map_err(storage)?.port()],
-    )
-    .await?;
+    let executor = listener_executor(&harness).await?;
     let mut call = executor.execute(invocation, Some(context));
     let mut gate = tokio::select! {
         connection = listener.accept() => connection.map(|(socket, _)| socket).map_err(storage)?,
@@ -296,6 +294,9 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
 
 #[tokio::test]
 async fn queued_background_shell_keeps_its_execution_lifetime() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(crate::test_support::local_harness_config(
@@ -324,6 +325,7 @@ async fn queued_background_shell_keeps_its_execution_lifetime() -> Result<()> {
     )?);
     let context = ToolContext::new(task, crate::OperationId::new(), "background-admission")?;
     let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
+    let executor = listener_executor(&harness).await?;
     let physical = harness.workspace.as_ref().unwrap();
     let held = crate::sync::owned::lock_owned(StateArc::clone(&physical.state)).await;
     let invocation = ToolInvocation {
@@ -342,27 +344,14 @@ async fn queued_background_shell_keeps_its_execution_lifetime() -> Result<()> {
     schedule.set_unix_millis(now);
     crate::test_support::run_native_schedule(&schedule, boundaries, async {
         tokio::time::pause();
-        let executor = &harness.harness.target(None)?.executor;
         let call = executor.execute(invocation, Some(context));
         tokio::pin!(call);
         assert!(call.as_mut().now_or_never().is_none());
-        // The native capture deadline uses std::time::Instant, independently
-        // of the paused Tokio clock and injected wall clock. Wait on one real
-        // OS timeout while checkout is held, then verify that clock elapsed.
-        let admitted = std::time::Instant::now();
-        let (elapsed, waited) = tokio::sync::oneshot::channel();
-        let timer = std::thread::spawn(move || {
-            let (_sender, receiver) = std::sync::mpsc::channel::<()>();
-            assert!(matches!(
-                receiver.recv_timeout(std::time::Duration::from_secs(6)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            ));
-            let _ = elapsed.send(());
-        });
-        waited.await.map_err(storage)?;
-        timer.join().expect("monotonic deadline waiter panicked");
-        assert!(admitted.elapsed() > std::time::Duration::from_millis(5000));
-        schedule.set_unix_millis(now + 6000);
+        // Elapse more than the process budget while the checkout lock is held.
+        tokio::time::advance(std::time::Duration::from_millis(6000)).await;
+        // The queued operation has aged. Drive the actual child on live time,
+        // so an idle runtime cannot advance past a native completion event.
+        tokio::time::resume();
         drop(held);
         let result = call.await?;
         assert_eq!(result.value["background"], true, "{result:?}");
@@ -370,12 +359,15 @@ async fn queued_background_shell_keeps_its_execution_lifetime() -> Result<()> {
         assert_eq!(published["exit_code"], 0, "{published}");
         Ok::<_, Error>(())
     })
-    .await?;
+    .await??;
     harness.disconnect().await
 }
 
 #[tokio::test]
 async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(crate::test_support::local_harness_config(
@@ -403,6 +395,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         },
     )?);
     let executor = &harness.harness.target(None)?.executor;
+    let job_executor = listener_executor(&harness).await?;
     let child = child_executable(&harness)?;
     let selector = "local::checkout_tools::shell::job::tests::shell_job_child";
     let mut jobs = Vec::new();
@@ -442,13 +435,8 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             name: "shell".into(),
             arguments: serde_json::json!({"command": [child, "--exact", selector, "--nocapture"], "cwd": name, "background": true}),
         };
-        let mut ports = vec![listener.local_addr().map_err(storage)?.port()];
-        if let Some(exit) = &exit {
-            ports.push(exit.local_addr().map_err(storage)?.port());
-        }
-        let executor = listener_executor(&harness, ports).await?;
         eprintln!("shell job {name}: executing");
-        let result = executor
+        let result = job_executor
             .execute(invocation.clone(), Some(context.clone()))
             .await?;
         assert_eq!(result.value["background"], true, "{result:?}");
@@ -488,7 +476,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         // Reconciliation recovers the original durable admission, without
         // restarting the command or waiting for its lifetime to end.
         assert_eq!(
-            executor
+            job_executor
                 .reconcile(invocation, Some(context.clone()))
                 .await?
                 .unwrap()

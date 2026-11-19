@@ -3,7 +3,8 @@ use super::*;
 use crate::kernel::allocation::retained::OwnedAccounting;
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;
 
 struct Completion {

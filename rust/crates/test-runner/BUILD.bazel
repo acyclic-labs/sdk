@@ -11,6 +11,7 @@ rust_binary(
     crate_root = "src/main.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -24,9 +25,19 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = "//:workspace_lints",
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -48,11 +59,21 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = "//:workspace_lints",
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
+    }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -94,11 +115,21 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = "//:workspace_lints",
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
+    }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

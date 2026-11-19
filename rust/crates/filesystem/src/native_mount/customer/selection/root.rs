@@ -172,4 +172,5 @@ impl<'a> AdmittedRoot<'a> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod tests;

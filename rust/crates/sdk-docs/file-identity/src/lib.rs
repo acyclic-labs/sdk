@@ -5,6 +5,53 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
+#[cfg(windows)]
+mod read_lease;
+
+/// Detects invalidation of a file whose contents may be cached.
+pub struct ReadWitness {
+    #[cfg(windows)]
+    lease: Option<read_lease::ReadLease>,
+}
+
+impl ReadWitness {
+    /// Starts observing writes to the file on hosts that require a read lease.
+    pub fn acquire(path: &Path) -> Self {
+        #[cfg(not(windows))]
+        let _ = path;
+        Self {
+            #[cfg(windows)]
+            lease: read_lease::ReadLease::request(path),
+        }
+    }
+
+    /// Whether this witness permits reuse when the native file stamp also agrees.
+    pub fn permits_reuse(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.lease
+                .as_ref()
+                .is_some_and(read_lease::ReadLease::pending)
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    }
+
+    /// Whether a write invalidated the witness while reading the file.
+    pub fn invalidated(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.lease.as_ref().is_some_and(|lease| !lease.pending())
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+}
+
 /// Whether no-follow metadata identifies a symlink or a Windows reparse point.
 pub fn is_linked(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
@@ -131,6 +178,8 @@ fn windows_identity(file: &fs::File) -> std::io::Result<(u64, [u8; 16], i64)> {
     use windows_sys::Win32::Storage::FileSystem as winfs;
     let mut basic = std::mem::MaybeUninit::<winfs::FILE_BASIC_INFO>::uninit();
     let mut id = std::mem::MaybeUninit::<winfs::FILE_ID_INFO>::uninit();
+    let basic_size = u32::try_from(std::mem::size_of_val(&basic)).map_err(std::io::Error::other)?;
+    let id_size = u32::try_from(std::mem::size_of_val(&id)).map_err(std::io::Error::other)?;
     // SAFETY: both buffers have the API's exact type/size and outlive the calls;
     // the file owns the live handle. Read the buffers only after both succeed.
     unsafe {
@@ -138,13 +187,13 @@ fn windows_identity(file: &fs::File) -> std::io::Result<(u64, [u8; 16], i64)> {
             file.as_raw_handle(),
             winfs::FileBasicInfo,
             basic.as_mut_ptr().cast(),
-            std::mem::size_of::<winfs::FILE_BASIC_INFO>() as u32,
+            basic_size,
         ) == 0
             || winfs::GetFileInformationByHandleEx(
                 file.as_raw_handle(),
                 winfs::FileIdInfo,
                 id.as_mut_ptr().cast(),
-                std::mem::size_of::<winfs::FILE_ID_INFO>() as u32,
+                id_size,
             ) == 0
         {
             return Err(std::io::Error::last_os_error());

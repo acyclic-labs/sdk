@@ -116,7 +116,7 @@ async fn configured_web_tools_reach_their_action_guards() -> Result<()> {
     };
     let search = Arc::new(ScriptedSearchProvider::new([])?);
     let mut registry = ToolRegistry::default();
-    super::WebExecutor::bind(&mut registry, Some(search.clone()))?;
+    acyclic_harness_search::web::WebExecutor::bind(&mut registry, Some(search.clone()))?;
     for (name, action, arguments) in [
         (
             "web_search",

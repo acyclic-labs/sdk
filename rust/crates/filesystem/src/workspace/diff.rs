@@ -52,9 +52,10 @@ impl<A, O> ChangeSet<A, O> {
     }
 }
 
-/// Complete path delta from the same retained producer used by paged queries.
+/// Complete path delta in cursor order, for publication's indexed-key encoder.
 pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
+    records: Option<&[crate::kernel::FileRecordChange]>,
     maximum_entries: Option<u32>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -66,7 +67,12 @@ pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
         .each_ref()
         .map(|view| view.as_ref().map(|view| view.root));
     collect_paths(
-        |accounting| crate::kernel::changed_paths::Cursor::new(roots, view.config, accounting),
+        |accounting| match records {
+            Some(records) => {
+                crate::kernel::changed_paths::Cursor::from_records(roots, view.config, records)
+            }
+            None => crate::kernel::changed_paths::Cursor::new(roots, view.config, accounting),
+        },
         view.objects,
         roots,
         maximum_entries,
@@ -129,11 +135,6 @@ async fn collect_paths<'a, O: AsyncObjectStore>(
                 let path = path.transfer_to(&mut paths.allocation, &mut paths.bytes, accounting)?;
                 paths.value.push(path);
             }
-            // The public vector API retains its historical path order. The cursor
-            // itself emits each path once, so no prefix index or coalescing is needed.
-            crate::kernel::sort_by_with_accounting(&mut paths.value, accounting, |left, right| {
-                left.path.components().cmp(right.path.components())
-            })?;
             Ok(())
         }
         .await;
@@ -213,7 +214,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
         };
         let result = async {
             let roots = [Some(from.value.root()), Some(to.value.root())];
-            collect_paths(
+            let mut paths = collect_paths(
                 |_| {
                     crate::kernel::changed_paths::Cursor::from_records(
                         roots,
@@ -227,7 +228,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
                 accounting,
                 cancellation,
             )
-            .await
+            .await?;
+            // The public vector API returns paths in namespace order.
+            let sorted = crate::kernel::sort_by_with_accounting(
+                &mut paths.value,
+                accounting,
+                |left, right| left.path.components().cmp(right.path.components()),
+            );
+            if let Err(error) = sorted {
+                paths.retire(accounting)?;
+                return Err(error.into());
+            }
+            Ok(paths)
         }
         .await;
         let to = to.retire(accounting);

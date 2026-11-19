@@ -376,4 +376,5 @@ pub(crate) use roots::CheckoutRoots;
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 pub(crate) use sweep::Worklist;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;

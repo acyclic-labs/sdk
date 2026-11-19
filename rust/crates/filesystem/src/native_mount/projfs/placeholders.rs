@@ -531,4 +531,5 @@ fn publish_ordinary_file(
 
 #[cfg(test)]
 #[path = "tests/ordinary_rename.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 mod rename_tests;

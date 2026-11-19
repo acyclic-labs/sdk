@@ -111,7 +111,7 @@ pub async fn native_signal_file<P: NativeStreamProvider + ?Sized>(
         };
         current_run_from(&current.event, agent).map_err(refused)?
     };
-    let text = signal_key_text(run, read.kind);
+    let text = signal_key_text(run, read.kind)?;
     let key = crate::executor::with_history_io(Some(&io), |work| {
         let observer = work
             .as_deref_mut()

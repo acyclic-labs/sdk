@@ -63,6 +63,7 @@ pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
+pub(crate) use serialization::borrowed_update_with_work;
 pub(crate) use serialization::canonical_digest_with_work;
 pub(crate) use serialization::count_json_bytes_trusted;
 pub(crate) use serialization::json_bytes_match;

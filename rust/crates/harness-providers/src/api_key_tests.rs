@@ -118,7 +118,7 @@ impl Responses {
                 "https://api.openai.com/v1/responses/input_tokens"
             );
             assert_eq!(request.headers["authorization"], "Bearer fixture-api-key");
-            let body = json(&request.body)?;
+            let body = acyclic_harness_provider_response::json(&request.body)?;
             assert_eq!(body["model"], "gpt-6-luna");
             assert!(body.get("stream").is_none());
             assert!(body.get("store").is_none());
@@ -126,7 +126,7 @@ impl Responses {
         }
         assert_eq!(request.url, "https://api.openai.com/v1/responses");
         assert_eq!(request.headers["authorization"], "Bearer fixture-api-key");
-        let body = json(&request.body)?;
+        let body = acyclic_harness_provider_response::json(&request.body)?;
         assert_eq!(body["model"], "gpt-6-luna");
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], true);

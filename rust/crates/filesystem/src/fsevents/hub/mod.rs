@@ -12,8 +12,10 @@
 //! ordinary directory rename/removal events, which invalidate the routes below
 //! them. One native root also keeps descriptor use independent of watch count.
 //!
-//! A stream with pending registrations is re-armed: it replays history from
-//! the older of the last event the shard delivered and each new
+//! A fresh stream starts live before its first registration returns. A
+//! registration can also join its covering stream during replay. If pending
+//! routes need a replacement stream, it replays history from the older of
+//! the last event the shard delivered and each new
 //! registration's start id. Every route drops an event at or below its
 //! floor, the last id its registration has had or did not want, so a re-arm
 //! neither loses nor repeats an event. History arrives in path order, so a
@@ -31,11 +33,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{MutexGuard, PoisonError};
 
+#[cfg(feature = "test-support")]
+pub mod stress_fixture;
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;
-
-/// The start id of a registration not yet armed: the id when it is.
-const AT_ARM: u64 = EVENT_ID_SINCE_NOW;
 
 /// One native producer covers every logical registration.
 pub(super) const SHARDS: usize = 1;
@@ -47,7 +49,6 @@ pub(super) struct Registration {
     roots: Vec<PathBuf>,
     handler: Arc<BorrowedEventHandlerFn>,
     live: AtomicBool,
-    routed: AtomicBool,
     failed: AtomicBool,
     shard: AtomicUsize,
     // A failed arm writes this before queue submission under routing custody.
@@ -69,7 +70,6 @@ impl Registration {
             roots,
             handler,
             live: AtomicBool::new(true),
-            routed: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             shard: AtomicUsize::new(0),
             terminal: UnsafeCell::new(None),
@@ -93,7 +93,7 @@ struct Shard {
     last_id: u64,
     replaying: bool,
     purge: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     arms: u64,
 }
 
@@ -109,7 +109,7 @@ impl Shard {
             last_id: 0,
             replaying: false,
             purge: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             arms: 0,
         }
     }
@@ -125,7 +125,6 @@ impl Shard {
                     floor: route.floor,
                 });
             }
-            route.registration.routed.store(true, Ordering::Release);
         }
     }
 }
@@ -170,7 +169,7 @@ pub(super) struct Hub {
     // Held by whoever replaces a shard's stream.
     arm: Mutex<()>,
     state: Mutex<State>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     armed: std::sync::Condvar,
 }
 
@@ -218,7 +217,7 @@ impl Hub {
             queue,
             arm: Mutex::new(()),
             state: Mutex::new(State { shards: Vec::new() }),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             armed: std::sync::Condvar::new(),
         }))
     }
@@ -243,45 +242,31 @@ impl Hub {
         {
             let mut state = self.state();
             let (index, shard) = state.least_loaded();
+            let was_empty = shard.load == 0;
             shard.load += registration.roots.len();
             registration.shard.store(index, Ordering::Relaxed);
+            let route = Route {
+                registration: Arc::clone(registration),
+                floor: self.current_event_id(),
+            };
             if !shard.stream.is_null()
-                && !shard.replaying
                 && shard.root.as_ref().is_some_and(|root| {
                     registration.roots.iter().all(|path| path.starts_with(root))
                 })
-                && let Ok(_arm) = self.arm.try_lock()
             {
-                // Routing custody prevents a callback from passing this floor
-                // before the route is visible. Try-only arm custody excludes a
-                // concurrent replacement without reversing the blocking order.
-                shard.route(std::iter::once(Route {
-                    registration: Arc::clone(registration),
-                    floor: self.current_event_id(),
-                }));
+                // The state lock serializes delivery and retirement with
+                // admission. A retiring stream already cleared this slot.
+                if was_empty {
+                    shard.purge = false;
+                }
+                shard.route(std::iter::once(route));
                 return Ok(());
             }
-            // It starts when its stream does, as a stream of its own would.
-            shard.pending.push(Route {
-                registration: Arc::clone(registration),
-                floor: AT_ARM,
-            });
+            shard.pending.push(route);
         }
         self.arm_all();
         if registration.failed.load(Ordering::Acquire) {
             return Err(native_error("cannot start an FSEvents stream"));
-        }
-        if !registration.routed.load(Ordering::Acquire) {
-            // Its shard is replaying and arms it once that is done; from
-            // now, its replay covers every event the registration may want.
-            let now = self.current_event_id();
-            let mut state = self.state();
-            let pending = state.of(registration).map(|shard| &mut shard.pending);
-            for route in pending.into_iter().flatten() {
-                if Arc::ptr_eq(&route.registration, registration) && route.floor == AT_ARM {
-                    route.floor = now;
-                }
-            }
         }
         Ok(())
     }
@@ -345,8 +330,7 @@ impl Hub {
     }
 
     fn arm_shard(&self, index: usize) {
-        let now = self.current_event_id();
-        let (mut batch, root, since) = {
+        let (mut batch, root, cut, replay) = {
             let mut state = self.state();
             let Some(shard) = state.shards.get_mut(index) else {
                 return;
@@ -377,29 +361,29 @@ impl Hub {
                 }
                 return;
             }
-            let mut batch = std::mem::take(&mut shard.pending);
-            for route in &mut batch {
-                if route.floor == AT_ARM {
-                    route.floor = now;
-                }
-            }
+            let batch = std::mem::take(&mut shard.pending);
             let covered = !shard.routes.is_empty()
                 || batch.iter().any(|route| {
                     route.registration.live.load(Ordering::Acquire)
                         && !route.registration.roots.is_empty()
                 });
             let root = covered.then(|| PathBuf::from("/"));
-            let since = batch
+            let cut = batch
                 .iter()
                 .map(|route| route.floor)
                 .chain((!shard.routes.is_empty()).then_some(shard.last_id))
                 .min()
-                .unwrap_or(EVENT_ID_SINCE_NOW);
-            (batch, root, since)
+                .unwrap_or(0);
+            // An existing coverage root marks a handoff. Pending watchers
+            // can already have returned during retirement, so their cut is
+            // required. At first birth, every registrant still waits for arm
+            // custody and can join a live stream before returning.
+            (batch, root, cut, shard.root.is_some())
         };
         // No callback runs between the new stream's start and the switch to
         // it, so none of its events finds it not yet the shard's.
         let suspended = Suspended::new(self.queue);
+        let since = if replay { cut } else { EVENT_ID_SINCE_NOW };
         let stream = match &root {
             Some(root) => self.create(std::array::from_ref(root), since),
             None => Ok(std::ptr::null_mut()),
@@ -409,6 +393,11 @@ impl Hub {
         let Some(shard) = state.shards.get_mut(index) else {
             return;
         };
+        if root.is_some() {
+            // Routes admitted while this stream was starting can use its
+            // coverage without a second arm.
+            batch.append(&mut shard.pending);
+        }
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
@@ -442,6 +431,8 @@ impl Hub {
                         );
                     }
                 }
+                #[cfg(any(test, feature = "test-support"))]
+                self.armed.notify_all();
                 return;
             }
         };
@@ -457,10 +448,10 @@ impl Hub {
         shard.route(batch);
         shard.stream = stream;
         shard.root = root;
-        shard.last_id = since;
-        shard.replaying = !stream.is_null();
-        shard.purge = false;
-        #[cfg(test)]
+        shard.last_id = cut;
+        shard.replaying = !stream.is_null() && replay;
+        shard.purge = !stream.is_null() && shard.load == 0;
+        #[cfg(any(test, feature = "test-support"))]
         {
             shard.arms += 1;
             self.armed.notify_all();
@@ -545,12 +536,14 @@ impl Hub {
                     continue;
                 }
                 shard.last_id = shard.last_id.max(id);
+                let stream_gap = flag & (USER_DROPPED | KERNEL_DROPPED) != 0;
                 let moved = flag & ROOT_CHANGED != 0
                     || flag & IS_DIR != 0 && flag & (ITEM_RENAMED | ITEM_REMOVED) != 0;
                 let mut route = |route: &Route, routed_flag: u32| {
-                    // Only the original native RootChanged may bypass the floor:
-                    // synthesized root changes still have ordinary event ids.
-                    if (id <= route.floor && flag & ROOT_CHANGED == 0)
+                    // Native root changes and stream gaps carry no usable cut
+                    // for the affected registrations. Synthesized root changes
+                    // keep the original event's id and must pass the floor.
+                    if (id <= route.floor && flag & ROOT_CHANGED == 0 && !stream_gap)
                         || !route.registration.live.load(Ordering::Acquire)
                     {
                         return;
@@ -563,15 +556,15 @@ impl Hub {
                         });
                     if let Some(batch) = batches.get_mut(slot) {
                         let added = batch.push(event, path, routed_flag);
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "test-support"))]
                         if added {
                             batch.ids.push(id);
                         }
-                        #[cfg(not(test))]
+                        #[cfg(not(any(test, feature = "test-support")))]
                         let _ = added;
                     }
                 };
-                if flag & (USER_DROPPED | KERNEL_DROPPED) != 0 {
+                if stream_gap {
                     for entry in shard.routes.values().flatten() {
                         route(entry, flag);
                     }
@@ -617,7 +610,7 @@ impl Hub {
                     (batch.registration.handler)(Ok(EventBatch {
                         paths: &batch.paths,
                         flags: &batch.flags,
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "test-support"))]
                         ids: &batch.ids,
                     }));
                 }));
@@ -628,7 +621,7 @@ impl Hub {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     fn streams(&self) -> usize {
         self.state()
             .shards
@@ -638,7 +631,7 @@ impl Hub {
     }
 
     /// Re-arms the registration's shard as if it had grown.
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     fn rearm(&self, registration: &Registration) {
         if let Some(shard) = self.state().of(registration) {
             shard.purge = true;
@@ -646,9 +639,56 @@ impl Hub {
         self.arm_all();
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     fn arms(&self, registration: &Registration) -> u64 {
         self.state().of(registration).map_or(0, |shard| shard.arms)
+    }
+
+    #[cfg(any(
+        all(test, any(not(unit_test_split), unit_test_host)),
+        feature = "test-support"
+    ))]
+    fn suspend_after_delivery(&self) -> Suspended {
+        extern "C" fn suspend(queue: *mut c_void) {
+            // SAFETY: the live serial queue is resumed by the returned guard.
+            unsafe { dispatch_suspend(queue) };
+        }
+        // SAFETY: suspends the queue after all earlier callbacks, before returning to the caller.
+        unsafe { dispatch_sync_f(self.queue, self.queue, suspend) };
+        Suspended(self.queue)
+    }
+
+    #[cfg(any(
+        all(test, any(not(unit_test_split), unit_test_host)),
+        feature = "test-support"
+    ))]
+    fn wait_for_arm(
+        &self,
+        registration: &Registration,
+        before: u64,
+        deadline: std::time::Duration,
+    ) -> Result<(), DemandError> {
+        let (mut state, _) = self
+            .armed
+            .wait_timeout_while(self.state(), deadline, |state| {
+                !registration.failed.load(Ordering::Acquire)
+                    && state
+                        .of(registration)
+                        .is_some_and(|shard| shard.arms <= before)
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        if registration.failed.load(Ordering::Acquire) {
+            return Err(native_error(
+                "FSEvents could not start the replacement stream",
+            ));
+        }
+        if state
+            .of(registration)
+            .is_some_and(|shard| shard.arms > before)
+        {
+            return Ok(());
+        }
+        Err(native_error("FSEvents did not arm a replacement stream"))
     }
 }
 
@@ -658,7 +698,7 @@ struct Batch {
     last: Option<usize>,
     paths: Vec<*const c_char>,
     flags: Vec<u32>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     ids: Vec<u64>,
 }
 
@@ -669,7 +709,7 @@ impl Batch {
             last: None,
             paths: Vec::new(),
             flags: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             ids: Vec::new(),
         }
     }

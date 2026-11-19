@@ -347,4 +347,5 @@ pub enum TreeMutationError {
 
 #[cfg(test)]
 #[path = "tests/tree_mutation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

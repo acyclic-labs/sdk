@@ -69,7 +69,7 @@ mod metadata;
 mod sites;
 pub mod snapshot;
 pub mod sweep;
-pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
+pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times, source_identity};
 pub use sites::{SiteCall, SiteFault};
 #[cfg(test)]
 #[cfg(loom)]
@@ -203,6 +203,7 @@ struct State {
     sites: sites::Sites,
     process: Option<Arc<process::Provider>>,
     metadata: Option<Arc<metadata::Provider>>,
+    source_identity: Option<Arc<metadata::SourceIdentityProvider>>,
 }
 
 struct Inner {

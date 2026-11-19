@@ -7,8 +7,6 @@ common --experimental_convenience_symlinks=ignore
 # Module resolution is reproducible: the committed MODULE.bazel.lock is the only result, and a command
 # fails on a stale lockfile instead of rewriting it. Update it with `bazel mod deps --lockfile_mode=update`.
 common --lockfile_mode=error
-# Share action results across both repositories, worktrees and jobs on this host.
-build --disk_cache=/var/tmp/acyclic-bazel-disk
 build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures
@@ -21,12 +19,13 @@ build --features=static_link_msvcrt
 # clippy aspect type-checks the same tree again.
 build --@rules_rust//rust/settings:clippy_driver
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
-# Pipelined compilation: a dependent crate starts on its dependency's metadata, not its finished rlib.
-build --@rules_rust//rust/settings:pipelined_compilation=true
 test --test_output=errors
 # Clippy reads the workspace thresholds. Every command carries the same value, so a build, a test and a
 # clippy run on one server share its analysis cache instead of discarding it when the flag differs.
 common --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+# Cargo.toml's [profile.dev] codegen-units, as rules_rust's setting: each compile then books the CPUs it really
+# keeps busy (rules_rust-codegen-units-resources.patch), so Bazel never runs more compile threads than its budget.
+common --@rules_rust//rust/settings:codegen_units=8
 # `--config=check` is `cargo check`: each requested crate is type-checked to its metadata, with no code
 # generation or link for it. Its dependencies are their ordinary outputs, shared with every other build.
 build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_groups=rust_check
@@ -35,6 +34,9 @@ build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_grou
 # ("Operation not permitted"). Tests on macOS therefore run outside it, as under Cargo.
 common --enable_platform_specific_config
 test:macos --strategy=TestRunner=local
+# Apple targets deploy to macOS 11, the first release on Apple silicon and rustc's own minimum for it. Bazel's
+# default, 10.11, is below what rustc supports, so every macOS compile, and every Cargo a test runs, warned on stderr.
+build:macos --macos_minimum_os=11.0 --host_macos_minimum_os=11.0
 # `--config=fmt` checks every crate's Rust sources with the toolchain's pinned rustfmt. The aspect
 # passes each crate's own edition, so a crate formats as `cargo fmt` would, and Bazel caches each
 # crate's check until one of its sources changes.

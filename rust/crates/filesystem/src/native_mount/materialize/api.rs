@@ -203,6 +203,7 @@ fn select_materialization_paths<'a>(
 
 #[cfg(test)]
 #[path = "tests/path_selection.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod path_selection_tests;
 
 #[allow(
@@ -729,6 +730,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             prepared,
             replacement,
             materialized,
+            materialize_options.materialized_view,
             cleanup_slot,
             native_work.clone(),
         )

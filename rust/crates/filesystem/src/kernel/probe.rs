@@ -1755,4 +1755,5 @@ pub enum AuthenticatedProbeError {
 
 #[cfg(test)]
 #[path = "tests/probe/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

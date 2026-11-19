@@ -1,37 +1,16 @@
+use super::return_fence_control::Omit;
 use super::*;
 use std::cell::Cell;
 use std::sync::{atomic::AtomicUsize, mpsc};
 
 thread_local! {
     static OMIT_DEADLINE: Cell<bool> = const { Cell::new(false) };
-    static OMIT: Cell<bool> = const { Cell::new(false) };
     static NOW: Cell<Option<u64>> = const { Cell::new(None) };
     static OBSERVE_DATA: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(in crate::native_mount::adapter) fn override_unix_seconds() -> Option<u64> {
     NOW.get()
-}
-
-pub(in crate::native_mount::adapter) fn omitted() -> bool {
-    OMIT.get()
-}
-
-struct Omit(bool);
-impl Omit {
-    fn enter(value: bool) -> Self {
-        Self(OMIT.replace(value))
-    }
-}
-impl Drop for Omit {
-    fn drop(&mut self) {
-        OMIT.set(self.0);
-    }
-}
-
-pub(in crate::native_mount) fn with_omitted<T>(broken: bool, run: impl FnOnce() -> T) -> T {
-    let _old = Omit::enter(broken);
-    run()
 }
 
 struct Pause {
@@ -415,7 +394,7 @@ fn revoked_return_after_prefix(
         }
     });
     pending.recv()?;
-    let policy = crate::access::fixtures::denied(crate::access::Action::Read, "**");
+    let policy = crate::access::fixtures::denied(crate::access::Action::Read, "**")?;
     let publication = (|| -> Result<(), Box<dyn std::error::Error>> {
         if matches!(change, Change::Policy) {
             super::policy_refresh::publish(&source, &policy)?;

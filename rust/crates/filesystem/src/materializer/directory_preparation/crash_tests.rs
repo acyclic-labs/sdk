@@ -20,7 +20,10 @@ fn spawn(root: &Path, cut: Option<u64>) -> std::io::Result<Child> {
 }
 
 fn succeeds(child: Child) -> TestResult {
-    let output = child.wait_with_output()?;
+    succeeds_output(child.wait_with_output()?)
+}
+
+fn succeeds_output(output: std::process::Output) -> TestResult {
     if !output.status.success() {
         return Err(format!(
             "publication child failed: {}\n{}\n{}",
@@ -122,6 +125,7 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
     let baseline = root.path().join("baseline");
     seed.restore(&baseline)?;
     let writes = runtime.block_on(publish(&baseline, None, false))?;
+    eprintln!("TIMING baseline writes={writes}");
     assert!(
         writes > 3,
         "the probe did not cover journal, mkdir, and publication writes"
@@ -142,6 +146,9 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         // Every transition and recovery still runs against independent files
         // with the original physical write/sync probe and durable semantics.
         seed.restore(&path)?;
+        let restore_started = std::time::Instant::now();
+        eprintln!("TIMING cut {cut} restore={:?}", restore_started.elapsed());
+        let cut_started = std::time::Instant::now();
         let output = spawn(&path, Some(cut))?.wait_with_output()?;
         assert_eq!(
             output.status.code(),
@@ -150,7 +157,19 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        succeeds(spawn(&path, None)?).map_err(|error| format!("recovery cut {cut}: {error}"))?;
+        eprintln!(
+            "TIMING cut {cut} child={:?} stderr: {}",
+            cut_started.elapsed(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let recovery_started = std::time::Instant::now();
+        let recovery = spawn(&path, None)?.wait_with_output()?;
+        eprintln!(
+            "TIMING cut {cut} recovery={:?} stderr: {}",
+            recovery_started.elapsed(),
+            String::from_utf8_lossy(&recovery.stderr)
+        );
+        succeeds_output(recovery).map_err(|error| format!("recovery cut {cut}: {error}"))?;
         assert_eq!(
             std::fs::read(path.join("checkout/file"))?,
             b"rebased generation"
@@ -168,17 +187,24 @@ fn publication_write_child() -> TestResult {
     };
     let root = PathBuf::from(root);
     let cut: u64 = std::env::var("ACYCLIC_PUBLICATION_CRASH_CUT")?.parse()?;
+    let started = std::time::Instant::now();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime
-        .block_on(publish(&root, (cut != 0).then_some(cut), false))
-        .map(|_| ())
+    eprintln!("TIMING child cut={cut} runtime={:?}", started.elapsed());
+    let writes = runtime.block_on(publish(&root, (cut != 0).then_some(cut), false))?;
+    eprintln!(
+        "TIMING child cut={cut} writes={writes} total={:?}",
+        started.elapsed()
+    );
+    Ok(())
 }
 
 async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64> {
+    let started = std::time::Instant::now();
     let cancellation = crate::CancellationToken::new();
     let fs = crate::Fs::local(crate::LocalOptions::new(root.join("fs"))).await?;
+    eprintln!("TIMING publish fs={:?}", started.elapsed());
     let manifest = root.join("generations");
     let workspace = if manifest.exists() {
         fs.open_workspace("publication", crate::WorkBudget::UNBOUNDED, &cancellation)
@@ -218,6 +244,7 @@ async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64
     if prepare {
         return Ok(0);
     }
+    eprintln!("TIMING publish workspace={:?}", started.elapsed());
     let ids = std::fs::read(&manifest)?;
     let from = GenerationId::new(crate::Digest::from_bytes(ids[..32].try_into()?));
     let to = GenerationId::new(crate::Digest::from_bytes(ids[32..].try_into()?));
@@ -232,6 +259,7 @@ async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64
         .map_err(|failure| failure.error)?
         .value;
     let state = crate::LocalCoreStateStore::new(root.join("state"));
+    eprintln!("TIMING publish generations={:?}", started.elapsed());
     let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let checkout = root.join("checkout");
@@ -241,6 +269,8 @@ async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64
         writes: 0,
         stop_before: cut,
     });
+    eprintln!("TIMING publish pre-call={:?}", started.elapsed());
+    let call_started = std::time::Instant::now();
     let result = publish_native_generation_transition(
         &from,
         &to,
@@ -262,6 +292,7 @@ async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64
     )
     .await
     .map_err(|failure| failure.error)?;
+    eprintln!("TIMING publish call={:?}", call_started.elapsed());
     let writes = work
         .state
         .lock()
@@ -269,6 +300,8 @@ async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64
         .as_ref()
         .ok_or("missing write probe")?
         .writes;
+    eprintln!("TIMING publish post-call={:?}", started.elapsed());
+    eprintln!("TIMING publish transition={:?}", started.elapsed());
     work.state.lock().write_probe = None;
     assert_eq!(result.value.phase, MaterializationPhase::Applied);
     assert_eq!(std::fs::read(checkout.join("file"))?, b"rebased generation");

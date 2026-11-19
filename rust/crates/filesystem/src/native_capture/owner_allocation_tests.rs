@@ -77,7 +77,7 @@ fn production_capture_has_no_outer_file_owner_allocation() -> Result<(), Box<dyn
     // allocation count by sweeping or growing the global weak-entry registry.
     let _health =
         NativeFile::from_file(std::fs::File::open(&file)?, None).map_err(|(error, _)| error)?;
-    let run = |old| {
+    let run = |old| -> Result<_, Box<dyn std::error::Error>> {
         let _owner = OldOwner(OLD_OWNER.replace(old));
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .unwrap();
@@ -90,30 +90,30 @@ fn production_capture_has_no_outer_file_owner_allocation() -> Result<(), Box<dyn
                 &root,
                 &path,
                 &snapshot,
-                Some(8),
+                (Some(8), true),
                 &scope.native,
                 &mut bytes,
             ));
             result = Some((staged, bytes));
         });
-        let (staged, bytes) = result.unwrap();
-        let staged = staged.unwrap().ranges;
-        assert_eq!(bytes, 1);
-        assert_eq!(staged.len(), 1);
-        assert_eq!(staged[0].1.logical_bytes(), 1);
+        let (staged, bytes) = result.ok_or("capture did not return a result")?;
+        let staged = staged?;
+        assert_eq!(bytes, 0);
+        assert!(staged.ranges.is_empty());
+        assert_eq!(staged.inline_content.as_deref(), Some([0x5a].as_slice()));
         drop(staged);
         drop(scope);
-        measured
+        Ok(measured)
     };
-    // Warm the native handle path, executor, source codec and store before counting.
-    run(false);
-    run(true);
-    let borrowed = run(false);
-    let old = run(true);
-    let repeated = run(false);
+    // Warm the native handle path and executor before counting.
+    run(false)?;
+    run(true)?;
+    let borrowed = run(false)?;
+    let old = run(true)?;
+    let repeated = run(false)?;
     eprintln!("CAPTURE_ALLOC borrowed={borrowed:?} old={old:?} repeated={repeated:?}");
-    // Compare the original owner operation on the same source and store. The
-    // complete staging total also contains authenticated storage allocations.
+    // Inline capture exercises the same owner and actual source read without
+    // measuring the independent authenticated-storage allocation path.
     assert_eq!(borrowed, repeated);
     assert_eq!(old.count_total, borrowed.count_total + 1);
     assert_eq!(

@@ -394,6 +394,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_workspace))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

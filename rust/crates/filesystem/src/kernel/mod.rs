@@ -17,6 +17,10 @@ mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
 mod content_eq;
+#[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
+#[path = "tests/deterministic.rs"]
+mod deterministic;
 pub(crate) mod direct_paths;
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzzing"))]
@@ -153,12 +157,12 @@ pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
 };
+pub(crate) use codec::Decoder;
 pub(crate) use codec::Encoder;
 pub use codec::{
-    CanonicalDecodeError, DecodeLimits, EncodeAllocationStep, EncodeError, EncodeWorkStep,
-    ReadAllocationStep, encode,
+    CanonicalDecodeError, CanonicalInvariant, DecodeLimits, EncodeAllocationStep, EncodeError,
+    EncodeWorkStep, ReadAllocationStep, encode,
 };
-pub(crate) use codec::{CanonicalInvariant, Decoder};
 pub use export::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest, validate_generation_export_manifest,
@@ -243,14 +247,15 @@ pub(crate) use publication::authority_actor;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use publication::codec_fuzz as publication_codec_fuzz;
+pub(crate) use publication::{
+    EVIDENCE_DOMAIN, OriginalEvidence, PreparedPublication, PublicationPreconditions,
+    RetainedPublication, contextual_publication_fingerprint, prepare_publication,
+    verify_original_publication_evidence,
+};
 pub use publication::{
     GroupAbort, PublicationCache, PublicationError, PublicationFailure, PublicationIntent,
     PublicationOwner, PublicationReceipt, PublishGenerationRequest, PublishedGeneration,
     decode_published_generation, publish_generation,
-};
-pub(crate) use publication::{
-    OriginalEvidence, PreparedPublication, PublicationPreconditions, RetainedPublication,
-    contextual_publication_fingerprint, prepare_publication, verify_original_publication_evidence,
 };
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,

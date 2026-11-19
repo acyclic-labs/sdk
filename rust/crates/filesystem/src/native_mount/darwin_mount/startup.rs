@@ -1,5 +1,6 @@
 use super::*;
 use crate::materializer::NativeWorkReservation;
+use std::os::fd::AsRawFd;
 
 pub(super) struct DriverSessionResources {
     pub(super) state: Mutex<LoopState>,
@@ -376,6 +377,13 @@ fn run_loop(
             .unwrap_or_else(PoisonError::into_inner);
     }
     let aborted = state.control.start_aborted;
+    let fenced = state.retirement.is_some();
+    let fence = state
+        .retirement
+        .as_ref()
+        .and_then(|packet| packet.destination_guard.as_ref())
+        .and_then(|guard| guard.file.as_ref())
+        .map_or(-1, |file| file.as_raw_fd());
     let (context, destination, pointers) = state
         .resources
         .as_ref()
@@ -386,6 +394,11 @@ fn run_loop(
         if aborted {
             return Err(NativeMountError::ControlPending);
         }
+        if fenced && fence < 0 {
+            return Err(NativeMountError::Lifecycle(
+                "the Darwin mount custodian requires its destination fence",
+            ));
+        }
         original.charge(WRITE_WORK)?;
         let mut interrupted = 0;
         let argc = c_int::try_from(
@@ -395,17 +408,22 @@ fn run_loop(
                 .unwrap_or(pointers.len()),
         )
         .map_err(|_| driver_errno(libc::EOVERFLOW))?;
-        // SAFETY: the provider retains SDK, context, arguments, destination and callback owner.
+        let owner_image = acyclic_fs_darwin_bridge::MOUNT_OWNER_IMAGE;
+        // SAFETY: the provider retains its SDK session, callback storage and retirement
+        // fence until it reports exit. The custodian image is static.
         let status = unsafe {
             acyclic_fs_darwin_mount_run(
                 driver.pointer() as *mut c_void,
                 argc,
                 pointers.as_ptr().cast(),
                 destination.as_ptr(),
-                &context as *const CallbackTarget as usize,
+                context.address(),
                 report_mounted,
                 Arc::as_ptr(&driver).cast_mut().cast(),
                 &mut interrupted,
+                owner_image.as_ptr(),
+                owner_image.len(),
+                fence,
             )
         };
         if interrupted != 0 {

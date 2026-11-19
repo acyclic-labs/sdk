@@ -382,4 +382,5 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
 
 #[cfg(test)]
 #[path = "watch_paths_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;

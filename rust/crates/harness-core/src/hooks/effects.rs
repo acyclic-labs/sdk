@@ -68,7 +68,6 @@ pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::Componen
 /// no outcome returns `None`.
 /// The original execution journal's child-effect claim excludes concurrent
 /// attempts before any replay read; a live duplicate refuses with conflict.
-
 pub async fn run_once<F, Fut>(
     context: &crate::runtime::ToolContext,
     event: HookEvent,

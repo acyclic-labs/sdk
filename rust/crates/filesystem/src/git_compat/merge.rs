@@ -103,6 +103,7 @@ pub async fn git_merge_resolution<
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

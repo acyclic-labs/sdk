@@ -46,7 +46,7 @@ pub async fn verify_model_contents_with_summary_authorization<
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Unauthorized,
-                        "attenuated task cannot read model content",
+                        ungranted_model_content(file),
                     ));
                 }
                 validate_model_binding(binding, scope, io)?;
@@ -84,12 +84,26 @@ pub(super) fn validate_model_content_scope(
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
-                "attenuated task cannot read model content",
+                ungranted_model_content(file),
             ));
         }
         validate_model_binding(binding, scope, io)?;
     }
     Ok(())
+}
+
+fn ungranted_model_content(file: &crate::conversation::FileRef) -> &'static str {
+    if file.volume().is_agent_journal()
+        && crate::core::journal_input_requires_selection(file.path())
+    {
+        if crate::core::journal_turn_input_directory(file.path()).is_some() {
+            "attenuated task cannot read steering outside its selected journal directory"
+        } else {
+            "attenuated task cannot read staged input without its original journal selection"
+        }
+    } else {
+        "attenuated task cannot read selected model content"
+    }
 }
 
 fn validate_model_content_limits(

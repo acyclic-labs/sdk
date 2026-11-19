@@ -177,6 +177,25 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             return Err("prompt did not retain a message".into());
         };
         assert_eq!(message.id, id);
+        // The turn's reader is granted the exact input it selected, never the
+        // whole journal. Mirror that selection here before expanding it.
+        let mut external = vec![(*message.body).clone()];
+        external.extend(message.attachments.as_deref().cloned());
+        let selected = agent_authority(
+            bound.issuer(),
+            bound.admission(),
+            root,
+            &state.volumes,
+            &external,
+        )
+        .await?;
+        let reader = FilesystemContentVerifier::new(
+            bound.volumes().clone(),
+            &selected.verifier,
+            &selected.scope,
+            64 * 1024,
+            None,
+        )?;
         let peer_body = message.body.clone();
         let input = model_input(&TurnInput::Message {
             from: message.from,

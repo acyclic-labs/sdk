@@ -46,11 +46,33 @@ impl OwnedSourceChunk {
         if self.intrinsic {
             return Ok(self.bytes);
         }
-        let owned = crate::kernel::Owned::new(
-            self.bytes,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
-            self.logical_owned_bytes,
-        );
+        self.retain_accounted(KernelOwnedAllocation::Standalone, accounting)
+    }
+
+    /// Transfers bytes returned by a separately accounted source invocation.
+    pub(crate) fn retain_received_bytes(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<acyclic_stream::OwnedBytes, FsError> {
+        if self.intrinsic {
+            return Ok(self.bytes);
+        }
+        let bytes = self.logical_owned_bytes;
+        let (allocation, admitted) = accounting.record_actual_owned(bytes)?;
+        if let Err(error) = admitted {
+            drop(self);
+            crate::kernel::retire_allocation(allocation, bytes, accounting)?;
+            return Err(error);
+        }
+        self.retain_accounted(allocation, accounting)
+    }
+
+    fn retain_accounted(
+        self,
+        allocation: KernelOwnedAllocation,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<acyclic_stream::OwnedBytes, FsError> {
+        let owned = crate::kernel::Owned::new(self.bytes, allocation, self.logical_owned_bytes);
         crate::kernel::allocation::retained::Retained::from_owned(owned, accounting)?
             .into_bytes((), accounting)
             .map(Into::into)
@@ -63,6 +85,19 @@ impl OwnedSourceChunk {
             logical_owned_bytes,
             intrinsic: false,
         }
+    }
+
+    pub(crate) fn from_accounted_read(
+        bytes: acyclic_stream::OwnedBytes,
+        logical_owned_bytes: u64,
+        accounting: &KernelAccounting<'_>,
+    ) -> Self {
+        let _ = accounting;
+        #[cfg(not(target_arch = "wasm32"))]
+        if accounting.native_work().is_some() {
+            return Self::intrinsic(bytes, logical_owned_bytes);
+        }
+        Self::claimed(bytes, logical_owned_bytes)
     }
 
     /// Bytes already retained by their original native allocation owner.

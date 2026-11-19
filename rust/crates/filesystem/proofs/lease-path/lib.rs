@@ -133,12 +133,15 @@ mod tests {
     #[should_panic(expected = "index out of bounds")]
     fn the_production_formatter_rejects_116_bytes_at_maximum_expiry() {
         let mut text = [0; 116];
-        encoding::write_buffer(
-            [0; 16],
-            [0; 16],
-            u64::MAX,
-            encoding::length(u64::MAX),
-            &mut text,
+        assert!(
+            encoding::write_buffer(
+                [0; 16],
+                [0; 16],
+                u64::MAX,
+                encoding::length(u64::MAX),
+                &mut text,
+            )
+            .is_ok()
         );
     }
 }

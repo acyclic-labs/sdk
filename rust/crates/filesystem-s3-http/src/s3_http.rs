@@ -4,7 +4,6 @@
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`acyclic_fs::S3Workspace`].
 
-use acyclic_fs::WorkBudget;
 use acyclic_fs::kernel::AsyncBlobSource;
 #[cfg(test)]
 use acyclic_fs::s3_multipart::read_multipart_snapshot;
@@ -24,6 +23,7 @@ use acyclic_fs_format::object_reference::ObjectId;
 use acyclic_fs_format::s3_limits::FilesystemS3Limits;
 #[cfg(test)]
 use acyclic_fs_format::s3_limits::S3MultipartRetentionLimits;
+use acyclic_fs_work::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 #[cfg(test)]
 use acyclic_stream::StreamProviderExt as _;
 use async_trait::async_trait;

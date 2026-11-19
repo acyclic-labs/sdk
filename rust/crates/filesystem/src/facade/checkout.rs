@@ -2,6 +2,7 @@ use super::*;
 
 #[cfg(test)]
 #[path = "../tests/facade/observed_generation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod tests;
 
 #[derive(Clone, Copy, Eq, PartialEq)]

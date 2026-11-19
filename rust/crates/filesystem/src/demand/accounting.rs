@@ -51,9 +51,10 @@ impl DemandWork {
         let saved = std::mem::replace(field(self), value);
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
+        #[cfg(any(not(unit_test_split), unit_test_foundation))]
         let restore = !super::scope_tests::omit_restore();
-        #[cfg(not(all(test, not(loom))))]
+        #[cfg(not(all(test, not(loom), any(not(unit_test_split), unit_test_foundation),)))]
         let restore = true;
         if restore {
             *field(self) = saved;

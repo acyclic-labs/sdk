@@ -120,4 +120,5 @@ pub(crate) fn authority_actor(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests;

@@ -1,6 +1,7 @@
 // The ordinary append builder contributes at most nine transaction items;
 // every member can additionally carry the three source-policy fences.
-pub(crate) const MAX_AUTHORITY_GROUP_MEMBERS: usize = acyclic_stream::MAX_ITEMS / 12;
+/// Maximum members in one filesystem authority group within the stream command limit.
+pub const MAX_AUTHORITY_GROUP_MEMBERS: usize = acyclic_stream::MAX_ITEMS / 12;
 
 use super::*;
 mod cost;

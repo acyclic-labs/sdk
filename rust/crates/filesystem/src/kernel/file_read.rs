@@ -660,6 +660,7 @@ fn failed(
 
 #[cfg(test)]
 #[path = "tests/file_read.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 pub(crate) fn decode_owned<T>(

@@ -489,6 +489,7 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

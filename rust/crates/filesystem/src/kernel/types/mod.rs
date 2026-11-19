@@ -28,4 +28,5 @@ pub use extent::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError};
 
 #[cfg(test)]
 #[path = "../tests/types.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -3,10 +3,10 @@ use std::marker::PhantomData;
 
 /// Workspace-file receipts are an unsupported persisted format. Refuse their
 /// original operation rather than reading a user path or applying it again.
-pub(in crate::filesystem) fn publication_evidence<'a>(
-    evidence: Option<&'a [u8]>,
+pub(in crate::filesystem) fn publication_evidence<T>(
+    evidence: Option<T>,
     io: Option<&PreparationIo>,
-) -> Result<&'a [u8]> {
+) -> Result<T> {
     evidence.ok_or_else(|| {
         stock_boundary(
             io,

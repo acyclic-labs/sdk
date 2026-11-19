@@ -17,16 +17,8 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
-        .max_blocking_threads(1)
         .enable_all()
         .build()?;
-    let (blocking_started_tx, blocking_started_rx) = std::sync::mpsc::sync_channel(0);
-    let (release_blocker_tx, release_blocker_rx) = std::sync::mpsc::sync_channel(0);
-    let blocker = runtime.spawn_blocking(move || {
-        let _ = blocking_started_tx.send(());
-        let _ = release_blocker_rx.recv();
-    });
-    blocking_started_rx.recv()?;
 
     runtime.block_on(async move {
         let directory = tempfile::tempdir()?;
@@ -35,11 +27,12 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
         let anchor = OwnershipAnchor::new(ownership);
         let root = directory.path().to_path_buf();
         let (submitted_tx, submitted_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         {
             let mut hook = JOURNAL_OPEN_SUBMITTED
                 .lock()
                 .map_err(|_| "journal-open test hook was poisoned")?;
-            *hook = Some((root.clone(), submitted_tx));
+            *hook = Some((root.clone(), submitted_tx, release_rx));
         }
         let opening = tokio::spawn(
             async move {
@@ -49,7 +42,8 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
             .with_subscriber(dispatch),
         );
 
-        // The occupied worker holds the original submitted Journal::open.
+        // The real Journal::open is running on its persistence worker and holds
+        // the ownership anchor until this test releases it.
         submitted_rx.await?;
         opening.abort();
         let cancelled = opening.await;
@@ -60,8 +54,7 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
         );
         let ownership_retained = Arc::clone(&lifecycle).try_lock_owned().is_err();
 
-        release_blocker_tx.send(())?;
-        blocker.await?;
+        release_tx.send(())?;
         drop(Arc::clone(&lifecycle).lock_owned().await);
         assert!(
             ownership_retained,

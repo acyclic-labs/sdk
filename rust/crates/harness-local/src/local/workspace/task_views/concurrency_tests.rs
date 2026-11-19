@@ -8,10 +8,16 @@ struct GatedOwner {
 
 impl ViewOwner for GatedOwner {
     fn verify(&self) -> BoxProviderFuture<'_, Result<()>> {
-        let gate = self.gate.lock().unwrap().take();
+        let gate = self
+            .gate
+            .lock()
+            .map_err(storage)
+            .map(|mut gate| gate.take());
         Box::pin(async move {
-            if let Some((entered, release)) = gate {
-                entered.send(()).unwrap();
+            if let Some((entered, release)) = gate? {
+                entered
+                    .send(())
+                    .map_err(|_| storage("task view observer closed"))?;
                 release.await.map_err(storage)?;
             }
             Ok(())

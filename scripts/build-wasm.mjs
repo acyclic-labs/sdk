@@ -16,7 +16,7 @@ const packages = wasmPackages;
 
 async function buildWasm() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  checkByteSnapshotBoundary(join(root, "rust/crates/harness/src/wasm"));
+  checkByteSnapshotBoundary(join(root, "rust/crates/harness-browser/src/wasm"));
 
   const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
 

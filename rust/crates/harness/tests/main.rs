@@ -23,15 +23,6 @@ mod history_selection;
 #[cfg(feature = "test-support")]
 #[cfg(not(loom))]
 mod model_tool_call;
-#[cfg(feature = "test-support")]
-#[cfg(not(loom))]
-mod portable_text_tools;
-#[cfg(feature = "test-support")]
-#[cfg(not(loom))]
-mod retained_content;
-#[cfg(feature = "test-support")]
-#[cfg(not(loom))]
-mod volume_composition;
 
 #[cfg(feature = "test-support")]
 #[path = "cases/client_mention_attachments.rs"]
@@ -94,9 +85,6 @@ mod client_diff;
 #[cfg(not(loom))]
 mod local_cloud_actors;
 
-#[cfg(all(not(loom), feature = "test-support"))]
-mod filesystem_access;
-
 #[cfg(all(
     not(loom),
     target_os = "linux",
@@ -113,3 +101,8 @@ mod skills_context;
 
 #[cfg(all(loom, feature = "model-checking"))]
 mod e2e_progress_model;
+
+#[path = "native_receipt.rs"]
+mod native_receipt;
+#[path = "plan_markdown_cases.rs"]
+mod plan_markdown_cases;

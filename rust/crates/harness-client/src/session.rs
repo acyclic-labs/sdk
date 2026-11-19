@@ -15,7 +15,8 @@ use std::{
 };
 
 mod subscription;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod viewport_tests;
 mod views;
 pub(crate) use subscription::Interest;
@@ -680,21 +681,17 @@ impl WireSession {
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<Option<SessionEvent>, WireSessionError>> {
-        loop {
-            match self.ready.poll_next(context) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => {
-                    return Poll::Ready(Err(WireSessionError::Stream(error)));
-                }
-                Poll::Ready(Ok(None)) => return Poll::Ready(Ok(None)),
-                Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => {
-                    context.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-                Poll::Ready(Ok(Some((interest, outcome)))) => {
-                    let outcome = self.fold(&interest, outcome);
-                    return Poll::Ready(Ok(Some((interest, outcome))));
-                }
+        match self.ready.poll_next(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(error)) => Poll::Ready(Err(WireSessionError::Stream(error))),
+            Poll::Ready(Ok(None)) => Poll::Ready(Ok(None)),
+            Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => {
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Poll::Ready(Ok(Some((interest, outcome)))) => {
+                let outcome = self.fold(&interest, outcome);
+                Poll::Ready(Ok(Some((interest, outcome))))
             }
         }
     }

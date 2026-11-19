@@ -5,7 +5,7 @@ use acyclic_fs::{
 };
 use acyclic_fs_work::performance::WorkBudget;
 
-use crate::transaction::{allow, commit};
+use crate::git_history::transaction::{allow, commit};
 
 type MemoryWorkspace = Workspace<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryGeneration = Generation<MemoryAuthorityBackend, MemoryObjectBackend>;

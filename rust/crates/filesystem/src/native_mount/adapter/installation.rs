@@ -282,6 +282,7 @@ fn check_mutation_deadline(
     clock: &crate::native_mount::clock::Clock,
 ) -> Result<(), MountSourceError> {
     #[cfg(test)]
+    #[cfg(any(not(unit_test_split), unit_test_mount))]
     if tests::return_fence::omitted_deadline() {
         return Ok(());
     }

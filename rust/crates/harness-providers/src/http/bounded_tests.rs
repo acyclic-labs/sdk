@@ -57,7 +57,7 @@ fn relocation_requires_credit_for_both_original_and_replacement_buffers() -> Res
                 "relocation was admitted without overlap credit"
             );
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes(), Ok(baseline));
     }
     Ok(())
 }
@@ -86,8 +86,8 @@ proptest::proptest! {
             if admitted {
                 let body = result.unwrap();
                 proptest::prop_assert_eq!(body.bytes.as_slice(), recorded.as_slice());
-                proptest::prop_assert_eq!(work.receipt().items_examined, chunks);
-                proptest::prop_assert!(work.receipt().bytes_copied < 3 * recorded.len() as u64);
+                proptest::prop_assert_eq!(work.receipt().unwrap().items_examined, chunks);
+                proptest::prop_assert!(work.receipt().unwrap().bytes_copied < 3 * recorded.len() as u64);
                 proptest::prop_assert_eq!(body.custody.as_ref().unwrap().bytes(), 64 + body.bytes.capacity() as u64);
                 drop(body);
                 // Restore the removed counter: byte-valid bodies can exceed
@@ -104,7 +104,7 @@ proptest::proptest! {
                     ), ..
                 })), "the caller's item allowance must end collection");
             }
-            proptest::prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            proptest::prop_assert_eq!(work.live_allocation_bytes(), Ok(baseline));
         }
     }
 }

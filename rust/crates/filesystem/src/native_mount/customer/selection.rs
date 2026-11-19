@@ -308,6 +308,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod tests {
     use super::*;
     use crate::native_mount::{NativeAccessOwner, NativeMountCallbackFuture};

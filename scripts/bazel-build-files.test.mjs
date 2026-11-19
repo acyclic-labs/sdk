@@ -142,6 +142,27 @@ test("a patched crate uses crate-universe spokes for its transitive registry dep
   } finally { rmSync(root, {recursive: true, force: true}); }
 });
 
+test("compiler memory bookings follow each target's Rust inputs", () => {
+  const { root, run } = fixture();
+  try {
+    mkdirSync(join(root, "member/tests"));
+    writeFileSync(join(root, "member/build.rs"), "fn main() {}\n");
+    writeFileSync(join(root, "member/tests/main.rs"), "#[test]\nfn sample() {}\n// " + "x".repeat(400_000) + "\n");
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const result = run("write");
+    assert.equal(result.status, 0, result.stderr);
+    const rules = readFileSync(join(root, "member/BUILD.bazel"), "utf8").split(/\n\)\n/);
+    const ruleFor = name => rules.find(rule => rule.includes(`    name = "${name}",`));
+    assert.match(ruleFor("build_script"), /tags = \["resources:memory:256"\]/);
+    assert.match(ruleFor("member"), /tags = \["resources:memory:256"\]/);
+    assert.match(ruleFor("member_test_cases"), /tags = \["manual","resources:memory:256"\]/);
+    assert.match(ruleFor("main_cases"), /tags = \["manual","resources:memory:512"\]/);
+    assert.doesNotMatch(ruleFor("main"), /resources:memory/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("only a package that declares test-env-inherit gives its tests those host variables", () => {
   const { root, run } = fixture();
   const manifest = join(root, "member/Cargo.toml");
@@ -172,7 +193,7 @@ test("an uncacheable test tag or host test environment is refused", () => {
     assert.equal(run("write").status, 0, "a commented-out setting is not a setting");
     rmSync(join(root, ".bazelrc"));
     const script = join(root, "scripts/bazel-build-files.mjs");
-    writeFileSync(script, readFileSync(script, "utf8").replace('["tags", q(["manual"])]', '["tags", q(["manual", "external"])]'));
+    writeFileSync(script, readFileSync(script, "utf8").replace('q(["manual", ...tags])', 'q(["manual", "external", ...tags])'));
     const tag = run("write");
     assert.notEqual(tag.status, 0);
     assert.match(tag.stderr, /STEP_FAILED bazel-build-files: member\/BUILD\.bazel tags a test external/);
@@ -205,6 +226,22 @@ test("every toolchain builds the dev profile's opt-level, and a profile Bazel ca
   }
 });
 
+test("the dev profile's codegen-units reaches Bazel only as rules_rust's setting, which books each compile at its parallelism", () => {
+  const { root, run } = fixture();
+  try {
+    writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["member"]\nexclude = ["local"]\nresolver = "3"\n\n[profile.dev]\nopt-level = 1\ncodegen-units = 8\n');
+    const refused = run("write");
+    assert.notEqual(refused.status, 0);
+    assert.ok(refused.stderr.includes('STEP_FAILED bazel-build-files: .bazelrc lacks "common --@rules_rust//rust/settings:codegen_units=8"'), refused.stderr);
+    writeFileSync(join(root, ".bazelrc"), "common --@rules_rust//rust/settings:codegen_units=8\n");
+    assert.equal(run("write").status, 0);
+    // A rustc flag would make each compile run eight code generators while Bazel books it one CPU.
+    assert.doesNotMatch(readFileSync(join(root, "cargo.MODULE.bazel"), "utf8"), /codegen-units/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a nextest capability profile's cases leave the default target for a manual one, and an unknown filter is refused", () => {
   const { root, run } = fixture();
   try {
@@ -221,6 +258,111 @@ test("a nextest capability profile's cases leave the default target for a manual
       assert.notEqual(refused.status, 0, filter);
       assert.match(refused.stderr, /STEP_FAILED bazel-build-files: nextest profile pg filter/, filter);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unit and integration test shards run their own binaries, while integration tests link the library", () => {
+  const { root, run } = fixture();
+  try {
+    const manifest = join(root, "member/Cargo.toml");
+    writeFileSync(manifest, readFileSync(manifest, "utf8") +
+      '\n[package.metadata.bazel]\nunit-test-shards = 8\nintegration-test-shards = 4\nunit-test-only-sources = ["src/unit.rs"]\n');
+    const lib = join(root, "member/src/lib.rs");
+    writeFileSync(lib, readFileSync(lib, "utf8") + '\n#[cfg(test)]\nmod unit;\n');
+    writeFileSync(join(root, "member/src/unit.rs"), '#[test]\nfn unit_case() {}\n');
+    mkdirSync(join(root, "member/tests"));
+    writeFileSync(join(root, "member/tests/api.rs"), '#[test]\nfn api_case() { assert_eq!(member::one(), 1); }\n');
+    mkdirSync(join(root, ".config"));
+    writeFileSync(join(root, ".config/nextest.toml"), '[profile.pg]\ndefault-filter = "test(pg::capability::)"\n');
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const generated = run("write");
+    assert.equal(generated.status, 0, generated.stderr);
+    const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    assert.equal(build.match(/crate_root = "src\/lib\.rs"/g)?.length, 2);
+    assert.match(build, /rust_test\(\n    name = "member_test_cases",\n[^]*?crate_root = "src\/lib\.rs"/);
+    assert.match(build, /name = "member_test",\n    binary = ":member_test_cases",\n[^)]*shard_count = 8,/);
+    assert.match(build, /name = "member_test_pg",\n    binary = ":member_test_cases",\n[^)]*only = "pg::capability::"/);
+    assert.match(build, /rust_test\(\n    name = "api_cases",\n    crate_root = "tests\/api.rs",\n[^]*?deps = \[\s+":member",/);
+    assert.match(build, /name = "api",\n    binary = ":api_cases",\n[^)]*shard_count = 4,/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the generator refuses multiple integration binaries, repeated roots and duplicate unit areas", () => {
+  const { root, run } = fixture();
+  const manifest = join(root, "member/Cargo.toml");
+  const original = readFileSync(manifest, "utf8");
+  try {
+    mkdirSync(join(root, "member/tests"));
+    for (const name of ["first", "second"]) {
+      writeFileSync(join(root, "member/tests", `${name}.rs`), "#[test] fn case() {}\n");
+    }
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const multiple = run("write");
+    assert.equal(multiple.status, 1);
+    assert.match(multiple.stderr, /member has multiple integration test roots/);
+    writeFileSync(manifest, original.replace("[package]\n", "[package]\nautotests = false\n") +
+      '\n[[test]]\nname = "second_library"\npath = "src/lib.rs"\n');
+    const repeated = run("write");
+    assert.equal(repeated.status, 1);
+    assert.match(repeated.stderr, /member target second_library uses the library as its crate root/);
+    writeFileSync(manifest, original.replace("[package]\n", "[package]\nautotests = false\n") +
+      '\n[package.metadata.bazel]\nunit-test-partitions = ["first", "first"]\n');
+    const partitions = run("write");
+    assert.equal(partitions.status, 1);
+    assert.match(partitions.stderr, /member unit-test-partitions must name distinct Rust cfg areas/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unit test areas compile separately and include only their reachable test sources", () => {
+  const { root, run } = fixture();
+  try {
+    const manifest = join(root, "member/Cargo.toml");
+    writeFileSync(manifest, readFileSync(manifest, "utf8") +
+      '\n[package.metadata.bazel]\nunit-test-partitions = ["first", "second"]\nunit-test-only-sources = ["src/unit/**"]\nlinked-unit-tests = ["linked"]\n');
+    const lib = join(root, "member/src/lib.rs");
+    writeFileSync(lib, readFileSync(lib, "utf8") + [
+      '',
+      '#[cfg(test)]',
+      '#[path = "unit/first.rs"]',
+      '#[cfg(any(not(unit_test_split), unit_test_first))]',
+      'mod first;',
+      '#[cfg(test)]',
+      '#[cfg(any(not(unit_test_split), unit_test_second))]',
+      '#[path = "unit/second.rs"]',
+      'mod second;',
+      '',
+    ].join('\n'));
+    mkdirSync(join(root, "member/src/unit"));
+    for (const area of ["first", "second"]) {
+      writeFileSync(join(root, `member/src/unit/${area}.rs`), '#[test]\nfn unit_case() {}\n');
+    }
+    mkdirSync(join(root, "member/tests"));
+    for (const name of ["api", "linked"]) {
+      writeFileSync(join(root, `member/tests/${name}.rs`), '#[test]\nfn linked_case() { assert_eq!(member::one(), 1); }\n');
+    }
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const generated = run("write");
+    assert.equal(generated.status, 0, generated.stderr);
+    const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    const first = build.slice(build.indexOf('name = "member_test_first_cases",'), build.indexOf('name = "member_test_first",'));
+    const second = build.slice(build.indexOf('name = "member_test_second_cases",'), build.indexOf('name = "member_test_second",'));
+    assert.match(first, /"--cfg=unit_test_first"/);
+    assert.match(first, /"src\/unit\/first\.rs"/);
+    assert.doesNotMatch(first, /"src\/unit\/second\.rs"/);
+    assert.match(second, /"--cfg=unit_test_second"/);
+    assert.match(second, /"src\/unit\/second\.rs"/);
+    assert.doesNotMatch(second, /"src\/unit\/first\.rs"/);
+    const linked = build.slice(build.indexOf('name = "linked_cases",'), build.indexOf('name = "linked",'));
+    assert.match(linked, /srcs = \[\s+"tests\/linked\.rs",\s+\]/);
+    assert.match(linked, /deps = \[\s+":member",/);
+    assert.match(build, /name = "linked",\s+binary = ":linked_cases",\s+id = "member",/);
+    assert.match(build, /test_suite\(\s+name = "member_test",\s+tests = \[\s+":member_test_first",\s+":member_test_second",\s+":linked",\s*\]/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

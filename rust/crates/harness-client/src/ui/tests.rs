@@ -13,7 +13,8 @@ use acyclic_harness_core::{
     resources::ProviderRef,
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProviderExt as _,
+    AppendRequest, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    MemoryStream, StreamPath, StreamProviderExt as _,
 };
 use futures::future::poll_fn;
 use std::{collections::BTreeMap, sync::Arc, task::Poll};
@@ -89,7 +90,36 @@ async fn wait(
     .await;
 }
 async fn idle(memory: &MemoryStream, path: &AgentPath) -> TestResult {
-    append(memory, path.membership()?, b"self membership".to_vec()).await?;
+    idle_agents(memory, std::iter::once(path.clone())).await
+}
+
+async fn idle_agents(
+    memory: &MemoryStream,
+    paths: impl IntoIterator<Item = AgentPath>,
+) -> TestResult {
+    let mut mutations = Vec::new();
+    for path in paths {
+        mutations.push(CommitMutation::Append {
+            path: path.membership()?,
+            records: vec![b"self membership".to_vec().into()],
+        });
+        mutations.push(CommitMutation::Append {
+            path: StreamPath::new(path.as_str())?,
+            records: vec![idle_adoption(&path)?.into()],
+        });
+    }
+    let outcome = memory
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(Vec::new(), mutations)],
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+    Ok(())
+}
+
+fn idle_adoption(path: &AgentPath) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
     let adoption = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
         agent: path.id(),
         parent: None,
@@ -101,7 +131,7 @@ async fn idle(memory: &MemoryStream, path: &AgentPath) -> TestResult {
         brief: None,
         policy: None,
     }));
-    append(memory, StreamPath::new(path.as_str())?, adoption.encode()?).await
+    Ok(adoption.encode()?)
 }
 
 #[tokio::test]
@@ -621,8 +651,10 @@ fn ui_blocks_are_generic_commonmark_and_inert() -> TestResult {
 async fn ui_lazy_cost() -> TestResult {
     async fn cost(n: u128) -> std::result::Result<u64, Box<dyn std::error::Error>> {
         let memory = Arc::new(MemoryStream::default());
-        for id in 1..=n {
-            idle(&memory, &agent(id)).await?;
+        const AGENTS_PER_COMMIT: usize = 512;
+        for start in (1..=n).step_by(AGENTS_PER_COMMIT) {
+            let end = n.min(start + AGENTS_PER_COMMIT as u128 - 1);
+            idle_agents(&memory, (start..=end).map(agent)).await?;
         }
         let selected = agent(1);
         append(&memory, selected.status()?, status(Phase::Idle).encode()?).await?;

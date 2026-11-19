@@ -105,7 +105,14 @@ fn watcher_delivers_file_events_without_linking_core_services() {
     let file = root.join("created");
     std::fs::write(&file, b"event").expect("write");
     loop {
-        let event = receiver.recv().expect("an FSEvents event").expect("event");
+        let event = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("an FSEvents event")
+            .expect("event");
+        assert!(
+            !event.need_rescan(),
+            "FSEvents lost its exact delivery: {event:?}"
+        );
         if event.paths.contains(&file) {
             break;
         }

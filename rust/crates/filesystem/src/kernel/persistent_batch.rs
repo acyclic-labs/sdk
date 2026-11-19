@@ -549,6 +549,7 @@ fn equal_group<K: Eq>(
 
 #[cfg(test)]
 #[path = "tests/persistent_batch.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 mod accept;

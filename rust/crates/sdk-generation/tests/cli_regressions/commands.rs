@@ -343,7 +343,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 let filename = Path::new(path);
                 if let Some((_, replacement)) = source_paths.iter().find(|(source, _)| {
                     filename.ends_with(source)
-                        || filename == entrypoint && **source == owner_entrypoint.as_path()
+                        || filename == entrypoint && *source == owner_entrypoint.as_path()
                 }) {
                     path.clone_from(replacement);
                 }

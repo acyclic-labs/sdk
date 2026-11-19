@@ -135,6 +135,7 @@ impl<T> Drop for QueueReceiver<T> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

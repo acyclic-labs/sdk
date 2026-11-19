@@ -64,11 +64,26 @@ async fn check(
         maximum_paths: Some(8),
         maximum_extent_spans: Some(8),
     };
-    capture(&mut checkout, &options, &path, &work, None).await?;
+    let initial = capture(&mut checkout, &options, &path, &work, None).await?;
+    if body.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
+        assert_eq!(initial.staged_file_bytes, 0);
+        let record = checkout
+            .lookup_no_follow(&path, &work, &cancellation)
+            .await?
+            .record
+            .ok_or("captured inline file is missing")?;
+        assert!(matches!(
+            record.payload,
+            crate::kernel::FilePayload::InlineRegular(data) if data.as_bytes() == body
+        ));
+    }
     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
     let prior = checkout.root().clone();
     let receipt = capture(&mut checkout, &options, &path, &work, Some(&baseline)).await?;
     assert_eq!(receipt.changed_paths, 0, "unchanged body {body:?}");
+    if body.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
+        assert_eq!(receipt.staged_file_bytes, 0);
+    }
     assert_eq!(checkout.root(), &prior);
     if !body.is_empty() {
         let mut edited = body.to_vec();
@@ -84,6 +99,7 @@ async fn check(
             receipt.changed_paths, 1,
             "same length edit with restored timestamps"
         );
+        assert_eq!(receipt.staged_file_bytes, edited.len() as u64);
         let read = checkout
             .read_file_range(
                 &path,

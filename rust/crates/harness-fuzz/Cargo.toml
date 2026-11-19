@@ -147,7 +147,7 @@ native-skill-records = ["core"]
 native-settings = ["core", "dep:tempfile"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 native-input = ["dep:acyclic-plugin", "dep:acyclic-harness", "dep:tempfile"]
-runtime = ["dep:acyclic-executable-search", "bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+runtime = ["dep:acyclic-executable-search", "bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-fs-work", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 filesystem-access = ["runtime", "acyclic-harness/test-support"]
 
 [dependencies]
@@ -169,6 +169,7 @@ serde-saphyr = { version = "=2.0.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
 acyclic-fs = { path = "../filesystem", default-features = false, optional = true }
+acyclic-fs-work = { path = "../filesystem-work", optional = true }
 acyclic-stream = { path = "../stream", default-features = false, optional = true }
 futures = { workspace = true, optional = true }
 serde_json.workspace = true

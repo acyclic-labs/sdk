@@ -160,29 +160,37 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             .authenticate(&candidate, accounting)
             .await
             .map_err(E::from)?;
-        let fingerprint_permit = self
-            .0
-            .intent
-            .fingerprint_permit
-            .unwrap_or(self.0.intent.permit);
-        let operation_context = permit_context(
-            self.0.intent.operation_context,
-            fingerprint_permit,
-            accounting,
-        )
-        .map_err(E::from)?;
-        let mut commit = prepare_publication_commit(
-            self.0.request,
-            Some(candidate.root),
-            operation_context,
-            (
-                self.0.intent.original_evidence_reference,
-                self.0.intent.original_evidence_custody.clone(),
-            ),
-            accounting,
-            self.0.cancellation,
-        )
-        .map_err(E::from)?;
+        let mut commit = if let Some(commit) = candidate
+            .ticket
+            .as_ref()
+            .and_then(|ticket| ticket.original_commit(candidate.root))
+        {
+            commit
+        } else {
+            let fingerprint_permit = self
+                .0
+                .intent
+                .fingerprint_permit
+                .unwrap_or(self.0.intent.permit);
+            let operation_context = permit_context(
+                self.0.intent.operation_context,
+                fingerprint_permit,
+                accounting,
+            )
+            .map_err(E::from)?;
+            prepare_publication_commit(
+                self.0.request,
+                Some(candidate.root),
+                operation_context,
+                (
+                    self.0.intent.original_evidence_reference,
+                    self.0.intent.original_evidence_custody.clone(),
+                ),
+                accounting,
+                self.0.cancellation,
+            )
+            .map_err(E::from)?
+        };
         if let Some(resolved) = self.0.resolved.as_ref()
             && (evidence_conflict || resolved.fingerprint != commit.fingerprint)
         {

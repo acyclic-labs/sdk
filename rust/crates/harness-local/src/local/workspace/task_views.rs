@@ -375,6 +375,24 @@ impl LocalWorkspace {
                 }
             }
             workspace.mounts = workspace.mounts_at(&workspace.path).await?;
+            if let Some(alias) = workspace.project_alias() {
+                // The actor checkpoints discovery before running its model.
+                // Reopening binds the same address to the new physical view.
+                let previous = volumes::alias_target(&alias)?;
+                if let Some(previous) = &previous
+                    && previous != &workspace.path
+                {
+                    let admission = self.task_view_admission.get().map(Arc::as_ref);
+                    if !acyclic_fs::shared_view_namespace_contains(previous, admission)
+                        .map_err(storage)?
+                    {
+                        return Err(Error::Conflict(
+                            "project address names another native namespace".into(),
+                        ));
+                    }
+                }
+                volumes::bind_alias(&alias, &workspace.path, previous.as_deref())?;
+            }
             workspace.context_line = workspace.mounts.context_line();
             if reuse_primary {
                 // CheckoutTools owns recovery and initialization under this

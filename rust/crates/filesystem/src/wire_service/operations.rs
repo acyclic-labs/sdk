@@ -454,6 +454,7 @@ where
                     None => options,
                 };
                 #[cfg(test)]
+                #[cfg(any(not(unit_test_split), unit_test_foundation))]
                 tests::fork_policy_cut(&source_workspace).await;
                 source_workspace
                     .fork::<_, _, WorkspaceError>(

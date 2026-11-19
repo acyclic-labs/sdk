@@ -770,4 +770,5 @@ fn checked_increment(value: u64) -> Result<u64, PromotionSpeculatorError> {
 
 #[cfg(test)]
 #[path = "tests/promotion.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

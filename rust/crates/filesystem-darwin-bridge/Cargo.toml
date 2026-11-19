@@ -10,8 +10,12 @@ description = "Vendored C transport for the macOS filesystem adapter"
 
 [package.metadata.bazel]
 target-compatible-with = ["@platforms//os:macos"]
+mounts-fuse = true
 build-script-inputs = [
     "src/native_mount/darwin_mount_bridge.c",
+    "src/native_mount/darwin_mount_owner.c",
+    "src/native_mount/darwin_mount_owner.h",
+    "src/native_mount/darwin_mount_owner_spawn.c",
     "src/native_mount/darwin_mount_retirement.c",
     "src/native_mount/darwin_mount/tests/retirement_model.c",
     "vendor/darwinfuse",

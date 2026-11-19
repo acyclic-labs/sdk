@@ -47,42 +47,44 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
             conversation: 0,
         }
         .append_record()?;
-        // Seed committed directory/status facts, without starting ten thousand
-        // idle runtimes. Root creation and actor admission have separate real
-        // lifecycle controls; this query must read only these original facts.
+        // The directory has its full population. Only its first transport
+        // page needs row details for the bounded projections below.
+        const FULL_ROW_MUTATIONS: usize = 3;
+        let peers = [false, true].map(|enabled| crate::agent::PeerMembership { enabled }.encode());
+        let [disabled, enabled] = peers;
+        let disabled: acyclic_stream::AppendRecord = disabled?.into();
+        let enabled: acyclic_stream::AppendRecord = enabled?.into();
         let mut mutations = Vec::new();
         for index in 0..count {
             let agent = AgentPath::root(&AgentId::from_bytes((index + 2).to_be_bytes()));
-            mutations.extend([
-                CommitMutation::Append {
-                    path: acyclic_stream::StreamPath::new(format!(
-                        "{}/{}",
-                        roots.as_str(),
-                        agent.id()
-                    ))?,
-                    records: vec![
-                        serde_json::to_vec(&serde_json::json!({
-                            "kind": "root", "version": 1, "agent": agent,
-                        }))?
-                        .into(),
-                    ],
-                },
-                CommitMutation::Append {
-                    path: agent.status()?,
-                    records: vec![status.clone()],
-                },
-                CommitMutation::Append {
-                    path: agent.peer_membership()?,
-                    records: vec![
-                        crate::agent::PeerMembership {
-                            enabled: index >= 16,
-                        }
-                        .encode()?
-                        .into(),
-                    ],
-                },
-            ]);
-            if mutations.len() >= 128 || index + 1 == count {
+            mutations.push(CommitMutation::Append {
+                path: acyclic_stream::StreamPath::new(format!(
+                    "{}/{}",
+                    roots.as_str(),
+                    agent.id()
+                ))?,
+                records: vec![
+                    serde_json::to_vec(&serde_json::json!({
+                        "kind": "root", "version": 1, "agent": agent,
+                    }))?
+                    .into(),
+                ],
+            });
+            if index < acyclic_stream::MAX_ITEMS as u128 {
+                mutations.extend([
+                    CommitMutation::Append {
+                        path: agent.status()?,
+                        records: vec![status.clone()],
+                    },
+                    CommitMutation::Append {
+                        path: agent.peer_membership()?,
+                        records: vec![if index < 16 { &disabled } else { &enabled }.clone()],
+                    },
+                ]);
+            }
+            if mutations.len() > acyclic_stream::MAX_ITEMS - FULL_ROW_MUTATIONS
+                || index + 1 == count
+            {
                 assert!(matches!(
                     stream
                         .commit(CommitRequest {
@@ -147,6 +149,38 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
             0,
             "discovery must not read transcripts or volumes"
         );
+        let first = &items[0].agent;
+        stream
+            .append(acyclic_stream::AppendRequest {
+                path: acyclic_stream::StreamPath::new(format!(
+                    "{first}/directory-test-publication",
+                ))?,
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"unrelated").into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let before = stream.requests();
+        let AgentReply::Children { items, next } = call(
+            &client,
+            "agents",
+            &AgentCommand::Sessions {
+                requester: None,
+                scope: acyclic_harness_client::SessionsScope::Owned,
+                page: AgentPageRequest::new(16, 64 * 1024, next)?,
+            },
+        )
+        .await??
+        else {
+            return Err("session continuation returned another result".into());
+        };
+        assert_eq!(stream.requests().since(before).control(), 2);
+        assert_eq!(items.len(), 16);
+        assert_eq!(
+            items[0].agent,
+            AgentPath::root(&AgentId::from_bytes(18_u128.to_be_bytes()))
+        );
+        assert_eq!(next.is_some(), count > 32);
         // A command ceiling can exceed the transport page size. Both directory
         // families must keep row projections within one bounded Stream view.
         for scope in [
@@ -275,7 +309,7 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
                 &authority,
                 server.root(),
                 authority.private.volume()?,
-                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                Arc::new(acyclic_actors::local::SystemClock),
                 Some(server.resource()),
             )
             .await?;

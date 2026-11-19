@@ -260,7 +260,8 @@ fn probe_slots_with_charge<const CHARGE: bool>(
             // Observe the actual inspection, including deliberately uncharged
             // probes, after admission and independently of accounting.
             #[cfg(test)]
-            #[cfg(all(not(loom)))]
+            #[cfg(not(loom))]
+            #[cfg(any(not(unit_test_split), unit_test_kernel))]
             tests::record_slot_access();
             match slot {
                 Some(entry) if entry.object_id == object_id => (
@@ -296,11 +297,14 @@ pub(super) fn object_hash(object_id: ObjectId) -> usize {
     hash
 }
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod callback_tests;
 #[cfg(test)]
 #[cfg(loom)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod loom_tests;
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

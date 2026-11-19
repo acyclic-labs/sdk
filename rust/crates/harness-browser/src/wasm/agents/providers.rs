@@ -1,0 +1,324 @@
+//! The storage an agent handler runs over, injected by its host: one stream
+//! provider (agent actors, inboxes, conversations and the volumes' authority)
+//! and one object store (the volumes' immutable objects). The handler and
+//! the guest artifact own no storage. The browser host injects `IndexedDB`,
+//! tests (and any host without a browser) inject memory, and further hosts add
+//! their StreamProvider and immutable object store through the same boundary.
+
+use super::{
+    Authorities, BrowserHandler, Error, HISTORY_TURNS, WasmAgentAuthority, WasmAgentRegistry,
+    WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
+};
+use crate::{
+    agent::{AgentHandler, ExecutorDriver, actor_store},
+    filesystem::{
+        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, Grants, StockExecutors, Tasks,
+        TurnAdmission, TurnContext, TurnLimits,
+    },
+};
+use acyclic_actors::domain::ActorLimits;
+use acyclic_fs::{
+    EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore,
+    browser::IndexedDbObjectStore,
+};
+use acyclic_objects::{Blobs, MemoryObjects};
+use acyclic_stream::{
+    BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, ProviderOwner, StreamError,
+    StreamProvider,
+};
+use std::sync::Arc;
+use wasm_bindgen::prelude::*;
+
+/// The object store injected by one host: `IndexedDB`, or any Objects v1
+/// provider, behind the one erased object contract.
+pub(super) type Objects = acyclic_fs::SharedObjectStore;
+
+/// One host's agent storage: what every agent handler, turn and control
+/// reads and writes.
+#[derive(Clone)]
+pub(super) struct Providers {
+    pub(super) stream: ProviderOwner<dyn StreamProvider>,
+    pub(super) filesystem: Arc<FilesystemHost<Authorities, Objects>>,
+    pub(super) placement: Fs<Authorities, Objects>,
+}
+
+impl Providers {
+    fn new(
+        stream: ProviderOwner<dyn StreamProvider>,
+        authority: Authorities,
+        objects: Objects,
+        durable: bool,
+        options: &WasmBrowserAgentOptions,
+    ) -> Result<Self, JsValue> {
+        let placement = Fs::new(authority, objects, EmbeddedCapabilities { durable });
+        let ancestry =
+            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(stream.clone()));
+        let filesystem = FilesystemHost::new(placement.clone(), &options.filesystem_provider, None)
+            .and_then(|host| host.with_changes(stream.clone()))
+            .and_then(|host| host.with_project_families(ancestry))
+            .map_err(js_error)?;
+        Ok(Self {
+            stream,
+            filesystem,
+            placement,
+        })
+    }
+
+    fn memory_limits(options: &WasmBrowserAgentOptions) -> MemoryLimits {
+        let limits = &options.stream_limits;
+        MemoryLimits {
+            paths: limits.paths.map(|value| value as usize),
+            path_bytes: limits.path_bytes.map(|value| value as usize),
+            records: limits.records.map(|value| value as usize),
+            payload_bytes: limits.payload_bytes.map(|value| value as usize),
+            commits: limits.commits.map(|value| value as usize),
+            idempotency_results: limits.idempotency_results.map(|value| value as usize),
+        }
+    }
+
+    /// The browser profile's `IndexedDB` databases named by `options`.
+    pub(super) async fn indexed_db(options: &WasmBrowserAgentOptions) -> Result<Self, JsValue> {
+        let storage = |error: StreamError| stream_error(error);
+        let objects =
+            IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
+                .await
+                .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        let stream = BrowserStream::open(
+            &options.stream_database,
+            BrowserStreamLimits {
+                commands: options.stream_limits.commands,
+                journal_bytes: options.stream_limits.journal_bytes,
+                memory: Self::memory_limits(options),
+            },
+        )
+        .await
+        .map_err(storage)?;
+        let stream: ProviderOwner<dyn StreamProvider> = ProviderOwner::new(stream);
+        Self::new(
+            stream.clone(),
+            StreamAuthorityStore::new(stream),
+            Arc::new(objects),
+            true,
+            options,
+        )
+    }
+
+    /// One in-memory stream (agents and volume authority) and object store:
+    /// nothing outlives the providers, and no browser storage is touched.
+    /// The database names in `options` are unused.
+    pub(super) fn memory(options: &WasmBrowserAgentOptions) -> Result<Self, JsValue> {
+        Self::over(
+            ProviderOwner::new(MemoryStream::new(Self::memory_limits(options))),
+            Arc::new(MemoryObjects::memory()),
+            false,
+            options,
+        )
+    }
+
+    /// A host's own stream and objects providers: the stream carries the
+    /// agents and their volumes' authority, `objects` the volumes' blobs,
+    /// and `durable` says whether both outlive the host. Every published
+    /// closure is retained under the object store's collection epoch before
+    /// its record is written. This host does not advance that epoch, so its
+    /// publications remain retained across provider restarts.
+    pub(super) fn over(
+        stream: ProviderOwner<dyn StreamProvider>,
+        objects: Arc<dyn Blobs>,
+        durable: bool,
+        options: &WasmBrowserAgentOptions,
+    ) -> Result<Self, JsValue> {
+        let objects = LogicalObjectStore::new(objects)
+            .with_object_limit(Some(options.maximum_object_bytes))
+            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        Self::new(
+            stream.clone(),
+            StreamAuthorityStore::new(stream),
+            Arc::new(objects),
+            durable,
+            options,
+        )
+    }
+
+    /// The one agent handler package over these providers: the handler the
+    /// in-process host runs and the guest artifact exports.
+    /// Its turns and spawns act under `admission`: the admission its host
+    /// was admitted with, never chosen here.
+    pub(super) fn handler(
+        &self,
+        options: &WasmBrowserAgentOptions,
+        owner: &WasmAgentAuthority,
+        registry: &WasmAgentRegistry,
+        admission: &TurnAdmission,
+    ) -> Result<BrowserHandler, JsValue> {
+        // The options a handler runs under are its own, not its providers'.
+        let limits = options.limits;
+        limits.validate(&mut None).map_err(js_error)?;
+        let turn_limits = TurnLimits {
+            maximum_bytes: limits.file_bytes,
+            history_turns: HISTORY_TURNS,
+        };
+        let turns = Arc::new(
+            FilesystemTurnHost::new(
+                self.stream.clone(),
+                owner.within()?,
+                Arc::clone(&self.filesystem),
+                owner.issuer.clone(),
+                admission.clone(),
+                Arc::new(Self::executors(options, registry)?),
+                (turn_limits, options.preset.approval_policy.clone()),
+            )
+            .with_filesystem_tools(),
+        );
+        AgentHandler::new(
+            actor_store(&self.stream).map_err(agent_error)?,
+            ExecutorDriver::new(turns),
+            ActorLimits::new(options.handler_timeout_ms, 1 << 20, 1 << 16)
+                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+        )
+        .map(|handler| handler.with_spawn_volumes(self.spawn_volumes()))
+        .map_err(|error| js_error(Error::Invalid(error.to_string())))
+    }
+
+    pub(super) fn executors(
+        options: &WasmBrowserAgentOptions,
+        registry: &WasmAgentRegistry,
+    ) -> Result<StockExecutors, JsValue> {
+        let limits = options.limits;
+        limits.validate(&mut None).map_err(js_error)?;
+        let (model, provider, compaction) = registry
+            .model
+            .clone()
+            .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
+        let mut selected = crate::tools::default_names();
+        selected.push("ask_question".into());
+        let mut tools = crate::tools::registry(
+            &selected,
+            |name| {
+                registry
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.tools.contains(&name))
+            },
+            Vec::new(),
+        )
+        .map_err(js_error)?;
+        tools.extend(registry.tools.clone()).map_err(js_error)?;
+        let grants = crate::tools::call_grants(&tools, selected.iter().map(String::as_str))
+            .map_err(js_error)?;
+        let context: Arc<dyn TurnContext> = match &registry.workspace {
+            Some(workspace) => Arc::new(Tasks(
+                crate::runtime::Bindings {
+                    targets: Some(Arc::new(
+                        crate::runtime::InProcessTargets::home(
+                            workspace.target.clone(),
+                            Arc::clone(&workspace.executor),
+                        )
+                        .map_err(js_error)?,
+                    )),
+                    scope: crate::runtime::RuntimeScope::new(
+                        crate::Capabilities::new(
+                            grants
+                                .into_iter()
+                                .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
+                        ),
+                        limits,
+                    )
+                    .map_err(js_error)?,
+                    ..Default::default()
+                }
+                .build()
+                .map_err(js_error)?,
+            )),
+            None => Arc::new(Grants(grants)),
+        };
+        let executors =
+            StockExecutors::new((model, provider), tools, (limits, compaction), context)
+                .with_agent_tools(&selected)
+                .with_question_plugin(options.questions.unwrap_or(options.user_surface));
+        let executors = match &registry.models {
+            Some(models) => executors.with_models(models.clone()),
+            None => executors,
+        };
+        Ok(if options.children {
+            executors.with_templates()
+        } else {
+            executors
+        })
+    }
+
+    pub(super) fn spawn_volumes(&self) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
+        Arc::new(FilesystemSpawnVolumes::new(self.filesystem.clone()))
+    }
+}
+
+/// Agent storage a host injects into [`super::guest::AgentGuest`] and
+/// [`super::WasmAgents::open_hosting`]; one handle shared by a guest and its
+/// host is one store.
+#[wasm_bindgen]
+pub struct WasmAgentProviders {
+    pub(super) providers: Providers,
+}
+
+impl WasmAgentProviders {
+    /// A host's own storage, for a host that builds its artifact over this
+    /// crate: any stream provider (the agents and their volumes' authority)
+    /// and any objects provider, which holds the volumes' blobs;
+    /// `durable` says whether both outlive the host. The handle serves
+    /// [`AgentGuest::open`](super::guest::AgentGuest::open) and
+    /// [`WasmAgents::open_hosting`](super::WasmAgents::open_hosting) like
+    /// the built-in constructors.
+    ///
+    /// # Errors
+    /// When `options` or the object limit are invalid.
+    pub fn over(
+        stream: ProviderOwner<dyn StreamProvider>,
+        objects: Arc<dyn Blobs>,
+        durable: bool,
+        options: JsValue,
+    ) -> Result<Self, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        Ok(Self {
+            providers: Providers::over(stream, objects, durable, &options)?,
+        })
+    }
+}
+
+#[wasm_bindgen]
+impl WasmAgentProviders {
+    /// Open storage injection: any Stream handle plus the host's Objects v1
+    /// storage, either an admitted account's original port or the host's own
+    /// durable keys holding one account under the one blob engine. `durable`
+    /// requires both providers to retain accepted writes.
+    pub fn injected(
+        stream: &acyclic_stream::WasmStream,
+        objects: &super::WasmObjects,
+        durable: bool,
+        #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
+    ) -> Result<WasmAgentProviders, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        Ok(Self {
+            providers: Providers::over(stream.provider(), objects.blobs(), durable, &options)?,
+        })
+    }
+
+    /// The browser profile's `IndexedDB` databases (the browser host's default).
+    #[wasm_bindgen(js_name = indexedDb)]
+    pub async fn indexed_db(
+        #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
+    ) -> Result<WasmAgentProviders, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        Ok(Self {
+            providers: Providers::indexed_db(&options).await?,
+        })
+    }
+
+    /// In-memory storage, for hosts and tests without browser storage.
+    pub fn memory(
+        #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
+    ) -> Result<WasmAgentProviders, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        Ok(Self {
+            providers: Providers::memory(&options)?,
+        })
+    }
+}

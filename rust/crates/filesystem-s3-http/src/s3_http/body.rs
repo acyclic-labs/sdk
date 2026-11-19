@@ -172,14 +172,16 @@ fn validate_completed_parts(
 
 fn multipart_storage_error(error: MultipartStorageError) -> s3s::S3Error {
     match error {
-        MultipartStorageError::KeyTooLong => s3s::s3_error!(InvalidArgument),
-        MultipartStorageError::TooManyParts => s3s::s3_error!(InvalidRequest),
+        MultipartStorageError::KeyTooLong | MultipartStorageError::InvalidLimits => {
+            s3s::s3_error!(InvalidArgument)
+        }
+        MultipartStorageError::TooManyParts | MultipartStorageError::Malformed => {
+            s3s::s3_error!(InvalidRequest)
+        }
         MultipartStorageError::InvalidPartDigest => s3s::s3_error!(InvalidPart),
-        MultipartStorageError::InvalidLimits => s3s::s3_error!(InvalidArgument),
         MultipartStorageError::Cancelled => s3s::s3_error!(RequestTimeout),
         MultipartStorageError::BudgetExceeded => s3s::s3_error!(SlowDown),
         MultipartStorageError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
-        MultipartStorageError::Malformed => s3s::s3_error!(InvalidRequest),
         MultipartStorageError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
         MultipartStorageError::Stream(error) => stream_read_error(&error),
         MultipartStorageError::StreamWrite(error) => stream_write_error(&error),

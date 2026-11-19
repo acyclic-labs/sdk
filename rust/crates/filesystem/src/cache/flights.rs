@@ -129,7 +129,7 @@ pub(super) fn insertion_work<T>(
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn verify_original_flight_admission_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::KernelAccounting;

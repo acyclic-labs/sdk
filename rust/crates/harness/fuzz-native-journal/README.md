@@ -43,7 +43,7 @@ exercise admission with an absent task and a null task.
 | `derived-task-type` | `f7d147326d8223b27b438cdcae69640fc76859270960341bec3fced6644b0fee` |
 
 Run the producer control with
-`cargo test -p acyclic-harness --no-default-features --test native_receipt -- --nocapture`.
+`cargo test -p acyclic-harness --no-default-features --test main native_receipt:: -- --nocapture`.
 Run the retained target with
 `cargo fuzz run native_receipt --fuzz-dir rust/crates/harness/fuzz-native-journal`.
 Coverage must include the called harness library; instrumenting only this

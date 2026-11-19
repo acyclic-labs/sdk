@@ -1,5 +1,6 @@
 //! File mention projection and attachment policy against the shared parser oracle.
 use acyclic_harness::{
+    Error, Result,
     command_request::{CommandResolution, FileMention},
     conversation::{FileDescriptor, FileRef, VolumeRef},
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
@@ -8,8 +9,8 @@ use acyclic_harness::{
 #[path = "../../../harness-fuzz/support/mentions.rs"]
 mod oracle;
 
-fn checked_input() -> CommandResolution {
-    let mentions = [file(1, 1, 1, b"one"), file(2, 1, 1, b"two")]
+fn checked_input() -> Result<CommandResolution> {
+    let mentions = [file(1, 1, 1, b"one")?, file(2, 1, 1, b"two")?]
         .into_iter()
         .enumerate()
         .map(|(index, file)| FileMention {
@@ -18,15 +19,16 @@ fn checked_input() -> CommandResolution {
             file,
         })
         .collect();
-    CommandResolution::Prompt {
+    Ok(CommandResolution::Prompt {
         text: "@file-1 @file-2".into(),
         source: None,
         mentions,
-    }
+    })
 }
 
 #[test]
-fn fuzz_oracle_checks_every_seed() {
+fn fuzz_oracle_checks_every_seed() -> Result<()> {
+    let fixtures = mention_oracle()?;
     for data in [
         include_bytes!("../../../harness-fuzz/corpus/client_mentions/pinned-mentions").as_slice(),
         include_bytes!("../../../harness-fuzz/corpus/client_mentions/plain-prompt").as_slice(),
@@ -37,8 +39,9 @@ fn fuzz_oracle_checks_every_seed() {
     ] {
         let input: CommandResolution = serde_json::from_slice(data).unwrap();
         oracle::check(&input);
-        mention_oracle().check(&input);
+        fixtures.check(&input);
     }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -51,12 +54,23 @@ enum Fault {
 }
 
 impl Fault {
-    fn tamper(&self, site: &str, actual: &mut acyclic_harness::Result<ModelContent>) {
+    fn tamper(
+        &self,
+        site: &str,
+        actual: &mut acyclic_harness::Result<ModelContent>,
+    ) -> acyclic_harness::Result<()> {
         match (self, site) {
             (Self::DroppedAttachment, "projection") => {
                 let Ok(ModelContent::Parts(parts)) = actual else {
-                    panic!("attachment control needs parts")
+                    return Err(acyclic_harness::Error::Invalid(
+                        "attachment control needs parts".into(),
+                    ));
                 };
+                if parts.len() <= 1 {
+                    return Err(acyclic_harness::Error::Invalid(
+                        "attachment control needs an attachment".into(),
+                    ));
+                }
                 parts.remove(1);
             }
             (Self::RejectedValid, "success") => {
@@ -69,18 +83,21 @@ impl Fault {
             }
             _ => {}
         }
+        Ok(())
     }
 }
 
-fn mention_oracle()
--> acyclic_test_support::differential::oracle::Oracle<CommandResolution, Fault, oracle::Seen> {
+fn mention_oracle() -> Result<
+    acyclic_test_support::differential::oracle::Oracle<CommandResolution, Fault, oracle::Seen>,
+> {
     use acyclic_test_support::differential::oracle::Oracle;
     let mut builder = Oracle::declare(|input, fault: Option<&Fault>, see| {
         oracle::observe(
             input,
             |site, actual| {
                 if let Some(fault) = fault {
-                    fault.tamper(site, actual);
+                    let result = fault.tamper(site, actual);
+                    assert!(result.is_ok(), "attachment control failed: {result:?}");
                 }
             },
             |event| see.see(event),
@@ -89,18 +106,18 @@ fn mention_oracle()
     for (name, invariant) in oracle::INVARIANTS {
         builder = builder.invariant(name, invariant);
     }
-    let mut conflict = checked_input();
+    let mut conflict = checked_input()?;
     let CommandResolution::Prompt { mentions, .. } = &mut conflict else {
         unreachable!()
     };
     mentions.push(FileMention {
         start: 16,
         end: 23,
-        file: file(1, 1, 1, b"changed"),
+        file: file(1, 1, 1, b"changed")?,
     });
-    builder
-        .control("projection", checked_input(), Fault::DroppedAttachment)
-        .control("success", checked_input(), Fault::RejectedValid)
+    Ok(builder
+        .control("projection", checked_input()?, Fault::DroppedAttachment)
+        .control("success", checked_input()?, Fault::RejectedValid)
         .control(
             "actions",
             CommandResolution::Sdk {
@@ -119,17 +136,18 @@ fn mention_oracle()
             },
             Fault::AcceptedInvalid,
         )
-        .build()
+        .build())
 }
 
 #[test]
-fn every_conversion_invariant_detects_its_control_and_survives_deletion() {
-    mention_oracle().check(&checked_input());
+fn every_conversion_invariant_detects_its_control_and_survives_deletion() -> Result<()> {
+    mention_oracle()?.check(&checked_input()?);
+    Ok(())
 }
 
-fn file(id: u8, revision: u8, volume: u8, body: &[u8]) -> FileRef {
-    let fixture: FileRef =
-        serde_json::from_str(include_str!("../../fixtures/v2/file-ref.json")).unwrap();
+fn file(id: u8, revision: u8, volume: u8, body: &[u8]) -> Result<FileRef> {
+    let fixture: FileRef = serde_json::from_str(include_str!("../../fixtures/v2/file-ref.json"))
+        .map_err(|error| Error::Invalid(format!("file reference fixture: {error}")))?;
     let reference = fixture.volume();
     FileRef::new(
         VolumeRef::new(
@@ -138,28 +156,28 @@ fn file(id: u8, revision: u8, volume: u8, body: &[u8]) -> FileRef {
             reference.class(),
             reference.owner().clone(),
             &mut None,
-        )
-        .unwrap(),
+        )?,
         format!("file-{id}"),
         format!("revision-{revision}"),
-        FileDescriptor::from_bytes(body, "text/plain", &mut None).unwrap(),
+        FileDescriptor::from_bytes(body, "text/plain", &mut None)?,
         "file".into(),
         &mut None,
     )
-    .unwrap()
 }
 
 #[test]
-fn conflicting_metadata_for_one_pinned_identity_is_rejected() {
+fn conflicting_metadata_for_one_pinned_identity_is_rejected() -> Result<()> {
     let mentions = [b"first".as_slice(), b"second".as_slice()]
         .into_iter()
         .enumerate()
-        .map(|(index, body)| FileMention {
-            start: index * 8,
-            end: index * 8 + 7,
-            file: file(1, 1, 1, body),
+        .map(|(index, body)| {
+            Ok(FileMention {
+                start: index * 8,
+                end: index * 8 + 7,
+                file: file(1, 1, 1, body)?,
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     assert!(matches!(
         CommandResolution::Prompt {
             text: "@file-1 @file-1".into(),
@@ -169,6 +187,7 @@ fn conflicting_metadata_for_one_pinned_identity_is_rejected() {
         .into_model_input(),
         Err(acyclic_harness::Error::Conflict(_))
     ));
+    Ok(())
 }
 
 proptest::proptest! {
@@ -178,13 +197,16 @@ proptest::proptest! {
     fn fuzz_oracle_checks_arbitrary_metadata_conflicts(
         rows in proptest::collection::vec((0u8..4, proptest::collection::vec(proptest::prelude::any::<u8>(), 0..16)), 0..16),
     ) {
-        let mentions = rows.into_iter().enumerate().map(|(index, (id, body))| FileMention {
+        let mentions = rows.into_iter().enumerate().map(|(index, (id, body))| Ok(FileMention {
             start: index * 8,
             end: index * 8 + 7,
-            file: file(id, 1, 1, &body),
-        }).collect();
+            file: file(id, 1, 1, &body)?,
+        })).collect::<Result<_>>()
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
         let input = CommandResolution::Prompt { text: "inspect files".into(), source: None, mentions };
-        mention_oracle().check(&input);
+        mention_oracle()
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?
+            .check(&input);
     }
 
     // Property: attach each pinned (volume,path,version) exactly once, in first
@@ -205,7 +227,9 @@ proptest::proptest! {
             let start = text.len();
             text.push('@');
             text.push_str(&path);
-            mentions.push(FileMention { start, end: text.len(), file: file(id, revision, volume, b"body") });
+            let file = file(id, revision, volume, b"body")
+                .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+            mentions.push(FileMention { start, end: text.len(), file });
             if !expected.contains(&identity) {
                 expected.push(identity);
             }

@@ -24,7 +24,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 use std::time::Instant;
 
 const ROOT_INODE: u64 = 1;
@@ -47,6 +47,7 @@ pub(super) use paths::update_time;
 use paths::*;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 pub(in crate::native_mount) mod tests;
 
 pub(super) use cleanup::DarwinRecoveryControl;

@@ -2,33 +2,35 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
-fn request_storage_cause(error: &Error, operation: OperationId) -> &str {
+fn request_storage_cause(error: &Error, operation: OperationId) -> Result<&str> {
     assert_eq!(
         error.request_operation_id(),
         Some(operation),
         "observation failure must retain its typed request identity"
     );
     let Error::Command(failure) = error else {
-        panic!("original request cause was discarded")
+        return Err(Error::Invalid(
+            "original request cause was discarded".into(),
+        ));
     };
     let original = failure
         .original()
-        .expect("local observation retains its actual cause");
+        .ok_or_else(|| Error::Invalid("local observation lost its actual cause".into()))?;
     assert_eq!(
         error.classification(),
         original.classification(),
         "request identity must not change the original failure classification"
     );
     let Error::Storage(cause) = original else {
-        panic!("original storage cause was replaced")
+        return Err(Error::Invalid("original storage cause was replaced".into()));
     };
-    cause
+    Ok(cause)
 }
 
-fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
+fn observer(bridge: &Bridge) -> Result<std::thread::JoinHandle<()>> {
     lock(&bridge.observer)
         .take()
-        .expect("the original owner observer")
+        .ok_or_else(|| Error::Invalid("missing original owner observer".into()))
 }
 
 fn reply_path(status: &Path, operation: OperationId) -> PathBuf {
@@ -393,8 +395,8 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     )?;
     let original = lock(&first.shared.waiters).retirement.clone().unwrap();
     let original_connection = original.connection.upgrade().unwrap();
-    let first_observer = observer(&first);
-    let other_observer = observer(&other);
+    let first_observer = observer(&first)?;
+    let other_observer = observer(&other)?;
     let (delivery, response) = mpsc::sync_channel(1);
     let waiting = first.wait(OperationId::new(), delivery)?;
     drop(owner_lock);
@@ -458,7 +460,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         weak.upgrade().is_none(),
         "only original caller custody may retain the retired bridge"
     );
-    let replacement_observer = observer(&replacement);
+    let replacement_observer = observer(&replacement)?;
     drop(replacement_lock);
     replacement_observer
         .join()
@@ -493,7 +495,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
             let bridge = Bridge::open(directory, endpoint)
                 .expect("discovery retains its original directory through connection admission");
             std::fs::remove_dir(&original_directory).map_err(storage)?;
-            let observing = observer(&bridge);
+            let observing = observer(&bridge)?;
             drop(early_lock);
             observing.join().expect("early owner terminal must return");
             Ok(bridge)
@@ -534,7 +536,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         &failed_child,
         Bridge::open,
     )?;
-    let failed_observer = observer(&failed);
+    let failed_observer = observer(&failed)?;
     let retired = lock(&failed.shared.waiters).retirement.clone().unwrap();
     let failed_connection = retired.connection.upgrade().unwrap();
     let operation = OperationId::new();
@@ -546,7 +548,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     let failure = lock(&failed.shared.waiters).failure.clone().unwrap();
     assert!(matches!(response.try_recv(),
         Ok(Delivery::Reply(Err(error)))
-            if request_storage_cause(&error, operation) == failure));
+            if request_storage_cause(&error, operation)? == failure));
     assert!(!lock(&failed.shared.waiters).gone);
     assert!(lock(&failed.shared.waiters).retirement.is_none());
     assert_eq!(lock(&registry).bridges.len(), 1);
@@ -580,7 +582,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     let weak = Arc::downgrade(&failed);
     drop((failed, failed_alias));
     assert!(weak.upgrade().is_none());
-    let fresh_observer = observer(&fresh);
+    let fresh_observer = observer(&fresh)?;
     drop(failed_lock);
     failed_observer
         .join()
@@ -602,7 +604,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
                 .shared
                 .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
             drop(early_lock);
-            observer(&bridge)
+            observer(&bridge)?
                 .join()
                 .expect("early native observer ends");
             Ok(bridge)
@@ -773,7 +775,10 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         .map_err(storage)?;
     let registry = Arc::new(Mutex::<Registry>::default());
     let (completed, completion) = mpsc::sync_channel(1);
-    let directory = request_root.path().parent().expect("fixture carrier");
+    let directory = request_root
+        .path()
+        .parent()
+        .ok_or_else(|| Error::Invalid("missing fixture carrier".into()))?;
     let result = std::thread::scope(|scope| {
         scope.spawn(|| {
             let _ = completed.send(request_operation_at(
@@ -813,14 +818,20 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         drop(owner);
         observation
     })?;
-    let error = result.expect_err("a rejected request has no completed reply");
+    let Err(error) = result else {
+        return Err(Error::Invalid(
+            "a rejected request returned a completed reply".into(),
+        ));
+    };
     assert_eq!(error.request_operation_id(), Some(operation));
     assert_eq!(
         error.classification(),
         Error::Indeterminate(operation).classification()
     );
     let Error::Command(failure) = error else {
-        panic!("the request lost its original terminal cause")
+        return Err(Error::Invalid(
+            "the request lost its original terminal cause".into(),
+        ));
     };
     assert!(matches!(failure.original(), Some(Error::Indeterminate(id)) if *id == operation));
     Ok(())
@@ -1711,7 +1722,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .clone()
         .expect("the first notification cause remains available");
     assert_eq!(
-        request_storage_cause(&first_failure, first.operation),
+        request_storage_cause(&first_failure, first.operation)?,
         failure
     );
     assert!(first_failure.uncertain());
@@ -1720,7 +1731,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     assert!(matches!(
         second_reply.try_recv(),
         Ok(Delivery::Reply(Err(ref error)))
-            if request_storage_cause(error, second.operation) == failure
+            if request_storage_cause(error, second.operation)? == failure
     ));
     drop((first, second));
     bridge
@@ -1737,7 +1748,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let refused_operation = OperationId::new();
     assert!(
-        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents { task: serde_json::from_value(result["task"].clone()).map_err(storage)?, after: None, limit: 256 }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
+        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents { task: serde_json::from_value(result["task"].clone()).map_err(storage)?, after: None, limit: 256 }), Err(ref error) if request_storage_cause(error, refused_operation)? == failure)
     );
     assert_eq!(
         std::fs::read_dir(&requests).map_err(storage)?.count(),
@@ -1767,7 +1778,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .failure
         .clone()
         .expect("owner observation failure remains available");
-    assert_eq!(request_storage_cause(&first, waiting.operation), failure);
+    assert_eq!(request_storage_cause(&first, waiting.operation)?, failure);
     assert!(failure.contains("step=observe native workspace owner exit:"));
     assert!(failure.ends_with("recovery=acyclic run --host-workspace"));
     assert!(!lock(&observed.shared.waiters).gone);
@@ -1839,7 +1850,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Client observation already retained the original admission cause. Join
     // the actual owner-lock producer before asserting its separate retirement.
-    observer(&blocked)
+    observer(&blocked)?
         .join()
         .expect("original owner-lock producer retires");
     drop(waiting);
@@ -2114,6 +2125,6 @@ fn withdrawn_workspace_refuses_the_request_under_its_operation() -> Result<()> {
     .err()
     .ok_or_else(|| Error::Invalid("a withdrawn workspace accepted the request".into()))?;
     assert_eq!(error.code(), crate::wire::ErrorCode::Storage, "{error}");
-    request_storage_cause(&error, operation);
+    request_storage_cause(&error, operation)?;
     Ok(())
 }

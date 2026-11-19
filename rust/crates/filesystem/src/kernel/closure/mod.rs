@@ -250,5 +250,6 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 #[path = "../tests/closure/mod.rs"]
 mod tests;

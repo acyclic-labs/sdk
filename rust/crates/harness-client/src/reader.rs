@@ -1006,13 +1006,13 @@ impl Reader {
                     observed: self.cache.observation(key.path()),
                 },
             );
-            self.issued += 1;
             ops.push(op);
         }
-        for op in &ops {
+        ops.retain(|op| {
             self.inflight
-                .dispatch(&op.id(), &mut self.demand, &mut self.next_ticket);
-        }
+                .dispatch(&op.id(), &mut self.demand, &mut self.next_ticket)
+        });
+        self.issued += ops.len() as u64;
         ops
     }
 

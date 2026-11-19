@@ -19,20 +19,61 @@ use acyclic_harness_local::{
     test_support::{PromptOutcome, local_harness_config, prompt_settled},
 };
 use acyclic_harness_providers::{HttpRequest, HttpTransport as _};
+use acyclic_stream::trace::{Mechanism, Outcome, SpanEvent, TraceRecord};
 use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::sync::Arc;
 
 pub(super) fn check_events(expected: &[Value], events: &[ModelEvent]) -> TestResult {
-    if expected.len() != events.len() {
+    let [
+        body @ ..,
+        ModelEvent::Trace {
+            record: TraceRecord::V1(start),
+        },
+        ModelEvent::Trace {
+            record: TraceRecord::V1(finish),
+        },
+        completed @ ModelEvent::Completed { .. },
+    ] = events
+    else {
+        return Err(
+            "provider stream did not finish with a response-header span and completion".into(),
+        );
+    };
+    match (start, finish) {
+        (
+            SpanEvent::Started {
+                id,
+                parent: None,
+                name,
+                mechanism: Mechanism::RoundTrip,
+                at_ns: started,
+                guarantee: Some(guarantee),
+            },
+            SpanEvent::Finished {
+                id: finished_id,
+                at_ns: finished,
+                bytes: None,
+                result: Outcome::Succeeded,
+            },
+        ) if id == finished_id
+            && started <= finished
+            && name == "model.response_headers"
+            && guarantee == "receive_response_headers" => {}
+        _ => return Err("invalid response-header span in provider stream".into()),
+    }
+    if expected.len() != body.len() + 1 {
         return Err(format!(
             "provider events differ: expected {} got {}",
             expected.len(),
-            events.len()
+            body.len() + 1
         )
         .into());
     }
-    for (expected, actual) in expected.iter().zip(events) {
+    for (expected, actual) in expected
+        .iter()
+        .zip(body.iter().chain(std::iter::once(completed)))
+    {
         let actual = serde_json::to_value(actual)?;
         let retained: &[&str] = match at(&actual, "/kind").as_str() {
             Some("reasoning_block") => &["/block/continuity", "/block/origin/credential_scope"],

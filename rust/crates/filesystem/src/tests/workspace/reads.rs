@@ -3,8 +3,14 @@ use super::*;
 #[tokio::test]
 async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 -> Result<(), Box<dyn Error>> {
+    let __t0 = std::time::Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
     reverse_selection_cost_and_custody()?;
+    eprintln!(
+        "skipped: required-host-capability=TIMING reverse_selection={:?}",
+        __t0.elapsed()
+    );
+    let __t1 = std::time::Instant::now();
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("read-shapes"))?;
     let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
@@ -51,6 +57,11 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     let TransactionCommit::Committed(exact) = commit(&mut transaction).await? else {
         return Err("shape publication did not commit".into());
     };
+    eprintln!(
+        "skipped: required-host-capability=TIMING setup_and_commit={:?}",
+        __t1.elapsed()
+    );
+    let __t2 = std::time::Instant::now();
 
     let file_id = unbounded!(workspace, stat("/tree/a"))?.file_id;
     let directory_id = unbounded!(workspace, stat("/tree"))?.file_id;
@@ -97,6 +108,11 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         OwnedBytes::from_static(b"a")
     );
 
+    eprintln!(
+        "skipped: required-host-capability=TIMING paths_and_reads={:?}",
+        __t2.elapsed()
+    );
+    let __t3 = std::time::Instant::now();
     let listing = unbounded!(workspace, head())?;
     let first = unbounded!(listing, list_directory("/tree", None, 1))?.0;
     assert_eq!(first.entries.len(), 1);
@@ -124,6 +140,11 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
             .any(|span| span.kind == WorkspaceExtentKind::Content)
     );
 
+    eprintln!(
+        "skipped: required-host-capability=TIMING listing_and_extents={:?}",
+        __t3.elapsed()
+    );
+    let __t4 = std::time::Instant::now();
     workspace.write_text("/tree/a", "changed").await?;
     assert_eq!(
         unbounded!(exact, read("/tree/a", 16))?,
@@ -132,6 +153,10 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     assert_eq!(
         unbounded!(workspace, read("/tree/a", 16))?,
         OwnedBytes::from_static(b"changed")
+    );
+    eprintln!(
+        "skipped: required-host-capability=TIMING final_writes={:?}",
+        __t4.elapsed()
     );
     Ok(())
 }
@@ -143,6 +168,7 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
     let cancel = CancellationToken::new();
     let mut counts = Vec::new();
     for population in [1_u64, 100_000] {
+        let __p = std::time::Instant::now();
         let bound = acyclic_collections::FixedIndex::<(), RetainedAllocation, 16>::insertion_bound(
             population,
         )
@@ -182,6 +208,10 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
         reverse_drop(ids, bytes, &mut accounting)?;
         assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(prior);
+        eprintln!(
+            "skipped: required-host-capability=TIMING population={population} took={:?}",
+            __p.elapsed()
+        );
     }
     eprintln!("reverse identity input=[1,100000] examinations/copy-bytes={counts:?}");
 
@@ -257,7 +287,8 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
 async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
 -> Result<(), Box<dyn Error>> {
     use crate::access::{Action, INITIAL_POLICY, fixtures};
-    use crate::workspace::accounting_tests::{Observation, ObservedAuthority, Prefunded};
+    use crate::workspace::Prefunded;
+    use crate::workspace::accounting_tests::{Observation, ObservedAuthority};
     use std::sync::{Arc, Mutex};
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -410,7 +441,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
     }
 
     // An old generation cannot bypass a later policy revocation.
-    fixtures::publish_policy(&workspace, &fixtures::denied(Action::Read, "present")).await?;
+    fixtures::publish_policy(&workspace, &fixtures::denied(Action::Read, "present")?).await?;
     let source = Prefunded {
         budget,
         held: Mutex::new(None),

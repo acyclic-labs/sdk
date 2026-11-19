@@ -15,6 +15,7 @@ keywords = ["agents", "filesystem", "mcp", "workspaces"]
 categories = ["command-line-utilities", "development-tools"]
 
 [package.metadata.bazel]
+integration-test-shards = 2
 # The identity tests start the host Node runtime.
 test-env-inherit = ["PATH"]
 
@@ -30,7 +31,7 @@ name = "graphcoder"
 path = "src/graphcoder.rs"
 
 [features]
-test-support = ["acyclic-fs/test-support", "acyclic-harness/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+test-support = ["acyclic-fs/test-support", "acyclic-harness/test-support", "acyclic-native-lines/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", default-features = false }
@@ -71,10 +72,6 @@ rustix-openpty = "0.2"
 [[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "cli"
-path = "tests/cli.rs"
 
 [[example]]
 name = "embedded"

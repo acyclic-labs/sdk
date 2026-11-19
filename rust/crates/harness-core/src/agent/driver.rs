@@ -192,11 +192,11 @@ pub async fn expand_attachments(
     }
     let mut expanded = Vec::with_capacity(parts.len());
     for (index, part) in parts.into_iter().enumerate() {
-        if envelope && index == body {
-            let ModelContentPart::File { file, .. } = part else {
-                unreachable!()
-            };
-            match read_user_input(&file, reader).await? {
+        if envelope
+            && index == body
+            && let ModelContentPart::File { file, .. } = &part
+        {
+            match read_user_input(file, reader).await? {
                 ModelContent::Text(text) => expanded.push(ModelContentPart::text(text)),
                 ModelContent::Part(part) => expanded.push(part),
                 ModelContent::Parts(parts) => expanded.extend(parts),

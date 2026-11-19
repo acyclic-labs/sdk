@@ -18,7 +18,7 @@ pub(super) struct NodeRef {
 }
 
 pub(super) struct Reader<'a, P: ?Sized> {
-    pub(super) provider: &'a Arc<P>,
+    pub(super) provider: &'a acyclic_stream::ProviderOwner<P>,
     pub(super) path: &'a StreamPath,
     pub(super) base: u64,
     pub(super) staged: &'a [OwnedBytes],
@@ -27,7 +27,7 @@ pub(super) struct Reader<'a, P: ?Sized> {
 }
 
 pub(super) struct Writer<'a, P: ?Sized> {
-    provider: &'a Arc<P>,
+    provider: &'a acyclic_stream::ProviderOwner<P>,
     path: &'a StreamPath,
     base: u64,
     scratch: Scratch,
@@ -40,7 +40,7 @@ pub(super) struct Writer<'a, P: ?Sized> {
 #[derive(Default)]
 pub(super) struct Scratch {
     records: Funded<OwnedBytes>,
-    retired: Funded<NodeRef>,
+    retired: Funded<u64>,
     live: Funded<bool>,
     path: Funded<update::Ancestor>,
 }
@@ -89,7 +89,7 @@ impl<T> Funded<T> {
     fn bind(&mut self, current: Option<&PreparationIo>) -> Result<()> {
         match (&mut self.io, current) {
             (Some(retained), Some(current)) if retained.shares_ledger(current) => {
-                retained.use_current_context(current);
+                retained.use_current_context(current)?;
             }
             (None, None) => (),
             _ => return Err(invalid(current, "index staging belongs to another ledger")),

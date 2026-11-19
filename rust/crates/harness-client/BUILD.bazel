@@ -20,6 +20,7 @@ cargo_build_script(
         "build.rs",
         "src/commands/name_index.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-client",
@@ -52,6 +53,7 @@ rust_library(
         "//rust/fuzz:corpus/client_files/mismatched-reply-path",
         "//rust/fuzz:corpus/client_files/stream-query-snapshot",
     ],
+    tags = ["resources:memory:1024"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -120,7 +122,7 @@ rust_test(
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","no-sandbox","resources:memory:1024"],
 )
 
 isolated_test(
@@ -193,7 +195,7 @@ rust_test(
         "@sdk_crates//wasm-bindgen-0.2.117",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","no-sandbox","resources:memory:256"],
 )
 
 isolated_test(
@@ -224,6 +226,7 @@ cargo_build_script(
         "build.rs",
         "src/commands/name_index.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-client",
@@ -258,6 +261,7 @@ rust_library(
         "//rust/fuzz:corpus/client_files/mismatched-reply-path",
         "//rust/fuzz:corpus/client_files/stream-query-snapshot",
     ],
+    tags = ["resources:memory:1024"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

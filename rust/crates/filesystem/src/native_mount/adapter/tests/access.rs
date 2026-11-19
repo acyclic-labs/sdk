@@ -1,8 +1,18 @@
 use super::*;
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_lazy,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
+use crate::access::AccessView;
 use crate::access::{
-    AccessView, Action, Capability, Conditions, Context, Effect, Generations, Grant,
-    POLICY_SCHEMA_VERSION, PathTrie, Policy, PrincipalPattern, Resource, ResourcePattern, Rule,
+    Action, Capability, Conditions, Context, Effect, Generations, Grant, POLICY_SCHEMA_VERSION,
+    PathTrie, Policy, PrincipalPattern, Resource, ResourcePattern, Rule,
 };
+use crate::model::{CheckoutMode, GenerationSelector};
 
 fn pattern(path: &str) -> ResourcePattern {
     ResourcePattern {
@@ -13,17 +23,31 @@ fn pattern(path: &str) -> ResourcePattern {
     }
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::actions::require_projfs_mode;
     let source = source(FilesystemProfile::Portable)?;
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let path = |name| {
+        crate::kernel::NamespacePath::from_text_in_profile(
+            name,
+            FilesystemProfile::Portable,
+            source.config.limits,
+        )
+    };
+    let root = path("/")?;
+    let sibling = path("/unrestricted")?;
+    let protected = path("/protected")?;
     let time = || {
         crate::native_mount::adapter::access::access_time(
             &crate::native_mount::clock::Clock::capture(),
         )
     };
     let unrestricted = compiled(&source, 1, vec![], None)?;
-    require_projfs_mode(&unrestricted, true, time()?)?;
+    require_projfs_mode(&unrestricted, &root, true, time()?, &work)?;
     for action in Action::ALL {
         let view = compiled(
             &source,
@@ -32,7 +56,7 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             None,
         )?;
         assert_eq!(
-            require_projfs_mode(&view, true, time()?).is_err(),
+            require_projfs_mode(&view, &root, true, time()?, &work).is_err(),
             matches!(
                 action,
                 Action::Create | Action::Write | Action::Append | Action::ReadHistory
@@ -40,15 +64,38 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             "unsupported writable mode for {action:?}",
         );
         assert!(matches!(
-            require_projfs_mode(&view, false, time()?),
-            Err(crate::native_mount::MountLifecycleError::NativePolicy(
+            require_projfs_mode(&view, &root, false, time()?, &work),
+            Err(crate::native_mount::NativeMountError::Lifecycle(
                 "ProjFS cannot prevent host mutations on read-only mounts"
             )),
         ));
     }
+    let view = compiled(
+        &source,
+        2,
+        vec![deny("restricted", &[Action::Write], "protected/**")],
+        None,
+    )?;
+    require_projfs_mode(&view, &sibling, true, time()?, &work)?;
+    assert!(require_projfs_mode(&view, &protected, true, time()?, &work).is_err());
+    let subtree = Capability::subtree(
+        None,
+        "unrestricted",
+        crate::access::ActionSet::MountWrite.actions(),
+    )?;
+    let view = compiled(&source, 3, Vec::new(), Some(subtree))?;
+    assert!(require_projfs_mode(&view, &root, true, time()?, &work).is_err());
+    require_projfs_mode(&view, &sibling, true, time()?, &work)?;
     Ok(())
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_lazy,
+    unit_test_mount_driver,
+    unit_test_mount_adapter
+))]
 pub(in crate::native_mount) fn deny(id: &str, actions: &[Action], path: &str) -> Rule {
     Rule {
         id: id.into(),
@@ -148,6 +195,14 @@ where
     .map_err(|_| MountSourceError::AccessDenied)
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_lazy,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 pub(in crate::native_mount) fn bind_test_access<
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
@@ -160,6 +215,12 @@ pub(in crate::native_mount) fn bind_test_access<
     Ok(source.with_access_view(view)?)
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_lazy,
+    unit_test_mount_driver
+))]
 pub(in crate::native_mount) fn publish_test_access<
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
@@ -180,6 +241,7 @@ pub(in crate::native_mount) fn publish_test_access<
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 pub(super) fn seed(
     source: &MemorySource,
     name: &str,
@@ -194,6 +256,7 @@ pub(super) fn seed(
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_filters_hidden_pages_and_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
@@ -225,6 +288,7 @@ fn native_access_filters_hidden_pages_and_metadata() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_read_only_paths_reject_each_content_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -260,6 +324,7 @@ fn native_access_read_only_paths_reject_each_content_mutation()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_inbox_creation_does_not_authorize_reopen_or_read()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -301,6 +366,7 @@ fn native_access_inbox_creation_does_not_authorize_reopen_or_read()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_append_is_atomic_and_cannot_overwrite() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
@@ -336,6 +402,7 @@ fn native_access_append_is_atomic_and_cannot_overwrite() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_revokes_existing_and_new_handles() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
@@ -401,6 +468,7 @@ fn native_access_revokes_existing_and_new_handles() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_rename_checks_source_and_destination() -> Result<(), Box<dyn std::error::Error>> {
     for (from, to) in [("protected", "allowed-new"), ("allowed", "protected-new")] {
@@ -430,6 +498,7 @@ fn native_access_rename_checks_source_and_destination() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -482,7 +551,7 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
             }
             _ => unreachable!(),
         }
-        let policy = crate::access::fixtures::denied(action, "**");
+        let policy = crate::access::fixtures::denied(action, "**")?;
         super::policy_refresh::publish(&source, &policy)?;
         assert!(
             source.sync().is_err(),
@@ -492,6 +561,7 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_path_reads_and_enumeration_bind_their_actual_policy_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -538,6 +608,7 @@ fn native_path_reads_and_enumeration_bind_their_actual_policy_snapshot()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_read_capability_does_not_disclose_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -567,6 +638,7 @@ fn native_access_read_capability_does_not_disclose_metadata()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_full_fold_aliases_share_denials() -> Result<(), Box<dyn std::error::Error>> {
     let config = VolumeConfig {
@@ -591,6 +663,7 @@ fn native_access_full_fold_aliases_share_denials() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_rejects_cross_volume_and_configuration_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -604,6 +677,7 @@ fn native_access_rejects_cross_volume_and_configuration_bindings()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_clone_uses_both_handles_without_metadata_disclosure()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -650,6 +724,7 @@ fn native_access_clone_uses_both_handles_without_metadata_disclosure()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_unbound_source_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let bound = source(FilesystemProfile::Portable)?;
@@ -672,6 +747,7 @@ fn native_access_unbound_source_fails_closed() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_list_only_never_reads_content_or_attribute_values()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -715,6 +791,7 @@ fn native_access_list_only_never_reads_content_or_attribute_values()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_open_checks_requested_content_rights() -> Result<(), Box<dyn std::error::Error>> {
     for (denied, access, allowed) in [
@@ -748,6 +825,7 @@ fn native_access_open_checks_requested_content_rights() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_retarget_preserves_grants_and_checks_identity()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -789,6 +867,7 @@ fn native_access_retarget_preserves_grants_and_checks_identity()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 fn denial_without_probe(action: Action, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = bind_test_access(
         source(FilesystemProfile::Portable)?,
@@ -806,6 +885,7 @@ fn denial_without_probe(action: Action, path: &str) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_access_denials_precede_backend_and_host_probes() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -819,7 +899,8 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // A published denial never probes storage or the native filesystem, for
     // every action and arbitrary bounded component spelling.
-    #[test]
+    #[cfg(any(not(unit_test_split), unit_test_mount))]
+#[test]
     fn native_access_denials_do_no_backend_io(
         action in 0..Action::ALL.len(), path in "[a-z]{1,20}(/[a-z]{1,20})?",
     ) {
@@ -828,6 +909,7 @@ proptest::proptest! {
     }
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn projection_admission_holds_policy_publication_until_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -835,7 +917,7 @@ fn projection_admission_holds_policy_publication_until_retirement()
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     assert!(source.projection_policy_lease(false, &work).is_err());
     let lease = source.projection_policy_lease(true, &work)?;
-    let mut denied = crate::access::fixtures::denied(Action::Write, "**");
+    let mut denied = crate::access::fixtures::denied(Action::Write, "**")?;
     denied.layers[0][1].actions = [Action::Write, Action::Append, Action::Create]
         .into_iter()
         .collect();
@@ -861,6 +943,7 @@ fn projection_admission_holds_policy_publication_until_retirement()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn private_policy_staging_does_not_hold_a_publication_lease()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -893,6 +976,7 @@ fn private_policy_staging_does_not_hold_a_publication_lease()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_relocations_cannot_disclose_denied_files_or_descendants()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -925,6 +1009,7 @@ fn native_relocations_cannot_disclose_denied_files_or_descendants()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_hard_links_cannot_widen_source_permissions() -> Result<(), Box<dyn std::error::Error>> {
     for (action, pattern, facts, allowed) in [
@@ -970,6 +1055,7 @@ fn native_hard_links_cannot_widen_source_permissions() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_relocations_preserve_uniform_and_equivalent_suffix_permissions()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1014,6 +1100,7 @@ fn native_relocations_preserve_uniform_and_equivalent_suffix_permissions()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn native_relocations_intersect_capability_path_limits() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;

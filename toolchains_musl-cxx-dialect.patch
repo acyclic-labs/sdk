@@ -1,0 +1,22 @@
+diff --git a/musl_cc_toolchain_config.bzl b/musl_cc_toolchain_config.bzl
+--- a/musl_cc_toolchain_config.bzl
++++ b/musl_cc_toolchain_config.bzl
+@@ -274,18 +274,6 @@
+                 ],
+                 with_features = [with_feature_set(features = ["opt"])],
+             ),
+-            flag_set(
+-                actions = [
+-                    _LINKSTAMP_COMPILE_ACTION_NAME,
+-                    _CPP_COMPILE_ACTION_NAME,
+-                    _CPP_HEADER_PARSING_ACTION_NAME,
+-                    _CPP_MODULE_COMPILE_ACTION_NAME,
+-                    _CPP_MODULE_CODEGEN_ACTION_NAME,
+-                    _LTO_BACKEND_ACTION_NAME,
+-                    _CLIF_MATCH_ACTION_NAME,
+-                ],
+-                flag_groups = [flag_group(flags = ["-std=c++14"])],
+-            ),
+         ],
+     )
+ 

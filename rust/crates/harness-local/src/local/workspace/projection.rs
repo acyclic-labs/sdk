@@ -138,10 +138,12 @@ impl Drop for Entered {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *users = users.checked_sub(1).expect("projection claim underflow");
-        let idle = *users == 0;
+        let Some(remaining) = users.checked_sub(1) else {
+            return;
+        };
+        *users = remaining;
         drop(users);
-        if idle {
+        if remaining == 0 {
             self.0.idle.notify_waiters();
         }
     }

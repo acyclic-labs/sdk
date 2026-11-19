@@ -8,7 +8,7 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
         let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let (copied, custody) = if encode {
             let (copied, custody) = value(&source, 4096, Some(&work))?;
             (
@@ -20,13 +20,13 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
         };
         assert_eq!(copied, source);
         let retained = retained_value_bytes(&copied)?;
-        assert_eq!(work.live_allocation_bytes(), baseline + retained);
+        assert_eq!(work.live_allocation_bytes()?, baseline + retained);
         // The old handoff resized custody to logical entries, losing the
         // sparse BTreeMap slots while the returned Value was still alive.
         assert!(crate::executor::json::json_value_logical_owned_bytes(&copied)? < retained);
         drop(copied);
         drop(custody);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -47,7 +47,7 @@ fn projected_sparse_json_retains_original_custody_on_finite_and_native_paths() -
         let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             crate::executor::PreparationIo::from_native_work(&work)?
         } else {
@@ -85,7 +85,7 @@ fn projected_sparse_json_retains_original_custody_on_finite_and_native_paths() -
         );
         assert_eq!(io.owned_bytes()?, 0);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

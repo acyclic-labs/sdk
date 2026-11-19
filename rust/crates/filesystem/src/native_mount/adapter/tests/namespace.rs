@@ -1,7 +1,20 @@
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 fn metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_adapter,
+    all(unit_test_mount_driver, target_os = "linux")
+))]
 fn checkout_state<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     source: &CheckoutMountSource<A, O>,
 ) -> (acyclic_fs_format::object_reference::GenerationId, bool) {
@@ -17,10 +30,24 @@ fn checkout_state<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'stati
         .expect("checkout state")
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 fn source(profile: FilesystemProfile) -> Result<MemorySource, Box<dyn std::error::Error>> {
     Ok(shared_sources(profile)?.0)
 }
 
+#[cfg(any(
+    not(unit_test_split),
+    unit_test_mount,
+    unit_test_mount_driver,
+    unit_test_mount_adapter,
+    unit_test_mount_adapter_namespace
+))]
 fn shared_sources(
     profile: FilesystemProfile,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
@@ -31,6 +58,7 @@ fn shared_sources(
     )
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn created_file_cases() -> Result<(), Box<dyn std::error::Error>> {
     for (name, offset, bytes) in [
@@ -80,6 +108,7 @@ fn created_file_cases() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn changes_record_their_requesters_origin() -> Result<(), Box<dyn std::error::Error>> {
     struct Origins(StdMutex<Vec<ViewOrigin>>);
@@ -127,6 +156,7 @@ fn changes_record_their_requesters_origin() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn direct_checkout_view_lease_excludes_concurrent_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -164,6 +194,7 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(
@@ -201,6 +232,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn concurrent_observations_never_see_a_mutation_half_applied()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -300,6 +332,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn namespace_invalidation_cases() -> Result<(), Box<dyn std::error::Error>> {
     for (operation, expected) in [
@@ -366,6 +399,7 @@ fn namespace_invalidation_cases() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(
@@ -413,6 +447,7 @@ fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error::Error>> {
     let (reader, writer) = sources(
@@ -465,6 +500,7 @@ fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -501,6 +537,7 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
 /// existing name without replacement or of an absent name, and the removal
 /// of a directory that is not empty, fail with their own POSIX error, which
 /// a native mount reports as is, not as an I/O error.
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
@@ -570,6 +607,7 @@ fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn s
 /// The kernel checks a rename's kinds itself but leaves emptiness to the
 /// file system, so a mount's own refusal must arrive as `ENOTEMPTY`.
 #[cfg(target_os = "linux")]
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn a_linux_mount_refuses_replacing_or_removing_a_full_directory_with_enotempty()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -599,6 +637,7 @@ fn a_linux_mount_refuses_replacing_or_removing_a_full_directory_with_enotempty()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount_adapter_namespace))]
 #[test]
 fn full_case_fold_native_comparison_keys_can_expand_past_name_limits()
 -> Result<(), Box<dyn std::error::Error>> {

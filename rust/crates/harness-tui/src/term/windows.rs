@@ -284,7 +284,10 @@ impl Tty {
             &mut bytes,
             self.decoder.input_deadline(deadline),
         )?;
-        self.decoder.feed(&bytes[..count])?;
+        let input = bytes
+            .get(..count)
+            .ok_or_else(|| io::Error::other("console read exceeded its input buffer"))?;
+        self.decoder.feed(input)?;
         if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             self.decoder.finish_input()?;
         }

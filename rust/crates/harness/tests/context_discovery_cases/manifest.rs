@@ -557,11 +557,12 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         .await?;
     let mut declaration = fixture.declaration();
     declaration.instructions.clear();
-    let base = ContextManifest::new(
+    let mut base = ContextManifest::new(
         declaration.capture(fixture.reader.as_ref()).await?,
         vec!["inspect".into()],
         &tools()?,
     )?;
+    base.tools.retain(|tool| tool.name == "write");
     let limits = Limits {
         render_bytes: Some(32_768),
         file_bytes: Some(32_768),
@@ -571,8 +572,8 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
     let (publisher, reader, _, _) = storage(&fixture).await?;
     // A manifest is bounded by what it renders and by its path, never by
     // the file bound on admitted content.
-    assert!(
-        base.publish(
+    let published = base
+        .publish(
             publisher.as_ref(),
             OperationId::new(),
             "context/unbounded-file.json",
@@ -581,9 +582,8 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
                 ..limits
             },
         )
-        .await
-        .is_ok()
-    );
+        .await?;
+    assert!(published.descriptor().byte_length() > 1);
     for bound in [
         Limits {
             render_bytes: Some(1),

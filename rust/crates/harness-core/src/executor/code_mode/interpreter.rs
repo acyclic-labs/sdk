@@ -534,7 +534,7 @@ mod tests {
                                     cause,
                                     work,
                                 })?;
-                                let before = work.receipt();
+                                let before = work.receipt()?;
                                 let (recovered, _custody) = tool
                                     .executor
                                     .reconcile_with_native_context(&context, &invocation, &work)?
@@ -546,7 +546,7 @@ mod tests {
                                         .await?,
                                     Some(result.clone())
                                 );
-                                let after = work.receipt();
+                                let after = work.receipt()?;
                                 assert_eq!(
                                     after.backend_write_operations,
                                     before.backend_write_operations

@@ -233,6 +233,11 @@ impl Recorded {
                     "native change producer closed before delivering the expected changes",
                 ));
             }
+            if Self::everything(&state.changes) {
+                return Err(std::io::Error::other(
+                    "native change stream required a rescan before reporting the expected names",
+                ));
+            }
             state = self
                 .changed
                 .wait(state)
@@ -430,8 +435,7 @@ fn lost_changes_are_reported_as_everything() -> TestResult {
     watch.fence()?;
     assert!(Recorded::everything(&recorded.take()));
     std::fs::write(root.path().join("after"), b"x")?;
-    watch.fence()?;
-    assert!(Recorded::reported(&recorded.take(), Path::new("after")));
+    recorded.wait_until(|changes| Recorded::reported(changes, Path::new("after")))?;
     assert!(watch.is_exact());
     Ok(())
 }

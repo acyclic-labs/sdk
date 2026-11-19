@@ -62,18 +62,40 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                     original.descriptor().verify(&bytes, &mut None)?;
                     // Private execution payloads require the original record proof;
                     // the session's published conversation exception does not cover them.
-                    if !matches!(
-                        call(endpoint, &AgentCommand::Read {
+                    let unproven = call(
+                        endpoint,
+                        &AgentCommand::Read {
                             agent: agent.clone(),
-                            target: ReadTarget::File { file: original.clone() },
+                            target: ReadTarget::File {
+                                file: original.clone(),
+                            },
                             offset: 0,
-                        }).await?,
-                        Err(acyclic_harness_client::AgentControlFailure::Refused { code, .. })
-                            if code == "agent_turn_error"
-                    ) {
-                        return Err(
-                            "an ordinary file read acquired private execution authority".into()
-                        );
+                        },
+                    )
+                    .await?;
+                    let missing_proof = acyclic_harness_core::agent::Error::from(
+                        acyclic_harness_core::Error::Unauthorized(
+                            "journal file requires adoption or a committed conversation proof"
+                                .into(),
+                        ),
+                    );
+                    match unproven {
+                        Err(acyclic_harness_client::AgentControlFailure::Refused {
+                            code,
+                            reason,
+                        }) if code == missing_proof.code()
+                            && reason == missing_proof.to_string() => {}
+                        Err(error) => {
+                            return Err(format!(
+                                "ordinary file read rejected for another reason: {error}"
+                            )
+                            .into());
+                        }
+                        Ok(_) => {
+                            return Err(
+                                "an ordinary file read acquired private execution authority".into(),
+                            );
+                        }
                     }
                     let recorded: RecordedInvocation = serde_json::from_slice(&bytes)?;
                     if recorded.metadata != super::invocation_metadata()

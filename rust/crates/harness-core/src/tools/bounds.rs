@@ -57,7 +57,7 @@ pub(super) fn result(
                 .unwrap_or_default();
             fields.insert("omitted_bytes".into(), omitted.into());
             fields.insert("truncated".into(), (omitted > 0).into());
-            if text_projection_len(super::shell::presentation(&fields)) as u64 <= maximum {
+            if text_projection_len(super::shell::presentation(&fields))? as u64 <= maximum {
                 return Ok(ToolResult {
                     value: Value::Object(fields),
                 });
@@ -87,7 +87,7 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
     // text projection rather than a second JSON rendering of canonical fields.
     fields.insert("omitted_bytes".into(), Value::from(u64::MAX));
     let base = super::shell::presentation(&fields);
-    let overhead = text_projection_len(base);
+    let overhead = text_projection_len(base)?;
     let budget = maximum
         .checked_sub(overhead)
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
@@ -116,7 +116,7 @@ fn suffix(text: &str, budget: usize) -> &str {
     text
 }
 
-fn text_projection_len(text: impl std::fmt::Display) -> usize {
+fn text_projection_len(text: impl std::fmt::Display) -> Result<usize> {
     struct EncodedBytes(usize);
     impl std::fmt::Write for EncodedBytes {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
@@ -125,8 +125,9 @@ fn text_projection_len(text: impl std::fmt::Display) -> usize {
         }
     }
     let mut bytes = EncodedBytes(br#"{"kind":"parts","parts":[{"kind":"text","text":""}]}"#.len());
-    std::fmt::write(&mut bytes, format_args!("{text}")).expect("size writer accepts all text");
-    bytes.0
+    std::fmt::write(&mut bytes, format_args!("{text}"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(bytes.0)
 }
 
 fn bound_too_small(name: &str) -> Error {

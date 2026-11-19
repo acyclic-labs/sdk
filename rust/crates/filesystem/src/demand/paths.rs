@@ -28,6 +28,7 @@ pub(crate) fn case_fold_unicode_with_work(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
 

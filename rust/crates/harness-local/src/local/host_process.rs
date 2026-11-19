@@ -748,9 +748,12 @@ mod tests {
             ])
             .arg(&pid_file)
             .current_dir(root.path());
-        let error = run_headless(&mut command, &mut ClosedAfterContext(false), b"{}", None)
-            .expect("the failed copy still proves tree retirement")
-            .expect_err("a closed caller fails the copy");
+        let Err(error) = run_headless(&mut command, &mut ClosedAfterContext(false), b"{}", None)?
+        else {
+            return Err(Error::Invalid(
+                "copy succeeded after the caller closed".into(),
+            ));
+        };
         assert!(matches!(error, Error::Storage(_)), "{error}");
         let tool = std::fs::read_to_string(&pid_file).map_err(storage)?;
         let stat = std::fs::read_to_string(format!("/proc/{}/stat", tool.trim())).ok();
@@ -833,12 +836,12 @@ mod tests {
             .stderr(acyclic_native_runtime::ProcessStdio::piped());
         process.spawn(&mut command, OperationId::new(), None)?;
         let before = work.remaining().map_err(storage)?;
-        let live = work.live_allocation_bytes();
+        let live = work.live_allocation_bytes()?;
         let mut progressed = false;
         // Each poll is metered; run past one invocation budget. Pipes at EOF
         // are released, so a reaped child's polls cost one exit observation.
         for _ in 0..262_144 {
-            if work.receipt().backend_read_operations > 65_536 {
+            if work.receipt()?.backend_read_operations > 65_536 {
                 break;
             }
             process.read_stdout(&mut [0; 8192])?;
@@ -854,10 +857,10 @@ mod tests {
                 before.backend_read_operations,
                 "polling spent the original process allowance"
             );
-            assert_eq!(work.live_allocation_bytes(), live);
+            assert_eq!(work.live_allocation_bytes()?, live);
         }
         assert!(
-            work.receipt().backend_read_operations > 65_536,
+            work.receipt()?.backend_read_operations > 65_536,
             "polling must retain cumulative work beyond a single invocation budget"
         );
         assert!(
@@ -885,9 +888,9 @@ mod tests {
                 .process(&work)?;
         let mut command = ProcessCommand::new(view.join("absent-native-program"));
         command.current_dir(host_view.as_ref());
-        let error = process
-            .spawn(&mut command, OperationId::new(), None)
-            .expect_err("missing program started");
+        let Err(error) = process.spawn(&mut command, OperationId::new(), None) else {
+            return Err(Error::Invalid("missing program started".into()));
+        };
         assert!(
             matches!(error, Error::Storage(_)),
             "equivalent native cwd was refused before process creation: {error}"
@@ -928,9 +931,11 @@ mod tests {
             HostProcessLease::acquire(state.path(), &view, &task, &view)?.process(&work)?;
         let mut command = ProcessCommand::new("must-not-execute");
         command.current_dir(outside.path());
-        let error = process
-            .spawn(&mut command, OperationId::new(), None)
-            .expect_err("foreign cwd admitted");
+        let Err(error) = process.spawn(&mut command, OperationId::new(), None) else {
+            return Err(Error::Invalid(
+                "foreign working directory was admitted".into(),
+            ));
+        };
         assert!(error.to_string().contains("cwd differs from admitted view"));
         process.release()?;
         let quiet = HostProcessLease::acquire(state.path(), &view, &task, &view)?.quiescent();

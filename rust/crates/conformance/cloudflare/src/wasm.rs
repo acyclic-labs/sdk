@@ -1,7 +1,9 @@
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{BoxProviderFuture, JournalStream, JournalStreamLimits, StreamProvider};
+use acyclic_stream::{
+    BoxProviderFuture, JournalStream, JournalStreamLimits, ProviderOwner, StreamProvider,
+};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
@@ -89,12 +91,14 @@ pub async fn qualify_journal_deadline(
         ) {
             return Err(StreamError::InvalidResponse);
         }
-        if peer.tail(path.clone()).await != Err(StreamError::NotFound) {
+        if !matches!(peer.tail(path.clone()).await, Err(StreamError::NotFound)) {
             return Err(StreamError::InvalidResponse);
         }
         drop(peer);
-        if provider.tail(path.clone()).await != Err(StreamError::NotFound)
-            || provider.inspect_idempotency(key.clone()).await?.is_some()
+        if !matches!(
+            provider.tail(path.clone()).await,
+            Err(StreamError::NotFound)
+        ) || provider.inspect_idempotency(key.clone()).await?.is_some()
         {
             return Err(StreamError::InvalidResponse);
         }
@@ -131,7 +135,7 @@ pub async fn qualify_journal_deadline(
                     ..request
                 })
                 .await;
-            if result != Err(StreamError::DeadlineElapsed)
+            if !matches!(result, Err(StreamError::DeadlineElapsed))
                 || admissions.get() != 2
                 || expire_next.get()
                 || clock.now_unix_millis() != DEADLINE
@@ -147,7 +151,7 @@ pub async fn qualify_journal_deadline(
                 Arc::new(Clock(AtomicU64::new(DEADLINE))),
             )
             .await?;
-            if reopened.tail(path).await != Err(StreamError::NotFound)
+            if !matches!(reopened.tail(path).await, Err(StreamError::NotFound))
                 || reopened.inspect_idempotency(key).await?.is_some()
                 || reopened.tail(control).await? != 1
             {
@@ -288,7 +292,7 @@ impl Storage for Port {
         Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
     }
 
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
+    fn open(&self) -> BoxProviderFuture<'_, Result<ProviderOwner<dyn StreamProvider>>> {
         Box::pin(async move {
             Ok(acyclic_stream::WasmStream::connect_provider(self.0.clone())
                 .map_err(|error| format!("provider port failed: {error:?}"))?
@@ -324,12 +328,11 @@ impl Storage for Domain {
         Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
     }
 
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
+    fn open(&self) -> BoxProviderFuture<'_, Result<ProviderOwner<dyn StreamProvider>>> {
         Box::pin(async move {
-            Ok(
-                Arc::new(JournalStream::open(self.0.clone(), JournalStreamLimits::default()).await?)
-                    as Arc<dyn StreamProvider>,
-            )
+            Ok(ProviderOwner::new(
+                JournalStream::open(self.0.clone(), JournalStreamLimits::default()).await?,
+            ) as ProviderOwner<dyn StreamProvider>)
         })
     }
 }

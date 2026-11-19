@@ -220,6 +220,7 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
 
 #[cfg(test)]
 #[cfg(all(target_os = "macos"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 #[test]
 fn moved_original_root_ends_callback_delivery_without_a_fence()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -251,6 +252,7 @@ fn moved_original_root_ends_callback_delivery_without_a_fence()
 
 #[cfg(test)]
 #[cfg(all(target_os = "linux"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 #[test]
 fn original_callback_failure_and_producer_panic_settle_once()
 -> Result<(), Box<dyn std::error::Error>> {

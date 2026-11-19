@@ -1,14 +1,23 @@
 use super::*;
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_views))]
+use crate::Fs;
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_views))]
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_views))]
 use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, FilesystemProfile, GenerationSelector, Lifecycle,
     MutationMode, VolumeConfig, VolumeLimits,
 };
-use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
+#[cfg(any(not(unit_test_split), unit_test_mount))]
+use crate::{ByteRange, WatchBatch, WatchChange};
+use crate::{CancellationToken, VolumeId, WorkBudget};
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 pub(in crate::native_mount) use super::fixture_access;
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 pub(super) use super::recovery::wait_for_retirement as await_recovery_worker;
 
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_views))]
 pub(super) async fn memory_volume(
     id: VolumeId,
     config: VolumeConfig,
@@ -23,6 +32,7 @@ pub(super) async fn memory_volume(
         .value)
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_views))]
 pub(super) async fn private_checkout<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
     volume: &crate::Volume<A, O>,
     cancellation: &CancellationToken,
@@ -42,6 +52,7 @@ pub(super) async fn private_checkout<A: crate::AsyncAuthorityStore, O: crate::As
         .value)
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_views))]
 pub(super) fn portable_path(
     limits: VolumeLimits,
     components: &[&[u8]],
@@ -55,8 +66,11 @@ pub(super) fn portable_path(
     )?)
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod capture;
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 pub(super) mod fence;
 #[cfg(all(target_os = "linux", not(loom)))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod recovery_bootstrap;
 pub(in crate::native_mount) mod retirement;

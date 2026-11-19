@@ -84,6 +84,11 @@ pub fn descriptors() -> io::Result<Vec<Descriptor>> {
     Native::descriptors()
 }
 
+/// Mount points visible to this process, in the platform's canonical path form.
+pub fn mount_points() -> io::Result<Vec<PathBuf>> {
+    Native::mount_points()
+}
+
 /// How many filesystems are mounted at `root` or beneath it.
 ///
 /// The mount table is shared: a Linux mount namespace with every process in
@@ -92,7 +97,7 @@ pub fn descriptors() -> io::Result<Vec<Descriptor>> {
 /// serves are that owner's cost.
 pub fn mounts_beneath(root: &Path) -> io::Result<u64> {
     let root = std::fs::canonicalize(root)?;
-    Ok(Native::mount_points()?
+    Ok(mount_points()?
         .iter()
         .filter(|point| point.starts_with(&root))
         .count() as u64)

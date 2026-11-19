@@ -372,11 +372,13 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
                 scope: scope.clone(),
             },
             Arc::new(NoDispatch),
-            TurnLimits {
-                maximum_bytes: Some(64 * 1024),
-                history_turns: 8,
-            },
-            Default::default(),
+            (
+                TurnLimits {
+                    maximum_bytes: Some(64 * 1024),
+                    history_turns: 8,
+                },
+                Default::default(),
+            ),
         );
         let admitted = host.admit(&state)?;
         let documents = host.journal_storage(&admitted, &[], &[]).await?.files;
@@ -769,22 +771,24 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 Default::default(),
             )
             .await?;
-        assert_eq!(
-            reader
-                .read(&skill, 4096, None, None)?
-                .await
-                .expect("guest reads published skill body")
-                .as_ref(),
-            b"optional instructions"
-        );
         let selected = root.bootstrap_scope(
             "input-reader",
-            &Capabilities::new([input.read_capability(&mut None)?]),
+            &Capabilities::new([
+                input.read_capability(&mut None)?,
+                skill.read_capability(&mut None)?,
+            ]),
             Some(owner),
             &mut None,
         )?;
         let selected_reader =
             FilesystemContentVerifier::new(host.clone(), &guest.verifier, &selected, 4096, None)?;
+        assert_eq!(
+            selected_reader
+                .read(&skill, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"optional instructions"
+        );
         let replacement = host
             .put_content(
                 &journal,
@@ -806,7 +810,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .as_ref(),
             b"accepted input"
         );
-        for file in [&replacement, &control] {
+        for file in [&replacement, &control, &unselected] {
             let denied = async { selected_reader.read(file, 4096, None, None)?.await }
                 .await
                 .expect_err("an input reference granted another journal file or version");
@@ -1873,11 +1877,13 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             issuer.clone(),
             TurnAdmission::LocalRoot,
             Arc::new(NoDispatch),
-            TurnLimits {
-                maximum_bytes: Some(64 * 1024),
-                history_turns: 8,
-            },
-            Default::default(),
+            (
+                TurnLimits {
+                    maximum_bytes: Some(64 * 1024),
+                    history_turns: 8,
+                },
+                Default::default(),
+            ),
         );
         let stop = acyclic_actors::guest::CancellationToken::new();
         let opening = host.open(
@@ -1905,7 +1911,10 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             drop(producer);
             assert!(matches!(
                 opening.as_mut().now_or_never(),
-                Some(Err(Error::Storage(_)))
+                Some(Err(Error::Agent(error))) if matches!(
+                    *error,
+                    crate::agent::Error::Stream(acyclic_stream::StreamError::Unavailable)
+                )
             ));
         }
     }
@@ -2215,7 +2224,6 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
         parent.capability(VolumeOperation::Write, &mut None)?,
         parent.capability(VolumeOperation::Delete, &mut None)?,
         parent.directory_read_capability("src", &mut None)?,
-        parent_file.read_capability(&mut None)?,
     ];
     let bound = fork.capability(VolumeOperation::Read, &mut None)?;
     let bound_directory = fork.directory_read_capability("src", &mut None)?;
@@ -2229,6 +2237,7 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
         &Capabilities::new(
             unbound.iter().cloned().chain([
                 bound.clone(),
+                parent_file.read_capability(&mut None)?,
                 bound_directory.clone(),
                 rooted_root.clone(),
                 rooted_escape.clone(),
@@ -2267,72 +2276,28 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
     assert!(granted.contains("model:generate"));
     assert!(!granted.contains(crate::contract::capability::HARNESS_HOST));
 
-    // The structured ceiling narrows to the bound volumes, by the storage
-    // reference each workspace is bound with; one bound without a reference
-    // is refused, never admitted.
-    let label = crate::core::filesystem_scope_label(granted, &mut None)?
-        .ok_or_else(|| Error::NotFound("minted filesystem ceiling".into()))?;
-    let narrowed = access::Capability::from_scope_label(label)
-        .map_err(|error| Error::Invalid(error.to_string()))?
-        .ok_or_else(|| Error::NotFound("minted filesystem ceiling".into()))?;
-    assert!(narrowed.is_attenuation_of(&whole));
-    let policy: access::Policy = serde_json::from_slice(access::INITIAL_POLICY)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    let principal = access::Principal {
-        kind: access::PrincipalKind::Agent,
-        id: owner.to_string(),
-        lineage: Vec::new(),
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
-    let fork_reference = fork.storage_name(&mut None)?;
-    let parent_reference = parent.storage_name(&mut None)?;
-    let journal = |id: u8| {
-        crate::conversation::journal_volume(
+    // The original explicit selection survives independently of workspace
+    // enrollment. It grants neither another file nor the whole source.
+    ContentGrant::verify_read(&minted.verifier, &minted.scope, &parent_file)?;
+    assert!(crate::core::filesystem_scope_label(granted, &mut None)?.is_none());
+    for ancestor in [191, 193, 192] {
+        let journal = crate::conversation::journal_volume(
             provider.clone(),
-            &crate::agent::AgentId::from_bytes([id; 16]),
-        )?
-        .storage_name(&mut None)
-    };
-    // 192 is a sibling of the parent 191, under the same grandparent 193.
-    let (grandparent_journal, parent_journal, sibling_journal) =
-        (journal(193)?, journal(191)?, journal(192)?);
-    for (reference, action, allowed) in [
-        (Some(fork_reference.as_str()), Action::Read, true),
-        (Some(fork_reference.as_str()), Action::Write, true),
-        (Some(parent_reference.as_str()), Action::Read, false),
-        (Some(parent_reference.as_str()), Action::Write, false),
-        // Every ancestor's journal is read, never written; a sibling's
-        // journal is not reached.
-        (Some(parent_journal.as_str()), Action::Read, true),
-        (Some(parent_journal.as_str()), Action::Write, false),
-        (Some(grandparent_journal.as_str()), Action::Read, true),
-        (Some(grandparent_journal.as_str()), Action::Write, false),
-        (Some(sibling_journal.as_str()), Action::Read, false),
-        (None, Action::Read, false),
-    ] {
-        let decision = access::decide(
-            &policy,
-            &principal,
-            action,
-            access::Resource {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
-                lineage: &[],
-                volume: "00000000-0000-0000-0000-000000000000",
-                reference,
-                generation: 1,
-                head: 1,
-                path: "seed.txt",
-            },
-            access::Context {
-                now: 0,
-                approvals: 0,
-            },
-            &narrowed,
-        );
-        assert_eq!(decision.allowed, allowed, "{reference:?} {action:?}");
+            &crate::agent::AgentId::from_bytes([ancestor; 16]),
+        )?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            assert!(
+                ContentGrant::verify(
+                    &minted.verifier,
+                    &minted.scope,
+                    &journal,
+                    operation,
+                    &mut None
+                )
+                .is_err(),
+                "a workload reached another agent's whole journal"
+            );
+        }
     }
     Ok(())
 }
@@ -2607,6 +2572,41 @@ async fn workload_scopes_never_widen_their_admission() -> Result<()> {
                     .expect_err("a workload reached another agent's journal");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
+    }
+    let input = |version: &str| {
+        FileRef::new(
+            journal.clone(),
+            "inputs/selected.txt".into(),
+            version.into(),
+            crate::conversation::FileDescriptor::from_bytes(b"prompt", "text/plain", &mut None)?,
+            "prompt".into(),
+            &mut None,
+        )
+    };
+    let selected = input("v1")?;
+    let other_version = input("v2")?;
+    for (grants, permitted) in [
+        (vec![read.clone()], false),
+        (vec![HARNESS_HOST.to_owned(), write], false),
+        (vec![HARNESS_HOST.to_owned(), read], true),
+    ] {
+        let parent = custody(grants, Some(owner))?;
+        let derived = native
+            .delegate(
+                &parent,
+                "agent",
+                crate::core::ScopeDerivation::Workload {
+                    journal: &journal,
+                    volumes: &volumes,
+                    external: std::slice::from_ref(&selected),
+                },
+            )
+            .await?;
+        assert_eq!(
+            ContentGrant::verify_read(&verifier, &derived, &selected).is_ok(),
+            permitted
+        );
+        assert!(ContentGrant::verify_read(&verifier, &derived, &other_version).is_err());
     }
     Ok(())
 }

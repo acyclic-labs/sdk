@@ -19,36 +19,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let original = self.generation(workspace, original, Some(io)).await?;
             let authorized = self.generation(workspace, authorized, Some(io)).await?;
-            // The protected metadata distinguishes publications of equal bytes;
-            // the file payload also catches writes that bypassed that metadata.
-            // Metadata is optional for files authored outside this publisher.
-            // Its matching absence is stable, while the actual source must exist.
-            let before = io.sdk(
-                original
-                    .named_attribute_value(content.0, content.1, io, io.cancellation())
-                    .await,
-            )?;
-            let after = io.sdk(
-                authorized
-                    .named_attribute_value(content.0, content.1, io, io.cancellation())
-                    .await,
-            )?;
-            let unchanged = before == after
-                && io.sdk(
-                    authorized
-                        .matches_file_payload(&original, content.0, io, io.cancellation())
-                        .await,
-                )?;
-            if !unchanged {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Conflict,
-                    "source file changed before content authorization",
-                )
-                .tool_input());
-            }
-            Ok(())
+            Self::require_unchanged_generations(&original, &authorized, content, io).await
         })
+    }
+
+    pub(super) async fn require_unchanged_generations(
+        original: &Generation<A, O>,
+        authorized: &Generation<A, O>,
+        content: (&str, &AttributeName),
+        io: &PreparationIo,
+    ) -> Result<()> {
+        // The protected metadata distinguishes publications of equal bytes;
+        // the file payload also catches writes that bypassed that metadata.
+        // Metadata is optional for files authored outside this publisher.
+        // Its matching absence is stable, while the actual source must exist.
+        let unchanged = io.sdk(
+            authorized
+                .matches_file_publication(original, content.0, content.1, io, io.cancellation())
+                .await,
+        )?;
+        if !unchanged {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "source file changed before content authorization",
+            )
+            .tool_input());
+        }
+        Ok(())
     }
 }
 

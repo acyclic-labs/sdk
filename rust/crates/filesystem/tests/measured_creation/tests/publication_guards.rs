@@ -4,7 +4,7 @@ use acyclic_fs::{
 use acyclic_fs_format::identity::OperationId;
 use std::error::Error;
 
-use crate::creation_budget::FINITE_BUDGET;
+use crate::creation::creation_budget::FINITE_BUDGET;
 
 #[tokio::test]
 async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn Error>> {

@@ -560,20 +560,27 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
     Ok(())
 }
 
-/// `FSEvents` reports only hints, so a change to the captured tree requires a
-/// rescan. A change beneath an excluded subtree is not part of that tree, and
-/// the fence cookie written there confirms that every earlier change was
-/// delivered: a quiet command never rescans, so it never reads files it did
-/// not touch.
-#[cfg(any(target_os = "macos", all(test, unix)))]
+/// Queues path hints from `FSEvents` and retains stream-wide invalidations.
+/// Excluded subtrees can hold a fence cookie that confirms earlier delivery
+/// without asking the consumer to read those subtrees.
+#[cfg(any(
+    target_os = "macos",
+    all(test, unix, any(not(unit_test_split), unit_test_host))
+))]
 struct RootHints {
-    root: PathBuf,
-    shared: Arc<WatchState>,
-    fenced: Arc<Condvar>,
-    _root_allocation: Option<crate::NativeAllocation>,
+    delivery: NativeEventDelivery,
 }
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(
+    target_os = "macos",
+    all(test, unix, any(not(unit_test_split), unit_test_host))
+))]
+type PathHint<'a> = (&'a Path, fn(NamespacePath) -> WatchChange);
+
+#[cfg(any(
+    target_os = "macos",
+    all(test, unix, any(not(unit_test_split), unit_test_host))
+))]
 impl RootHints {
     /// Accepts one delivered batch. The fence cookie confirms delivery only
     /// once its whole batch is accepted: a batch that fails after the cookie
@@ -586,6 +593,7 @@ impl RootHints {
         use crate::source_watch::HostChange;
         work.check()?;
         let mut state = self
+            .delivery
             .shared
             .state
             .lock()
@@ -596,46 +604,106 @@ impl RootHints {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let relative = match change {
-                HostChange::Departed(relative)
-                | HostChange::Rebound(relative)
-                | HostChange::Altered(relative) => Some(relative.as_path()),
+            let hint: Option<PathHint<'_>> = match change {
+                HostChange::Departed(relative) => Some((relative, WatchChange::Removed)),
+                HostChange::Rebound(relative) => Some((relative, WatchChange::Arrived)),
+                HostChange::Altered(relative) if relative.as_os_str().is_empty() => {
+                    Some((relative, WatchChange::MetadataChanged))
+                }
+                HostChange::Altered(relative) => Some((relative, WatchChange::Modified)),
                 HostChange::Everything => None,
                 #[cfg(any(target_os = "macos", windows))]
                 HostChange::Unconfirmed => None,
                 #[cfg(windows)]
-                HostChange::Observed { path, .. } => Some(path.as_path()),
+                HostChange::Observed { path, .. } => Some((path, WatchChange::Modified)),
             };
             let beneath = |host: &Path| {
-                relative.is_some_and(|relative| {
-                    host.strip_prefix(&self.root).is_ok_and(|host| {
-                        !host.as_os_str().is_empty() && relative.starts_with(host)
-                    })
+                hint.is_some_and(|(relative, _)| {
+                    host.strip_prefix(&self.delivery.context.root)
+                        .is_ok_and(|host| {
+                            !host.as_os_str().is_empty() && relative.starts_with(host)
+                        })
                 })
             };
             if state.fence.as_deref().is_some_and(beneath) {
                 cookie = true;
-            } else if !state.excluded.iter().any(|excluded| beneath(excluded)) {
-                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-                self.fenced.notify_all();
+            } else if state.invalidation.is_none()
+                && !state.excluded.iter().any(|excluded| beneath(excluded))
+            {
+                if let Some((relative, build_change)) = hint {
+                    if relative.as_os_str().is_empty()
+                        && matches!(change, HostChange::Departed(_) | HostChange::Rebound(_))
+                    {
+                        state.invalidation = Some(WatchInvalidationReason::RootChanged);
+                    } else {
+                        self.enqueue(relative, build_change, &mut state, work)?;
+                    }
+                } else {
+                    state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+                }
             }
         }
         if cookie {
             state.fence = None;
-            self.fenced.notify_all();
+        }
+        if cookie || state.invalidation.is_some() {
+            self.delivery.fenced.notify_all();
         }
         Ok(())
     }
+
+    fn enqueue<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        relative: &Path,
+        change: fn(NamespacePath) -> WatchChange,
+        state: &mut SharedState,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        let context = &self.delivery.context;
+        let (path, bytes, allocation) =
+            match namespace_hint_with_work(relative, context.profile, context.limits, work) {
+                Ok(hint) => hint,
+                Err(DemandError::InvalidRequest) => {
+                    state.invalidation = Some(WatchInvalidationReason::UnrepresentablePath);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+        let result = work.started_io(WorkCounters {
+            items_returned: 1,
+            ..WorkCounters::default()
+        });
+        if result.is_ok() {
+            self.delivery.publish_locked(
+                state,
+                QueuedWatchChange {
+                    change: change(path),
+                    allocations: [allocation, None],
+                },
+            );
+        } else {
+            drop(path);
+            drop(allocation);
+        }
+        if bytes != 0 {
+            work.release(bytes)?;
+        }
+        result
+    }
 }
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(
+    target_os = "macos",
+    all(test, unix, any(not(unit_test_split), unit_test_host))
+))]
 impl crate::source_watch::HostChangeSink for RootHints {
     fn delivery_finished(&self) {
-        self.shared.changed.notify_waiters();
+        self.delivery.shared.changed.notify_waiters();
     }
 
     fn logical_owned_bytes(&self) -> u64 {
-        size_of::<Self>() as u64 + self.root.capacity() as u64
+        size_of::<Self>() as u64 + self.delivery.context.root.capacity() as u64
     }
 
     fn host_changed(
@@ -655,7 +723,7 @@ impl crate::source_watch::HostChangeSink for RootHints {
     }
 
     fn delivery_lost(&self) {
-        lose_delivery(&self.shared, &self.fenced);
+        lose_delivery(&self.delivery.shared, &self.delivery.fenced);
     }
 }
 
@@ -708,7 +776,7 @@ impl Drop for AdapterDelivery {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 struct NativeEventDelivery {
     context: NativeEventContext,
     sender: QueueSender<QueuedWatchChange>,
@@ -717,21 +785,10 @@ struct NativeEventDelivery {
     fenced: Arc<Condvar>,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 impl NativeEventDelivery {
-    /// Queues the observed half of a rename whose other end is outside the
-    /// watched tree as that path's departure. Its caller already charged it.
-    fn depart_locked(&self, state: &mut SharedState) {
-        let Some(pending) = state.pending_rename.take() else {
-            return;
-        };
-        if state.invalidation.is_some() {
-            return;
-        }
-        match self.sender.try_send(QueuedWatchChange {
-            change: WatchChange::Removed(pending.from),
-            allocations: [pending.allocation, None],
-        }) {
+    fn publish_locked(&self, state: &mut SharedState, change: QueuedWatchChange) {
+        match self.sender.try_send(change) {
             Ok(()) => {
                 self.queued.fetch_add(1, Ordering::Release);
             }
@@ -739,6 +796,25 @@ impl NativeEventDelivery {
                 state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             }
         }
+    }
+
+    /// Queues the observed half of a rename whose other end is outside the
+    /// watched tree as that path's departure. Its caller already charged it.
+    #[cfg(any(target_os = "linux", windows))]
+    fn depart_locked(&self, state: &mut SharedState) {
+        let Some(pending) = state.pending_rename.take() else {
+            return;
+        };
+        if state.invalidation.is_some() {
+            return;
+        }
+        self.publish_locked(
+            state,
+            QueuedWatchChange {
+                change: WatchChange::Removed(pending.from),
+                allocations: [pending.allocation, None],
+            },
+        );
     }
 }
 
@@ -951,14 +1027,7 @@ impl NativeEventDelivery {
                     allocations: [payload.2, None],
                 }
             };
-            match self.sender.try_send(change) {
-                Ok(()) => {
-                    self.queued.fetch_add(1, Ordering::Release);
-                }
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                    state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                }
-            }
+            self.publish_locked(&mut state, change);
             Ok::<(), DemandError>(())
         })();
         if bytes != 0 {
@@ -1514,14 +1583,7 @@ impl WindowsRootSink {
                 allocations: [allocation, None],
             },
         };
-        match self.delivery.sender.try_send(change) {
-            Ok(()) => {
-                self.delivery.queued.fetch_add(1, Ordering::Release);
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            }
-        }
+        self.delivery.publish_locked(state, change);
         Ok::<(), DemandError>(())
     }
 }
@@ -2094,8 +2156,8 @@ impl NativeWatch {
                 fenced: Arc::clone(&fenced),
             })
         };
-        #[cfg(target_os = "linux")]
-        let linux_sender = sender.clone();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let source_sender = sender.clone();
         #[cfg(not(windows))]
         let callback = if use_adapter {
             let (context_root, context_allocation) =
@@ -2152,7 +2214,7 @@ impl NativeWatch {
                     limits: options.limits,
                     _root_allocation: event_allocation,
                 },
-                sender: linux_sender,
+                sender: source_sender,
                 shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
@@ -2194,10 +2256,19 @@ impl NativeWatch {
             let (hint_root, hint_allocation) = Self::copy_startup_path(&root, work, original)?;
             Self::startup_control(work)?;
             let sink = Arc::new(RootHints {
-                root: hint_root,
-                shared: Arc::clone(&shared),
-                fenced: Arc::clone(&fenced),
-                _root_allocation: hint_allocation,
+                delivery: NativeEventDelivery {
+                    context: NativeEventContext {
+                        root: hint_root,
+                        root_identity,
+                        profile,
+                        limits: options.limits,
+                        _root_allocation: hint_allocation,
+                    },
+                    sender: source_sender,
+                    shared: Arc::clone(&shared),
+                    queued: Arc::clone(&queued),
+                    fenced: Arc::clone(&fenced),
+                },
             });
             Some(crate::source_watch::NativeSourceWatch::start(
                 held, sink, work,
@@ -4857,6 +4928,7 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
 
 #[cfg(test)]
 #[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod demand_admission_tests {
     use super::*;
     use crate::demand::{DemandDirectoryObserver, DemandError};
@@ -5331,4 +5403,5 @@ mod demand_admission_tests {
 
 #[cfg(test)]
 #[path = "tests/watch/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;

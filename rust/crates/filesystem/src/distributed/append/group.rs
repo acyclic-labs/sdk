@@ -611,6 +611,7 @@ fn visit(work: &mut AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod quotation_tests {
     use super::*;
 
@@ -648,5 +649,6 @@ mod quotation_tests {
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod identity_tests;

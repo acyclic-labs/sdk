@@ -288,13 +288,13 @@ fn native_deadline_timer_is_admitted_once_on_the_original_ledger() {
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap_or_else(|_| panic!("ledger"));
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes().unwrap();
         let mut deadline = Deadline::start(transport, 100, true);
         let mut context = Context::from_waker(futures::task::noop_waker_ref());
         let allocated = acyclic_test_support::measure(|| {
             assert!(deadline.poll_wake(&mut context, Some(&work)).is_pending());
         });
-        let claimed = work.live_allocation_bytes() - before;
+        let claimed = work.live_allocation_bytes().unwrap() - before;
         assert_eq!(allocated.count_total, 1);
         assert!(claimed > 0);
         assert_eq!(allocated.bytes_total, claimed);
@@ -302,11 +302,11 @@ fn native_deadline_timer_is_admitted_once_on_the_original_ledger() {
             assert!(deadline.poll_wake(&mut context, Some(&work)).is_pending());
         });
         assert_eq!(again.count_total, 0);
-        assert_eq!(work.live_allocation_bytes() - before, claimed);
+        assert_eq!(work.live_allocation_bytes().unwrap() - before, claimed);
         // Restoring per-poll timer creation must be visible to the allocator,
         // even though the replacement retains the same amount of credit.
         drop(deadline.wake.take());
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes().unwrap(), before);
         let recreated = acyclic_test_support::measure(|| {
             assert!(deadline.poll_wake(&mut context, Some(&work)).is_pending());
         });
@@ -326,6 +326,6 @@ fn native_deadline_timer_is_admitted_once_on_the_original_ledger() {
             } if excerpt.is_empty()
         ));
         drop(deadline);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes().unwrap(), before);
     });
 }

@@ -310,7 +310,9 @@ pub(crate) fn durable_rename_observed(
             Ok(())
         };
         let dispatch = || {
-            #[cfg(feature = "test-support")]
+            #[cfg(all(feature = "test-support", windows))]
+            return testing::durable_flush("namespace:rename", rename);
+            #[cfg(all(feature = "test-support", unix))]
             return testing::durable_operation("namespace:rename", rename);
             #[cfg(not(feature = "test-support"))]
             rename()

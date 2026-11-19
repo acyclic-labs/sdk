@@ -4,6 +4,7 @@ use crate::conformance::{Backend, Result, observe::Observed, vectors};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::*,
+    contract::capability::HARNESS_HOST,
     conversation::VolumeOperation,
     core::{AggregateKind, Authority, AuthorityRoot, Scope},
     executor::Executor,
@@ -178,7 +179,7 @@ async fn admission(
             .capability(VolumeOperation::Read, &mut None)?,
     ];
     let journal = journal(binding)?;
-    grants.push(acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned());
+    grants.push(HARNESS_HOST.to_owned());
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(journal.capability(operation, &mut None)?);
     }
@@ -312,18 +313,13 @@ async fn check_scope(
             let TurnAdmission::Admitted { scope, .. } = admission else {
                 return Err("admitted control lost its scope".into());
             };
-            // The workload keeps every admitted grant except host custody: the
-            // host role and the journal write. It reads its journal; only the
-            // host writes it.
-            let journal_write = journal(binding)?.capability(VolumeOperation::Write, &mut None)?;
+            // These explicit grants name the workload's own private volume
+            // and journal. Host custody requires the separate host role.
             let guest = Capabilities::new(
                 scope
                     .capabilities()
                     .iter()
-                    .filter(|label| {
-                        *label != acyclic_harness_core::contract::capability::HARNESS_HOST
-                            && **label != journal_write
-                    })
+                    .filter(|label| *label != HARNESS_HOST)
                     .map(str::to_owned),
             );
             let agent = Some(acyclic_harness_core::AgentId::from_bytes(

@@ -41,7 +41,7 @@ mod authority;
 mod generation;
 pub(crate) use generation::generation_fact;
 mod owned_group;
-pub(crate) use authority::MAX_AUTHORITY_GROUP_MEMBERS;
+pub use authority::MAX_AUTHORITY_GROUP_MEMBERS;
 pub use authority::{AppendGroupOutcome, AsyncAuthorityStore, AuthorityGroupCost};
 pub use owned_group::{OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask};
 mod policy;
@@ -63,6 +63,7 @@ pub(crate) use read_batch::{Decoded, ReadRepresentation, Stored};
 
 #[cfg(test)]
 #[path = "../tests/async_storage.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 pub(crate) use objects::{forward_object_store, prepare_object};

@@ -47,7 +47,7 @@ mod tests {
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let custody = work.claim(123, 1, WorkCounters::UNCHARGED)?;
         let error = run_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(
             GitCompatRunError::Executor(
@@ -58,7 +58,7 @@ mod tests {
                 .into(),
             ),
         );
-        assert_eq!(work.live_allocation_bytes(), baseline + 123);
+        assert_eq!(work.live_allocation_bytes()?, baseline + 123);
         let Error::NativeSource { source, .. } = &error else {
             return Err(Error::Invalid("native source cause was lost".into()));
         };
@@ -70,7 +70,7 @@ mod tests {
         assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied);
         assert_eq!(allocation.bytes(), 123);
         drop(error);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         Ok(())
     }
 }

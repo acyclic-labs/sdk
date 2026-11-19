@@ -162,4 +162,5 @@ pub(crate) async fn diff_tree_entries_with_accounting(
 
 #[cfg(test)]
 #[path = "tests/persistent_diff.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

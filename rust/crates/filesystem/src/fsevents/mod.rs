@@ -65,7 +65,7 @@ unsafe extern "C" {
         context: *mut c_void,
         work: extern "C" fn(*mut c_void),
     );
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     fn dispatch_release(object: DispatchQueue);
     fn dispatch_suspend(object: DispatchQueue);
     fn dispatch_resume(object: DispatchQueue);
@@ -161,10 +161,13 @@ mod stream;
 use api::Api;
 pub(crate) use callback::{BorrowedEventHandlerFn, EventBatch, on_queue};
 use callback::{OnQueue, drain, terminal_suffix};
+#[cfg(feature = "test-support")]
+pub use hub::stress_fixture;
 use hub::{Hub, Registration};
 pub use notify_adapter::FsEventsWatcher;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use stream::BEFORE_DRAIN;
 pub(crate) use stream::{EventStream, StreamTerminal};
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests;

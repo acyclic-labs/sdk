@@ -36,4 +36,5 @@ impl<V, const N: usize, const WINDOW: usize> RecentIndex<V, N, WINDOW> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -279,6 +279,7 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/retention.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 /// Encodes one canonical terminal workspace fact with before-effect admission.

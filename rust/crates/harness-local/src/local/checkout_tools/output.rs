@@ -5,21 +5,13 @@ use tokio::sync::{Mutex, Notify, oneshot};
 
 pub(super) mod writer;
 
-/// Waits, from a native capture worker, for one output publication. It
-/// completes when the volume answers, never on a wall-clock deadline.
-pub(super) fn await_publication<T, F: std::future::Future<Output = std::io::Result<T>>>(
-    runtime: &tokio::runtime::Handle,
-    step: impl FnOnce() -> F,
-) -> std::io::Result<T> {
-    crate::filesystem::native_process::capture::wait_control(runtime, step)
-}
-
 pub(super) struct Output {
     writer: Arc<Mutex<writer::Writer>>,
     ready: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
     publisher: Option<acyclic_native_runtime::TaskHandle<()>>,
     tasks: acyclic_native_runtime::TaskSpawner,
+    runtime: tokio::runtime::Handle,
     finished: bool,
     pub(super) health: Health,
 }
@@ -98,6 +90,7 @@ impl Output {
             stop: Some(stop),
             publisher: Some(publisher),
             tasks,
+            runtime: tokio::runtime::Handle::current(),
             finished: false,
             health,
         })
@@ -107,17 +100,21 @@ impl Output {
     // chunks only copy into the bounded buffer; full batches publish immediately.
     pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
         self.health.check()?;
-        let mut writer = self.writer.blocking_lock();
-        self.health.check()?;
-        let was_empty = !writer.pending();
-        if let Err(cause) = writer.observe(chunk) {
-            self.health.fail(&cause);
-            return Err(cause);
-        }
-        if was_empty && writer.pending() {
-            self.ready.notify_one();
-        }
-        Ok(())
+        // The publisher may hold the writer while waiting for the volume.
+        // Use one native handoff for both the lock and any full-batch write.
+        crate::filesystem::native_process::capture::wait_control(&self.runtime, || async {
+            let mut writer = self.writer.lock().await;
+            self.health.check()?;
+            let was_empty = !writer.pending();
+            if let Err(cause) = writer.observe(chunk).await {
+                self.health.fail(&cause);
+                return Err(cause);
+            }
+            if was_empty && writer.pending() {
+                self.ready.notify_one();
+            }
+            Ok(())
+        })
     }
 
     pub(super) async fn finish(&mut self, result: &ToolResult) -> Result<()> {

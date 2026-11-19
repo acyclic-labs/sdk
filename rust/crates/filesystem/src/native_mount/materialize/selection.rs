@@ -69,6 +69,7 @@ fn verify_native_staging_selection_inner(input: &str) -> Result<(), Box<dyn std:
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

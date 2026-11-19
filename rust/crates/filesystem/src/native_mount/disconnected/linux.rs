@@ -11,7 +11,7 @@ pub(super) struct Pinned {
 
 fn stat(file: &OwnedFd, flags: AtFlags) -> std::io::Result<(FileType, Option<u64>)> {
     #[cfg(test)]
-    #[cfg(all(loom))]
+    #[cfg(loom)]
     if let Some(kernel) = super::kernel::current() {
         return metadata(file, flags, kernel.stat(file.as_raw_fd(), flags), || {
             kernel
@@ -130,20 +130,22 @@ fn pinned_identity(
 ) -> std::io::Result<(FileType, Option<u64>)> {
     match metadata {
         Err(error) if error.raw_os_error() == Some(libc::ENOTCONN) => {
-            let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?;
-            let mount = info
-                .lines()
-                .find_map(|line| line.strip_prefix("mnt_id:")?.trim().parse().ok())
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "O_PATH fdinfo has no mount identity",
-                    )
-                })?;
-            Ok((FileType::Directory, Some(mount)))
+            Ok((FileType::Directory, Some(mount_id(file)?)))
         }
         result => result,
     }
+}
+
+pub(in crate::native_mount) fn mount_id(file: &impl AsRawFd) -> std::io::Result<u64> {
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?;
+    info.lines()
+        .find_map(|line| line.strip_prefix("mnt_id:")?.trim().parse().ok())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "fdinfo has no mount identity",
+            )
+        })
 }
 
 impl Pinned {
@@ -192,7 +194,7 @@ impl Pinned {
 
     fn current_stat(&self) -> rustix::io::Result<rustix::fs::Statx> {
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         if let Some(kernel) = super::kernel::current() {
             return Ok(kernel.current_stat());
         }
@@ -231,4 +233,5 @@ impl Pinned {
 
 #[cfg(test)]
 #[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests;

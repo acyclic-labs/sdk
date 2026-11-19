@@ -23,7 +23,11 @@ struct Cache {
     normalized: RefCell<BTreeMap<PathBuf, Derived<[u8]>>>,
 }
 
-type FileSnapshot = (sdk_file_identity::Stamp, Rc<[u8]>);
+struct FileSnapshot {
+    stamp: sdk_file_identity::Stamp,
+    witness: sdk_file_identity::ReadWitness,
+    bytes: Rc<[u8]>,
+}
 
 // Handle entries own their input Rc: an allocator cannot recycle the indexed
 // address while it remains in the map. Equal buffers share one derived value.
@@ -117,7 +121,7 @@ impl Cache {
             .files
             .borrow()
             .values()
-            .map(|(_, bytes)| Rc::as_ptr(bytes) as *const u8)
+            .map(|snapshot| Rc::as_ptr(&snapshot.bytes) as *const u8)
             .collect::<BTreeSet<_>>();
         self.parsed.borrow_mut().retain(&bytes);
         self.json.borrow_mut().retain(&bytes);
@@ -218,49 +222,47 @@ pub fn rustdoc_worker<T, R>(
 
 /// Read a Rustdoc receipt, reusing only matching native file observations.
 pub fn read_rustdoc(path: &Path) -> Result<Rc<[u8]>, Error> {
-    let read = || {
-        std::fs::read(path)
-            .map(|bytes| {
-                #[cfg(test)]
-                READS.set(READS.get() + 1);
-                Rc::from(bytes)
-            })
-            .map_err(Error::from)
-    };
-    let result = CACHE.with_borrow(|cache| match cache {
-        Some(cache) => sdk_file_identity::cached(
-            &cache.files,
-            path.to_owned(),
-            || sdk_file_identity::stamp(path).map_err(Error::from),
-            read,
-            || {
-                Error::Invalid(format!(
-                    "Rustdoc receipt changed while reading {}",
-                    path.display()
-                ))
-            },
-        ),
-        None => sdk_file_identity::cached(
-            &RefCell::new(BTreeMap::new()),
-            path.to_owned(),
-            || sdk_file_identity::stamp(path).map_err(Error::from),
-            read,
-            || {
-                Error::Invalid(format!(
-                    "Rustdoc receipt changed while reading {}",
-                    path.display()
-                ))
-            },
-        ),
-    });
-    if result.is_ok() {
-        CACHE.with_borrow(|cache| {
-            if let Some(cache) = cache {
+    let stamp = sdk_file_identity::stamp(path)?;
+    CACHE.with_borrow(|cache| {
+        if let Some(cache) = cache {
+            let files = cache.files.borrow();
+            if let Some(snapshot) = files
+                .get(path)
+                .filter(|snapshot| snapshot.stamp == stamp && snapshot.witness.permits_reuse())
+            {
                 cache.observed.borrow_mut().insert(path.to_owned());
+                return Ok(Rc::clone(&snapshot.bytes));
             }
-        });
-    }
-    result
+        }
+        let witness = sdk_file_identity::ReadWitness::acquire(path);
+        let contents = std::fs::read(path)?;
+        #[cfg(test)]
+        READS.set(READS.get() + 1);
+        if sdk_file_identity::stamp(path)? != stamp || witness.invalidated() {
+            return Err(Error::Invalid(format!(
+                "Rustdoc receipt changed while reading {}",
+                path.display()
+            )));
+        }
+        let Some(cache) = cache else {
+            return Ok(Rc::from(contents));
+        };
+        let mut files = cache.files.borrow_mut();
+        let bytes = files
+            .get(path)
+            .filter(|snapshot| *snapshot.bytes == contents)
+            .map_or_else(|| Rc::from(contents), |snapshot| Rc::clone(&snapshot.bytes));
+        files.insert(
+            path.to_owned(),
+            FileSnapshot {
+                stamp,
+                witness,
+                bytes: Rc::clone(&bytes),
+            },
+        );
+        cache.observed.borrow_mut().insert(path.to_owned());
+        Ok(bytes)
+    })
 }
 
 /// Read the unchanged JSON tree used for source retention and normalization.

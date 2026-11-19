@@ -1,6 +1,7 @@
 //! Explicit live acceptance, separate from deterministic provider conformance.
 //! API keys use the product credential resolver. Nothing
 //! prints credentials, request headers, prompts, response bodies or raw errors.
+#![cfg(test)]
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_harness_core::{

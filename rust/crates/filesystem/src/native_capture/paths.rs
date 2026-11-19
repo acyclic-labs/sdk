@@ -211,6 +211,7 @@ pub(super) fn append_path_measured(
     meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
     #[cfg(test)]
+    #[cfg(any(not(unit_test_split), unit_test_host))]
     if super::path_error_tests::restore_old_append() {
         return super::path_error_tests::old_append(parent, name, limits, meter);
     }

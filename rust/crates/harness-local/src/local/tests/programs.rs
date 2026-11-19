@@ -1,8 +1,39 @@
 //! Authored files through the real actor, code caller and native shell owner.
 use super::*;
+use crate::agent::AgentRecord as _;
 use crate::client::{AgentCommand, AgentReply};
 use crate::model::{ModelContent, ModelEvent, ToolCall};
 use crate::test_support::ScriptedEvent;
+
+fn program_model(
+    turns: impl IntoIterator<Item = ScriptedTurn>,
+    wakes: usize,
+) -> ScriptedModelProvider {
+    ScriptedModelProvider::routed(
+        turns,
+        (0..wakes).map(|_| ScriptedTurn::Text("Observed child settlement".into())),
+    )
+    .with_context_capacity(capacity())
+}
+
+async fn settle_program_child(
+    harness: &Arc<LocalHarness>,
+    observer: &mut ObservedConversation,
+    child: &crate::agent::AgentPath,
+) -> Result<()> {
+    let entries = agents::settled(harness, child).await?;
+    let (agents, _) = harness.agents().await?;
+    let state = agents.state(child).await.map_err(crate::local::storage)?;
+    let entry = crate::agent::ConversationEntry::decode(
+        entries
+            .last()
+            .ok_or_else(|| Error::NotFound("program child settlement".into()))?,
+    )
+    .map_err(crate::local::storage)?;
+    let turn = crate::agent::turn_id(&state, &entry.input).map_err(crate::local::storage)?;
+    observer.settled_child_notice(turn).await?;
+    Ok(())
+}
 
 fn code(id: &str, source: &str) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
@@ -35,8 +66,11 @@ fn program_code(id: &str, source: &str) -> ScriptedTurn {
     )
 }
 
-fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a serde_json::Value> {
-    let content = request
+fn tool_result<'a>(
+    request: &'a crate::model::ModelRequest,
+    id: &str,
+) -> Result<&'a crate::model::ToolResultContent> {
+    request
         .messages
         .iter()
         .flat_map(|message| message.content.parts())
@@ -46,8 +80,11 @@ fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a s
             } if call_id == id => Some(content),
             _ => None,
         })
-        .ok_or_else(|| Error::NotFound(format!("program result {id}")))?;
-    match content {
+        .ok_or_else(|| Error::NotFound(format!("program result {id}")))
+}
+
+fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a serde_json::Value> {
+    match tool_result(request, id)? {
         crate::model::ToolResultContent::Json { value } => Ok(value),
         other => Err(Error::Invalid(format!("program result {id}: {other:?}"))),
     }
@@ -98,56 +135,70 @@ async fn started_calls(conversation: &Conversation, inbox: u64) -> Result<Vec<St
 #[tokio::test]
 async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell_permissions()
 -> Result<()> {
-    for denied in [false, true] {
-        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        std::fs::create_dir(directory.path().join(".git"))
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let provider = scripted([ScriptedTurn::Text("ready".into())]);
-        let mut config = checkout_config(directory.path(), (model()?, provider.clone()))?;
-        if denied {
-            config = config.approval_policy(crate::approvals::ApprovalPolicy {
-                approvers: vec![crate::approvals::Approver::Rules {
-                    principal: "owner".into(),
-                    rules: vec![crate::approvals::ApprovalRule {
-                        tool: Some("shell".into()),
-                        arguments: None,
-                        selectors: Vec::new(),
-                        target: None,
-                        verdict: crate::approvals::RuleVerdict::Deny,
-                    }],
-                    fallback: crate::approvals::RuleVerdict::Allow,
+    authored_program_permissions(false).await
+}
+
+#[tokio::test]
+async fn authored_programs_inherit_explicit_shell_denial_through_a_fork() -> Result<()> {
+    authored_program_permissions(true).await
+}
+
+async fn authored_program_permissions(denied: bool) -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::create_dir(directory.path().join(".git"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let provider = Arc::new(program_model(
+        [ScriptedTurn::Text("ready".into())],
+        if denied { 4 } else { 7 },
+    ));
+    let mut config = checkout_config(directory.path(), (model()?, provider.clone()))?;
+    if denied {
+        config = config.approval_policy(crate::approvals::ApprovalPolicy {
+            approvers: vec![crate::approvals::Approver::Rules {
+                principal: "owner".into(),
+                rules: vec![crate::approvals::ApprovalRule {
+                    tool: Some("shell".into()),
+                    arguments: None,
+                    selectors: Vec::new(),
+                    target: None,
+                    verdict: crate::approvals::RuleVerdict::Deny,
                 }],
-            });
-        }
-        let harness = Arc::new(super::open_scripted(config).await?);
-        let connection = harness.connect().await?;
-        let AgentReply::Spawned { agent: worker, .. } = connection
-            .execute(&AgentCommand::Spawn {
-                parent: connection.root().clone(),
-                id: crate::agent::IntentId::try_from("program-author")
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                brief: ModelContent::Text("Prepare to author a program".into()),
-                role: "worker".into(),
-            })
-            .await?
-        else {
-            return Err(Error::Invalid("worker did not open".into()));
-        };
-        agents::settled(&harness, &worker).await?;
-        let first = provider.request_count();
-        let argument = concat!(
-            r#"program-value ' " \ $(touch program-injected); ‘’‚‛"#,
-            "\n🦀"
-        );
-        let call = format!("tools.echo({})", json!({"text": argument}));
-        let invoke = if denied {
-            format!(
-                "export default await (async () => {{ try {{ await {call}; throw new Error('unexpected execution'); }} catch (error) {{ if (error.class !== 'denied') throw error; return 'denied-program'; }} }})();"
-            )
-        } else {
-            format!("export default await {call};")
-        };
-        provider.extend([
+                fallback: crate::approvals::RuleVerdict::Allow,
+            }],
+        });
+    }
+    let harness = Arc::new(super::open_scripted(config).await?);
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned { agent: worker, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("program-author")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            brief: ModelContent::Text("Prepare to author a program".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("worker did not open".into()));
+    };
+    agents::settled(&harness, &worker).await?;
+    let first = provider.input_requests();
+    let argument = concat!(
+        r#"program-value ' " \ $(touch program-injected); ‘’‚‛"#,
+        "\n🦀"
+    );
+    let call = format!("tools.echo({})", json!({"text": argument}));
+    let invoke = if denied {
+        format!(
+            "export default await (async () => {{ try {{ await {call}; throw new Error('unexpected execution'); }} catch (error) {{ if (error.class !== 'denied') throw error; return 'denied-program'; }} }})();"
+        )
+    } else {
+        format!("export default await {call};")
+    };
+    provider.extend([
             code("author", r#"
                 import {write} from 'acyclic';
                 await write('volume:///home/tools/echo/program.ts', {
@@ -163,35 +214,35 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             program_code("invoke", &invoke),
             ScriptedTurn::Text("done".into()),
         ]);
-        let conversation = Conversation::open(connection.select(worker.clone()).await?);
-        let mut observed = ObservedConversation::observe(conversation, None).await?;
-        let entry = observed
-            .send("author-and-call", "Write and call a program")
-            .await?;
-        assert!(
-            entry.outcome.is_completed(),
-            "{:?}; requests: {:#?}",
-            entry.outcome,
-            provider.requests()
-        );
-        let requests = provider.requests();
-        assert_eq!(requests.len(), first + 3);
-        assert_eq!(result(&requests[first + 1], "author")?, "authored");
-        assert_eq!(
-            system_prefix(&requests[first])?,
-            system_prefix(&requests[first + 1])?
-        );
-        assert_eq!(
-            requests[first].model_tools().collect::<Vec<_>>(),
-            requests[first + 1].model_tools().collect::<Vec<_>>()
-        );
-        if denied {
-            assert_eq!(result(&requests[first + 2], "invoke")?, "denied-program");
-        } else {
-            echoed(&requests[first + 2], "invoke", argument)?;
-        }
-        let forked_first = provider.request_count();
-        provider.extend([
+    let conversation = Conversation::open(connection.select(worker.clone()).await?);
+    let mut observed = ObservedConversation::observe(conversation, None).await?;
+    let entry = observed
+        .send("author-and-call", "Write and call a program")
+        .await?;
+    assert!(
+        entry.outcome.is_completed(),
+        "{:?}; requests: {:#?}",
+        entry.outcome,
+        provider.requests()
+    );
+    let requests = provider.input_exchanges();
+    assert_eq!(requests.len(), first + 3);
+    assert_eq!(result(&requests[first + 1].1, "author")?, "authored");
+    assert_eq!(
+        system_prefix(&requests[first].1)?,
+        system_prefix(&requests[first + 1].1)?
+    );
+    assert_eq!(
+        requests[first].1.model_tools().collect::<Vec<_>>(),
+        requests[first + 1].1.model_tools().collect::<Vec<_>>()
+    );
+    if denied {
+        assert_eq!(result(&requests[first + 2].1, "invoke")?, "denied-program");
+    } else {
+        echoed(&requests[first + 2].1, "invoke", argument)?;
+    }
+    let forked_first = provider.input_requests();
+    provider.extend([
             program_code("inherited-call", if denied {
                 "export default await (async () => { try { await tools.echo({text: 'child-value-🦀'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-child-program'; } })();"
             } else {
@@ -199,41 +250,41 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             }),
             ScriptedTurn::Text("child done".into()),
         ]);
-        let AgentReply::Spawned { agent: child, .. } = connection
-            .execute(&AgentCommand::Fork {
-                continuation: None,
-                parent: worker,
-                id: crate::agent::IntentId::try_from("program-reader")
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                at: 1,
-                brief: ModelContent::Text("Call the inherited program".into()),
-                role: "worker".into(),
-            })
-            .await?
-        else {
-            return Err(Error::Invalid("program fork did not open".into()));
-        };
-        agents::settled(&harness, &child).await?;
-        let requests = provider.requests();
-        assert_eq!(requests.len(), forked_first + 2);
+    let AgentReply::Spawned { agent: child, .. } = connection
+        .execute(&AgentCommand::Fork {
+            continuation: None,
+            parent: worker,
+            id: crate::agent::IntentId::try_from("program-reader")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            at: 1,
+            brief: ModelContent::Text("Call the inherited program".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("program fork did not open".into()));
+    };
+    settle_program_child(&harness, &mut observed, &child).await?;
+    let requests = provider.input_exchanges();
+    assert_eq!(requests.len(), forked_first + 2);
+    assert_eq!(
+        requests[first].1.model_tools().collect::<Vec<_>>(),
+        requests[forked_first].1.model_tools().collect::<Vec<_>>()
+    );
+    if denied {
         assert_eq!(
-            requests[first].model_tools().collect::<Vec<_>>(),
-            requests[forked_first].model_tools().collect::<Vec<_>>()
+            result(&requests[forked_first + 1].1, "inherited-call")?,
+            "denied-child-program"
         );
-        if denied {
-            assert_eq!(
-                result(&requests[forked_first + 1], "inherited-call")?,
-                "denied-child-program"
-            );
-        } else {
-            echoed(
-                &requests[forked_first + 1],
-                "inherited-call",
-                "child-value-🦀",
-            )?;
-        }
-        if !denied {
-            provider.extend([
+    } else {
+        echoed(
+            &requests[forked_first + 1].1,
+            "inherited-call",
+            "child-value-🦀",
+        )?;
+    }
+    if !denied {
+        provider.extend([
                 code("replace-parent-program", r#"
                     import {write} from 'acyclic';
                     await write('volume:///home/tools/echo/main.sh', 'printf parent-changed', 'any');
@@ -242,35 +293,34 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 "#),
                 ScriptedTurn::Text("parent changed".into()),
             ]);
-            assert!(
-                observed
-                    .send("replace-program", "Replace the parent program")
-                    .await?
-                    .outcome
-                    .is_completed()
-            );
-            provider.extend([
-                program_code(
-                    "call-frozen-program",
-                    "export default await tools.echo({text: 'frozen-child-value-🦀'});",
-                ),
-                ScriptedTurn::Text("child still isolated".into()),
-            ]);
-            let conversation = Conversation::open(connection.select(child).await?);
-            let mut inherited = ObservedConversation::observe(conversation, None).await?;
-            assert!(
-                inherited
-                    .send("call-frozen-program", "Call your inherited program again")
-                    .await?
-                    .outcome
-                    .is_completed()
-            );
-            let last = provider
-                .requests()
-                .pop()
-                .ok_or_else(|| Error::Invalid("child request is absent".into()))?;
-            echoed(&last, "call-frozen-program", "frozen-child-value-🦀")?;
-        }
+        assert!(
+            observed
+                .send("replace-program", "Replace the parent program")
+                .await?
+                .outcome
+                .is_completed()
+        );
+        provider.extend([
+            program_code(
+                "call-frozen-program",
+                "export default await tools.echo({text: 'frozen-child-value-🦀'});",
+            ),
+            ScriptedTurn::Text("child still isolated".into()),
+        ]);
+        let conversation = Conversation::open(connection.select(child).await?);
+        let mut inherited = ObservedConversation::observe(conversation, None).await?;
+        assert!(
+            inherited
+                .send("call-frozen-program", "Call your inherited program again")
+                .await?
+                .outcome
+                .is_completed()
+        );
+        let (_, last) = provider
+            .input_exchanges()
+            .pop()
+            .ok_or_else(|| Error::Invalid("child request is absent".into()))?;
+        echoed(&last, "call-frozen-program", "frozen-child-value-🦀")?;
     }
     Ok(())
 }
@@ -278,10 +328,13 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
 #[tokio::test]
 async fn authored_programs_wait_for_the_original_shell_approval_before_native_dispatch()
 -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(directory.path().join(".git"))
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let provider = scripted([ScriptedTurn::Text("ready".into())]);
+    let provider = Arc::new(program_model([ScriptedTurn::Text("ready".into())], 2));
     let policy = crate::approvals::ApprovalPolicy {
         approvers: vec![
             crate::approvals::Approver::Rules {
@@ -324,7 +377,7 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
         return Err(Error::Invalid("program worker did not open".into()));
     };
     agents::settled(&harness, &worker).await?;
-    let first = provider.request_count();
+    let first = provider.input_requests();
     provider.extend([
         code(
             "approved-program-call",
@@ -372,7 +425,7 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
             _ => {}
         }
     };
-    assert_eq!(provider.request_count(), first + 1);
+    assert_eq!(provider.input_requests(), first + 1);
     assert_eq!(
         started_calls(&conversation, inbox).await?,
         ["approved-program-call"],
@@ -391,14 +444,14 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
             .await
             .is_err()
     );
-    assert_eq!(provider.request_count(), first + 1);
+    assert_eq!(provider.input_requests(), first + 1);
     conversation
         .decide_with_binding(&id, binding, true.into())
         .await?;
     let entry = observed.settled(inbox).await?;
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert!(conversation.pending_approval(&id).await?.is_none());
-    assert_eq!(provider.request_count(), first + 2);
+    assert_eq!(provider.input_requests(), first + 2);
     let starts = started_calls(&conversation, inbox).await?;
     assert_eq!(
         starts.len(),
@@ -408,7 +461,7 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
     assert_eq!(starts[0], "approved-program-call");
     assert_ne!(starts[1], starts[0]);
     echoed(
-        &provider.request(first + 1).unwrap(),
+        &provider.input_exchanges()[first + 1].1,
         "approved-program-call",
         "approved-🦀",
     )?;
@@ -417,6 +470,9 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
 
 #[tokio::test]
 async fn authored_settings_select_the_next_provider_without_restarting_the_turn() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     use crate::model::{
         ModelDispatch, ModelRequest, ModelStream, NativeToolProfile, PreparedModelRequest,
     };
@@ -515,23 +571,25 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "A source retained by the request",
     )
     .map_err(|error| Error::Storage(error.to_string()))?;
-    let first = Arc::new(ScriptedModelProvider::new([
+    let first = Arc::new(program_model([
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
             import {write} from 'acyclic';
-            await write('volume:///home/plugins/step-guard/plugin.ts', "export default {name:'step-guard',description:'Selected tool context',matcher:{tool:{action:['exec'],command:'selected-native'}}};", 'any');
-            await write('volume:///home/plugins/step-guard/hooks/before-tool.sh', `printf '%s' '{"hookSpecificOutput":{"additionalContext":"selected-step-hook"}}'`, 'any');
-            await write('volume:///home/plugins/step-guard/hooks/before-tool.ps1', `[Console]::Out.Write('{"hookSpecificOutput":{"additionalContext":"selected-step-hook"}}')`, 'any');
+            await write('volume:///home/plugins/step-guard/plugin.ts', "export default {name:'step-guard',description:'Selected command rewrite',matcher:{tool:{action:['exec'],command:'selected-native'}}};", 'any');
+            await write('volume:///home/plugins/step-guard/hooks/before-tool.ts', `
+                export default ({request}) => {
+                    const input = request.input;
+                    const rewrite = value => value.replace('selected-native', 'selected-step-hook');
+                    const command = Array.isArray(input.command) ? input.command.map(rewrite) : rewrite(input.command);
+                    return {allow:true,input:{...input,command}};
+                };
+            `, 'any');
             await write('volume:///home/plugins.ts', "export default base => ({...base,'step-guard':{enabled:true}});", 'any');
             await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
         "#),
-    ]).reading_content().with_context_capacity(capacity()));
-    let second = Arc::new(
-        ScriptedModelProvider::new([])
-            .reading_content()
-            .with_context_capacity(capacity()),
-    );
+    ], 8).reading_content());
+    let second = Arc::new(program_model([], 4).reading_content());
     let first_route: Arc<dyn ModelProvider> = Arc::new(Native {
         family: NativeToolProfile::Anthropic,
         profile: reasoning_profile("test", "{}")?,
@@ -617,7 +675,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         return Err(Error::Invalid("settings worker did not open".into()));
     };
     agents::settled(&harness, &worker).await?;
-    assert_eq!(first.request_count(), 1);
+    assert_eq!(first.input_requests(), 1);
     let conversation = Conversation::open(connection.select(worker.clone()).await?);
     let mut observed = ObservedConversation::observe(conversation, None).await?;
     let prompt = "Write and use your model settings @source.txt";
@@ -628,27 +686,35 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "selected provider"
     );
     assert_eq!(
-        first.request_count(),
+        first.input_requests(),
         2,
-        "the preceding provider must not run another step"
+        "the preceding provider must not run another step: {:?}",
+        first
+            .input_exchanges()
+            .into_iter()
+            .map(|(dispatch, request)| (
+                dispatch.operation_id,
+                dispatch.step,
+                crate::test_support::is_retrospective(&request)
+            ))
+            .collect::<Vec<_>>()
     );
-    assert_eq!(second.request_count(), 2);
-    let before = first.request(1).unwrap();
-    let after = second.request(0).unwrap();
-    let finished = second.request(1).unwrap();
-    let hook_contexts = |request: &ModelRequest| {
-        request.messages.iter().filter(|message| {
-            matches!(&message.content, ModelContent::Text(text) if text == "selected-step-hook")
-        }).count()
-    };
-    assert_eq!(hook_contexts(&after), 0);
-    assert_eq!(hook_contexts(&finished), 1);
-    assert_eq!(result(&after, "select-settings")?, "selected");
+    assert_eq!(second.input_requests(), 2);
+    let first_exchanges = first.input_exchanges();
+    let second_exchanges = second.input_exchanges();
+    let (before_dispatch, before) = &first_exchanges[1];
+    let (after_dispatch, after) = &second_exchanges[0];
+    let (finished_dispatch, finished) = &second_exchanges[1];
+    assert!(matches!(
+        tool_result(after, "selected-shell"),
+        Err(Error::NotFound(_))
+    ));
+    assert_eq!(result(after, "select-settings")?, "selected");
     assert_eq!(after.model.name, "second");
     assert_eq!(after.sampling.temperature, Some(0.75));
-    assert!(efforts(&before).is_empty());
-    assert_eq!(efforts(&after), ["low"]);
-    assert_eq!(efforts(&finished), ["low"]);
+    assert!(efforts(before).is_empty());
+    assert_eq!(efforts(after), ["low"]);
+    assert_eq!(efforts(finished), ["low"]);
     assert!(
         after
             .messages
@@ -656,8 +722,9 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             .any(|message| message.content.file_parts().next().is_some()),
         "the selected provider must consume retained files"
     );
-    assert_eq!(system_prefix(&before)?, system_prefix(&after)?);
-    assert_eq!(system_prefix(&before)?, system_prefix(&finished)?);
+    let prefix = system_prefix(before)?;
+    assert_eq!(prefix, system_prefix(after)?);
+    assert_eq!(prefix, system_prefix(finished)?);
     let before_shell = before
         .model_tools()
         .find(|tool| tool.name == "shell")
@@ -694,20 +761,22 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         ),
         "restored canonical read failed: {read:?}"
     );
-    let shell = result(&finished, "selected-shell")?;
-    assert_eq!(shell["exit_code"], 0);
-    assert_eq!(shell["stdout"], "selected-native");
-    let before = first.dispatches()[1];
-    let after = second.dispatches()[0];
-    assert_eq!(before.operation_id, after.operation_id);
-    assert_eq!((before.step, after.step), (0, 1));
-    assert_eq!(second.dispatches()[1].operation_id, after.operation_id);
-    assert_eq!(second.dispatches()[1].step, 2);
+    let shell = tool_result(finished, "selected-shell")?;
+    assert!(
+        matches!(shell, crate::model::ToolResultContent::Parts { parts }
+            if matches!(parts.as_slice(), [crate::model::ModelDataPart::Text { text }]
+                if text == "Exit code: 0\nselected-step-hook")),
+        "selected shell returned {shell:?}"
+    );
+    assert_eq!(before_dispatch.operation_id, after_dispatch.operation_id);
+    assert_eq!((before_dispatch.step, after_dispatch.step), (0, 1));
+    assert_eq!(finished_dispatch.operation_id, after_dispatch.operation_id);
+    assert_eq!(finished_dispatch.step, 2);
     assert_eq!(
         observed.conversation.send("select-model", prompt).await?,
         entry.inbox
     );
-    assert_eq!((first.request_count(), second.request_count()), (2, 2));
+    assert_eq!((first.input_requests(), second.input_requests()), (2, 2));
     let AgentReply::Spawned { agent: child, .. } = connection
         .execute(&AgentCommand::Fork {
             continuation: None,
@@ -722,14 +791,15 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     else {
         return Err(Error::Invalid("settings fork did not open".into()));
     };
-    agents::settled(&harness, &child).await?;
-    assert_eq!((first.request_count(), second.request_count()), (2, 3));
-    let inherited = second.request(2).unwrap();
+    settle_program_child(&harness, &mut observed, &child).await?;
+    assert_eq!((first.input_requests(), second.input_requests()), (2, 3));
+    let second_exchanges = second.input_exchanges();
+    let (inherited_dispatch, inherited) = &second_exchanges[2];
     assert_eq!(inherited.model.name, "second");
     assert_eq!(inherited.sampling.temperature, Some(0.75));
-    assert_ne!(second.dispatches()[2].operation_id, after.operation_id);
-    assert_eq!(efforts(&inherited), ["low"]);
-    let frozen_prefix = system_prefix(&inherited)?;
+    assert_ne!(inherited_dispatch.operation_id, after_dispatch.operation_id);
+    assert_eq!(efforts(inherited), ["low"]);
+    let frozen_prefix = system_prefix(inherited)?;
     second.extend([
         code("clear-effort", r#"
             import {write} from 'acyclic';
@@ -752,7 +822,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&cleared).await?,
         "default effort"
     );
-    let default_request = second.request(4).unwrap();
+    let default_request = second.input_exchanges()[4].1.clone();
     assert_eq!(efforts(&default_request), ["low", "medium"]);
     assert_eq!(system_prefix(&default_request)?, frozen_prefix);
     let restored = observed
@@ -763,7 +833,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&restored).await?,
         "low effort"
     );
-    let restored_request = second.request(6).unwrap();
+    let restored_request = second.input_exchanges()[6].1.clone();
     assert_eq!(efforts(&restored_request), ["low", "medium", "low"]);
     assert_eq!(system_prefix(&restored_request)?, frozen_prefix);
     assert_eq!(
@@ -780,7 +850,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             .await?,
         restored.inbox
     );
-    assert_eq!((first.request_count(), second.request_count()), (2, 7));
+    assert_eq!((first.input_requests(), second.input_requests()), (2, 7));
     first.extend([
         ScriptedTurn::Text("first model with high effort".into()),
         code("return-second", r#"
@@ -824,7 +894,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
         assert_eq!(observed.conversation.output_text(&entry).await?, output);
     }
-    let returned = first.request(4).unwrap();
+    let returned = first.input_exchanges()[4].1.clone();
     assert_eq!(returned.model.name, "test");
     assert_eq!(returned.sampling.temperature, None);
     assert_eq!(system_prefix(&returned)?, frozen_prefix);
@@ -845,7 +915,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         efforts(&returned),
         ["low", "medium", "low", "high", "medium", "medium"]
     );
-    assert_eq!((first.request_count(), second.request_count()), (5, 10));
+    assert_eq!((first.input_requests(), second.input_requests()), (5, 10));
     assert_eq!(
         second_route.model_profile(&model()?)?.unwrap().reasoning(),
         reasoning_baseline
@@ -877,27 +947,21 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&disabled).await?,
         "hook disabled"
     );
-    let before_disable = first.request(5).unwrap();
-    let after_disable = first.request(6).unwrap();
-    let disabled_result = first.request(7).unwrap();
+    let exchanges = first.input_exchanges();
+    let before_disable = &exchanges[5].1;
+    let after_disable = &exchanges[6].1;
+    let disabled_result = &exchanges[7].1;
+    assert!(result(before_disable, "disable-step-hook").is_err());
     assert_eq!(
-        hook_contexts(&after_disable),
-        hook_contexts(&before_disable) + 1
+        result(after_disable, "disable-step-hook")?["stdout"],
+        "selected-step-hook"
     );
     assert_eq!(
-        hook_contexts(&disabled_result),
-        hook_contexts(&after_disable)
-    );
-    assert_eq!(
-        result(&after_disable, "disable-step-hook")?["stdout"],
+        result(disabled_result, "probe-disabled-hook")?["stdout"],
         "selected-native"
     );
-    assert_eq!(
-        result(&disabled_result, "probe-disabled-hook")?["stdout"],
-        "selected-native"
-    );
-    assert_eq!(system_prefix(&after_disable)?, frozen_prefix);
-    assert_eq!(system_prefix(&disabled_result)?, frozen_prefix);
-    assert_eq!((first.request_count(), second.request_count()), (8, 10));
+    assert_eq!(system_prefix(after_disable)?, frozen_prefix);
+    assert_eq!(system_prefix(disabled_result)?, frozen_prefix);
+    assert_eq!((first.input_requests(), second.input_requests()), (8, 10));
     Ok(())
 }

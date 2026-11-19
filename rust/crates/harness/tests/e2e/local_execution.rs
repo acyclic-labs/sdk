@@ -24,6 +24,20 @@ use std::sync::Arc;
 /// this driver's one future.
 pub(super) async fn run(case: LocalCase) -> TestResult {
     case.validate()?;
+    let needs_shell = case
+        .expect
+        .results
+        .iter()
+        .flat_map(|results| results.values())
+        .any(|result| {
+            result.get("name").and_then(Value::as_str) == Some("shell")
+                && result.pointer("/content/kind").and_then(Value::as_str) == Some("parts")
+        });
+    if (needs_shell || case.requires_native_hook)
+        && acyclic_native_runtime::execution::skip_if_windows_psec_unavailable()
+    {
+        return Ok(());
+    }
     let steps = case.turns.len();
     let temporary = local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
@@ -313,8 +327,11 @@ async fn verify_diffs(
         // Drop the publication only for this consumer. Exercise the same oracle
         // immediately after the real follow and fold, without another execution
         // or an await that could delay reaching the negative-control assertion.
-        let error = assert_rendered(&dropped, expected)
-            .expect_err("consumer that dropped the publication passed unchanged expectations");
+        let Err(error) = assert_rendered(&dropped, expected) else {
+            return Err(
+                "consumer that dropped the publication passed unchanged expectations".into(),
+            );
+        };
         assert!(
             error.to_string().contains("rendered diffs differ"),
             "{error}"

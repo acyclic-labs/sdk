@@ -300,6 +300,36 @@ fn incremental_namespace_rejects_duplicate_orphan_and_cyclic_bindings() -> TestR
 }
 
 #[test]
+fn incremental_namespace_requires_each_removed_file_to_lose_its_only_binding() -> TestResult<()> {
+    let budget = crate::performance::work_budget(10_000, 1_000_000);
+    let mut diff = namespace_diff(2, false)?;
+    // Invert one addition to get a removal alongside the other new file.
+    let removed = diff.files.get_mut(1).ok_or("missing removed file")?;
+    removed.before = removed.after.take();
+    let binding = diff.bindings.first_mut().ok_or("missing removed binding")?;
+    binding.before = binding.after.take();
+    assert!(validate(&diff, budget)?.0);
+
+    let mut stale = diff.clone();
+    stale.bindings.remove(0);
+    assert!(!validate(&stale, budget)?.0);
+
+    let mut hard_link = diff.clone();
+    hard_link
+        .files
+        .get_mut(1)
+        .and_then(|change| change.before.as_mut())
+        .ok_or("missing old record")?
+        .link_count = 2;
+    assert!(!validate(&hard_link, budget)?.0);
+
+    let mut retained = diff;
+    retained.files.remove(1);
+    assert!(!validate(&retained, budget)?.0);
+    Ok(())
+}
+
+#[test]
 fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
     use crate::kernel::Child;
     let store = crate::memory::MemoryObjectStore::default();

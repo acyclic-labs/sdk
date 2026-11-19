@@ -10,6 +10,8 @@ pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
 /// The one namespace below [`HOST_VIEW_ROOT`] holding every task binding of
 /// a checkout's tree, one directory per bound project.
 const BINDINGS: &str = ".bindings";
+/// Stable discovery name in a host-owned binding directory.
+const PROJECT_ALIAS: &str = ".project";
 /// Physical task-view directories, below [`HOST_VIEW_ROOT`] so that no
 /// checkout capture or Git facade ever reads them as authored content.
 const PHYSICAL_VIEW_ROOT: &str = ".physical";
@@ -127,6 +129,25 @@ impl LocalWorkspace {
     /// The selected native cwd, independent of the whole-volume capture path.
     pub(in crate::local) fn native_cwd(&self) -> Result<Option<&Path>> {
         Ok(self.mounts.native_root_for(self.mounts.named(None)?.1))
+    }
+
+    fn project_alias(&self) -> Option<PathBuf> {
+        self.mounted.as_ref()?;
+        Some(self.binding.as_ref()?.root.join(PROJECT_ALIAS))
+    }
+
+    pub(super) fn announced_path(&self, entry: crate::agent::EntryId) -> Option<PathBuf> {
+        let mount = self.mounts.by_entry(entry)?;
+        let path = self.mounts.native_root_for(mount)?;
+        if self
+            .mounts
+            .named(None)
+            .is_ok_and(|(_, primary)| std::ptr::eq(primary, mount))
+            && let Some(alias) = self.project_alias()
+        {
+            return Some(alias);
+        }
+        Some(path.to_path_buf())
     }
 
     pub(super) async fn mount_options(
@@ -289,7 +310,7 @@ impl LocalWorkspace {
     pub async fn executor(
         self: &Arc<Self>,
         (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, Option<u64>),
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        clock: Arc<dyn acyclic_actors::local::Clock>,
         signed: &Scope,
         verifier: &crate::core::AuthorityVerifier,
         execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,

@@ -26,7 +26,11 @@ pub fn check(input: &[u8]) -> Result<(), Error> {
             "acyclic.call.v1"
         }
         .into(),
-        value: KINDS[usize::from(tag) % KINDS.len()].into(),
+        value: KINDS
+            .get(usize::from(tag) % KINDS.len())
+            .copied()
+            .ok_or(Error::Malformed("unknown generated kind"))?
+            .into(),
     }];
     if tag & 16 != 0 {
         attributes.push(Attribute {

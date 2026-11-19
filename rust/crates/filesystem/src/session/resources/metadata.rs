@@ -151,7 +151,8 @@ pub(super) fn project(
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
     use crate::kernel::NamespacePath;
@@ -213,7 +214,7 @@ mod tests {
         let full_resource = canonical_resource(volume, &full, config).unwrap();
         assert!(full_resource.ends_with(&text));
         assert!(full_resource.len() > entry.key.len());
-        let policy = crate::access::fixtures::denied(Action::List, &text);
+        let policy = crate::access::fixtures::denied(Action::List, &text)?;
         let principal = crate::access::Principal {
             kind: crate::access::PrincipalKind::Anonymous,
             id: String::new(),

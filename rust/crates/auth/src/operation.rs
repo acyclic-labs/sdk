@@ -35,6 +35,28 @@ pub trait ClockOwner {}
 #[cfg(target_arch = "wasm32")]
 impl<T> ClockOwner for T {}
 
+/// Decodes one gRPC timeout value in its wire unit. Invalid values return
+/// `None`. The receiving transport owns header cardinality and deadline admission.
+#[must_use]
+pub fn grpc_timeout(value: &str) -> Option<Duration> {
+    let (&unit, digits) = value.as_bytes().split_last()?;
+    if digits.is_empty() || digits.len() > 8 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let count = digits
+        .iter()
+        .fold(0u64, |n, byte| n * 10 + u64::from(byte - b'0'));
+    Some(match unit {
+        b'H' => Duration::from_secs(count * 3600),
+        b'M' => Duration::from_secs(count * 60),
+        b'S' => Duration::from_secs(count),
+        b'm' => Duration::from_millis(count),
+        b'u' => Duration::from_micros(count),
+        b'n' => Duration::from_nanos(count),
+        _ => return None,
+    })
+}
+
 /// The ORIGINAL invocation's clock, supplied only by its trusted custodian.
 /// Its wall-time projection must advance monotonically from the original clock
 /// anchor. Reading time performs no IO. Registering an earlier expiry uses that

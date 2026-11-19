@@ -405,7 +405,7 @@ impl MountDestinationGuard {
         };
         let (directory, parent) = if let Some(parent) = recovery_parent {
             (
-                crate::native_host::HostRoot::open(parent, work)
+                crate::native_host::HostRoot::open_ambient_parent(parent, work)
                     .map_err(|error| Self::missing_destination(parent, error))?
                     .into_directory(),
                 None,
@@ -422,7 +422,7 @@ impl MountDestinationGuard {
             let leaf = destination
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?;
-            let parent = crate::native_host::HostRoot::open(parent, work)
+            let parent = crate::native_host::HostRoot::open_ambient_parent(parent, work)
                 .map_err(|error| Self::missing_destination(parent, error))?;
             let child = parent
                 .open_directory(Path::new(leaf), work)
@@ -634,6 +634,7 @@ impl MountDestinationGuard {
             )?;
         }
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_mount))]
         super::tests::fence::before_registry_unlock(native);
         held.unlock(work)
     }
@@ -942,9 +943,11 @@ pub(super) fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
 
 #[cfg(test)]
 #[cfg(all(loom, target_os = "linux"))]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod models;
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod cleanup_credit_tests {
     use super::*;
 

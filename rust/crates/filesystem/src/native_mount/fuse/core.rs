@@ -57,8 +57,8 @@ impl StateGuard<'_> {
         {
             wake.wake();
         }
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+        #[cfg(loom)]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
@@ -81,10 +81,10 @@ impl Drop for StateGuard<'_> {
             .get()
             .filter(|_| state.invalidation_wanted());
         drop(state);
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+        #[cfg(loom)]
         let notify = !invalidation::model_checking::omit_guard_notification();
-        #[cfg(not(all(test, loom)))]
+        #[cfg(not(all(all(test, any(not(unit_test_split), unit_test_mount_driver)), loom)))]
         let notify = true;
         if notify {
             self.core.invalidation.notify_all();
@@ -92,8 +92,8 @@ impl Drop for StateGuard<'_> {
         if let Some(wake) = wake {
             wake.wake();
         }
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+        #[cfg(loom)]
         invalidation::model_checking::after_guard_drop();
     }
 }
@@ -101,10 +101,10 @@ impl Drop for StateGuard<'_> {
 pub(super) use crate::native_mount::shared::metering::source_original as fuse_native_source_original;
 
 pub(super) struct ProjectionCore {
-    #[cfg(test)]
+    #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
     pub(super) write_pause: std::sync::Mutex<tests::write_gate::PauseSlot>,
-    #[cfg(test)]
-    #[cfg(all(not(loom)))]
+    #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+    #[cfg(not(loom))]
     pub(super) publication_test: std::sync::Mutex<tests::owner::PublicationTest>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
@@ -179,10 +179,10 @@ impl ProjectionCore {
             work,
         )?;
         Ok(Arc::new(Self {
-            #[cfg(test)]
+            #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
             write_pause: std::sync::Mutex::new(tests::write_gate::PauseSlot::default()),
-            #[cfg(test)]
-            #[cfg(all(not(loom)))]
+            #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+            #[cfg(not(loom))]
             publication_test: std::sync::Mutex::new(tests::owner::PublicationTest::default()),
             source,
             clock: super::super::clock::Clock::capture(),
@@ -289,8 +289,8 @@ impl ProjectionCore {
         let queued = std::mem::take(&mut state.invalidation.deferred);
         drop(state);
         drop(queued);
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
+        #[cfg(loom)]
         if invalidation::model_checking::omit_terminal_notification() {
             return;
         }

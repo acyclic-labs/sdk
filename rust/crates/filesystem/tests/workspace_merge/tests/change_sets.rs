@@ -5,7 +5,8 @@ use acyclic_fs::{
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_merge::fixtures::fork_workspace;
+use crate::workspace_merge::transaction::commit;
 
 #[tokio::test]
 async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<dyn Error>> {

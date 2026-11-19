@@ -3,7 +3,7 @@
  * harness entry's own selection of its descriptor bindings. */
 import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, HostCredential,
   SecretRef, SubscriptionSpec, VolumeProvider } from "@acyclic-labs/workers/manifest";
-import type { ProviderSpec } from "@acyclic-labs/harness";
+import type { ProviderConfig, ProviderSpec } from "@acyclic-labs/harness";
 import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT,
   STREAMS_ENDPOINT } from "./bindings.js";
 
@@ -37,7 +37,7 @@ export class HarnessManifestError extends Error {
 
 /** The canonical versioned reference named by the provider authentication. The
  * Rust manifest validator is the sole judge of whether it is a reference. */
-function reference(authentication: ProviderSpec["authentication"]): SecretRef | undefined {
+function reference(authentication: ProviderSpec["authentication"] | undefined): SecretRef | undefined {
   const credential = typeof authentication === "object" && authentication !== null
     ? Object.values(authentication)[0] as { secret_reference?: SecretRef } | undefined : undefined;
   return credential?.secret_reference;
@@ -45,20 +45,27 @@ function reference(authentication: ProviderSpec["authentication"]): SecretRef | 
 
 /** `volumeProvider` is the owner's `options.filesystem_provider`: the platform
  * selects each actor agent's private volume of that provider for its Machine. */
-export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpec, volumeProvider: VolumeProvider,
+export function harnessManifest(deployment: HarnessDeployment, spec: ProviderConfig, volumeProvider: VolumeProvider,
   artifactSha256: string, assets: EntryAsset[]): DeploymentManifest {
   const declared = new Set(deployment.bindings.map(binding => binding.name));
   for (const name of Object.values(HARNESS_BINDINGS)) {
     if (!declared.has(name)) throw new HarnessManifestError(`$.environments[0].bindings.${name}`, "harness-binding");
   }
-  const origin = new URL(spec.base_url);
+  const origin = spec.adapter === "scripted" ? undefined : new URL(spec.base_url);
+  if (spec.adapter === "scripted" && (Object.keys(spec).some(key => key !== "adapter" && key !== "script")
+    || typeof spec.script?.path !== "string" || typeof spec.script.sha256 !== "string"
+    || !/^[0-9a-f]{64}$/u.test(spec.script.sha256)
+    || Object.keys(spec.script).some(key => key !== "path" && key !== "sha256"))) {
+    throw new HarnessManifestError("$.model.spec", "scripted-provider");
+  }
   const machines = new URL(deployment.machines.origin);
   if (machines.protocol !== "https:" || machines.origin !== deployment.machines.origin) {
     throw new HarnessManifestError("$.deployment.machines.origin", "https-origin");
   }
   const cell = { host: machines.hostname, port: Number(machines.port || 443) };
   // An anonymous endpoint has no credential to protect; every other mode names one.
-  const secrets = spec.authentication === "optional" ? [] : [MODEL_SECRET];
+  const authentication = spec.adapter === "scripted" ? undefined : spec.authentication;
+  const secrets = spec.adapter === "scripted" || authentication === "optional" ? [] : [MODEL_SECRET];
   return {
     schemaVersion: 1,
     environments: [{
@@ -78,7 +85,7 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
           timerInbox: null,
           actorMachine: { binding: HARNESS_BINDINGS.workspace, endpoint: MACHINES_ENDPOINT, volumeProvider },
         },
-        fetch: { name: MODEL_FETCH, egress: [{ host: origin.hostname, port: Number(origin.port || 443) }] },
+        fetch: origin ? { name: MODEL_FETCH, egress: [{ host: origin.hostname, port: Number(origin.port || 443) }] } : null,
         hostFetch: [
           { name: MACHINES_ENDPOINT, origin: cell, credential: deployment.machines.credential ?? ACCOUNT_LEAF },
           { name: OBJECTS_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF },
@@ -87,7 +94,7 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
       }],
       bindings: deployment.bindings,
       grants: deployment.grants,
-      secrets: secrets.map(name => ({ name, reference: reference(spec.authentication) as SecretRef })),
+      secrets: secrets.map(name => ({ name, reference: reference(authentication) as SecretRef })),
       crons: [],
       assets: [],
       routes: [],

@@ -27,6 +27,7 @@ use acyclic_harness_core::{
         PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits,
         hosting::{Bound, Placement, RootRequest, RootSubmission, Turns, VerifiedCaller},
     },
+    interaction::ApprovalBinding,
     model::{
         Model, ModelContent, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest,
         ToolCall,
@@ -37,7 +38,11 @@ use acyclic_harness_core::{
         ToolResult,
     },
 };
-use acyclic_stream::{BoxProviderFuture, CommitMutation, CommitRequest, StreamProviderExt as _};
+use acyclic_stream::{
+    BoxProviderFuture, CommitMutation, CommitRequest, ProviderOwner, StreamProvider,
+    StreamProviderExt as _, records_only,
+};
+use futures::TryStreamExt as _;
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -167,13 +172,40 @@ struct Asked {
     root: AgentPath,
     calls: Arc<AtomicUsize>,
     _storage: Box<dyn crate::conformance::Storage>,
-    stream: Arc<Observed>,
+    stream: ProviderOwner<Observed>,
+    input: u64,
+}
+
+impl Asked {
+    async fn pending(&self) -> Result<(IntentId, u64, ApprovalBinding)> {
+        let agents = self.bound.agents();
+        let mut failed = agents.runtime().unavailable(&agents.actor(&self.root)?)?;
+        loop {
+            let progress = agents.input_progress(&self.root, self.input).await?;
+            if let Some(pending) = self.bound.pending_approval(&self.root).await? {
+                return Ok(pending);
+            }
+            if progress.settled {
+                let phase = agents.state(&self.root).await?.phase;
+                return Err(
+                    format!("input settled before publishing its approval: {phase:?}").into(),
+                );
+            }
+            let mut changes = records_only(self.stream.follow(progress.follow).await?);
+            tokio::select! {
+                changed = changes.try_next() => {
+                    changed?.ok_or("approval actor observation closed")?;
+                }
+                cause = &mut failed => return Err(cause.into()),
+            }
+        }
+    }
 }
 
 async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> Result<Asked> {
     let storage = backend.fresh().await?;
     let provider = storage.open().await?;
-    let stream = Arc::new(if capture {
+    let stream = ProviderOwner::new(if capture {
         Observed::capturing(provider)
     } else {
         Observed::new(provider)
@@ -214,7 +246,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: acyclic_fs::Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(Arc::clone(&stream)),
+                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
                 objects.into_store(storage.as_ref())?,
                 capabilities,
             ),
@@ -261,7 +293,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
             ("call the tool", "call the tool"),
         )
         .await?;
-    bound
+    let Delivered::Committed { inbox: input } = bound
         .agents()
         .send(
             &root,
@@ -274,7 +306,10 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
                 attachments: None,
             }),
         )
-        .await?;
+        .await?
+    else {
+        return Err("approval fixture input was not accepted".into());
+    };
     bound
         .agents()
         .drain(&root)
@@ -286,23 +321,23 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         calls,
         _storage: storage,
         stream,
+        input,
     })
 }
 
 /// The generic default asks the human, and the decision path completes.
 async fn human_decides(backend: &dyn Backend) -> Result {
+    let asked = asked(backend, ApprovalPolicy::default(), false).await?;
+    let (pending, _, exact) = asked.pending().await?;
     let Asked {
         bound,
         root,
         calls,
         _storage,
         ..
-    } = asked(backend, ApprovalPolicy::default(), false).await?;
+    } = asked;
 
     // The turn waits on the tool call, which has not run.
-    let Some((pending, _, exact)) = bound.pending_approval(&root).await? else {
-        return Err("the turn does not wait on an approval of its tool call".into());
-    };
     if calls.load(Ordering::SeqCst) != 0 {
         return Err("the tool ran before its approval".into());
     }
@@ -361,8 +396,10 @@ async fn accepted(backend: &dyn Backend) -> Result {
         root,
         calls,
         _storage,
+        input,
         ..
     } = asked(backend, ApprovalPolicy::accept_all("conformance"), false).await?;
+    bound.agents().wait_for_input(&root, input).await?;
     if bound.pending_approval(&root).await?.is_some() {
         return Err("an accept-all preset left the tool call pending".into());
     }
@@ -382,17 +419,16 @@ async fn accepted(backend: &dyn Backend) -> Result {
 /// isolates uncertain acknowledgement from loss of an accepted producer.
 pub async fn verify_recovery(backend: &dyn Backend) -> Result {
     for fault in [Fault::Before, Fault::After] {
+        let asked = asked(backend, ApprovalPolicy::default(), true).await?;
+        let (pending, _, exact) = asked.pending().await?;
         let Asked {
             bound,
             root,
             calls,
             stream,
             _storage,
-        } = asked(backend, ApprovalPolicy::default(), true).await?;
-        let (pending, _, exact) = bound
-            .pending_approval(&root)
-            .await?
-            .ok_or("recovery control has no original pending approval")?;
+            ..
+        } = asked;
         let inbox = root.inbox()?;
         let before = stream.tail(inbox.clone()).await?;
         drop(stream.take_commits());

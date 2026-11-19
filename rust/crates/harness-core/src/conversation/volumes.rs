@@ -754,7 +754,7 @@ impl ContentGrant {
                 "content grant does not match the file",
             ));
         }
-        Ok(())
+        self.require_input_selection(file.path(), io)
     }
 
     /// Checks a read path without widening an exact-file or whole-volume grant
@@ -787,7 +787,36 @@ impl ContentGrant {
                 "content grant does not match the read path",
             ));
         }
-        Ok(())
+        self.require_input_selection(path, io)
+    }
+
+    fn require_input_selection(&self, path: &str, io: Option<&ContentIo>) -> Result<()> {
+        if !self.volume.is_agent_journal()
+            || !crate::core::journal_input_requires_selection(path)
+            || self.exact_file.is_some()
+            || self
+                .policy_scope()
+                .capabilities()
+                .contains(crate::contract::capability::HARNESS_HOST)
+        {
+            return Ok(());
+        }
+        if let Some(prefix) = crate::core::journal_turn_input_directory(path)
+            && self.directory_prefix.as_deref() == Some(prefix)
+            && self
+                .policy_scope()
+                .capabilities()
+                .contains(&crate::executor::with_history_io(io, |work| {
+                    self.volume.directory_read_capability(prefix, work)
+                })?)
+        {
+            return Ok(());
+        }
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unauthorized,
+            "journal input requires its original selection",
+        ))
     }
 
     /// Checks any lazy directory path against the owner-issued read boundary.

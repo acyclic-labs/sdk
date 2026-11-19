@@ -17,6 +17,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-tui",
@@ -43,6 +44,7 @@ rust_library(
         "tests/support/status_flags.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -167,7 +169,7 @@ rust_test(
     ],
     }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
@@ -369,7 +371,7 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//rust/crates/harness-tui:tree/tests/golden",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
@@ -398,6 +400,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-tui",
@@ -426,6 +429,7 @@ rust_library(
         "tests/support/status_flags.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

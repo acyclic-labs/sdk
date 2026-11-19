@@ -59,15 +59,23 @@ fn destination_fences_survive_ancestor_relocation_and_retire_through_original_pa
     let destination = ancestor.join("mount");
     std::fs::create_dir(&destination)?;
     std::fs::write(ancestor.join("authored"), b"preserve")?;
+    #[cfg(unix)]
+    let requested = {
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&ancestor, &alias)?;
+        alias.join("mount")
+    };
+    #[cfg(windows)]
+    let requested = &destination;
     let canonical = destination.canonicalize()?;
     let (fence, _) = MountDestinationGuard::paths_for_canonical(&canonical)?;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let mut guard = None;
-    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+    MountDestinationGuard::acquire_with_work(requested.as_ref(), false, &work, &mut guard, false)?;
     let mut guard = guard.unwrap();
-    guard.prepare_destination_cleanup(&destination, &work)?;
+    guard.prepare_destination_cleanup(requested.as_ref(), &work)?;
     std::fs::rename(&ancestor, &moved)?;
     assert!(!ancestor.exists());
     assert!(

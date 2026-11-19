@@ -77,14 +77,17 @@ impl HostWorkspaceOwner {
             validate_prompt(prompt)?;
             host_workspace::child_reference(reference)?;
             let (state, _) = self.native.session(parent).await?;
-            // Replaying a spawn is idempotent only for its own prompt.
-            let brief = self.native.brief(&state, reference, prompt).await?;
-            if !state
+            let already_open = state
                 .open_children
                 .contains(&child)
                 .await
-                .map_err(storage)?
-            {
+                .map_err(storage)?;
+            if already_open && self.native.session(&child).await?.1.control == Control::Archive {
+                return Err(Error::Conflict(agents::ARCHIVED.into()));
+            }
+            // Replaying a spawn is idempotent only for its own prompt.
+            let brief = self.native.brief(&state, reference, prompt).await?;
+            if !already_open {
                 // Host-authored parent work is the child's starting point.
                 parent_view.capture(operation).await?;
                 self.native

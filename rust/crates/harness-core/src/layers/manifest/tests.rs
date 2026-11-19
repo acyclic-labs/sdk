@@ -1,9 +1,24 @@
 use super::*;
 use acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters};
 use acyclic_stream::{
-    AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamCategory, StreamPath,
+    AppendRecord, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamCategory,
+    StreamPath,
 };
 use std::sync::Arc;
+
+fn assert_original_sources_fenced(request: &CommitRequest) {
+    let conditions = request.conditions();
+    let (heads, live) = conditions.fold((0, 0), |(heads, live), condition| match condition {
+        CommitCondition::Tail { .. } => (heads + 1, live),
+        CommitCondition::Absent { path } if path.as_str().ends_with("/retirement") => {
+            (heads, live + 1)
+        }
+        _ => (heads, live),
+    });
+    let layers = super::super::ORDER.len();
+    assert_eq!((heads, live), (layers, layers));
+    assert_eq!(request.conditions().count(), heads + live);
+}
 
 #[tokio::test]
 async fn home_apply_denies_before_publication_and_fences_every_original_source()
@@ -567,10 +582,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
                 .condition(&fs, &mut commit, &io, &cancellation)
                 .await,
         )?;
-        assert_eq!(
-            commit.request().conditions().count(),
-            super::super::ORDER.len()
-        );
+        assert_original_sources_fenced(commit.request());
         let original = commit.request().clone();
         let retained = native.live_allocation_bytes();
         let other = acyclic_fs::NativeMaterializationWork::new(
@@ -776,10 +788,7 @@ async fn every_original_layer_fences_the_same_consuming_commit()
     Manifest::new(std::array::from_fn(|index| &generations[index]))
         .condition(&fs, &mut original, budget, &cancellation)
         .await?;
-    assert_eq!(
-        original.request().conditions().count(),
-        super::super::ORDER.len()
-    );
+    assert_original_sources_fenced(original.request());
     assert!(matches!(
         fs.submit_commit(original, budget, &cancellation)
             .await?

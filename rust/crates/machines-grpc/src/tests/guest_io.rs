@@ -135,27 +135,43 @@ async fn fixture() -> (
     ServerTask,
 ) {
     let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
-    let (provider, io, shutdown, task) = rpc_fixture().await;
+    let (provider, io, shutdown, task) = rpc_fixture(machine).await;
     (
-        Machine::new(Machines::new(Arc::new(provider)), machine),
+        Machines::new(Arc::new(provider))
+            .attach(machine)
+            .await
+            .unwrap(),
         io,
         shutdown,
         task,
     )
 }
 
-async fn rpc_fixture() -> (
+async fn rpc_fixture(
+    machine: MachineId,
+) -> (
     GrpcProvider,
     Arc<GuestIo>,
     tokio::sync::oneshot::Sender<()>,
     ServerTask,
 ) {
     let io = Arc::new(GuestIo::default());
+    let operation = OperationId::parse("00000000-0000-4000-8000-000000000003").unwrap();
     let service = OperationService {
         guest: Some(io.clone()),
         expected_key: IdempotencyKey::parse("00000000-0000-4000-8000-000000000002").unwrap(),
-        expected_operation: OperationId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
-        recovered: wire::RecoveredAdmission::default(),
+        expected_operation: operation,
+        recovered: wire::RecoveredAdmission {
+            result: Some(wire::recovered_admission::Result::Create(
+                wire::MachineAdmission {
+                    machine: Some(encode_machine(machine)),
+                    operation: Some(encode_operation(operation)),
+                    contract: Some(codecs::wire_contract(&[])),
+                    provenance: None,
+                },
+            )),
+            ..wire::RecoveredAdmission::default()
+        },
         inspected: wire::OperationState::default(),
         cancelled: wire::OperationState::default(),
         watch: WatchReply::Items(vec![]),
@@ -166,8 +182,8 @@ async fn rpc_fixture() -> (
 
 #[tokio::test]
 async fn file_stream_receipts_progress_before_input_eof_and_drop_releases_input() {
-    let (provider, io, shutdown, task) = rpc_fixture().await;
     let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+    let (provider, io, shutdown, task) = rpc_fixture(machine).await;
     let access = wire::FileAccess {
         machine: Some(encode_machine(machine)),
         path: "/workspace/file".into(),
@@ -628,7 +644,7 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline()
             finish(Err(cause.clone()));
         }
         let (entered, entering) = tokio::sync::oneshot::channel();
-        let mut dispatch = Box::pin(transport::dispatch(
+        let mut dispatch = Box::pin(crate::transport::dispatch(
             Some(&deadline),
             async {
                 let _ = entered.send(());
@@ -988,14 +1004,11 @@ async fn read_output_preserves_wide_offsets_and_validates_evidence() {
 
 #[tokio::test]
 async fn simulator_rejects_guest_io_instead_of_fabricating_output() {
-    let provider = Arc::new(SimulatedMachines::default());
-    let absent = Machine::new(
-        Machines::new(provider.clone()),
-        MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
-    );
+    let provider = SimulatedMachines::default();
+    let absent = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
     // Exec admits like a physical provider before refusing guest execution.
     assert!(matches!(
-        absent.exec(command(1)).await,
+        provider.exec(absent, command(1)).await,
         Err(ProviderError::NotFound(_))
     ));
     let MutationOutcome::Created(created) = provider
@@ -1009,13 +1022,12 @@ async fn simulator_rejects_guest_io_instead_of_fabricating_output() {
     else {
         unreachable!()
     };
-    let machine = Machine::new(Machines::new(provider), created.id);
     assert!(matches!(
-        machine.exec(command(1)).await,
+        provider.exec(created.id, command(1)).await,
         Err(ProviderError::Unsupported(_))
     ));
     assert!(matches!(
-        machine.read_output(0, 1).await,
+        provider.read_output(created.id, 0, 1).await,
         Err(ProviderError::Unsupported(_))
     ));
 }

@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod model_checking;
 
 pub(crate) type Failure = OperationFailure<Error>;
@@ -725,4 +726,5 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
 
 #[cfg(test)]
 #[path = "tests/persistent_point.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -47,6 +47,32 @@ impl TurnExecutors for Never {
 
 type Objects = LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
+async fn run_host<P: acyclic_harness_core::store::JournalProvider + ?Sized + 'static>(
+    host: &AgentHost<P>,
+    exercise: impl std::future::Future<Output = Result>,
+    expected: impl Fn(&acyclic_actors::local::Error) -> bool,
+) -> Result {
+    let (failures, mut reports) = tokio::sync::mpsc::channel(1);
+    tokio::select! {
+        biased;
+        result = host.run(|actor, error| {
+            if !expected(error) {
+                let _ = failures.try_send(std::io::Error::other(format!(
+                    "actor delivery {actor:?}: {error}"
+                )));
+            }
+        }) => match result {
+            Err(error) => Err(error.into()),
+            Ok(never) => match never {},
+        },
+        report = reports.recv() => {
+            let report = report.ok_or("actor failure reporter closed")?;
+            Err(report.into())
+        },
+        result = exercise => result,
+    }
+}
+
 fn provider() -> Result<ProviderRef> {
     Ok(ProviderRef::new(
         "agents".into(),
@@ -134,8 +160,8 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     );
     assert_eq!(stream.calls.load(Ordering::SeqCst), 0);
     assert_eq!(bucket.objects().await?, 0);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(work.receipt()?.backend_read_operations, 0);
+    assert_eq!(work.receipt()?.backend_write_operations, 0);
     Ok(())
 }
 
@@ -417,11 +443,7 @@ async fn rejected_steering_cannot_block_owner_pause_or_stop() -> Result {
             assert!(bound.agents().state(&agent).await?.closed);
             Ok::<_, Box<dyn std::error::Error>>(())
         };
-        let result: Result = tokio::select! {
-            result = bound.agents().run(|actor, error| panic!("file control delivery {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
-            result = exercise => result,
-        };
-        result?;
+        run_host(bound.agents(), exercise, |_| false).await?;
     }
     Ok(())
 }
@@ -940,24 +962,15 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             }
             Ok::<_, Box<dyn std::error::Error>>(())
         };
-        tokio::select! {
-            result = bound.agents().run(|actor, error| {
-                if completion == QuietCase::DeadlineOverflow {
-                    // The owner-indexed failure watch verifies the agent;
-                    // this report names the companion that handled its files.
-                    assert!(matches!(error,
-                        acyclic_actors::local::Error::Handler(error)
-                            if matches!(error.as_ref(), acyclic_actors::guest::GuestError::Handler(message)
-                                if message == "invalid agent record: quiet deadline overflow")
-                    ), "unexpected overflow failure: {error}");
-                } else {
-                    panic!("quiet actor {actor:?}: {error}");
-                }
-            }) => match result {
-                Err(error) => return Err(error.into()), Ok(never) => match never {},
-            },
-            result = exercise => result?,
-        }
+        run_host(bound.agents(), exercise, |error| {
+            // The owner-indexed failure watch verifies the agent;
+            // this report names the companion that handled its files.
+            completion == QuietCase::DeadlineOverflow
+                && matches!(error, acyclic_actors::local::Error::Handler(error)
+                    if matches!(error.category(), acyclic_actors::guest::GuestError::Handler(message)
+                        if message == "invalid agent record: quiet deadline overflow"))
+        })
+        .await?;
     }
     Ok(())
 }
@@ -1391,11 +1404,7 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
         assert!(bound.agents().state(&agent).await?.closed);
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    let result: Result = tokio::select! {
-        result = bound.agents().run(|actor, error| panic!("file control delivery {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
-        result = exercise => result,
-    };
-    result?;
+    run_host(bound.agents(), exercise, |_| false).await?;
     assert_eq!(guest_calls.load(Ordering::SeqCst) > 0, guest);
     Ok(())
 }
@@ -1962,10 +1971,7 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    tokio::select! {
-        result = bound.agents().run(|actor, error| panic!("guest child control {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
-        result = exercise => result,
-    }
+    run_host(bound.agents(), exercise, |_| false).await
 }
 
 #[tokio::test]
@@ -2133,7 +2139,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     let operation = acyclic_harness_core::OperationId::from_bytes(identity);
-    let saved_path = format!("inputs/{operation}-{}.json", blake3::hash(&original));
+    let saved_path = format!("events/{operation}-{}.json", blake3::hash(&original));
     let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
         bound.volumes().clone(),
         file.volume(),
@@ -2629,8 +2635,11 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     let exercise = async {
         observed(&a, &AgentPath::root(&id(1))).await?;
         observed(&b, &root_b).await?;
-        assert_eq!(a.agents().runtime().counts().0, 1);
-        assert_eq!(b.agents().runtime().counts().0, 1);
+        a.agents().runtime().complete().await?;
+        b.agents().runtime().complete().await?;
+        // A bound root with a private volume owns an agent and its file-control actor.
+        assert_eq!(a.agents().runtime().counts().0, 2);
+        assert_eq!(b.agents().runtime().counts().0, 2);
         // These roots are committed by different hosts after discovery starts.
         // Interleaving their activations also exercises foreign-tree exclusion.
         let later_b = create(&b2, 3).await?;
@@ -2639,13 +2648,15 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
         observed(&b, &later_b).await?;
         observed(&a, &later_a).await?;
         observed(&b, &last_b).await?;
+        a.agents().runtime().complete().await?;
+        b.agents().runtime().complete().await?;
         assert_eq!(
             (
                 a.agents().runtime().counts().0,
                 b.agents().runtime().counts().0
             ),
-            (2, 3),
-            "activation producers discovered exactly their own roots"
+            (4, 6),
+            "each host discovered exactly its own roots and their file-control actors"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     };
@@ -2666,8 +2677,10 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
 
 #[tokio::test]
 async fn input_wait_retains_the_original_actor_failure_after_source_drop() -> Result {
+    use acyclic_stream::{CommitEffect, CommitMutation, CommitOutcome, CommitRequest};
+    let stream = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
-        Arc::new(MemoryStream::default()),
+        stream.clone(),
         super::script(vec![]),
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -2677,18 +2690,40 @@ async fn input_wait_retains_the_original_actor_failure_after_source_drop() -> Re
         .create(&intent("failed-input-root"), super::adopted(id(1)))
         .await?;
     assert!(host.runtime().drain().await.is_empty());
-    let Delivered::Committed { inbox } = host
-        .send(
-            &root,
-            &super::user(),
-            &InboxRecord::Approval(Approval {
-                id: intent("failed-input"),
-            }),
-        )
+    // A malformed durable record fails delivery before the agent can publish
+    // a terminal turn. The pending input therefore keeps its delivery failure.
+    let malformed = b"malformed inbox record";
+    let decode_failure = InboxRecord::decode(malformed)
+        .expect_err("the injected record must be invalid")
+        .to_string();
+    let path = root.inbox()?;
+    let actor = host.actor(&root)?;
+    let CommitOutcome::Committed(receipt) = stream
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: intent_key("malformed-inbox", &[root.as_str()])?,
+            effects: vec![
+                CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![malformed.to_vec().into()],
+                    }],
+                ),
+                host.runtime().store().activation(&actor)?,
+            ],
+        })
         .await?
     else {
         return Err("the original input was not committed".into());
     };
+    let inbox = receipt
+        .appends
+        .iter()
+        .find(|append| append.path == path)
+        .ok_or("missing input publication")?
+        .start;
+    host.runtime().wake_committed(&actor, &receipt)?;
     assert!(!host.runtime().drain().await.is_empty());
     let Err(Error::Stream(original)) = host.wait_for_input(&root, inbox).await else {
         return Err("a failed actor certified input settlement".into());
@@ -2700,7 +2735,7 @@ async fn input_wait_retains_the_original_actor_failure_after_source_drop() -> Re
     let mut source = std::error::Error::source(&retained);
     while let Some(cause) = source {
         if let Some(original) = cause.downcast_ref::<acyclic_actors::local::DeliveryFailure>() {
-            assert!(original.to_string().contains("script exhausted"));
+            assert!(original.to_string().contains(&decode_failure));
             return Ok(());
         }
         source = cause.source();
@@ -3029,8 +3064,17 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
                 .iter()
                 .map(|(path, text)| (path.as_str(), Some(*text)))
                 .collect();
-            let injected = objects.medium().inject(fault, calls, marked(marker));
+            // Arm the fault after publication so its own verification cannot
+            // consume the fault intended for the companion's registration read.
+            let runtime = bound.agents().runtime();
+            runtime
+                .pause_with(&control, true, std::future::ready(()))
+                .await?;
             publish(&changes, number).await?;
+            let injected = objects.medium().inject(fault, calls, marked(marker));
+            runtime
+                .pause_with(&control, false, std::future::ready(()))
+                .await?;
             let registered = if fault == Fault::Transient {
                 Some(source.clone())
             } else {
@@ -3050,9 +3094,5 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    let result: Result = tokio::select! {
-        result = bound.agents().run(|actor, error| panic!("file hook delivery {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
-        result = exercise => result,
-    };
-    result
+    run_host(bound.agents(), exercise, |_| false).await
 }

@@ -28,6 +28,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-auth",
@@ -73,6 +74,7 @@ rust_library(
         "//rust/crates/auth/fuzz:corpus/trust_record/snapshot-unbounded",
         "tests/fixtures/resource-identity-v1.json",
     ],
+    tags = ["resources:memory:768"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -166,7 +168,7 @@ rust_test(
         "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","resources:memory:768"],
 )
 
 isolated_test(
@@ -193,9 +195,11 @@ rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
     srcs = [
+        "src/operation/backoff.rs",
         "tests/admission.rs",
         "tests/authorization.rs",
         "tests/authorization_regressions.rs",
+        "tests/backoff.rs",
         "tests/caller.rs",
         "tests/channel.rs",
         "tests/common/credential.rs",
@@ -302,7 +306,7 @@ rust_test(
         "//rust/crates/objects:tree/proto",
         "//rust/crates/stream-wire:tree/proto",
     ],
-    tags = ["manual"],
+    tags = ["manual","resources:memory:384"],
 )
 
 isolated_test(
@@ -310,6 +314,7 @@ isolated_test(
     binary = ":main_cases",
     id = "acyclic-auth::main",
     exclude = ["::full_cloud::"],
+    shard_count = 2,
     limit_seconds = 10,
 )
 
@@ -325,58 +330,13 @@ isolated_test(
     tags = ["manual"],
 )
 
-rust_test(
-    name = "backoff_cases",
-    crate_root = "tests/backoff.rs",
-    srcs = [
-        "src/operation/backoff.rs",
-        "tests/backoff.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"client\", \"grpc\", \"grpc-metadata\", \"javascript\", \"js-credential\", \"native-javascript\", \"test-support\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = "//:workspace_lints",
-    deps = [
-        "@sdk_crates//proptest-1.12.0",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "backoff",
-    binary = ":backoff_cases",
-    id = "acyclic-auth::backoff",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-)
-
-isolated_test(
-    name = "backoff_full-cloud",
-    binary = ":backoff_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-auth::backoff",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual"],
-)
-
 rust_binary(
     name = "generate_example",
     crate_root = "examples/generate.rs",
     srcs = [
         "examples/generate.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -447,6 +407,7 @@ rust_binary(
         "examples/corpus/mod.rs",
         "examples/issuance_corpus.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -516,6 +477,7 @@ rust_binary(
         "examples/corpus/mod.rs",
         "examples/secret_ref_corpus.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -585,6 +547,7 @@ rust_binary(
         "examples/corpus/mod.rs",
         "examples/trust_corpus.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -653,6 +616,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-auth",
@@ -700,6 +664,7 @@ rust_library(
         "//rust/crates/auth/fuzz:corpus/trust_record/snapshot-unbounded",
         "tests/fixtures/resource-identity-v1.json",
     ],
+    tags = ["resources:memory:768"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

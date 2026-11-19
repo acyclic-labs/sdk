@@ -5,6 +5,7 @@ use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
+use acyclic_actors::local::Clock;
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
@@ -28,7 +29,7 @@ pub(super) struct CheckoutTools {
     verifier: AuthorityVerifier,
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
-    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    clock: Arc<dyn Clock>,
     /// The signed scope's authenticated expiry; a running command stops there.
     expiry_unix_ms: u64,
     /// Tool locations selected once by the native owner, never guest input.
@@ -81,7 +82,7 @@ async fn serialized<T, R>(
 async fn serialized_until<T, R>(
     state: &StateArc<AsyncMutex<T>>,
     deadline_unix_ms: Option<u64>,
-    clock: &dyn acyclic_stream::UnixMillisClock,
+    clock: &dyn Clock,
     command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> Result<R>,
 ) -> Result<R> {
     let guard = observe_until(deadline_unix_ms, clock, async {
@@ -95,7 +96,7 @@ async fn serialized_until<T, R>(
 /// retains its accepted effects through cleanup and publication.
 async fn observe_until<R>(
     deadline_unix_ms: Option<u64>,
-    clock: &dyn acyclic_stream::UnixMillisClock,
+    clock: &dyn Clock,
     completion: impl std::future::Future<Output = Result<R>>,
 ) -> Result<R> {
     let Some(deadline) = deadline_unix_ms else {
@@ -110,7 +111,7 @@ async fn observe_until<R>(
     if clock.now_unix_millis() >= deadline {
         return Err(timeout());
     }
-    let alarm = std::pin::pin!(acyclic_native_runtime::WallAlarm::wait(deadline).map_err(storage)?);
+    let alarm = clock.sleep_until(deadline);
     let command = std::pin::pin!(completion);
     match futures::future::select(alarm, command).await {
         futures::future::Either::Right((result, _)) => {
@@ -133,7 +134,7 @@ impl CheckoutTools {
     pub(super) fn new<'a>(
         workspace: Arc<LocalWorkspace>,
         project: &'a VolumeRef,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        clock: Arc<dyn Clock>,
         signed: &'a Scope,
         verifier: &'a AuthorityVerifier,
         execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
@@ -193,13 +194,27 @@ impl CheckoutTools {
                 capture_options,
                 capture_policy,
                 workspace,
-                clock,
+                clock: acyclic_actors::local::SystemClock::bind(clock),
                 expiry_unix_ms,
                 environment,
                 execution_grant,
                 state: shared,
             })
         })
+    }
+
+    fn process_control(&self) -> Result<acyclic_native_runtime::ProcessControl> {
+        use acyclic_native_runtime::ProcessControl;
+        let deadline = self.expiry_unix_ms;
+        if self.clock.is_system_clock() {
+            return ProcessControl::open(deadline).map_err(storage);
+        }
+        let clock = self.clock.clone();
+        let expiry = clock.sleep_until(deadline);
+        ProcessControl::open_with_clock(deadline, move || clock.now_unix_millis(), async {
+            let _ = expiry.await;
+        })
+        .map_err(storage)
     }
 
     /// Publishes a freshly imported source's baseline before any command, so
@@ -626,11 +641,7 @@ impl ToolExecutor for CheckoutTools {
             let (started, launched) = tokio::sync::oneshot::channel();
             // The signed scope's expiry stops a command whenever it runs out;
             // timeout_ms is the process's own schedule, armed at its launch.
-            let control = shell
-                .as_ref()
-                .map(|_| acyclic_native_runtime::ProcessControl::open(self.expiry_unix_ms))
-                .transpose()
-                .map_err(storage)?;
+            let control = shell.as_ref().map(|_| self.process_control()).transpose()?;
             // Stopping observation stops execution, while the original task
             // keeps its guard and volume claims through final publication.
             let _stop = if background {

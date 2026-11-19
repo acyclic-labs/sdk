@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines::codec::codec_fuzz;
 use acyclic_machines::results::{ResultCursor, ResultCut};
 
 #[tokio::test]

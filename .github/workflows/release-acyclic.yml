@@ -101,7 +101,7 @@ jobs:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
-          flags=(-c opt --repository_cache="$HOME/.cache/bazel-repository-cache")
+          flags=(-c opt --repository_cache="$HOME/.cache/bazel-repository-cache" --disk_cache=/var/tmp/acyclic-bazel-disk)
           if [[ -n "$PLATFORM" ]]; then flags+=(--platforms="$PLATFORM"); fi
           labels=(//plugin:acyclic //plugin:graphcoder //rust/crates/conformance:native-mount-qualify)
           bazelisk build "${flags[@]}" "${labels[@]}"

@@ -363,7 +363,7 @@ mod tests {
                 .ok_or_else(|| Error::NotFound("checkout".into()))?
                 .clone(),
             &harness.project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
             None,
@@ -479,7 +479,7 @@ mod tests {
         let tools = CheckoutTools::new(
             workspace.clone(),
             &harness.project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
             None,

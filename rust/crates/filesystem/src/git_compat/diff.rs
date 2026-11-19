@@ -69,6 +69,8 @@ where
 
 /// Compares exact generations once, returning eligible paths and counts.
 /// Directory records and hard-link count changes alone are not file changes.
+/// Access times do not constitute edits. A symbolic link's tracked content
+/// is its target, independent of changes to its other aliases.
 pub async fn git_compatible_diff<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
@@ -131,13 +133,8 @@ where
         {
             continue;
         }
-        let comparable = |record: Option<crate::kernel::FileRecord>| {
-            record.map(|mut record| {
-                record.link_count = 0;
-                record
-            })
-        };
-        let file_changed = comparable(before_file) != comparable(after_file);
+        let file_changed =
+            git_file_changed((from, before_file), (to, after_file), cancellation).await?;
         let binding_changed =
             before_file.map(|record| record.file_id) != after_file.map(|record| record.file_id);
         if file_changed {
@@ -165,6 +162,60 @@ where
         },
         paths: changed_paths,
     })
+}
+
+async fn git_file_changed<A, O>(
+    before: (&Generation<A, O>, Option<crate::kernel::FileRecord>),
+    after: (&Generation<A, O>, Option<crate::kernel::FileRecord>),
+    cancellation: &CancellationToken,
+) -> Result<bool, WorkspaceError>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let (Some(left), Some(right)) = (before.1, after.1) else {
+        return Ok(before.1.is_some() || after.1.is_some());
+    };
+    if (left.file_id, left.kind, left.payload) != (right.file_id, right.kind, right.payload) {
+        return Ok(true);
+    }
+    if left.kind == FileKind::SymbolicLink {
+        return Ok(false);
+    }
+    if left.bindings != right.bindings {
+        return Ok(true);
+    }
+    if left.metadata == right.metadata {
+        return Ok(false);
+    }
+    let left = git_file_metadata(before.0, left.metadata, cancellation).await?;
+    let right = git_file_metadata(after.0, right.metadata, cancellation).await?;
+    Ok(left != right)
+}
+
+async fn git_file_metadata<A, O>(
+    generation: &Generation<A, O>,
+    metadata: crate::ObjectId,
+    cancellation: &CancellationToken,
+) -> Result<acyclic_fs_format::metadata::FileMetadata, WorkspaceError>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let volume = &generation.workspace.volume;
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+    let mut metadata = crate::kernel::read_file_metadata_with_accounting(
+        volume.fs.objects(),
+        metadata,
+        crate::kernel::DecodeLimits::for_volume(volume.config),
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map_err(WorkspaceError::engine)?;
+    metadata.accessed_ns = acyclic_fs_format::metadata::MetadataField::Unavailable;
+    Ok(metadata)
 }
 
 /// Lists every path whose binding or record differs between two generations.

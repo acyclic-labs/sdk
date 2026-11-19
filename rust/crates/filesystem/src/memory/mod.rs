@@ -55,4 +55,5 @@ fn allocation(custody: KernelOwnedAllocation) -> crate::AuthorityAllocation {
 
 #[cfg(test)]
 #[path = "../tests/memory/mod.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

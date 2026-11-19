@@ -5,6 +5,56 @@ use crate::conversation::{
 };
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn read_retained_skill<'a, 'io: 'a>(
+        &'a self,
+        sources: Arc<crate::context::native_skills::NativeSkills>,
+        volume: &'a VolumeRef,
+        grant: &'a ContentGrant,
+        (path, generation): (&'a str, &'a GenerationRef),
+        maximum_bytes: Option<u64>,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            Option<(FileRef, crate::conversation::Custody)>,
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(access.io, || async move {
+            let temporary;
+            let io = if let Some(io) = access.io {
+                io
+            } else {
+                temporary = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &temporary
+            };
+            // The journal head governs access. The retained source key identifies
+            // a stream record in that journal, so it never selects a volume cut.
+            let selected = self
+                .select_private_read(volume, grant, path, None, access.ceiling, io)
+                .await?;
+            let bytes = sources
+                .read(volume, generation, path, maximum_bytes, access.io)?
+                .await?;
+            let file = bytes
+                .map(|bytes| -> Result<_> {
+                    let (file, hold) =
+                        selected_reference(volume, path, generation, &bytes, None, io)?;
+                    grant.require_file_read(&file, Some(io))?;
+                    let bytes = if access.io.is_some() {
+                        io.retain_read_bytes(bytes)?.into_custody()
+                    } else {
+                        crate::conversation::Custody::Unmetered(bytes)
+                    };
+                    hold.into_retained()?;
+                    Ok((file, bytes))
+                })
+                .transpose()?;
+            selected.recheck(grant, io, self.clock()).await?;
+            Ok(file)
+        })
+    }
+
     pub(in crate::filesystem) async fn capture_private_path<'io>(
         &self,
         grant: &ContentGrant,
@@ -39,9 +89,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &temporary
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let native = self
-            .skill_sources(volume)?
-            .filter(|sources| sources.matches(volume, generation, path));
+        let native = self.retained_skill_source(volume, generation, path)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_source = native.is_some();
         #[cfg(target_arch = "wasm32")]
@@ -101,7 +149,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             selected.recheck(grant, io, self.clock()).await?;
             return Ok((file, bytes, hold));
         }
-        let bytes = if access.io.is_none() {
+        let bytes = if access.io.is_none() && !native_source {
             Some(
                 self.read_private_path(
                     volume,
@@ -121,20 +169,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 bytes = sources
                     .read(volume, generation, path, maximum_bytes, access.io)?
                     .await?
-                    .map(|bytes| io.retain_read_bytes(bytes))
+                    .map(|bytes| match access.io {
+                        Some(work) => work
+                            .retain_read_bytes(bytes)
+                            .map(|bytes| bytes.into_custody()),
+                        None => Ok(crate::conversation::Custody::Unmetered(bytes)),
+                    })
                     .transpose()?;
             } else {
                 bytes = self
                     .read_capture_source(&selected, path, maximum_bytes, io)
-                    .await?;
+                    .await?
+                    .map(|bytes| bytes.into_custody());
             }
             #[cfg(target_arch = "wasm32")]
             {
                 bytes = self
                     .read_capture_source(&selected, path, maximum_bytes, io)
-                    .await?;
+                    .await?
+                    .map(|bytes| bytes.into_custody());
             }
-            bytes.map(crate::filesystem::Charged::into_custody)
+            bytes
         };
         let bytes = bytes.ok_or_else(|| {
             stock_boundary(

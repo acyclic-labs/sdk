@@ -30,6 +30,13 @@ impl CapturedClock {
         self.schedule.0.state().wall.now()
     }
 
+    /// Waits on this clock's deadline producer from any calling thread.
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    pub fn wait_until(&self, deadline: u64) -> std::io::Result<crate::AlarmWait> {
+        let owner = self.schedule.alarm_owner()?;
+        crate::AlarmWait::register(|fire| owner.register(deadline, fire))
+    }
+
     /// Reads the creating runtime's monotonic clock on any callback thread.
     pub fn instant(&self) -> std::time::Instant {
         monotonic(&self.runtime)
@@ -120,18 +127,21 @@ pub(crate) fn wall_alarms() -> std::io::Result<Option<Arc<crate::wall_alarm::Sim
     if !context.schedule.is_seeded() {
         return Ok(None);
     }
-    let mut state = context.schedule.0.state();
-    let wall = &mut state.wall;
-    // An existing index retains its original failure. Without one, closure
-    // must still refuse creation without allocating an index during shutdown.
-    if wall.alarms_closed && wall.alarms.is_none() {
-        return Err(crate::wall_alarm::Simulated::producer_lost());
-    }
-    let alarms = wall.alarms.get_or_insert_with(Default::default).clone();
-    Ok(Some(alarms))
+    context.schedule.alarm_owner().map(Some)
 }
 
 impl Schedule {
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    fn alarm_owner(&self) -> std::io::Result<Arc<crate::wall_alarm::Simulated>> {
+        let mut state = self.0.state();
+        let wall = &mut state.wall;
+        // Keep the original failure after closure, without creating a clock.
+        if wall.alarms_closed && wall.alarms.is_none() {
+            return Err(crate::wall_alarm::Simulated::producer_lost());
+        }
+        Ok(wall.alarms.get_or_insert_with(Default::default).clone())
+    }
+
     /// Only a seeded schedule has a simulated clock; an unseeded one keeps a
     /// wall that nothing reads.
     pub(super) fn is_seeded(&self) -> bool {

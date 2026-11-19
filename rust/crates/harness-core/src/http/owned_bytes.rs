@@ -37,6 +37,7 @@ pub fn owned<T: AsRef<[u8]> + Send + 'static>(
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    use acyclic_fs_work::performance::WorkObservationError;
     use proptest::prelude::*;
     use std::sync::{Arc, Mutex};
 
@@ -88,7 +89,7 @@ mod tests {
     struct Observed {
         bytes: Option<acyclic_auth::operation::ProtectedBytes>,
         work: NativeMaterializationWork,
-        retired_at: Arc<Mutex<Option<std::result::Result<u64, acyclic_fs::WorkObservationError>>>>,
+        retired_at: Arc<Mutex<Option<std::result::Result<u64, WorkObservationError>>>>,
     }
 
     impl AsRef<[u8]> for Observed {

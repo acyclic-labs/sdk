@@ -611,6 +611,7 @@ pub enum CanonicalDecodeError {
 
 #[cfg(test)]
 #[path = "tests/codec.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 /// Canonical encoding admission or reservation failure.

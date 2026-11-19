@@ -156,14 +156,15 @@ fn references(host: &str, cwd: &Path) -> Result {
     assert!(sessions.wait(&key)?.is_none());
     assert_eq!(sessions.accepted.len(), 1);
     for branch in [key.clone(), format!("agents/{reference}")] {
-        let refused = host_files::request(
+        let Err(refused) = host_files::request(
             cwd,
             HostAction::Fs {
                 task: parent.clone(),
                 command: format!("merge {branch}"),
             },
-        )
-        .expect_err("canonical child merge bypassed running-session custody");
+        ) else {
+            return Err("canonical child merge bypassed running-session custody".into());
+        };
         assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
         assert!(
             refused
@@ -182,14 +183,15 @@ fn references(host: &str, cwd: &Path) -> Result {
     }
     for other in [&parent, &grandchild] {
         for operation in ["diff", "merge", "discard"] {
-            let refused = host_files::request(
+            let Err(refused) = host_files::request(
                 cwd,
                 HostAction::Fs {
                     task: parent.clone(),
                     command: format!("{operation} {other}"),
                 },
-            )
-            .expect_err("a full non-child address bypassed parent ownership");
+            ) else {
+                return Err("a full non-child address bypassed parent ownership".into());
+            };
             assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
             assert!(
                 refused.to_string().contains("only direct children"),
@@ -197,14 +199,15 @@ fn references(host: &str, cwd: &Path) -> Result {
             );
         }
     }
-    let refused = host_files::request(
+    let Err(refused) = host_files::request(
         cwd,
         HostAction::Fs {
             task,
             command: format!("merge agents/{reference}"),
         },
-    )
-    .expect_err("a leaf cannot merge its own changes");
+    ) else {
+        return Err("a leaf cannot merge its own changes".into());
+    };
     assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
     assert!(
         refused.to_string().contains("only a parent can merge"),
@@ -228,7 +231,9 @@ fn references(host: &str, cwd: &Path) -> Result {
         sessions.send(&reference, "next".into()),
         sessions.send(&key, "next".into()),
     ] {
-        let refused = result.expect_err("an archived reference cannot resume");
+        let Err(refused) = result else {
+            return Err("an archived reference cannot resume".into());
+        };
         assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
         assert!(
             refused.to_string().contains("spawn a new reference"),
@@ -606,19 +611,19 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
                 .spawn(&mut command, inner.claim.operation, None)?;
             wait_exit(&mut inner)?;
             finish_turn(&nested, "idle", &mut inner)?;
-            let foreign = sessions
-                .request(
-                    "idle",
-                    SessionAction::Complete {
-                        claim: inner.claim.clone(),
-                        outcome: inner
-                            .settlement
-                            .clone()
-                            .ok_or("nested child retained no settlement")?,
-                    },
-                    false,
-                )
-                .expect_err("a parent-local name cannot authorize another child's reply");
+            let Err(foreign) = sessions.request(
+                "idle",
+                SessionAction::Complete {
+                    claim: inner.claim.clone(),
+                    outcome: inner
+                        .settlement
+                        .clone()
+                        .ok_or("nested child retained no settlement")?,
+                },
+                false,
+            ) else {
+                return Err("a parent-local name cannot authorize another child's reply".into());
+            };
             assert_eq!(foreign.code(), crate::wire::ErrorCode::Conflict);
             assert!(
                 foreign

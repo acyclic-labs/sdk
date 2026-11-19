@@ -21,7 +21,7 @@ proptest! {
         let retained = work();
         let fresh_hold = reserve(&fresh, bytes, nodes, 0).unwrap();
         let retained_hold = reserve(&retained, bytes, nodes, prior).unwrap();
-        prop_assert_eq!(fresh.receipt().bytes_copied, retained.receipt().bytes_copied);
+        prop_assert_eq!(fresh.receipt().unwrap().bytes_copied, retained.receipt().unwrap().bytes_copied);
         prop_assert!(retained_hold.bytes() > fresh_hold.bytes());
         drop((fresh_hold, retained_hold));
         prop_assert_eq!(fresh.live_allocation_bytes(), retained.live_allocation_bytes());

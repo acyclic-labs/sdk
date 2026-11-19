@@ -27,31 +27,32 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         }));
         ScriptedTurn::Events(events)
     };
-    // The retrospectives here report feedback, so the script answers them.
+    // Report in the original task turns. Settlement wakes have their own reply
+    // queue, and their retrospectives do not consume a task's feedback script.
     let provider = Arc::new(
-        ScriptedModelProvider::new([
-            ScriptedTurn::Text("root answer".into()),
-            report(2),
-            ScriptedTurn::Text("none".into()),
-            ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                    "child-error".into(),
-                    "absent-tool".into(),
-                    json!({}),
-                ))),
-                ScriptedEvent::Event(ModelEvent::Completed {
-                    metadata: json!({}),
-                }),
-            ]),
-            ScriptedTurn::Text("child answer after error".into()),
-            report(1),
-            ScriptedTurn::Text("none".into()),
-            ScriptedTurn::Text("grandchild answer".into()),
-            report(1),
-            ScriptedTurn::Text("none".into()),
-        ])
-        .with_context_capacity(capacity())
-        .scripting_retrospectives(),
+        ScriptedModelProvider::routed(
+            [
+                report(2),
+                ScriptedTurn::Text("root answer".into()),
+                ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                        "child-error".into(),
+                        "absent-tool".into(),
+                        json!({}),
+                    ))),
+                    ScriptedEvent::Event(ModelEvent::Completed {
+                        metadata: json!({}),
+                    }),
+                ]),
+                report(1),
+                ScriptedTurn::Text("child answer after error".into()),
+                report(1),
+                ScriptedTurn::Text("grandchild answer".into()),
+            ],
+            ["child settled", "grandchild settled", "child wake settled"]
+                .map(|text| ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(capacity()),
     );
     let directory = tempfile::tempdir().map_err(crate::local::storage)?;
     let project = volume(directory.path()).await?;
@@ -72,6 +73,11 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         conversation.send("root-input", "root task").await?;
         let mut paths = vec![root.clone()];
         for name in ["child", "grandchild"] {
+            let mut wakes = Vec::new();
+            for ancestor in paths.iter().rev() {
+                let observer = Conversation::open(connection.select(ancestor.clone()).await?);
+                wakes.push(observer.observe(None).await?);
+            }
             let parent = paths.last().expect("root or child").clone();
             let AgentReply::Spawned { agent: child, .. } = connection
                 .execute(&AgentCommand::Spawn {
@@ -85,6 +91,30 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 panic!("spawn did not return a child");
             };
             agents::settled(&harness, &child).await?;
+            // Child settlement becomes a separate input. Follow its actual
+            // turn rather than assuming that it arrived before the next drain.
+            for mut observer in wakes {
+                loop {
+                    match observer.next().await? {
+                        crate::local::Event::Turn { entry, .. }
+                            if matches!(&entry.input, crate::agent::TurnInput::Notice { id, .. }
+                                if id.as_str().starts_with("child-settled:")) =>
+                        {
+                            assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+                            break;
+                        }
+                        crate::local::Event::Status(status)
+                            if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+                        {
+                            return Err(Error::Conflict(format!(
+                                "ancestor ended before {name} settled: {:?}",
+                                status.phase
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // Reopening either descendant for saved reads must keep the
             // session's root audience while enrolling the child's read grant.
             let saved = Conversation::open(connection.select(child.clone()).await?)
@@ -102,6 +132,7 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     let paths = conversation
         .with_transcripts(&output, "tree-export", run)
         .await??;
+    assert_eq!(provider.woken(), [root.clone(), paths[1].clone(), root]);
     assert_eq!(
         std::fs::read_dir(&output)
             .map_err(crate::local::storage)?
@@ -306,6 +337,14 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     }
     assert!(inspections.try_next().await?.is_none());
     assert_eq!(aggregate.feedback[&crate::live::feedback::Kind::Slow], 4);
-    assert_eq!(provider.request_count(), 10);
+    assert_eq!(
+        provider
+            .requests()
+            .iter()
+            .filter(|request| !crate::test_support::is_retrospective(request))
+            .count(),
+        10,
+        "seven task calls and three settlement wakes"
+    );
     Ok(())
 }

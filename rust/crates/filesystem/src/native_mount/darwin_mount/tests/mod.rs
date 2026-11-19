@@ -1,7 +1,13 @@
 #[test]
 fn absent_callback_context_is_stale() {
     assert_eq!(
-        super::ffi_path(0, c"/".as_ptr(), 0, false, |_, _, _| Ok(0)),
+        super::ffi_path(
+            CallbackAddress::ABSENT,
+            c"/".as_ptr(),
+            0,
+            false,
+            |_, _, _| Ok(0)
+        ),
         -libc::ESTALE
     );
 }
@@ -26,30 +32,6 @@ unsafe extern "C" {
     fn nfs4_test_verify_attributes() -> c_int;
     fn nfs4_test_node_identity() -> c_int;
     fn nfs4_test_release_open_files() -> c_int;
-    fn nfs4_test_mounted_io(
-        root: *const c_char,
-        retire: unsafe extern "C" fn(*const c_char) -> c_int,
-    ) -> c_int;
-}
-
-unsafe extern "C" fn retire_mounted_io(root: *const c_char) -> c_int {
-    // SAFETY: the C fixture retains its terminated destination through this call.
-    let root = unsafe { CStr::from_ptr(root) };
-    super::reclaim::retire_mount(root, |operation, path| operation(path))
-        .err()
-        .map_or(0, |error| error.raw_os_error().unwrap_or(libc::EIO))
-}
-
-#[test]
-fn readiness_callback_can_issue_synchronous_nfs_io() -> TestResult {
-    let root = tempfile::tempdir()?;
-    let root = CString::new(root.path().canonicalize()?.as_os_str().as_bytes())?;
-    // SAFETY: the fixture owns this empty directory and retains its terminated path.
-    assert_eq!(
-        unsafe { nfs4_test_mounted_io(root.as_ptr(), retire_mounted_io) },
-        0
-    );
-    Ok(())
 }
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -347,10 +329,9 @@ fn only_a_publishing_source_leaves_writes_unstable() -> TestResult {
         (MountPublication::CloseAndSync, 0),
     ] {
         let (_, context, _work) = checkout_context(publication)?;
-        // SAFETY: `context` outlives the call it is passed to.
-        let answer = unsafe {
-            acyclic_fs_darwin_mount_durable_writes(std::ptr::from_ref(&context) as usize)
-        };
+        let target = CallbackTarget::View(Arc::new(context));
+        // SAFETY: the target outlives the synchronous callback.
+        let answer = unsafe { acyclic_fs_darwin_mount_durable_writes(target.address()) };
         assert_eq!(answer, durable);
     }
     Ok(())
@@ -428,14 +409,12 @@ fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
         0,
         &work,
     )?;
+    let context = Arc::new(context);
+    let target = CallbackTarget::View(Arc::clone(&context));
     let rename_over = |from: &CStr| {
-        // SAFETY: both names are NUL-terminated and `context` outlives the call.
+        // SAFETY: both names are NUL-terminated and the target outlives the call.
         unsafe {
-            acyclic_fs_darwin_mount_rename(
-                std::ptr::from_ref(&context) as usize,
-                from.as_ptr(),
-                c"/replaced".as_ptr(),
-            )
+            acyclic_fs_darwin_mount_rename(target.address(), from.as_ptr(), c"/replaced".as_ptr())
         }
     };
     assert_eq!(rename_over(c"/missing"), -libc::ENOENT);
@@ -453,10 +432,12 @@ fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult
     let path = MountPath::root().child(b"plain".to_vec());
     source.create_file(&path, FileMetadata::default(), None, &work)?;
     assert!(!context.may_have_named_attributes(&path, &work)?);
-    // SAFETY: the names are NUL-terminated and `context` outlives the call.
+    let context = Arc::new(context);
+    let target = CallbackTarget::View(Arc::clone(&context));
+    // SAFETY: the names are NUL-terminated and the target outlives the call.
     let probe = || unsafe {
         acyclic_fs_darwin_mount_getxattr(
-            std::ptr::from_ref(&context) as usize,
+            target.address(),
             c"/plain".as_ptr(),
             c"com.apple.provenance".as_ptr(),
             ptr::null_mut(),

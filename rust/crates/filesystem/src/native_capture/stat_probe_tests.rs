@@ -325,7 +325,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                         &root,
                         &host_path,
                         &snapshot,
-                        Some(8),
+                        (Some(8), false),
                         &scope.native,
                         &mut staged_bytes,
                     ));

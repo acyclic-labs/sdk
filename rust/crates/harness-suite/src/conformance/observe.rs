@@ -1,7 +1,9 @@
 use acyclic_stream::testing::{RequestClass, RequestLedger};
 use acyclic_stream::*;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 use std::sync::{
-    Arc, Mutex,
+    Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -19,7 +21,7 @@ enum FaultAt {
 }
 
 pub(crate) struct Observed {
-    pub inner: Arc<super::Stream>,
+    pub inner: ProviderOwner<super::Stream>,
     pub requests: RequestLedger,
     // A history-read sentinel, independent of the aggregate request budget.
     pub history_reads: AtomicUsize,
@@ -40,7 +42,7 @@ struct Capture {
 }
 
 impl Observed {
-    pub fn new(inner: Arc<super::Stream>) -> Self {
+    pub fn new(inner: ProviderOwner<super::Stream>) -> Self {
         Self {
             inner,
             requests: RequestLedger::new(),
@@ -57,7 +59,7 @@ impl Observed {
 
     /// Only the finite exact-retry vectors retain requests. Counter and scale
     /// workloads use `new`, with no history allocation, lock or request clone.
-    pub fn capturing(inner: Arc<super::Stream>) -> Self {
+    pub fn capturing(inner: ProviderOwner<super::Stream>) -> Self {
         Self {
             capture: Some(Mutex::default()),
             ..Self::new(inner)
@@ -65,7 +67,7 @@ impl Observed {
     }
 
     /// Count dispatches without retaining requests or consulting fault state.
-    pub fn counters(inner: Arc<super::Stream>) -> Self {
+    pub fn counters(inner: ProviderOwner<super::Stream>) -> Self {
         Self {
             counter_only: true,
             ..Self::new(inner)
@@ -88,23 +90,28 @@ impl Observed {
 
     pub fn take_commits(&self) -> Vec<CommitRequest> {
         self.take_capture(|capture| std::mem::take(&mut capture.commits))
+            .unwrap_or_default()
     }
 
     /// The first captured commit `select` accepts, awaited as commits arrive;
     /// captured history stays in place.
-    pub async fn committed<T>(&self, select: impl Fn(&CommitRequest) -> Option<T>) -> T {
+    pub async fn committed<T>(
+        &self,
+        select: impl Fn(&CommitRequest) -> Option<T>,
+    ) -> Result<T, StreamError> {
         // Subscribe before scanning, so no commit lands unseen in between.
         let mut captured = self.captured.subscribe();
         loop {
-            if let Some(found) =
-                self.take_capture(|capture| capture.commits.iter().find_map(&select))
+            if let Some(found) = self
+                .take_capture(|capture| capture.commits.iter().find_map(&select))
+                .ok_or(StreamError::InvalidArgument)?
             {
-                return found;
+                return Ok(found);
             }
             captured
                 .changed()
                 .await
-                .expect("the commit watch lives as long as its provider");
+                .map_err(|_| StreamError::Unavailable)?;
         }
     }
 
@@ -114,6 +121,7 @@ impl Observed {
 
     pub fn take_follows(&self) -> Vec<(StreamPath, u64)> {
         self.take_capture(|capture| std::mem::take(&mut capture.follows))
+            .unwrap_or_default()
     }
 
     fn capture(&self, record: impl FnOnce(&mut Capture)) {
@@ -122,24 +130,25 @@ impl Observed {
         }
     }
 
-    fn take_capture<T>(&self, take: impl FnOnce(&mut Capture) -> T) -> T {
-        let capture = self.capture.as_ref().expect("request capture was selected");
-        take(&mut capture.lock().unwrap_or_else(|error| error.into_inner()))
+    fn take_capture<T>(&self, take: impl FnOnce(&mut Capture) -> T) -> Option<T> {
+        let capture = self.capture.as_ref()?;
+        Some(take(
+            &mut capture.lock().unwrap_or_else(|error| error.into_inner()),
+        ))
     }
 
+    /// Lose this provider session at the selected request. After that request,
+    /// no further operation reaches storage until the caller opens a new session.
     pub fn crash_at(&self, at: usize, fault: Fault) {
         *self.crash.lock().unwrap_or_else(|e| e.into_inner()) = Some((at, fault));
     }
 
-    /// The call-ordinal crash armed for this provider call, if any.
+    /// Allow a crash-after request to finish once, then refuse every later call.
     fn crash_fault(&self) -> Option<Fault> {
-        let at = self.calls.fetch_add(1, Ordering::SeqCst);
         let mut crash = self.crash.lock().unwrap_or_else(|e| e.into_inner());
-        if crash.as_ref().is_some_and(|(step, _)| *step == at) {
-            crash.take().map(|(_, fault)| fault)
-        } else {
-            None
-        }
+        let at = self.calls.fetch_add(1, Ordering::SeqCst);
+        let (step, fault) = crash.as_mut()?;
+        (*step <= at).then(|| std::mem::replace(fault, Fault::Before))
     }
 
     async fn io<T>(
@@ -516,7 +525,7 @@ mod tests {
     -> crate::conformance::Result {
         let mut previous = None;
         for records in [1, 1_024] {
-            let memory = Arc::new(MemoryStream::default());
+            let memory = ProviderOwner::new(MemoryStream::default());
             let path = StreamPath::new("observation")?;
             let request = CommitRequest {
                 deadline_unix_millis: None,

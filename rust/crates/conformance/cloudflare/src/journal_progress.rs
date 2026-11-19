@@ -136,7 +136,7 @@ pub async fn qualify_journal_progress(
             .call0(&JsValue::NULL)?
             .dyn_into::<js_sys::Function>()?;
         check(
-            peer.tail(path.clone()).await == Err(StreamError::Unavailable),
+            matches!(peer.tail(path.clone()).await, Err(StreamError::Unavailable)),
             "lost SQLite domain did not refuse public observation",
         )?;
         check(
@@ -187,14 +187,16 @@ pub async fn qualify_journal_progress(
         reopened
             .tail(StreamPath::new("progress/grandchild").map_err(stream_error)?)
             .await
-            == Ok(1),
+            .map_err(stream_error)?
+            == 1,
         "reopened journal lost the original inherited cut",
     )?;
     check(
         reopened
             .tail(StreamPath::new("progress/root").map_err(stream_error)?)
             .await
-            == Ok(2),
+            .map_err(stream_error)?
+            == 2,
         "reopened journal lost its committed root",
     )?;
     Ok(())

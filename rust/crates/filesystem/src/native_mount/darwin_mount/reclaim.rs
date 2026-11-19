@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 use super::mount_probe::same_mount;
 use super::*;
 use crate::native_mount::NativeMountRecoveryOwner;
@@ -28,18 +28,20 @@ pub(super) fn field(name: &[c_char]) -> Result<&CStr, NativeMountError> {
 fn is_loopback_mount(mount: &libc::statfs, uid: u32) -> Result<bool, NativeMountError> {
     let source = field(&mount.f_mntfromname)?.to_bytes();
     let socket_id = source
-        .strip_prefix(b"</tmp/acyclic-fs.")
-        .and_then(|source| source.strip_suffix(b"/nfs>:/"));
+        .strip_prefix(b"</")
+        .and_then(|source| source.strip_suffix(b"/nfs>:/"))
+        .and_then(|directory| directory.rsplit(|byte| *byte == b'/').next())
+        .and_then(|name| name.strip_prefix(b"acyclic-fs."));
     Ok(mount.f_owner == uid
         && field(&mount.f_fstypename)?.to_bytes() == b"nfs"
-        && socket_id.is_some_and(|id| !id.is_empty() && !id.contains(&b'/')))
+        && socket_id.is_some_and(|id| !id.is_empty()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 static DENIED_DIRECT_UNMOUNTS: Mutex<std::collections::BTreeMap<CString, Arc<AtomicU64>>> =
     Mutex::new(std::collections::BTreeMap::new());
 
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 pub(super) fn with_direct_unmount_denied<T>(
     destination: &CStr,
     operation: impl FnOnce() -> T,
@@ -70,7 +72,7 @@ pub(super) fn with_direct_unmount_denied<T>(
 }
 
 fn direct_unmount(destination: &CStr) -> std::io::Result<()> {
-    #[cfg(test)]
+    #[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
     if let Some(count) = DENIED_DIRECT_UNMOUNTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -120,7 +122,7 @@ fn arbitration_unmount(destination: &CStr) -> std::io::Result<()> {
     super::teardown_error::retirement_result(status, dissent)
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
     // No operation may target a changed kernel identity. The destination
     // fence excludes a replacing SDK owner until terminal completion.
@@ -130,18 +132,14 @@ pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMount
     {
         return Ok(());
     }
-    retire_mount(field(&mount.f_mntonname)?, |operation, path| {
+    let result = retire_mount(field(&mount.f_mntonname)?, |operation, path| {
         operation(path)
-    })?;
-    verify_detached(mount)
-}
-
-#[cfg(test)]
-fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
-    if mount_table()?
+    });
+    let still_mounted = mount_table()?
         .iter()
-        .any(|current| same_mount(mount, current))
-    {
+        .any(|current| same_mount(mount, current));
+    super::teardown_error::retirement_after_probe(result.map_err(Into::into), !still_mounted)?;
+    if still_mounted {
         return Err(std::io::Error::other("stale mount remained after retirement").into());
     }
     Ok(())
@@ -235,17 +233,17 @@ fn reclaim_mount(mount: &libc::statfs, uid: u32, work: &Work) -> Result<bool, Na
     Ok(true)
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 use crate::native_mount::fence::{MountDestinationGuard, acquire_existing_mount_lock};
 
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 pub(super) fn reclaim_stale_mounts_direct_only() -> Result<(), NativeMountError> {
     reclaim_stale_mounts_with_retirement(|mount| {
         direct_unmount(field(&mount.f_mntonname)?).map_err(Into::into)
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(not(unit_test_split), unit_test_mount_driver)))]
 fn reclaim_stale_mounts_with_retirement(
     retire: impl Fn(&libc::statfs) -> Result<(), NativeMountError>,
 ) -> Result<(), NativeMountError> {

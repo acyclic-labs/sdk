@@ -154,6 +154,7 @@ impl DemandWork {
         let bytes = NativeAllocationAccounting::ALLOCATION_BYTES;
         #[cfg(test)]
         #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+        #[cfg(any(not(unit_test_split), unit_test_foundation))]
         let bytes = metadata_tests::admitted_bytes(bytes);
         // This shared control belongs to the original ledger, not the first
         // resource or capture that needs deferred retirement.
@@ -245,18 +246,22 @@ impl NativeDemandReadMeter {
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "admissions_custody_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod custody_tests;
 
 #[cfg(test)]
 #[path = "admissions_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "admissions_loom_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod loom_tests;
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "admissions_metadata_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod metadata_tests;

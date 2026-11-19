@@ -63,6 +63,8 @@ pub struct DurableWrite {
     pub ordinal: usize,
     /// Original production boundary.
     pub operation: &'static str,
+    /// The operation issues a stable-storage flush, even if it also changes a name.
+    pub flushes: bool,
     /// Bytes offered to this call; zero for namespace and durability calls.
     pub requested: usize,
     /// Bytes reported by the original file call, when it ran successfully.
@@ -171,7 +173,12 @@ impl Drop for Open {
     }
 }
 
-fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::Result<Call> {
+fn begin(
+    schedule: Schedule,
+    operation: &'static str,
+    requested: usize,
+    flushes: bool,
+) -> io::Result<Call> {
     let (ordinal, fault) = {
         let mut state = schedule.0.state();
         let writes = &mut state.writes;
@@ -200,6 +207,7 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
             writes.trace.push(DurableWrite {
                 ordinal,
                 operation,
+                flushes,
                 requested,
                 transferred: None,
                 failure: None,
@@ -267,7 +275,7 @@ pub fn durable_write(
         return write(bytes);
     };
     let _open = Open::enter(operation);
-    let call = begin(context.schedule, operation, bytes.len())?;
+    let call = begin(context.schedule, operation, bytes.len(), false)?;
     let result = call.before().and_then(|()| {
         #[cfg(test)]
         if call.schedule.0.state().writes.skip_write {
@@ -302,7 +310,7 @@ pub fn durable_flush<T>(
     work: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
     super::ledger::charge(crate::cost::Cost::Fsync, 0);
-    durable_operation(operation, work)
+    record_operation(operation, true, work)
 }
 
 /// Runs the original flush, truncation or namespace operation without changing
@@ -311,11 +319,19 @@ pub fn durable_operation<T>(
     operation: &'static str,
     work: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
+    record_operation(operation, false, work)
+}
+
+fn record_operation<T>(
+    operation: &'static str,
+    flushes: bool,
+    work: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     let Some(context) = Context::simulation() else {
         return work();
     };
     let _open = Open::enter(operation);
-    let call = begin(context.schedule, operation, 0)?;
+    let call = begin(context.schedule, operation, 0, flushes)?;
     let result = call.before().and_then(|()| {
         if let Some(fault) = &call.fault
             && matches!(fault.fault, DurableFault::Torn(_))

@@ -15,7 +15,8 @@
 //! nextest's `test(...)` default filters do; a profile whose cases nextest runs under a wrapper
 //! script names it as `ACYCLIC_TEST_WRAPPER`. Within those, cases are selected as libtest
 //! selects them, from Bazel's `--test_filter` (which arrives as `TESTBRIDGE_TEST_ONLY`) followed by
-//! every `--test_arg`, as `cargo test -- <args>` selects them.
+//! every `--test_arg`, as `cargo test -- <args>` selects them. Bazel's shards divide that selection
+//! round-robin across processes running the same binary.
 //!
 //! Each outcome is reported as nextest reports it, `STATUS [ seconds] <binary id> <case>`, so a
 //! case keeps one identity whichever runner ran it. Ignored cases are reported as skipped and
@@ -40,11 +41,53 @@ use std::time::{Duration, Instant};
 use acyclic_native_runtime::{FileLock, FileLockMode};
 use acyclic_native_runtime::{ProcessCommand, ProcessCustody, ProcessStdio, ProcessTree};
 
+#[cfg(target_os = "linux")]
+mod linux_scratch_mounts;
+
 /// How one case ended.
 enum Outcome {
     Passed,
     Failed(Option<i32>),
     TimedOut,
+}
+
+#[derive(Clone, Copy)]
+struct Shard {
+    index: usize,
+    count: NonZero<usize>,
+}
+
+impl Shard {
+    const ALL: Self = Self {
+        index: 0,
+        count: NonZero::<usize>::MIN,
+    };
+
+    fn from_environment() -> Result<Self, String> {
+        if env::var_os("TEST_TOTAL_SHARDS").is_none() {
+            return Ok(Self::ALL);
+        }
+        let count: NonZero<usize> = setting("TEST_TOTAL_SHARDS")?
+            .parse()
+            .map_err(|error| format!("TEST_TOTAL_SHARDS: {error}"))?;
+        let index = setting("TEST_SHARD_INDEX")?
+            .parse()
+            .map_err(|error| format!("TEST_SHARD_INDEX: {error}"))?;
+        if index >= count.get() {
+            return Err(format!(
+                "TEST_SHARD_INDEX {index} is outside {count} shards"
+            ));
+        }
+        if let Some(path) = env::var_os("TEST_SHARD_STATUS_FILE") {
+            fs::write(&path, b"")
+                .map_err(|error| format!("TEST_SHARD_STATUS_FILE {path:?}: {error}"))?;
+        }
+        Ok(Self { index, count })
+    }
+
+    fn cases<T>(self, cases: Vec<T>) -> impl Iterator<Item = T> {
+        cases.into_iter().skip(self.index).step_by(self.count.get())
+    }
 }
 
 /// One test executable and the limits each of its cases runs under.
@@ -65,6 +108,7 @@ struct Suite {
     only: Option<String>,
     /// The profile cases the default target leaves to their own profile targets.
     exclude: Vec<String>,
+    shard: Shard,
     package: PathBuf,
     logs: PathBuf,
     /// This runner's own directory, where each case's temporary directory is made.
@@ -115,6 +159,9 @@ const SETTINGS: &[&str] = &[
     "ACYCLIC_TEST_TEMP_ROOT",
     "ACYCLIC_TEST_WORKERS",
     "ACYCLIC_TEST_WRAPPER",
+    "TEST_SHARD_INDEX",
+    "TEST_SHARD_STATUS_FILE",
+    "TEST_TOTAL_SHARDS",
 ];
 
 fn setting(name: &str) -> Result<String, String> {
@@ -144,6 +191,7 @@ fn run() -> Result<usize, String> {
         exclude: env::var("ACYCLIC_TEST_EXCLUDE")
             .map(|patterns| patterns.lines().map(str::to_owned).collect())
             .unwrap_or_default(),
+        shard: Shard::from_environment()?,
         package: root.join(setting("ACYCLIC_TEST_PACKAGE")?),
         temporary: RunnerDirectory::claim(&temporary_root(
             &setting("ACYCLIC_TEST_TEMP_ROOT")?,
@@ -188,12 +236,14 @@ fn list(suite: &Suite, selection: &[OsString], ignored: bool) -> Result<Vec<Stri
             String::from_utf8_lossy(&listing.stderr)
         ));
     }
-    Ok(String::from_utf8_lossy(&listing.stdout)
+    let mut cases: Vec<_> = String::from_utf8_lossy(&listing.stdout)
         .lines()
         .filter_map(|line| line.strip_suffix(": test"))
         .filter(|name| suite.selects(name))
         .map(str::to_owned)
-        .collect())
+        .collect();
+    cases.sort_unstable();
+    Ok(cases)
 }
 
 /// Runs each case `selection` selects in its own process and reports every outcome to `out`.
@@ -216,12 +266,16 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
             .collect();
         (cases, ignored)
     };
-    for name in &skipped {
+    if !selection.is_empty() && cases.is_empty() && skipped.is_empty() {
+        return Err(format!("{selection:?} selects no case of {}", suite.id));
+    }
+    for name in suite.shard.cases(skipped) {
         writeln!(out, "{:>12} [         ] {} {name}", "SKIP", suite.id)
             .map_err(|error| format!("report: {error}"))?;
     }
-    if !selection.is_empty() && cases.is_empty() && skipped.is_empty() {
-        return Err(format!("{selection:?} selects no case of {}", suite.id));
+    let cases: Vec<_> = suite.shard.cases(cases).collect();
+    if cases.is_empty() {
+        return Ok(0);
     }
     // Every case tree is held in custody, so a timeout stops descendants that left its process
     // group (setsid, nested trees) too.
@@ -272,6 +326,15 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
             );
             let Some(detail) = detail else {
                 writeln!(out, "{line}").map_err(|error| format!("report: {error}"))?;
+                const SKIPPED_CAPABILITY: &str = "skipped: required-host-capability=";
+                for (_, capability) in fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| line.split_once(SKIPPED_CAPABILITY))
+                {
+                    writeln!(out, "{SKIPPED_CAPABILITY}{capability}")
+                        .map_err(|error| format!("report: {error}"))?;
+                }
                 continue;
             };
             failed += 1;
@@ -290,15 +353,29 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
 /// test` runs this crate's own tests) never share a temporary directory.
 static CASES: AtomicUsize = AtomicUsize::new(0);
 
-/// Linux's RAM-backed directory: a case's durability syncs there cost no device flush, so a
-/// test's wall time does not follow the load on the host's disk. The product still syncs.
-const MEMORY_ROOT: &str = "/dev/shm";
+/// The host's RAM-backed directory: a case's durability syncs there cost no device flush, so a
+/// test's wall time does not follow the load on the host's disk. The product still syncs. Linux
+/// has one; on macOS it is a RAM volume the host mounts there, its name short enough that the
+/// longest case directory under it still leaves a socket name room in `sun_path`.
+const MEMORY_ROOT: &str = if cfg!(target_os = "macos") {
+    "/Volumes/ram"
+} else {
+    "/dev/shm"
+};
+
+/// How a host provides `MEMORY_ROOT`, named when it is missing.
+const MEMORY_RECOVERY: &str = if cfg!(target_os = "macos") {
+    "create it as a RAM volume (`diskutil erasevolume APFS ram $(hdiutil attach -nomount \
+     ram://<512-byte sectors>)`)"
+} else {
+    "mount it"
+};
 
 /// The root of every case's temporary directory, by the rule's `ACYCLIC_TEST_TEMP_ROOT`. On Linux
-/// `memory` is `memory_root`, which must exist: there is no silent fallback to a disk. A target
-/// that needs a real disk's semantics (`O_DIRECT`, a block device behind `statfs`) is tagged
-/// `requires-disk-tmp` and gets `disk`. Elsewhere, and for `disk`, the root is `/tmp` on Unix
-/// (short, so a socket path fits) and the test's own directory on Windows.
+/// and macOS `memory` is `memory_root`, which must be mounted: there is no silent fallback to a
+/// disk. A target that needs a real disk's semantics (`O_DIRECT`, a block device behind `statfs`)
+/// is tagged `requires-disk-tmp` and gets `disk`. Elsewhere, and for `disk`, the root is `/tmp` on
+/// Unix (short, so a socket path fits) and the test's own directory on Windows.
 fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf, String> {
     let memory = match kind {
         "memory" => true,
@@ -309,22 +386,36 @@ fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf
             ));
         }
     };
-    if cfg!(target_os = "linux") && memory {
+    if cfg!(any(target_os = "linux", target_os = "macos")) && memory {
         if !memory_root.is_dir() {
             return Err(format!(
                 "{} is not a directory, so cases cannot have RAM-backed temporary directories; \
-                 recovery: mount it, or tag a target that needs a real disk requires-disk-tmp",
+                 recovery: {MEMORY_RECOVERY}, or tag a target that needs a real disk \
+                 requires-disk-tmp",
                 memory_root.display()
             ));
         }
-        let mounts = fs::read_to_string("/proc/self/mountinfo")
-            .map_err(|error| format!("/proc/self/mountinfo: {error}"))?;
-        if !executes(memory_root, &mounts) {
+        #[cfg(target_os = "macos")]
+        if !mount_point(memory_root)? {
             return Err(format!(
-                "{} is mounted noexec, so a case cannot run a script it writes there; \
-                 recovery: remount it exec, or tag a target that needs a real disk requires-disk-tmp",
+                "{} is a directory on its parent's volume, not a mounted RAM volume, so cases \
+                 would sync to a disk; recovery: remove it and {MEMORY_RECOVERY}, or tag a target \
+                 that needs a real disk requires-disk-tmp",
                 memory_root.display()
             ));
+        }
+        // A RAM volume diskutil makes on macOS is always mounted exec; Linux's may not be.
+        if cfg!(target_os = "linux") {
+            let mounts = fs::read_to_string("/proc/self/mountinfo")
+                .map_err(|error| format!("/proc/self/mountinfo: {error}"))?;
+            if !executes(memory_root, &mounts) {
+                return Err(format!(
+                    "{} is mounted noexec, so a case cannot run a script it writes there; \
+                     recovery: remount it exec, or tag a target that needs a real disk \
+                     requires-disk-tmp",
+                    memory_root.display()
+                ));
+            }
         }
         return Ok(memory_root.to_path_buf());
     }
@@ -333,6 +424,18 @@ fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf
     } else {
         logs.to_path_buf()
     })
+}
+
+/// Whether `path` is the root of a mounted volume: on another device than its parent.
+#[cfg(target_os = "macos")]
+fn mount_point(path: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let device = |path: &Path| {
+        fs::metadata(path)
+            .map(|metadata| metadata.dev())
+            .map_err(|error| failed("inspect", path, &error))
+    };
+    Ok(device(path)? != device(path.parent().unwrap_or(path))?)
 }
 
 /// Whether the mount holding `path` lets a case execute files, by its innermost entry in
@@ -374,10 +477,22 @@ fn failed(action: &str, path: &Path, error: &io::Error) -> String {
 
 impl RunnerDirectory {
     fn claim(root: &Path) -> Result<Self, String> {
-        // Abandoned directories go before this runner needs a new one: they may hold the very
-        // space or inodes its creation needs.
         #[cfg(unix)]
-        reclaim(root, acyclic_native_runtime::private_file::effective_user())?;
+        let root = &root
+            .canonicalize()
+            .map_err(|error| failed("resolve", root, &error))?;
+        // Reclaim space from abandoned runs when possible before claiming this run's directory.
+        #[cfg(unix)]
+        if let Err(error) = scratch_mounts().and_then(|mounts| {
+            reclaim(
+                root,
+                acyclic_native_runtime::private_file::effective_user(),
+                &inspect,
+                &mounts,
+            )
+        }) {
+            eprintln!("acyclic-test-runner: scratch reclaim deferred: {error}");
+        }
         let mut attempt = 0_u64;
         loop {
             let name = std::collections::hash_map::RandomState::new()
@@ -444,12 +559,102 @@ impl RunnerDirectory {
     }
 }
 
-/// Removes a runner directory and everything in it. A case may leave a directory it made
-/// unwritable; the runner owns the whole tree, so it restores its own access to each directory
-/// first, and no leftover outlives its runner's reclaim.
+/// Names a mount found inside a runner directory, which removal never crosses.
+#[cfg(unix)]
+const FOREIGN_MOUNT: &str = "TEST_RUNNER_FOREIGN_MOUNT";
+
+/// Inspects a path and its device so removal can recognize mount boundaries.
+#[cfg(unix)]
+type Inspect<'a> = dyn Fn(&Path) -> io::Result<(fs::Metadata, u64)> + 'a;
+
+#[cfg(unix)]
+fn inspect(path: &Path) -> io::Result<(fs::Metadata, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = fs::symlink_metadata(path)?;
+    let device = metadata.dev();
+    Ok((metadata, device))
+}
+
+#[cfg(unix)]
+fn foreign_mount(point: &Path) -> String {
+    format!(
+        "{FOREIGN_MOUNT} {}: a case left a mount inside its runner directory. Its owner must unmount it",
+        point.display()
+    )
+}
+
+#[cfg(unix)]
+fn scratch_mounts() -> Result<Vec<PathBuf>, String> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    return acyclic_process_resources::resources::mount_points()
+        .map_err(|error| format!("read scratch mount points: {error}"));
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Ok(Vec::new())
+}
+
+#[cfg(unix)]
+fn mount_under<'a>(path: &Path, mounts: &'a [PathBuf]) -> Option<&'a Path> {
+    mounts
+        .iter()
+        .map(PathBuf::as_path)
+        .find(|point| point.starts_with(path))
+}
+
+/// Removes a runner directory and everything in it, or fails naming a mount left inside it.
 fn remove(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
-    restore_access(path)?;
+    return remove_owned(path, &inspect, &scratch_mounts()?);
+    #[cfg(not(unix))]
+    remove_tree(path)
+}
+
+#[cfg(unix)]
+fn remove_owned(path: &Path, inspect: &Inspect<'_>, mounts: &[PathBuf]) -> Result<(), String> {
+    let point = match mount_under(path, mounts) {
+        Some(point) => Some(point.to_path_buf()),
+        None => remove_unless_mounted(path, inspect)?,
+    };
+    if let Some(point) = point {
+        let leaked = foreign_mount(&point);
+        #[cfg(target_os = "linux")]
+        detach_scratch_mounts(path, inspect).map_err(|error| format!("{leaked}. {error}"))?;
+        return Err(leaked);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn detach_scratch_mounts(path: &Path, inspect: &Inspect<'_>) -> Result<(), String> {
+    let detached = linux_scratch_mounts::detach(path)
+        .map_err(|error| failed("detach mounts left in", path, &error))?;
+    if detached && mount_under(path, &scratch_mounts()?).is_none() {
+        remove_unless_mounted(path, inspect)?;
+    }
+    Ok(())
+}
+
+/// Removes a runner directory and everything in it, unless a mount is inside it: then nothing is
+/// removed and the mount point is returned. A case may leave a directory it made unwritable; the
+/// runner owns the whole tree, so it restores its own access to each directory first, and no
+/// leftover outlives its runner's reclaim. It never enters another filesystem, whose files are
+/// not the runner's to delete, and whose mount point it may not even be able to change.
+#[cfg(unix)]
+fn remove_unless_mounted(path: &Path, inspect: &Inspect<'_>) -> Result<Option<PathBuf>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no scratch parent", path.display()))?;
+    let device = match inspect(parent) {
+        Ok((_, device)) => device,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(failed("inspect", parent, &error)),
+    };
+    if let Some(point) = restore_access(path, device, inspect)? {
+        return Ok(Some(point));
+    }
+    remove_tree(path).map(|()| None)
+}
+
+fn remove_tree(path: &Path) -> Result<(), String> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         // A reclaimer may have removed the same directory first.
@@ -458,58 +663,104 @@ fn remove(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Gives the owner full access to `path` and every directory under it, following no link.
+/// Gives the owner full access to `path` and every directory under it, following no link and
+/// entering no mount. Returns the first disconnected mount or directory on another device.
 #[cfg(unix)]
-fn restore_access(path: &Path) -> Result<(), String> {
+fn restore_access(
+    path: &Path,
+    parent: u64,
+    inspect: &Inspect<'_>,
+) -> Result<Option<PathBuf>, String> {
     use std::os::unix::fs::PermissionsExt as _;
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+    let (metadata, here) = match inspect(path) {
+        Ok(observed) => observed,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // A disconnected FUSE mount cannot return its device ID even for lstat.
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => {
+            return Ok(Some(path.to_path_buf()));
+        }
         Err(error) => return Err(failed("inspect", path, &error)),
     };
+    if parent != here {
+        return Ok(Some(path.to_path_buf()));
+    }
     if !metadata.is_dir() {
-        return Ok(());
+        return Ok(None);
     }
     if metadata.permissions().mode() & 0o700 != 0o700 {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
             .map_err(|error| failed("restore access to", path, &error))?;
     }
     for entry in fs::read_dir(path).map_err(|error| failed("list", path, &error))? {
-        restore_access(&entry.map_err(|error| failed("list", path, &error))?.path())?;
+        let entry = entry.map_err(|error| failed("list", path, &error))?;
+        if let Some(point) = restore_access(&entry.path(), here, inspect)? {
+            return Ok(Some(point));
+        }
+    }
+    Ok(None)
+}
+
+/// Opportunistically reclaims abandoned directories. Only cleanup of this run's own scratch
+/// reports a failed test. A live runner keeps its lock, and foreign mounts stay intact.
+#[cfg(unix)]
+fn reclaim(
+    root: &Path,
+    user: u32,
+    inspect: &Inspect<'_>,
+    mounts: &[PathBuf],
+) -> Result<(), String> {
+    for entry in fs::read_dir(root).map_err(|error| failed("list", root, &error))? {
+        let result = entry
+            .map_err(|error| failed("list", root, &error))
+            .and_then(|entry| reclaim_entry(&entry, user, inspect, mounts));
+        if let Err(error) = result {
+            eprintln!("acyclic-test-runner: scratch reclaim deferred: {error}");
+        }
     }
     Ok(())
 }
 
-/// Removes every runner directory of `user` under `root` whose lock is free.
 #[cfg(unix)]
-fn reclaim(root: &Path, user: u32) -> Result<(), String> {
+fn reclaim_entry(
+    entry: &fs::DirEntry,
+    user: u32,
+    inspect: &Inspect<'_>,
+    mounts: &[PathBuf],
+) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt as _;
-    for entry in fs::read_dir(root).map_err(|error| failed("list", root, &error))? {
-        let entry = entry.map_err(|error| failed("list", root, &error))?;
-        let path = entry.path();
-        if !entry.file_name().to_str().is_some_and(is_runner_name) {
-            continue;
-        }
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(failed("inspect", &path, &error)),
-        };
-        if !metadata.is_dir() || metadata.uid() != user {
-            continue;
-        }
-        let abandoned = match File::open(&path) {
-            Ok(abandoned) => abandoned,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(failed("open", &path, &error)),
-        };
-        match FileLock::try_acquire(abandoned, FileLockMode::Exclusive) {
-            Ok(_lock) => remove(&path)?,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(failed("lock", &path, &error)),
-        }
+    if !entry.file_name().to_str().is_some_and(is_runner_name) {
+        return Ok(());
     }
-    Ok(())
+    let path = entry.path();
+    // An overmounted runner root hides the original lock and cannot be reclaimed.
+    if mounts.contains(&path) {
+        return Ok(());
+    }
+    let mounted = mount_under(&path, mounts).is_some();
+    #[cfg(not(target_os = "linux"))]
+    if mounted {
+        return Ok(());
+    }
+    let metadata = match entry.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failed("inspect", &path, &error)),
+    };
+    if !metadata.is_dir() || metadata.uid() != user {
+        return Ok(());
+    }
+    let abandoned = match File::open(&path) {
+        Ok(abandoned) => abandoned,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failed("open", &path, &error)),
+    };
+    match FileLock::try_acquire(abandoned, FileLockMode::Exclusive) {
+        #[cfg(target_os = "linux")]
+        Ok(_lock) if mounted => detach_scratch_mounts(&path, inspect),
+        Ok(_lock) => remove_unless_mounted(&path, inspect).map(|_| ()),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(error) => Err(failed("lock", &path, &error)),
+    }
 }
 
 /// Whether `name` is a runner directory's: the prefix and exactly eight lowercase hex digits.
@@ -551,7 +802,7 @@ fn case(
         temporary.canonicalize()?
     };
     let outcome = run_case(suite, custody, name, output, &named);
-    fs::remove_dir_all(temporary)?;
+    remove(temporary).map_err(io::Error::other)?;
     outcome
 }
 
@@ -789,6 +1040,84 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A runner refuses its own mount at cleanup. Reclaim skips a foreign mounted tree before
+    /// inspecting it, and an error inspecting an abandoned tree leaves other reclaims eligible.
+    #[cfg(unix)]
+    #[test]
+    fn a_mount_inside_a_runner_directory_is_never_crossed() {
+        let root = env::temp_dir().join(format!("acyclic-mount-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let live = RunnerDirectory::claim(&root).unwrap();
+        let gone = RunnerDirectory::claim(&root).unwrap();
+        let clean = RunnerDirectory::claim(&root).unwrap();
+        let point = gone.path.join("views").join("mounted");
+        fs::create_dir_all(&point).unwrap();
+        fs::write(point.join("mounted-file"), "").unwrap();
+        let mounted = |path: &Path| {
+            let (metadata, device) = inspect(path)?;
+            let device = if path.ends_with("views/mounted") {
+                u64::MAX
+            } else {
+                device
+            };
+            Ok((metadata, device))
+        };
+        let disconnected = |path: &Path| {
+            if path.ends_with("views/mounted") {
+                Err(io::ErrorKind::NotConnected.into())
+            } else {
+                inspect(path)
+            }
+        };
+        let gone_path = gone.path.clone();
+        drop(gone);
+        let user = acyclic_native_runtime::private_file::effective_user();
+        let mounts = std::slice::from_ref(&point);
+        let live_case = live.path.join("0");
+        fs::create_dir(&live_case).unwrap();
+        remove_owned(&live_case, &inspect, mounts).unwrap();
+
+        let refuse_probe = |path: &Path| {
+            assert!(!path.starts_with(&gone_path) && !path.starts_with(&live.path));
+            inspect(path)
+        };
+        reclaim(&root, user, &refuse_probe, mounts).unwrap();
+        assert!(live.path.is_dir());
+        assert!(
+            remove_owned(&gone_path, &refuse_probe, mounts)
+                .unwrap_err()
+                .starts_with(&format!("{FOREIGN_MOUNT} {}", point.display()))
+        );
+
+        for inspect in [&mounted as &Inspect<'_>, &disconnected] {
+            let error = remove_owned(&gone_path, inspect, &[]).unwrap_err();
+            assert!(error.starts_with(&format!("{FOREIGN_MOUNT} {}", point.display())));
+            // A mount at the case directory itself must also be caught before walking it.
+            let error = remove_owned(&point, inspect, &[]).unwrap_err();
+            assert!(error.starts_with(&format!("{FOREIGN_MOUNT} {}", point.display())));
+        }
+
+        let fail_probe = |path: &Path| {
+            if path == point {
+                Err(io::ErrorKind::PermissionDenied.into())
+            } else {
+                inspect(path)
+            }
+        };
+        let clean_path = clean.path.clone();
+        drop(clean);
+        reclaim(&root, user, &fail_probe, &[]).unwrap();
+        assert!(
+            !clean_path.exists(),
+            "the other abandoned tree was not reclaimed"
+        );
+        assert!(point.join("mounted-file").is_file(), "entered the mount");
+        live.release().unwrap();
+        remove(&gone_path).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     /// A pre-created entry at the old predictable lock path in the shared root is ignored: the
     /// lock lives in a directory only this user can write, so another user cannot block a runner
     /// by claiming a name there.
@@ -864,18 +1193,24 @@ mod tests {
         assert!(executes(Path::new("/dev/shm"), &remounted));
     }
 
-    /// Cases get RAM-backed directories on Linux and a disk only when the target declares one;
-    /// a missing RAM root or an unknown kind refuses the suite instead of falling back.
+    /// Cases get RAM-backed directories on Linux and macOS and a disk only when the target
+    /// declares one; a missing RAM root, a plain directory in its place, or an unknown kind
+    /// refuses the suite instead of falling back.
     #[test]
-    fn the_temporary_root_is_memory_on_linux_unless_a_disk_is_declared() {
+    fn the_temporary_root_is_memory_unless_a_disk_is_declared() {
         let logs = Path::new("/unused");
         let memory = temporary_root("memory", Path::new(MEMORY_ROOT), logs).unwrap();
         let disk = temporary_root("disk", Path::new(MEMORY_ROOT), logs).unwrap();
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
             assert_eq!(memory, Path::new(MEMORY_ROOT));
             let missing = env::temp_dir().join(format!("acyclic-no-root-{}", std::process::id()));
             let refused = temporary_root("memory", &missing, logs).unwrap_err();
             assert!(refused.contains("requires-disk-tmp"), "{refused}");
+            if cfg!(target_os = "macos") {
+                // The case's own directory is a plain directory inside its runner's.
+                let refused = temporary_root("memory", &env::temp_dir(), logs).unwrap_err();
+                assert!(refused.contains("not a mounted RAM volume"), "{refused}");
+            }
         } else {
             assert_eq!(memory, disk);
         }
@@ -900,6 +1235,7 @@ mod tests {
                 id: "fixture".into(),
                 only: None,
                 exclude: Vec::new(),
+                shard: Shard::ALL,
                 package: root.clone(),
                 temporary: RunnerDirectory::claim(
                     &temporary_root("memory", Path::new(MEMORY_ROOT), &root).unwrap(),
@@ -957,6 +1293,7 @@ mod tests {
             id: "acyclic-test-runner".into(),
             only: None,
             exclude: Vec::new(),
+            shard: Shard::ALL,
             package: dir.clone(),
             temporary: RunnerDirectory::claim(
                 &temporary_root("memory", Path::new(MEMORY_ROOT), &dir).unwrap(),
@@ -1097,6 +1434,25 @@ mod tests {
             ],
         );
         assert_eq!((failed, out.lines().count()), (0, 2), "{out}");
+    }
+
+    #[test]
+    fn shards_report_each_selected_case_once() {
+        let count = NonZero::new(3).unwrap();
+        let expected: [&[&str]; 3] = [&["fail", "ignored"], &["pass"], &[]];
+        for (index, expected) in expected.into_iter().enumerate() {
+            let mut suite = suite(&format!("shard-{index}"));
+            suite.shard = Shard { index, count };
+            let (failed, out) = report(&suite, &["tests::fixture_", "--skip", "fixture_hang"]);
+            let mut cases: Vec<_> = out
+                .lines()
+                .filter_map(|line| line.split_once(" acyclic-test-runner tests::fixture_"))
+                .map(|(_, name)| name)
+                .collect();
+            cases.sort_unstable();
+            assert_eq!(cases, expected, "shard {index}: {out}");
+            assert_eq!(failed, usize::from(index == 0), "shard {index}: {out}");
+        }
     }
 
     /// `--ignored` runs exactly the selected ignored cases, and no other, as

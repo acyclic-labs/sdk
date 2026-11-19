@@ -1507,7 +1507,7 @@ async fn cancelling_the_parent_interrupts_cpu_code_and_records_retirement() -> R
     });
     // The program settles as interrupted; the turn's own stop then ends it.
     assert!(matches!(
-        execution,
+        execution.and_then(ExecutionProgress::into_output),
         Err(Error::InteractionRejected(
             crate::InteractionRejection::Cancelled
         ))

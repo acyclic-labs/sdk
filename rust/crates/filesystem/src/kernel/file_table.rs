@@ -229,6 +229,7 @@ impl FileRecord {
     pub(crate) fn validate(self) -> Result<(), FileTableError> {
         #[cfg(test)]
         #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+        #[cfg(any(not(unit_test_split), unit_test_kernel))]
         decode_probe::validation();
         if self.link_count == 0
             || self.metadata.kind != ObjectKind::Metadata
@@ -595,11 +596,13 @@ fn invariant_inline(error: InlineFileDataError) -> CanonicalDecodeError {
 
 #[cfg(test)]
 #[path = "tests/file_table.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "tests/file_table_decode/performance.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod decode_probe;
 
 #[cfg(test)]

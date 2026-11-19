@@ -32,7 +32,7 @@ async fn update_work(
         .await
         .map_err(storage)?
         .ok_or_else(|| Error::NotFound("lazy state".into()))?;
-    let before = work.receipt().durability_operations;
+    let before = work.receipt()?.durability_operations;
     for _ in 0..updates {
         let revision = state.revision;
         state.revision += 1;
@@ -43,7 +43,7 @@ async fn update_work(
                 .map_err(storage)?
         );
     }
-    Ok((work.receipt().durability_operations - before, state))
+    Ok((work.receipt()?.durability_operations - before, state))
 }
 fn one_barrier_per_update(actual: u64, updates: usize) -> proptest::test_runner::TestCaseResult {
     prop_assert_eq!(

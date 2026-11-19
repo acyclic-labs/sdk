@@ -3,7 +3,7 @@ use super::*;
 use acyclic_harness::supervision::{Action, Kind, Policy};
 
 #[tokio::test]
-async fn remote_headless_run_and_json_supervisor_share_file_controls() {
+async fn remote_headless_run_and_json_supervisor_share_file_controls() -> TestResult {
     use acyclic_harness::{
         client_files::{ClientFileChange, FileRoot},
         local::{Connection, agent_conversation::Conversation},
@@ -12,9 +12,9 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
     use acyclic_native_runtime::{ProcessPipeReader, ProcessTree};
     use tokio::io::{AsyncBufReadExt as _, BufReader};
 
-    let fixture = fixture();
-    let model = model(fixture._directory.path()).await;
-    let plugins = task_plugins(&fixture);
+    let fixture = fixture()?;
+    let model = model(fixture._directory.path()).await?;
+    let plugins = task_plugins(&fixture)?;
     let mut server = graphcoder_command(&fixture);
     server
         .arg("--settings-root")
@@ -77,7 +77,7 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
         .arg(&goal)
         .arg("--policy")
         .arg(&policy_file);
-    let rejected = capture(drifted, "").await;
+    let rejected = capture(drifted, "").await?;
     assert!(
         !rejected.status.success(),
         "headless run bypassed the bound execution model"
@@ -93,7 +93,7 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
         .arg(&goal)
         .arg("--policy")
         .arg(&policy_file);
-    let output = capture(run, "").await;
+    let output = capture(run, "").await?;
     assert_eq!(
         output.status.code(),
         Some(22),
@@ -155,7 +155,7 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
             .arg(&goal)
             .arg("--policy")
             .arg(&policy_file);
-        let output = capture(run, "").await;
+        let output = capture(run, "").await?;
         assert_eq!(
             output.status.code(),
             Some(22),
@@ -196,11 +196,13 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
     .await
     .unwrap();
     assert_eq!(model.generated(), 3);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_owner() {
+async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_owner() -> TestResult
+{
     use acyclic_harness::{
         client_files::{ClientFileChange, FileRoot},
         local::{agent_conversation::Conversation, service::Directory},
@@ -209,14 +211,14 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
     use acyclic_native_runtime::{ProcessPipeReader, ProcessTree};
     use tokio::io::{AsyncBufReadExt as _, BufReader};
 
-    let fixture = fixture();
+    let fixture = fixture()?;
     let state = fixture._directory.path().join("observer-service");
     let mut absent = cli_command(&fixture, acyclic_test_support::cargo_binary!("graphcoder"));
     absent
         .arg("--host-state-directory")
         .arg(&state)
         .args(["supervise", "--json"]);
-    let rejected = capture(absent, "").await;
+    let rejected = capture(absent, "").await?;
     assert!(!rejected.status.success());
     assert!(
         String::from_utf8_lossy(&rejected.stderr).contains("requires an existing session service")
@@ -238,10 +240,10 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
         ],
         "responses",
     )
-    .await;
+    .await?;
     let goal = fixture._directory.path().join("observer-goal.md");
     let policy = fixture._directory.path().join("observer-policy.json");
-    let plugins = task_plugins(&fixture);
+    let plugins = task_plugins(&fixture)?;
     std::fs::write(&goal, "Finish this task\n").unwrap();
     let mut selected = Policy {
         no_progress_turns: Some(1),
@@ -255,12 +257,12 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
         .arg(&fixture.settings)
         .arg("--catalog")
         .arg(&model.catalog)
-        .args(["--model", "fixture/tiny"])
+        .args(["--model", "fixture/tiny", "--environment-credentials"])
         .arg("--home-file")
         .arg(&plugins)
         .arg("--host-state-directory")
         .arg(&state);
-    let _owner = start_service(owner).await;
+    let _owner = start_service(owner).await?;
     let mut run = graphcoder_command(&fixture);
     run.arg("--host-state-directory")
         .arg(&state)
@@ -269,7 +271,7 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
         .arg(&goal)
         .arg("--policy")
         .arg(&policy);
-    let run = capture(run, "").await;
+    let run = capture(run, "").await?;
     assert_eq!(
         run.status.code(),
         Some(22),
@@ -448,15 +450,16 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
         "observer or stop control dispatched model work"
     );
     drop(_owner);
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
-async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> Output {
+async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> TestResult<Output> {
     let goal = fixture._directory.path().join("goal.md");
     let configuration = fixture._directory.path().join("supervision.json");
-    std::fs::write(&goal, "Finish this task\n").unwrap();
-    std::fs::write(&configuration, serde_json::to_vec(policy).unwrap()).unwrap();
-    let plugins = task_plugins(fixture);
+    std::fs::write(&goal, "Finish this task\n")?;
+    std::fs::write(&configuration, serde_json::to_vec(policy)?)?;
+    let plugins = task_plugins(fixture)?;
     // This finite task script exercises supervision, not context-review turns.
     graphcoder(
         fixture,
@@ -469,9 +472,11 @@ async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> Output {
             "--output-format",
             "jsonl",
             "--goal",
-            goal.to_str().unwrap(),
+            goal.to_str().ok_or("fixture goal path is not UTF-8")?,
             "--policy",
-            configuration.to_str().unwrap(),
+            configuration
+                .to_str()
+                .ok_or("fixture policy path is not UTF-8")?,
         ],
         "",
     )
@@ -481,7 +486,7 @@ async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> Output {
 fn tool_response(name: &str, arguments: Value, call: usize) -> String {
     let event = json!({"type":"response.output_item.done","output_index":0,"item":{
         "type":"function_call","call_id":format!("scripted-call-{call}"),"name":name,
-        "arguments":serde_json::to_string(&arguments).unwrap()
+        "arguments":arguments.to_string()
     }});
     format!(
         "data: {event}\n\ndata: {}\n\n",
@@ -495,10 +500,10 @@ async fn terminal_script(
     signal: Kind,
     status: i32,
     calls: usize,
-) {
-    let fixture = fixture();
-    let model = model_responses(fixture._directory.path(), responses, "responses").await;
-    let output = run_goal(&fixture, &model, &policy).await;
+) -> TestResult {
+    let fixture = fixture()?;
+    let model = model_responses(fixture._directory.path(), responses, "responses").await?;
+    let output = run_goal(&fixture, &model, &policy).await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
         output.status.code(),
@@ -506,7 +511,7 @@ async fn terminal_script(
         "{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let result: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let result: Value = serde_json::from_str(stdout.trim())?;
     assert_eq!(result["version"], 1);
     assert_eq!(result["result"]["kind"], "terminal");
     assert_eq!(result["result"]["signal"], signal.name());
@@ -515,21 +520,22 @@ async fn terminal_script(
         calls,
         "terminal action redispatched work"
     );
-    model.close().await;
+    model.close().await
 }
 
 #[tokio::test]
-async fn headless_spend_stops_at_the_configured_reservation() {
+async fn headless_spend_stops_at_the_configured_reservation() -> TestResult {
     let mut policy = Policy::default();
     policy.reservation.tokens = Some(1);
-    terminal_script(vec![ANSWER.into()], policy, Kind::Spend, 25, 1).await;
+    terminal_script(vec![ANSWER.into()], policy, Kind::Spend, 25, 1).await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_configured_morph_chat_preserves_usage_and_process_credentials() {
+async fn headless_configured_morph_chat_preserves_usage_and_process_credentials() -> TestResult {
     const KEY: &str = "fixture-morph-chat-process-key";
     for (credential, measured) in [(false, true), (true, true), (true, false)] {
-        let fixture = fixture();
+        let fixture = fixture()?;
         let authentication = Arc::new(Mutex::new(Vec::new()));
         let observed = authentication.clone();
         let model = model_with(fixture._directory.path(), "chat", move |headers, _, _| {
@@ -548,7 +554,7 @@ async fn headless_configured_morph_chat_preserves_usage_and_process_credentials(
                 json!({"choices":[{"delta":{"content":"Work remains."},"finish_reason":null}]}),
                 json!({"choices":[{"delta":{},"finish_reason":"stop"}]}),
             )
-        }).await;
+        }).await?;
         let mut catalog: Value =
             serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
         let mut configured = catalog["fixture"].clone();
@@ -558,7 +564,7 @@ async fn headless_configured_morph_chat_preserves_usage_and_process_credentials(
         });
         catalog["morph"] = configured;
         std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
-        let plugins = task_plugins(&fixture);
+        let plugins = task_plugins(&fixture)?;
         let goal = fixture._directory.path().join("morph-goal.md");
         let policy_file = fixture._directory.path().join("morph-policy.json");
         std::fs::write(&goal, "Finish the task with the configured provider.\n").unwrap();
@@ -586,20 +592,8 @@ async fn headless_configured_morph_chat_preserves_usage_and_process_credentials(
         if credential {
             command.env("MORPH_API_KEY", KEY);
         }
-        let output = capture(command, "").await;
-        if !credential {
-            assert!(!output.status.success());
-            assert_eq!(
-                model.generated(),
-                0,
-                "missing Morph credential dispatched paid work"
-            );
-            assert!(
-                String::from_utf8_lossy(&output.stderr)
-                    .contains("model provider API key is unavailable"),
-                "missing Morph credential was not refused before dispatch"
-            );
-        } else {
+        let output = capture(command, "").await?;
+        if credential {
             let expected = if measured {
                 Kind::NoProgress
             } else {
@@ -633,14 +627,28 @@ async fn headless_configured_morph_chat_preserves_usage_and_process_credentials(
                 "configured Chat used the Responses wire shape"
             );
             assert_eq!(requests[0]["stream_options"]["include_usage"], true);
+        } else {
+            assert!(!output.status.success());
+            assert_eq!(
+                model.generated(),
+                0,
+                "missing Morph credential dispatched paid work"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("model provider API key is unavailable"),
+                "missing Morph credential was not refused before dispatch: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
-        assert_no_fixture_credentials(&fixture, &output, &[KEY]);
-        model.close().await;
+        assert_no_fixture_credentials(&fixture, &output, &[KEY])?;
+        model.close().await?;
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_repeated_model_output_stops_across_goal_turns() {
+async fn headless_repeated_model_output_stops_across_goal_turns() -> TestResult {
     terminal_script(
         vec![ANSWER.into()],
         Policy::default(),
@@ -648,11 +656,12 @@ async fn headless_repeated_model_output_stops_across_goal_turns() {
         24,
         2,
     )
-    .await;
+    .await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_identical_tool_errors_obey_the_selected_signal_action() {
+async fn headless_identical_tool_errors_obey_the_selected_signal_action() -> TestResult {
     let arguments = json!({
         "path":"volume:///home/GOAL.md", "old_text":"absent original text", "new_text":"replacement"
     });
@@ -662,43 +671,47 @@ async fn headless_identical_tool_errors_obey_the_selected_signal_action() {
     let responses = (0..2)
         .map(|call| tool_response("edit", arguments.clone(), call))
         .collect();
-    terminal_script(responses, policy, Kind::RepeatFailure, 20, 2).await;
+    terminal_script(responses, policy, Kind::RepeatFailure, 20, 2).await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_repeated_selected_checks_pause_before_another_execution() {
+async fn headless_repeated_selected_checks_pause_before_another_execution() -> TestResult {
     let mut policy = Policy::default();
     policy.validation_commands.insert("echo checked".into());
     policy.thresholds.loop_output = None;
     let responses = (0..3)
         .map(|call| tool_response("shell", json!({"command":"echo checked"}), call))
         .collect();
-    terminal_script(responses, policy, Kind::ValidationLoop, 21, 3).await;
+    terminal_script(responses, policy, Kind::ValidationLoop, 21, 3).await?;
+    Ok(())
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn headless_quiet_tool_stops_from_its_original_actor_alarm() {
+async fn headless_quiet_tool_stops_from_its_original_actor_alarm() -> TestResult {
     let mut policy = Policy {
         quiet_ms: Some(1),
         ..Default::default()
     };
     policy.actions.insert(Kind::Stuck, Action::Stop);
     let response = tool_response("shell", json!({"command":"mkfifo hold; cat hold"}), 0);
-    terminal_script(vec![response], policy, Kind::Stuck, 23, 1).await;
+    terminal_script(vec![response], policy, Kind::Stuck, 23, 1).await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_no_progress_uses_the_same_terminal_signal_status_for_pause_and_stop() {
+async fn headless_no_progress_uses_the_same_terminal_signal_status_for_pause_and_stop() -> TestResult
+{
     for action in [Action::Pause, Action::Stop] {
-        let fixture = fixture();
-        let model = model(fixture._directory.path()).await;
+        let fixture = fixture()?;
+        let model = model(fixture._directory.path()).await?;
         let mut policy = Policy {
             no_progress_turns: Some(1),
             ..Default::default()
         };
         policy.actions.insert(Kind::NoProgress, action);
-        let output = run_goal(&fixture, &model, &policy).await;
+        let output = run_goal(&fixture, &model, &policy).await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
             output.status.code(),
@@ -719,12 +732,13 @@ async fn headless_no_progress_uses_the_same_terminal_signal_status_for_pause_and
             1,
             "terminal policy admitted another model call"
         );
-        model.close().await;
+        model.close().await?;
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_original_goal_change_is_healthy_under_no_progress_supervision() {
+async fn headless_original_goal_change_is_healthy_under_no_progress_supervision() -> TestResult {
     let completed = "---\nstatus: done\n---\nCompleted the objective\n";
     for (name, arguments) in [
         (
@@ -736,21 +750,21 @@ async fn headless_original_goal_change_is_healthy_under_no_progress_supervision(
             json!({"path":"volume:///home/GOAL.md","content":completed}),
         ),
     ] {
-        let fixture = fixture();
+        let fixture = fixture()?;
         let first = tool_response(name, arguments, 0);
         let model = model_responses(
             fixture._directory.path(),
             vec![first, ANSWER.into()],
             "responses",
         )
-        .await;
+        .await?;
         let mut policy = Policy {
             no_progress_turns: Some(1),
             ..Default::default()
         };
         policy.actions.insert(Kind::NoProgress, Action::Stop);
         policy.reservation.tokens = Some(10_000);
-        let output = run_goal(&fixture, &model, &policy).await;
+        let output = run_goal(&fixture, &model, &policy).await?;
         let stdout = succeeded(&output);
         let result: Value = serde_json::from_str(stdout.trim()).unwrap();
         assert_eq!(result["version"], 1);
@@ -761,14 +775,18 @@ async fn headless_original_goal_change_is_healthy_under_no_progress_supervision(
             2,
             "goal completion did not settle its original {name} publication"
         );
-        model.close().await;
+        model.close().await?;
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
-    async fn scenario(changed: bool, earlier_edit: bool) {
-        let fixture = fixture();
+async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() -> TestResult {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
+    async fn scenario(changed: bool, earlier_edit: bool) -> TestResult {
+        let fixture = fixture()?;
         std::fs::write(fixture.workspace.join("progress.txt"), b"before").unwrap();
         let content = if changed { "after!" } else { "before" };
         #[cfg(unix)]
@@ -783,7 +801,7 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
             // parent and repeatedly claim the same content change.
             responses.extend([
                 tool_response("shell", json!({"command":command}), 0),
-                ANSWER.into(),
+                ANSWER.replace("fixture answer", "The first edit completed"),
             ]);
         }
         #[cfg(unix)]
@@ -792,20 +810,20 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
         let clean_command = "Get-Content -Raw progress.txt";
         responses.extend([
             tool_response("shell", json!({"command":if earlier_edit { clean_command } else { &command }}), usize::from(earlier_edit)),
-            ANSWER.into(),
+            ANSWER.replace("fixture answer", "The shell command completed"),
             tool_response("write", json!({"path":"volume:///home/GOAL.md", "content":"---\nstatus: done\n---\nCompleted the objective\n"}), 1 + usize::from(earlier_edit)),
-            ANSWER.into(),
+            ANSWER.replace("fixture answer", "The objective is complete"),
         ]);
-        let model = model_responses(fixture._directory.path(), responses, "responses").await;
+        let model = model_responses(fixture._directory.path(), responses, "responses").await?;
         let mut policy = Policy {
             no_progress_turns: Some(1),
             ..Default::default()
         };
         policy.actions.insert(Kind::NoProgress, Action::Stop);
         policy.reservation.tokens = Some(10_000);
-        let output = run_goal(&fixture, &model, &policy).await;
+        let output = run_goal(&fixture, &model, &policy).await?;
         let requests = model.requests.lock().unwrap().clone();
-        model.close().await;
+        model.close().await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
             output.status.code(),
@@ -820,16 +838,22 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
             "native capture progress dispatched the wrong number of paid requests"
         );
         for request in [1, 3].into_iter().take(if earlier_edit { 2 } else { 1 }) {
-            let native = requests[request]["input"]
-                .as_array()
-                .unwrap()
+            let input = requests
+                .get(request)
+                .and_then(|request| request["input"].as_array())
+                .ok_or("native request has no model input")?;
+            let native = input
                 .iter()
                 .rev()
                 .find(|item| item["type"] == "function_call_output")
-                .expect("original native result was not delivered");
-            let native: Value = serde_json::from_str(native["output"].as_str().unwrap()).unwrap();
-            assert_eq!(native["success"], true, "native command failed: {native}");
-            assert_eq!(native["exit_code"], 0, "native command failed: {native}");
+                .ok_or("original native result was not delivered")?;
+            let output = native["output"]
+                .as_str()
+                .ok_or("native result has no output")?;
+            assert!(
+                output.lines().eq(["Exit code: 0", content]),
+                "native command returned {output:?}"
+            );
         }
         if changed && !earlier_edit {
             assert_eq!(result["result"]["kind"], "goal");
@@ -838,17 +862,22 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
             assert_eq!(result["result"]["kind"], "terminal");
             assert_eq!(result["result"]["signal"], "no_progress");
         }
+        Ok(())
     }
-    tokio::join!(
+    tokio::try_join!(
         scenario(true, false),
         scenario(false, false),
         scenario(true, true)
-    );
+    )?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() {
-    let fixture = fixture();
+async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() -> TestResult {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
+    let fixture = fixture()?;
     let model = model_responses(
         fixture._directory.path(),
         vec![
@@ -863,7 +892,7 @@ async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() {
             ANSWER.into(),
         ],
         "responses",
-    ).await;
+    ).await?;
     let mut policy = Policy {
         no_progress_turns: Some(1),
         quiet_ms: Some(60_000),
@@ -881,7 +910,7 @@ async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() {
     ] {
         policy.actions.insert(kind, Action::Stop);
     }
-    let output = run_goal(&fixture, &model, &policy).await;
+    let output = run_goal(&fixture, &model, &policy).await?;
     let result: Value = serde_json::from_str(succeeded(&output).trim()).unwrap();
     assert_eq!(result["result"]["goal"]["status"], "done");
     assert_eq!(
@@ -889,16 +918,17 @@ async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() {
         5,
         "a healthy run was interrupted or redispatched"
     );
-    model.close().await;
+    model.close().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
+async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() -> TestResult {
     use std::sync::atomic::{AtomicUsize, Ordering};
     const ROOT_KEY: &str = "fixture-root-process-credential";
     const WORKER_KEY: &str = "fixture-worker-process-credential";
-    let fixture = fixture();
-    let plugins = task_plugins(&fixture);
+    let fixture = fixture()?;
+    let plugins = task_plugins(&fixture)?;
     let root_selection = acyclic_harness::templates::root()
         .unwrap()
         .model
@@ -960,7 +990,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
             }
         },
     )
-    .await;
+    .await?;
     let mut catalog: Value =
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
     catalog[root_provider] = catalog["fixture"].clone();
@@ -994,7 +1024,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
         .arg(&goal)
         .arg("--policy")
         .arg(&policy);
-    let output = capture(command, "").await;
+    let output = capture(command, "").await?;
     {
         let authentication = authentication.lock().unwrap();
         assert!(
@@ -1023,11 +1053,12 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
         1
     );
     drop(requests);
-    assert_no_fixture_credentials(&fixture, &output, &[ROOT_KEY, WORKER_KEY]);
-    model.close().await;
+    assert_no_fixture_credentials(&fixture, &output, &[ROOT_KEY, WORKER_KEY])?;
+    model.close().await?;
+    Ok(())
 }
 
-fn assert_no_fixture_credentials(fixture: &Fixture, output: &Output, keys: &[&str]) {
+fn assert_no_fixture_credentials(fixture: &Fixture, output: &Output, keys: &[&str]) -> TestResult {
     for key in keys {
         assert!(
             !output
@@ -1044,13 +1075,13 @@ fn assert_no_fixture_credentials(fixture: &Fixture, output: &Output, keys: &[&st
     }
     let mut directories = vec![fixture._directory.path().to_owned()];
     while let Some(directory) = directories.pop() {
-        for entry in std::fs::read_dir(directory).unwrap() {
-            let entry = entry.unwrap();
-            let kind = entry.file_type().unwrap();
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
             if kind.is_dir() {
                 directories.push(entry.path());
             } else if kind.is_file() {
-                let bytes = std::fs::read(entry.path()).unwrap();
+                let bytes = std::fs::read(entry.path())?;
                 for key in keys {
                     assert!(
                         !bytes
@@ -1062,4 +1093,5 @@ fn assert_no_fixture_credentials(fixture: &Fixture, output: &Output, keys: &[&st
             }
         }
     }
+    Ok(())
 }

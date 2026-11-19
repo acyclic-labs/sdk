@@ -135,7 +135,8 @@ macro_rules! checked {
             self.require(Action::$action, $meter)?;
             let result = self.file.$name($($arg),*);
             #[cfg(test)]
-            if super::tests::return_fence::omitted() {
+            #[cfg(any(not(unit_test_split), unit_test_mount, unit_test_mount_lazy))]
+            if super::tests::return_fence_control::omitted() {
                 return result;
             }
             // Retain the original ceiling and expiry, and reject changes to

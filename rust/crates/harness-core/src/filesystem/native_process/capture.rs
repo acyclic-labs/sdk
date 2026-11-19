@@ -204,6 +204,11 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
             Started::Finished(result(Ok(Err(failure))), handler)
         }
         Err(acyclic_native_runtime::LaunchFailure::Control { error, handler }) => {
+            let error = if error.raw_os_error().is_some() {
+                std::io::Error::new(error.kind(), format!("native capture admission: {error}"))
+            } else {
+                error
+            };
             Started::Finished(result(Err(error)), handler)
         }
         Err(acyclic_native_runtime::LaunchFailure::Indeterminate {

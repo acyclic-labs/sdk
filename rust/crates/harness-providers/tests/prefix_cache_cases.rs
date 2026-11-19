@@ -1,6 +1,6 @@
 //! Provider prompt-cache integration cases.
+#![cfg(test)]
 #![cfg(not(target_arch = "wasm32"))]
-#![recursion_limit = "112"]
 
 mod integration_helpers;
 use integration_helpers::TestResult;

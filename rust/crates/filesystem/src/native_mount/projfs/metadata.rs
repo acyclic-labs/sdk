@@ -76,6 +76,7 @@ pub(super) fn host_windows_metadata(
 ) -> Result<HostWindowsMetadata, MountSourceError> {
     let guard = || {
         #[cfg(test)]
+        #[cfg(any(not(unit_test_split), unit_test_mount_driver))]
         if super::tests::read_bindings::bypass_probe_registration() {
             return None;
         }
@@ -87,6 +88,7 @@ pub(super) fn host_windows_metadata(
         }
         with_guard(guard, || {
             #[cfg(test)]
+            #[cfg(any(not(unit_test_split), unit_test_mount_driver))]
             let _replay = super::tests::read_bindings::replay_fallback();
             root.stat(path, work)
         })
@@ -443,8 +445,10 @@ pub(super) unsafe fn start_directory(
 
 #[cfg(test)]
 #[path = "tests/metadata_query.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 mod query_tests;
 
 #[cfg(test)]
 #[path = "tests/metadata_encoding.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_driver))]
 mod encoding_tests;

@@ -1,5 +1,6 @@
 """The existing pinned LLVM distribution compiling freestanding wasm C."""
 
+load("@platforms//host:constraints.bzl", "HOST_CONSTRAINTS")
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc:cc_toolchain_config_lib.bzl", "action_config", "feature", "flag_group", "flag_set", "tool")
@@ -60,7 +61,7 @@ _wasm_cc_config = rule(
 )
 
 def wasm_cc_toolchain():
-    """Declare the browser C toolchain for Linux execution."""
+    """Declare the browser C toolchain for the host, whose LLVM distribution it runs."""
     clang = Label("@wasm_llvm_distribution//:bin/clang")
     archive = Label("@wasm_llvm_distribution//:bin/llvm-ar")
     _wasm_cc_config(
@@ -86,6 +87,6 @@ def wasm_cc_toolchain():
         name = "wasm_cc_toolchain",
         toolchain = ":wasm_cc",
         toolchain_type = Label("@bazel_tools//tools/cpp:toolchain_type"),
-        exec_compatible_with = [Label("@platforms//os:linux"), Label("@platforms//cpu:x86_64")],
+        exec_compatible_with = HOST_CONSTRAINTS,
         target_compatible_with = [Label("@platforms//os:none"), Label("@platforms//cpu:wasm32")],
     )

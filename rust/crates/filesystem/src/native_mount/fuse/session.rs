@@ -70,11 +70,7 @@ impl FuseSessionState {
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            let result = self.mount.stop(path);
-            if let Some(device) = self.device.as_ref() {
-                device.stop();
-            }
-            result?;
+            self.mount.stop(path, self.device.as_deref())?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
@@ -95,6 +91,7 @@ impl FuseSessionState {
             }
             self.mount.observe_closed()?;
         }
+        self.mount.finish_exit_action(true)?;
         self.device.take();
         self.before.take();
         if self.worker.is_some() {
@@ -149,7 +146,7 @@ impl Drop for FuseSessionState {
             }
         }
         // Finish before the original retirement packet can unlock its fence.
-        if let Err(error) = self.mount.finish_exit_action() {
+        if let Err(error) = self.mount.finish_exit_action(false) {
             tracing::warn!(%error, "FUSE owner-exit cleanup failed during retirement");
         }
     }

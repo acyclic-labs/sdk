@@ -8,6 +8,7 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 #[test]
 fn held_leaf_rename_uses_original_parents_and_never_replaces()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -287,12 +287,9 @@ struct fuse_operations {
  * fuse_new() attached the filesystem callbacks.
  * Returns a channel on success, NULL on failure (including unknown options).
  */
-struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args);
-
-/*
- * Unmount a FUSE filesystem.
- */
-void fuse_unmount(const char *mountpoint, struct fuse_chan *ch);
+struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args,
+                            const unsigned char *owner_image, size_t owner_image_len, int fence);
+pid_t fuse_mount_owner_pid(const struct fuse *f);
 
 /* Destroy a prepared channel not transferred to a FUSE instance.
  * A channel owned by an instance is destroyed only by fuse_destroy(). */

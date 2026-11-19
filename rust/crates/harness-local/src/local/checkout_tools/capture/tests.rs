@@ -70,7 +70,7 @@ async fn seeded(
     let tools = CheckoutTools::new(
         physical.clone(),
         &harness.project,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        harness.clock.clone(),
         &harness.signed,
         &harness.verifier,
         None,
@@ -726,7 +726,7 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
     let (directory, harness, tools) = seeded(|root| {
         let marker = root.join("marker");
         std::fs::write(&marker, b"before").map_err(storage)?;
-        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0)).map_err(storage)
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o000)).map_err(storage)
     })
     .await?;
     let harness = Arc::new(harness);
@@ -880,20 +880,22 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
 #[tokio::test]
 async fn a_large_source_is_readable_before_the_first_command() -> Result<()> {
     const FILES: usize = 6144;
+    const GROUPS: usize = 64;
     let (_directory, harness, tools) = seeded(|root| {
         std::fs::write(root.join("README.md"), b"# readme\n").map_err(storage)?;
-        for index in 0..FILES {
-            let directory = root
-                .join("crates/publication-reference-delta-regression-module")
-                .join(format!("generated-source-group-{:02}", index % 64));
+        let sources = root.join("crates/publication-reference-delta-regression-module");
+        for group in 0..GROUPS {
+            let directory = sources.join(format!("generated-source-group-{group:02}"));
             std::fs::create_dir_all(&directory).map_err(storage)?;
-            std::fs::write(
-                directory.join(format!(
-                    "a-source-file-with-a-descriptive-name-{index:05}.rs"
-                )),
-                index.to_le_bytes(),
-            )
-            .map_err(storage)?;
+            for index in (group..FILES).step_by(GROUPS) {
+                std::fs::write(
+                    directory.join(format!(
+                        "a-source-file-with-a-descriptive-name-{index:05}.rs"
+                    )),
+                    index.to_le_bytes(),
+                )
+                .map_err(storage)?;
+            }
         }
         Ok(())
     })
@@ -916,7 +918,7 @@ async fn a_large_source_is_readable_before_the_first_command() -> Result<()> {
         .read(
             &format!(
                 "/crates/publication-reference-delta-regression-module/generated-source-group-{:02}/a-source-file-with-a-descriptive-name-{:05}.rs",
-                (FILES - 1) % 64,
+                (FILES - 1) % GROUPS,
                 FILES - 1
             ),
             64,

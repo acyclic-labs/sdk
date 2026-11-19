@@ -110,6 +110,7 @@ pub(super) fn probe(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests {
     use super::super::NativeSparseAccelerationEvidence;
     use super::*;

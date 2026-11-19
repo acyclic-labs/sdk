@@ -30,7 +30,7 @@ async fn fixture(
                 .ok_or_else(|| Error::NotFound("checkout".into()))?
                 .clone(),
             &harness.project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
             None,
@@ -99,7 +99,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         CheckoutTools::new(
             Arc::clone(&mounted),
             &harness.project,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
             None,
@@ -488,7 +488,11 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
             (false, crate::tool::files::FileReadSource::Content(selected)) => {
                 assert_eq!(selected, file);
             }
-            (_, selected) => panic!("read returned another source kind: {selected:?}"),
+            (_, selected) => {
+                return Err(Error::Invalid(format!(
+                    "read returned another source kind: {selected:?}"
+                )));
+            }
         }
         assert!(projected.to_string().contains(path));
     }
@@ -672,7 +676,11 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
         );
     }
     assert!(!directory.path().join(".volumes/home").exists());
-    let view = harness.workspace.as_ref().unwrap().view();
+    let view = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view();
     let stop = acyclic_fs::CancellationToken::new();
     let primary_absent = async |path: &str| -> Result<bool> {
         let head = view

@@ -1,3 +1,4 @@
+use super::teardown_error::retirement_after_probe;
 use super::*;
 use std::future::Future;
 use std::task::Poll;
@@ -159,7 +160,7 @@ impl DarwinRecoveryControl {
         }
         let result = self.wait_direct(work);
         self.detached = !probe.mounted(destination, work)?;
-        result?;
+        retirement_after_probe(result, self.detached)?;
         if !self.detached {
             return Err(NativeMountError::Lifecycle(
                 "Darwin mount remains visible after unmount",
@@ -173,7 +174,7 @@ impl DarwinRecoveryControl {
             && let Poll::Ready(result) = task.poll(work)?
         {
             self.direct = None;
-            result?;
+            retirement_after_probe(result, self.detached)?;
         }
         Ok(())
     }

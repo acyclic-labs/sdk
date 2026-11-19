@@ -43,6 +43,7 @@ pub(crate) fn readonly_cleanup_standalone(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_facade))]
 mod tests {
     use super::*;
     use crate::kernel::allocation::fixed_index::FixedIndex;

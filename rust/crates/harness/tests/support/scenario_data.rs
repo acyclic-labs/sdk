@@ -1,22 +1,9 @@
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-pub fn discover(root: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            discover(&path, paths)?;
-        } else if path.extension().is_some_and(|ext| ext == "json")
-            && path
-                .file_name()
-                .is_some_and(|name| name != "_defaults.json")
-        {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
+#[path = "scenario_inventory.rs"]
+mod scenario_inventory;
+pub use scenario_inventory::discover;
 
 pub fn load_value(root: &Path, path: &Path) -> Result<Value, String> {
     let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;

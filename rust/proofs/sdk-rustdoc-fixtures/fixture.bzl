@@ -71,6 +71,7 @@ def _rustdoc_fixture_impl(ctx):
     args.add(artifacts.path if artifacts else "")
     args.add(ctx.file._rustup)
     args.add(toolchain)
+    args.add(ctx.attr.target_triple)
     args.add(ctx.attr.package)
     args.add(ctx.attr.manifest_path)
     args.add(ctx.attr.selected_lock)
@@ -80,8 +81,8 @@ def _rustdoc_fixture_impl(ctx):
     tool_inputs = [ctx.attr._rustup[DefaultInfo].data_runfiles.files]
     linker_env = {}
     if ctx.attr.needs_linker:
-        # The producer runs Cargo on the execution platform for `--target <host>`, so build scripts and the
-        # fixture link there: the C++ toolchain is the exec configuration's, never the target platform's.
+        # Cargo runs build scripts and proc macros on the execution platform even when Rustdoc
+        # documents another target. Only those host programs link.
         cc = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]
         features = cc_common.configure_features(ctx = ctx, cc_toolchain = cc, requested_features = ctx.features, unsupported_features = ctx.disabled_features)
         action = ACTION_NAMES.cpp_link_executable
@@ -123,6 +124,7 @@ rustdoc_fixture = rule(
         "selected_lock": attr.string(),
         "library_name": attr.string(),
         "binary_name": attr.string(),
+        "target_triple": attr.string(),
         "proc_macro": attr.bool(),
         "needs_linker": attr.bool(),
         "retain_artifacts": attr.bool(),
@@ -147,6 +149,10 @@ def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = 
             selected_lock = selected_lock,
             library_name = library_name,
             binary_name = binary_name,
+            target_triple = select({
+                "//:windows-x86_64": "x86_64-pc-windows-msvc",
+                "//conditions:default": "",
+            }),
             proc_macro = proc_macro,
             needs_linker = needs_linker,
             retain_artifacts = retain_artifacts,

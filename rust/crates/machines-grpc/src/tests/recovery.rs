@@ -33,11 +33,11 @@ proptest! {
     }
 }
 
-fn suspended_state(operation: OperationId) -> wire::OperationState {
-    let mut state = operation_state(operation, wire::OperationStatus::Succeeded);
+fn suspended_state() -> wire::OperationState {
+    let mut state = operation_state(SCRIPTED_OPERATION, wire::OperationStatus::Succeeded);
     state.outcome = Some(wire::MutationOutcome {
         result: Some(wire::mutation_outcome::Result::Suspended(encode_machine(
-            MachineId::from_bytes(Uuid::from_u128(0x43).into_bytes()).unwrap(),
+            SCRIPTED_MACHINE,
         ))),
     });
     state
@@ -367,7 +367,6 @@ async fn servers_without_live_fork_report_unsupported()
 #[tokio::test]
 async fn interrupted_mutation_retains_key_until_explicit_recovery()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
     for first_watch in [
         WatchReply::Items(Vec::new()),
         WatchReply::Items(vec![WatchItem::Error(Code::Unavailable)]),
@@ -380,7 +379,7 @@ async fn interrupted_mutation_retains_key_until_explicit_recovery()
         let (service, script, machine) = scripted_operation_service(
             vec![
                 first_watch,
-                WatchReply::Items(vec![WatchItem::State(suspended_state(operation))]),
+                WatchReply::Items(vec![WatchItem::State(suspended_state())]),
             ],
             vec![],
         );
@@ -443,11 +442,10 @@ async fn watch_errors_never_consume_an_inspection_or_reopen()
 #[tokio::test]
 async fn quiet_watch_receives_its_terminal_producer_event_without_inspection()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
     let (release, released) = tokio::sync::oneshot::channel();
     let (service, script, machine) = scripted_operation_service(
         vec![WatchReply::Gated(
-            suspended_state(operation),
+            suspended_state(),
             Arc::new(std::sync::Mutex::new(Some(released))),
         )],
         vec![],
@@ -495,14 +493,14 @@ async fn dropping_accepted_wait_does_not_cancel_native_operation()
 #[tokio::test]
 async fn terminal_watch_failures_remain_authoritative()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
     for (status, expected) in [
         (wire::OperationStatus::Failed, ProviderError::Failed),
         (wire::OperationStatus::Cancelled, ProviderError::Cancelled),
     ] {
         let (service, script, machine) = scripted_operation_service(
             vec![WatchReply::Items(vec![WatchItem::State(operation_state(
-                operation, status,
+                SCRIPTED_OPERATION,
+                status,
             ))])],
             vec![],
         );

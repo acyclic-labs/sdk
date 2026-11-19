@@ -471,6 +471,7 @@ impl From<crate::native_mount::MountSourceError> for DemandError {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod receipt_tests {
     use super::*;
     use crate::facade::FsWork;

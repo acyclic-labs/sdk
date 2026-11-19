@@ -270,6 +270,9 @@ async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_availabl
 #[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> Result<()> {
+    if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+        return Ok(());
+    }
     let project = tempfile::tempdir().map_err(Error::process_io)?;
     let mut mounts = table_with_roots(
         project.path().canonicalize().map_err(Error::process_io)?,

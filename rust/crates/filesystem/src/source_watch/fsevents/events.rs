@@ -1,6 +1,18 @@
 use super::*;
 
 impl Shared {
+    pub(super) fn root_unchanged<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<bool, DemandError> {
+        work.started_io(WorkCounters {
+            items_examined: 1,
+            ..READ
+        })?;
+        Ok(std::fs::symlink_metadata(&self.root)
+            .is_ok_and(|metadata| identity(&metadata) == self.held))
+    }
+
     pub(super) fn events<'a, W: SourceDemandReadWork>(
         &self,
         events: impl ExactSizeIterator<Item = (&'a Path, u32)>,
@@ -23,6 +35,7 @@ impl Shared {
         };
         let mut payload = 0_u64;
         let result = (|| {
+            let mut root_uncertain = false;
             for (path, flags) in events {
                 work.started_io(WorkCounters {
                     items_examined: 1,
@@ -31,10 +44,14 @@ impl Shared {
                 // A volume mounted or unmounted at a path beneath the root
                 // rebinds only that path; one above the root, or lost
                 // notifications, may have changed anything.
+                let dropped = flags & (USER_DROPPED | KERNEL_DROPPED) != 0;
+                root_uncertain |= dropped
+                    || (flags & (MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT) != 0
+                        && self.root.starts_with(path));
                 if flags & ROOT_CHANGED != 0 {
                     self.delivery.notify_lost();
                     changes.push(HostChange::Everything);
-                } else if flags & (USER_DROPPED | KERNEL_DROPPED) != 0 {
+                } else if dropped {
                     changes.push(HostChange::Everything);
                 } else if let Some(relative) = relative_path(path, &self.root, work)? {
                     let (relative, bytes) = clone_path(relative, work)?;
@@ -45,6 +62,11 @@ impl Shared {
                 } else if flags & (MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT) != 0 {
                     changes.push(HostChange::Everything);
                 }
+            }
+            // A gap may have swallowed the original root's rename. Check the
+            // binding before handing off the rescan, even without a fence.
+            if root_uncertain && self.delivery.is_exact() && !self.root_unchanged(work)? {
+                self.delivery.notify_lost();
             }
             self.delivery.deliver(&changes, work)
         })();
@@ -95,9 +117,4 @@ pub(super) fn change(relative: PathBuf, flags: u32) -> HostChange {
     } else {
         HostChange::Altered(relative)
     }
-}
-
-pub(super) fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
-    use std::os::unix::fs::MetadataExt as _;
-    (metadata.dev(), metadata.ino())
 }

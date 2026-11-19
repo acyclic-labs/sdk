@@ -258,10 +258,9 @@ impl LiveTurn {
 impl Replay {
     fn release_live(&mut self, operation: OperationId, accepted: bool) {
         let key = operation.into_bytes();
-        let turn = self
-            .live
-            .get_retained_mut(key, |_| true, |_| {})
-            .expect("original live admission retains its funded turn slot");
+        let Some(turn) = self.live.get_retained_mut(key, |_| true, |_| {}) else {
+            return;
+        };
         turn.accepted |= accepted;
         turn.pending -= 1;
         if turn.unclaimed() {
@@ -350,8 +349,18 @@ struct ReplayAdmission<'a> {
 }
 
 impl ReplayAdmission<'_> {
-    fn accept(mut self) {
+    fn accept(mut self) -> Result<()> {
         let mut replay = self.owner.lock();
+        let divergence = if replay.diverged {
+            None
+        } else {
+            Some(Divergence {
+                dispatch: self.dispatch,
+                key: self.key.ok_or_else(|| {
+                    Error::Storage("first live admission has no replay key".into())
+                })?,
+            })
+        };
         let selection = replay
             .dispatches
             .get_retained_mut(
@@ -359,20 +368,16 @@ impl ReplayAdmission<'_> {
                 |selection| matches!(selection, Some(ReplaySelection::Pending)),
                 |_| {},
             )
-            .expect("original replay admission owns its registration");
+            .ok_or_else(|| Error::Storage("replay admission lost its registration".into()))?;
         *selection = Some(ReplaySelection::Live);
         replay.release_live(self.dispatch.operation_id, true);
-        let first = !std::mem::replace(&mut replay.diverged, true);
+        replay.diverged = true;
         self.accepted = true;
         drop(replay);
-        if first {
-            self.owner.sink.diverged(Divergence {
-                dispatch: self.dispatch,
-                key: self
-                    .key
-                    .expect("first live admission retains its replay key"),
-            });
+        if let Some(divergence) = divergence {
+            self.owner.sink.diverged(divergence);
         }
+        Ok(())
     }
 }
 
@@ -570,7 +575,11 @@ impl RecordedModel {
                         for (ordinal, lookup) in staged.into_iter().enumerate() {
                             tools
                                 .get_retained_mut(lookup, |_| true, |_| {})
-                                .expect("original tool admission retains its funded slot")
+                                .ok_or_else(|| {
+                                    Error::Storage(
+                                        "tool replay admission lost its registration".into(),
+                                    )
+                                })?
                                 .selected = Some(ToolCoordinate {
                                 key,
                                 index,
@@ -1082,9 +1091,9 @@ mod tests {
             };
             if population == 1 {
                 drop(second);
-                first.accept();
+                first.accept()?;
             } else {
-                second.accept();
+                second.accept()?;
                 drop(first);
             }
             for operation in 0..population {
@@ -1112,9 +1121,12 @@ mod tests {
                         <= dispatch_bound.examined_items + 2 * bound.examined_items
                 );
                 assert!(prepared.allocation_operations - before.allocation_operations <= 4);
+                let mut accepted = None;
+                let physical =
+                    acyclic_test_support::measure(|| accepted = Some(admission.accept()));
+                accepted.unwrap()?;
                 assert_eq!(
-                    acyclic_test_support::measure(|| admission.accept()).count_total,
-                    0,
+                    physical.count_total, 0,
                     "live acceptance allocated after admission"
                 );
                 assert_eq!(funded.receipt()?, prepared, "acceptance spent new work");
@@ -1889,8 +1901,10 @@ impl ModelProvider for RecordedModel {
             Ok(ReplayPreparation::Recorded(stream)) => stream,
             Ok(ReplayPreparation::Live(admission)) => {
                 let stream = self.live.generate(request, dispatch);
-                admission.accept();
-                stream
+                match admission.accept() {
+                    Ok(()) => stream,
+                    Err(error) => ModelStream::new(Box::pin(futures::stream::iter([Err(error)]))),
+                }
             }
             Err(error) => ModelStream::new(Box::pin(futures::stream::iter([Err(error)]))),
         }
@@ -1998,7 +2012,7 @@ impl ModelProvider for RecordedModel {
                 let future = self
                     .live
                     .generate_with_native_work(request, dispatch, work)?;
-                admission.accept();
+                admission.accept()?;
                 Ok(future)
             }
         }

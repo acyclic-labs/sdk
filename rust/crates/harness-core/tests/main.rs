@@ -1,10 +1,12 @@
 //! Original ordinary and instrumented suites share their real root bindings.
+#![cfg(test)]
+
+acyclic_test_support::counting_allocator!();
+
 #[cfg(all(not(loom), feature = "test-support"))]
 use acyclic_harness_control_checks as agent_control_mapping;
 #[cfg(not(loom))]
 mod agent_model;
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod git_executor;
 
 pub use acyclic_harness_core::Error;
 #[cfg(all(loom, feature = "model-checking"))]
@@ -30,8 +32,13 @@ use sync::{
 #[cfg(all(loom, feature = "model-checking"))]
 mod skill_materializer_loom;
 
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod machine_workspace;
-
-#[cfg(not(loom))]
-mod target_lifecycle;
+#[path = "computed_ui_records.rs"]
+mod computed_ui_records;
+#[path = "contract_error_cases.rs"]
+mod contract_error_cases;
+#[path = "conversation_contract.rs"]
+mod conversation_contract;
+#[path = "model_usage_cost.rs"]
+mod model_usage_cost;
+#[path = "projection_selection.rs"]
+mod projection_selection;

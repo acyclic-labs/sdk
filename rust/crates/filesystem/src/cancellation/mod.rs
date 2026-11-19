@@ -28,7 +28,7 @@ struct CancellationState {
 enum CancellationWake {
     Future(Waker),
     #[cfg(test)]
-    #[cfg(all(not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Notification(fn()),
 }
 
@@ -37,7 +37,7 @@ impl CancellationWake {
         match self {
             Self::Future(waker) => waker.wake(),
             #[cfg(test)]
-            #[cfg(all(not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Notification(notify) => notify(),
         }
     }
@@ -46,7 +46,7 @@ impl CancellationWake {
         match self {
             Self::Future(waker) => waker.will_wake(other),
             #[cfg(test)]
-            #[cfg(all(not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Notification(_) => false,
         }
     }
@@ -467,9 +467,11 @@ pub use wait::Cancelled;
 use wait::WaitMeter;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod native_tests;
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 mod notification;
 #[cfg(test)]
 #[path = "../tests/cancellation.rs"]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

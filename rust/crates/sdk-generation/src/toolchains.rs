@@ -36,7 +36,7 @@ fn select_cargo(root: &Path, declaration: &Path, source: &str) -> Result<PathBuf
             sdk_docs::command_environment().into_iter()
         )
     );
-    let path = crate::file_cache::get(&declaration, &context, || {
+    let path = crate::file_cache::get(declaration, &context, || {
         let output = sdk_docs::command("rustup")
             .args(["which", "cargo", "--toolchain", &toolchain])
             .run_output()

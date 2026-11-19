@@ -14,8 +14,9 @@ mod result;
 pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "composition_custody_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod custody_tests;
 
 /// One prepared actor transition, sealed only by the composed commit receipt.

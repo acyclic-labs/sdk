@@ -46,6 +46,7 @@ mod tests {
     fn interrupt_filters_round_trip_and_refuse_empty_or_undeclared_prefixes()
     -> Result<(), Box<dyn std::error::Error>> {
         use bytes::Bytes;
+        use guest::Handler as _;
         use guest::wire::{decode_manifest, encode_manifest};
 
         let package = conformance::Package::new()?;

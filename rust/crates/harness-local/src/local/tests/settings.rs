@@ -99,6 +99,7 @@ async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash
         decisions: decisions(harness)?,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
+        issuer_access: None,
         maximum_bytes: harness.limits.file_bytes,
     };
     let tree = super::super::agent_settings::Tree::new(&volumes, path, None).await?;
@@ -388,7 +389,12 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     assert_eq!(original.status, AdmissionStatus::Applied);
     let original_cut = settings_cut(&harness, "agent.ts").await?;
     let mut conversation = super::ObservedConversation::open(&harness).await?;
-    conversation.send("configuration", "Finish").await?;
+    let entry = conversation.send("configuration", "Finish").await?;
+    assert!(
+        entry.outcome.is_completed(),
+        "turn with issuer-selected settings did not complete: {:?}",
+        entry.outcome
+    );
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].model.name, "selected");
@@ -419,6 +425,7 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
         home: &harness.scratch,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
+        issuer_access: None,
         maximum_bytes: None,
     };
     let tree = super::super::agent_settings::Tree::new(&volumes, "agent.ts", None).await?;
@@ -944,7 +951,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     cancellation.cancel();
-    let before = work.receipt();
+    let before = work.receipt()?;
     let cancelled = match reader.select_private_generation(
         &harness.scratch,
         "",
@@ -959,8 +966,8 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         Ok(_) => panic!("cancelled selection must refuse before allocating its future"),
     };
     assert_eq!(cancelled.code(), crate::wire::ErrorCode::Cancelled);
-    assert_eq!(work.receipt().items_examined, before.items_examined);
-    assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+    assert_eq!(work.receipt()?.items_examined, before.items_examined);
+    assert_eq!(work.receipt()?.bytes_hashed, before.bytes_hashed);
     drop(present);
     drop(present_hold);
     drop(absent_generation);
@@ -1152,6 +1159,7 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             home: &harness.scratch,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            issuer_access: None,
             decisions: decisions(&harness)?,
 
             maximum_bytes: harness.limits.file_bytes,
@@ -1312,6 +1320,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         home: &harness.scratch,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
+        issuer_access: None,
         decisions: decisions(&harness)?,
 
         maximum_bytes: harness.limits.file_bytes,

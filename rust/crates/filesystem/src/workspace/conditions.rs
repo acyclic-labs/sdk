@@ -41,8 +41,83 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.write_with_accounting(path, bytes, Some(condition), accounting, cancellation)
+        self.write_with_accounting(path, bytes, Some(condition), None, accounting, cancellation)
             .await
+    }
+
+    /// Creates an absent file with its initial named attribute in one mutation.
+    /// An existing binding refuses the complete mutation.
+    pub async fn create_with_attribute<W: crate::facade::FsWork>(
+        &mut self,
+        path: &str,
+        bytes: acyclic_stream::OwnedBytes,
+        attribute: (&crate::kernel::AttributeName, &[u8]),
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        self.create_annotated_files(
+            std::iter::once((path, bytes, attribute.0, attribute.1)),
+            work,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Stages absent files with their initial named attributes as one mutation
+    /// batch. An occupied binding refuses before the batch becomes visible.
+    pub async fn create_annotated_files<'a, W: crate::facade::FsWork>(
+        &mut self,
+        files: impl ExactSizeIterator<
+            Item = (
+                &'a str,
+                acyclic_stream::OwnedBytes,
+                &'a crate::kernel::AttributeName,
+                &'a [u8],
+            ),
+        >,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let mut mutations = crate::kernel::Owned::allocate(files.len(), &mut accounting)?;
+            for (path, bytes, attribute, value) in files {
+                let path = self.mutation_path(path, &mut accounting, cancellation)?;
+                let metadata = crate::facade::change_attribute(
+                    &self.workspace.volume,
+                    FileMetadata::default(),
+                    attribute,
+                    Some((value, crate::NamedAttributeWriteMode::Create)),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+                Self::push_mutation(
+                    &mut mutations,
+                    crate::kernel::Owned::new(
+                        AuthoredMutation::CreateFile {
+                            file_id: None,
+                            path: path.value,
+                            bytes,
+                            metadata,
+                        },
+                        path.allocation,
+                        path.bytes,
+                    ),
+                    &mut accounting,
+                )?;
+            }
+            self.apply_authored(mutations, &mut accounting, cancellation)
+                .await
+                .map_err(|error| match error {
+                    WorkspaceError::Filesystem(FsError::Mutation(
+                        crate::kernel::GenerationMutationError::AlreadyExists,
+                    )) => WorkspaceError::StaleIdentity,
+                    error => error,
+                })
+        }
+        .await;
+        work.finish(result, &accounting)
     }
 
     /// Removes one binding only while `condition` holds. `Absent` never holds

@@ -71,7 +71,7 @@ impl WorkspaceInput {
         let (_, admitted) = self.admit(&original)?;
         assert_eq!(admitted.session, endpoint.session);
         let escaped = String::from_utf8(original)
-            .unwrap()
+            .map_err(storage)?
             .replace(r#""version":"#, r#""v\u0065rsion":"#)
             .replace(r#""session":"#, r#""sess\u0069on":"#)
             .replace(r#""workspace":"#, r#""worksp\u0061ce":"#);
@@ -86,11 +86,13 @@ impl WorkspaceInput {
         match self.admit(&versioned) {
             Ok(_) => assert_eq!(endpoint.version, 4),
             Err(Error::Unsupported(_)) => assert_ne!(endpoint.version, 4),
-            Err(error) => panic!("descriptor version admission changed: {error:?}"),
+            Err(error) => return Err(error),
         }
         if endpoint.version != 4 {
             let mut preceding: Value = serde_json::from_slice(&versioned).map_err(storage)?;
-            let fields = preceding.as_object_mut().expect("writer emits an object");
+            let fields = preceding
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("descriptor writer did not emit an object".into()))?;
             fields.remove("requests");
             fields.remove("status");
             assert!(

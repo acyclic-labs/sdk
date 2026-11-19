@@ -221,9 +221,13 @@ pub(in crate::native_mount) async fn with_session_work_async<
 fn original_control_work<F: MountFilesystem + ?Sized>(
     source: &F,
 ) -> Result<NativeMaterializationWork, MountLifecycleError> {
-    source
+    let work = source
         .native_original_work()?
         .ok_or(MountLifecycleError::NativePolicy(
             "mounted volume has no original native work",
-        ))
+        ))?;
+    work.cancellation()
+        .check()
+        .map_err(|_| MountSourceError::Stale)?;
+    Ok(work)
 }

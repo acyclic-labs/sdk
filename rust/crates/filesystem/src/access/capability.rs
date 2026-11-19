@@ -308,6 +308,7 @@ pub(super) fn binding(capability: &Capability) -> Result<[u8; 32], InvalidPolicy
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod action_set_tests {
     use super::*;
 

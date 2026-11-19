@@ -6,25 +6,35 @@ use acyclic_collections::FixedIndex;
 const HOT_PAGES: usize = 128;
 
 struct CachedNode {
-    reference: NodeRef,
+    sequence: u64,
+    scalar_digest: Option<[u8; 32]>,
     bytes: OwnedBytes,
     io: Option<PreparationIo>,
     referenced: std::sync::atomic::AtomicBool,
 }
 
 impl CachedNode {
-    fn new(reference: NodeRef, bytes: &OwnedBytes, io: Option<&PreparationIo>) -> Result<Self> {
+    fn new(
+        sequence: u64,
+        bytes: &OwnedBytes,
+        retained: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        let scalar_digest = (!node::is_branch_bundle(bytes))
+            .then(|| crate::model::hash_bytes(bytes, io))
+            .transpose()?;
         let mut node = Self {
-            reference,
+            sequence,
+            scalar_digest,
             bytes: OwnedBytes::from_static(b""),
             referenced: std::sync::atomic::AtomicBool::new(false),
             io: io
-                .filter(|_| bytes.retained_capacity().unwrap_or(0) != 0)
+                .filter(|_| retained != 0)
                 .map(PreparationIo::scoped)
                 .transpose()?,
         };
         if let Some(io) = &node.io {
-            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+            io.retain_owned(retained)?;
         }
         node.bytes = bytes.clone();
         Ok(node)
@@ -47,10 +57,13 @@ pub(in crate::filesystem::execution_journal) struct NodeCache {
 }
 
 impl NodeCache {
-    pub(super) fn bind(&mut self, io: Option<&PreparationIo>) -> Result<()> {
+    pub(in crate::filesystem::execution_journal) fn bind(
+        &mut self,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         match (&mut self.io, io) {
             (Some(retained), Some(current)) if retained.shares_ledger(current) => {
-                retained.use_current_context(current);
+                retained.use_current_context(current)?;
             }
             (None, Some(current)) if self.len == 0 => {
                 self.io = Some(current.scoped()?);
@@ -71,26 +84,47 @@ impl NodeCache {
         reference: NodeRef,
         io: Option<&PreparationIo>,
     ) -> Result<Option<OwnedBytes>> {
-        let node = self.node(reference, io)?;
+        let node = self
+            .values
+            .get(reference.sequence.to_be_bytes(), &mut OwnedIndexWork(io))?;
         if let Some(node) = node {
+            if node
+                .scalar_digest
+                .is_some_and(|digest| digest != reference.digest)
+            {
+                return Err(invalid(io, "execution page cache digest differs"));
+            }
             node.referenced
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(node.map(|node| node.bytes.clone()))
     }
 
-    fn node(&self, reference: NodeRef, io: Option<&PreparationIo>) -> Result<Option<&CachedNode>> {
-        let node = self
-            .values
-            .get(reference.sequence.to_be_bytes(), &mut OwnedIndexWork(io))?;
-        if node.is_some_and(|node| node.reference != reference) {
-            return Err(invalid(io, "execution page cache digest differs"));
-        }
-        Ok(node)
+    pub(super) fn insert(&mut self, sequence: u64, bytes: &OwnedBytes) -> Result<()> {
+        self.insert_retained(
+            sequence,
+            bytes,
+            bytes.retained_capacity().unwrap_or(0) as u64,
+        )
     }
 
-    pub(super) fn insert(&mut self, reference: NodeRef, bytes: &OwnedBytes) -> Result<()> {
-        if let Some(node) = self.node(reference, self.io.as_ref())? {
+    pub(super) fn insert_retained(
+        &mut self,
+        sequence: u64,
+        bytes: &OwnedBytes,
+        retained: u64,
+    ) -> Result<()> {
+        let key = sequence.to_be_bytes();
+        if let Some(node) = self
+            .values
+            .get(key, &mut OwnedIndexWork(self.io.as_ref()))?
+        {
+            if node.bytes.as_ref() != bytes.as_ref() {
+                return Err(invalid(
+                    self.io.as_ref(),
+                    "execution page cache record differs",
+                ));
+            }
             node.referenced
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
@@ -115,29 +149,25 @@ impl NodeCache {
                 let referenced = node
                     .referenced
                     .swap(false, std::sync::atomic::Ordering::Relaxed);
-                let reference = node.reference;
+                let sequence = node.sequence;
                 self.replacement = Some(*key);
                 if !referenced {
-                    self.remove(reference)?;
+                    self.remove(sequence)?;
                     break;
                 }
             }
         }
-        self.values.get_or_try_insert_with(
-            reference.sequence.to_be_bytes(),
-            &mut OwnedIndexWork(self.io.as_ref()),
-            |_| CachedNode::new(reference, bytes, self.io.as_ref()),
-        )?;
+        self.values
+            .get_or_try_insert_with(key, &mut OwnedIndexWork(self.io.as_ref()), |_| {
+                CachedNode::new(sequence, bytes, retained, self.io.as_ref())
+            })?;
         self.len += 1;
         Ok(())
     }
 
-    pub(super) fn remove(&mut self, reference: NodeRef) -> Result<()> {
-        if self.node(reference, self.io.as_ref())?.is_none() {
-            return Ok(());
-        }
+    pub(super) fn remove(&mut self, sequence: u64) -> Result<()> {
         let removed = self.values.remove(
-            reference.sequence.to_be_bytes(),
+            sequence.to_be_bytes(),
             &mut OwnedIndexWork(self.io.as_ref()),
         )?;
         if removed.is_some() {
@@ -155,7 +185,7 @@ mod tests {
 
     #[derive(Default)]
     struct Settled {
-        retained: u64,
+        retained: [Option<u64>; 32],
         staging: Option<(usize, usize, usize, usize)>,
     }
 
@@ -174,10 +204,9 @@ mod tests {
                 staging.live.values.capacity(),
                 staging.path.values.capacity(),
             );
-            assert_eq!(
-                cache.len,
-                2 * (update as usize + 1).min(32) - 1,
-                "cache retained a replaced tree version"
+            assert!(
+                cache.len < 2 * (update as usize + 1).min(32),
+                "cache retained more records than reachable logical nodes"
             );
             if update == 63 {
                 self.staging = Some(sizes);
@@ -189,13 +218,14 @@ mod tests {
                     "settled staging capacities grew with history"
                 );
             }
-            if update == 99 {
-                self.retained = cache.io.as_ref().expect("funded cache").owned_bytes()?;
-            }
-            if update >= 100 {
+            // Once every live sequence uses the same varint width, each pass
+            // through the key set rewrites the same bundle shapes in order.
+            if update >= 128 {
+                let retained = cache.io.as_ref().expect("funded cache").owned_bytes()?;
+                let previous = &mut self.retained[update as usize % 32];
                 assert_eq!(
-                    cache.io.as_ref().expect("funded cache").owned_bytes()?,
-                    self.retained,
+                    retained,
+                    *previous.get_or_insert(retained),
                     "settled page metadata grew with update count"
                 );
             }
@@ -304,6 +334,20 @@ mod tests {
             );
         }
         if distinct == 32 {
+            let mut reachable = std::collections::BTreeSet::new();
+            let mut pending = vec![root.expect("live root")];
+            while let Some(reference) = pending.pop() {
+                reachable.insert(reference.sequence);
+                let page = reader.read(reference).await?;
+                if let Node::Branch { children, .. } = page.node(Some(&io))? {
+                    pending.extend(children);
+                }
+            }
+            assert_eq!(
+                cache.len,
+                reachable.len(),
+                "a replaced record stayed cached"
+            );
             assert_eq!(
                 io.receipt()?.authority_records_read - before.authority_records_read,
                 0
@@ -389,7 +433,7 @@ mod tests {
             sequence: 0,
             digest: *blake3::hash(&bytes).as_bytes(),
         };
-        cache.insert(hot, &bytes)?;
+        cache.insert(hot.sequence, &bytes)?;
         let mut misses = 0;
         let mut maximum_items = 0;
         let mut maximum_allocations = 0;
@@ -399,13 +443,7 @@ mod tests {
                 misses += 1;
             }
             let before = io.receipt()?;
-            cache.insert(
-                NodeRef {
-                    sequence: sequence.reverse_bits(),
-                    ..hot
-                },
-                &bytes,
-            )?;
+            cache.insert(sequence.reverse_bits(), &bytes)?;
             let after = io.receipt()?;
             maximum_items = maximum_items.max(after.items_examined - before.items_examined);
             maximum_allocations =

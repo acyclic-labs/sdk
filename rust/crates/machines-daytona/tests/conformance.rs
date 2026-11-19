@@ -1,4 +1,6 @@
 //! Real-HTTP conformance and protected-origin negative controls.
+#![cfg(test)]
+
 use acyclic_harness_core::{Error, Result, http::*};
 use acyclic_harness_providers::ReqwestTransport;
 use acyclic_machines::*;
@@ -10,18 +12,20 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use url::Url;
 
 const MACHINE: &str = "a1000000-0000-0000-0000-000000000001";
 const ORIGINS: [&str; 2] = ["https://app.daytona.io", "https://proxy.app.daytona.io"];
 // Fixture value belongs solely to the fake host binding, never provider config.
 const HOST_VALUE: &str = "fixture-host-owned-daytona-credential";
+
+type FixtureResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Default)]
 struct State {
@@ -39,7 +43,7 @@ struct State {
 
 struct Server {
     state: Arc<Mutex<State>>,
-    task: tokio::task::JoinHandle<()>,
+    task: tokio::task::JoinHandle<FixtureResult>,
     address: String,
 }
 impl Drop for Server {
@@ -49,9 +53,9 @@ impl Drop for Server {
 }
 
 impl Server {
-    async fn start(proxy: &str, lose_create: bool) -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = format!("http://{}", listener.local_addr().unwrap());
+    async fn start(proxy: &str, lose_create: bool) -> FixtureResult<Self> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = format!("http://{}", listener.local_addr()?);
         let state = Arc::new(Mutex::new(State {
             proxy: proxy.into(),
             lose_create,
@@ -59,57 +63,56 @@ impl Server {
         }));
         let shared = state.clone();
         let task = tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut request = Vec::new();
-                let head = loop {
-                    let mut buffer = [0; 4096];
-                    let count = stream.read(&mut buffer).await.unwrap();
-                    if count == 0 {
-                        return;
+            loop {
+                let (stream, _) = listener.accept().await?;
+                let mut stream = BufReader::new(stream);
+                let mut headers = String::new();
+                if stream.read_line(&mut headers).await? == 0 {
+                    continue;
+                }
+                while !headers.ends_with("\r\n\r\n") {
+                    if stream.read_line(&mut headers).await? == 0 {
+                        return Err("Daytona request ended before its headers".into());
                     }
-                    request.extend_from_slice(&buffer[..count]);
-                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                        break end + 4;
-                    }
-                };
-                let headers = String::from_utf8(request[..head].to_vec()).unwrap();
+                }
                 let length = headers
                     .lines()
                     .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|value| value.trim().parse::<usize>().unwrap())
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>())
                     })
+                    .transpose()?
                     .unwrap_or(0);
-                while request.len() - head < length {
-                    let mut buffer = [0; 4096];
-                    let count = stream.read(&mut buffer).await.unwrap();
-                    assert_ne!(count, 0);
-                    request.extend_from_slice(&buffer[..count]);
-                }
-                let first = headers.lines().next().unwrap();
+                let mut request = vec![0; length];
+                stream.read_exact(&mut request).await?;
+                let first = headers
+                    .lines()
+                    .next()
+                    .ok_or("missing Daytona request line")?;
                 let mut parts = first.split_whitespace();
-                let method = parts.next().unwrap();
-                let target = parts.next().unwrap();
-                let url = Url::parse(&format!("https://app.daytona.io{target}")).unwrap();
+                let method = parts.next().ok_or("missing Daytona request method")?;
+                let target = parts.next().ok_or("missing Daytona request target")?;
+                let url = Url::parse(&format!("https://app.daytona.io{target}"))?;
                 let authorized = headers.lines().any(|line| {
                     line.eq_ignore_ascii_case(&format!("authorization: Bearer {HOST_VALUE}"))
                 });
                 let response = {
-                    let mut state = shared.lock().unwrap();
+                    let mut state = shared
+                        .lock()
+                        .map_err(|_| "Daytona fixture state poisoned")?;
                     state.requests.push((target.into(), authorized));
                     let mut status = 200;
                     let mut body = b"{}".to_vec();
                     if target == "/api/sandbox" && method == "POST" {
                         state.posts += 1;
-                        let create: Value = serde_json::from_slice(&request[head..]).unwrap();
+                        let create: Value = serde_json::from_slice(&request)?;
                         if state.sandbox.is_some() {
                             status = 409;
                         } else {
-                            state.sandbox = Some(
-                                json!({"id": MACHINE, "state": "started", "labels": create["labels"], "toolboxProxyUrl": state.proxy, "createdAt": "2026-11-09T00:00:00Z", "updatedAt": "2026-11-09T00:00:00Z"}),
-                            );
-                            body = serde_json::to_vec(state.sandbox.as_ref().unwrap()).unwrap();
+                            let sandbox = json!({"id": MACHINE, "state": "started", "labels": create["labels"], "toolboxProxyUrl": state.proxy, "createdAt": "2026-11-09T00:00:00Z", "updatedAt": "2026-11-09T00:00:00Z"});
+                            body = serde_json::to_vec(&sandbox)?;
+                            state.sandbox = Some(sandbox);
                         }
                         if std::mem::take(&mut state.lose_create) {
                             None
@@ -118,29 +121,37 @@ impl Server {
                         }
                     } else {
                         if url.path() == format!("/api/sandbox/{MACHINE}") {
-                            body = serde_json::to_vec(state.sandbox.as_ref().unwrap()).unwrap();
+                            let sandbox = state
+                                .sandbox
+                                .as_ref()
+                                .ok_or("sandbox has not been created")?;
+                            body = serde_json::to_vec(sandbox)?;
                         } else if url.path() == "/api/sandbox" {
-                            body = serde_json::to_vec(
-                                &json!({"items": [state.sandbox.as_ref().unwrap()]}),
-                            )
-                            .unwrap();
+                            let sandbox = state
+                                .sandbox
+                                .as_ref()
+                                .ok_or("sandbox has not been created")?;
+                            body = serde_json::to_vec(&json!({"items": [sandbox]}))?;
                         } else if url.path() == format!("/toolbox/{MACHINE}/process/execute") {
                             assert_eq!(method, "POST");
-                            let command: Value = serde_json::from_slice(&request[head..]).unwrap();
-                            assert!(command["command"].as_str().unwrap().contains("bash"));
+                            let command: Value = serde_json::from_slice(&request)?;
+                            assert!(
+                                command["command"]
+                                    .as_str()
+                                    .is_some_and(|command| command.contains("bash"))
+                            );
                             if std::mem::take(&mut state.lose_exec) {
                                 continue;
                             }
                             body = serde_json::to_vec(
                                 &json!({"exitCode": 0, "result": state.exec_output}),
-                            )
-                            .unwrap();
+                            )?;
                         } else if url.path() == format!("/toolbox/{MACHINE}/files/download") {
                             assert_eq!(method, "GET");
                             let path = url
                                 .query_pairs()
                                 .find(|(key, _)| key == "path")
-                                .unwrap()
+                                .ok_or("missing Daytona file path")?
                                 .1
                                 .into_owned();
                             if let Some(file) = state.files.get(&path) {
@@ -153,31 +164,36 @@ impl Server {
                             let path = url
                                 .query_pairs()
                                 .find(|(key, _)| key == "path")
-                                .unwrap()
+                                .ok_or("missing Daytona file path")?
                                 .1
                                 .into_owned();
                             let content_type = headers
                                 .lines()
                                 .find(|line| line.to_ascii_lowercase().starts_with("content-type:"))
-                                .unwrap();
-                            let boundary = content_type.split("boundary=").nth(1).unwrap();
-                            let multipart = &request[head..];
-                            let start = multipart
+                                .ok_or("missing Daytona upload content type")?;
+                            let (_, boundary) = content_type
+                                .split_once("boundary=")
+                                .ok_or("missing multipart boundary")?;
+                            let start = request
                                 .windows(4)
                                 .position(|bytes| bytes == b"\r\n\r\n")
-                                .unwrap()
+                                .ok_or("missing multipart headers")?
                                 + 4;
                             let tail = format!("\r\n--{boundary}--\r\n");
-                            assert!(multipart.ends_with(tail.as_bytes()));
-                            state.files.insert(
-                                path,
-                                multipart[start..multipart.len() - tail.len()].to_vec(),
-                            );
+                            let bytes = request
+                                .get(start..)
+                                .and_then(|bytes| bytes.strip_suffix(tail.as_bytes()))
+                                .ok_or("missing multipart terminator")?;
+                            state.files.insert(path, bytes.to_vec());
                             if std::mem::take(&mut state.fail_upload) {
                                 status = 500;
                             }
                         } else {
-                            panic!("unadmitted fake Daytona route: {method} {}", url.path());
+                            return Err(format!(
+                                "unadmitted fake Daytona route: {method} {}",
+                                url.path()
+                            )
+                            .into());
                         }
                         let truncated = url.path() == format!("/toolbox/{MACHINE}/files/download")
                             && url.query_pairs().any(|(key, value)| {
@@ -192,30 +208,28 @@ impl Server {
                         "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len() + usize::from(truncated)
                     );
-                    stream.write_all(header.as_bytes()).await.unwrap();
-                    stream.write_all(&body).await.unwrap();
+                    stream.get_mut().write_all(header.as_bytes()).await?;
+                    stream.get_mut().write_all(&body).await?;
                 }
             }
         });
-        Self {
+        Ok(Self {
             state,
             task,
             address,
-        }
+        })
     }
-    fn provider(&self) -> DaytonaProvider {
-        self.provider_with_transport(Arc::new(ReqwestTransport::new().unwrap()))
+    fn provider(&self) -> FixtureResult<DaytonaProvider> {
+        self.provider_with_transport(Arc::new(ReqwestTransport::new()?))
     }
-    fn provider_with_transport(&self, transport: Arc<dyn HttpTransport>) -> DaytonaProvider {
+    fn provider_with_transport(
+        &self,
+        transport: Arc<dyn HttpTransport>,
+    ) -> FixtureResult<DaytonaProvider> {
         let config = DaytonaConfig {
             base_url: "https://app.daytona.io/api".into(),
-            secret_reference: acyclic_auth::secrets::SecretRef::new(
-                "sandboxes".into(),
-                "daytona".into(),
-                1,
-            )
-            .unwrap(),
-            images: BTreeMap::from([("immutable-snapshot".into(), image())]),
+            secret_reference: secret_reference()?,
+            images: BTreeMap::from([("immutable-snapshot".into(), image()?)]),
             platform: Platform {
                 os: OperatingSystem::Linux,
                 arch: Architecture::X64,
@@ -226,24 +240,38 @@ impl Server {
             block_all_network_policy: [19; 32],
         };
         assert!(!format!("{config:?}").contains(HOST_VALUE));
-        DaytonaProvider::new(config, Arc::new(Binding(self.address.clone())), transport).unwrap()
+        Ok(DaytonaProvider::new(
+            config,
+            Arc::new(Binding(self.address.clone())),
+            transport,
+        )?)
     }
-    fn all_authorized(&self) {
-        let state = self.state.lock().unwrap();
+    async fn all_authorized(mut self) -> FixtureResult {
+        self.task.abort();
+        match (&mut self.task).await {
+            Ok(result) => result?,
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => return Err(error.into()),
+        }
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "Daytona fixture state poisoned")?;
         assert!(!state.requests.is_empty());
         assert!(
             state.requests.iter().all(|(_, authorized)| *authorized),
             "a request bypassed the protected host binding"
         );
+        Ok(())
     }
 }
 
 #[tokio::test]
-async fn range_credit_finishes_before_an_unread_http_suffix_error() {
-    let server = Server::start("https://app.daytona.io/toolbox", false).await;
-    let provider = server.provider();
-    provider.create(request()).await.unwrap();
-    let file = access(4_102_444_800_000);
+async fn range_credit_finishes_before_an_unread_http_suffix_error() -> FixtureResult {
+    let server = Server::start("https://app.daytona.io/toolbox", false).await?;
+    let provider = server.provider()?;
+    provider.create(request()?).await.unwrap();
+    let file = access(4_102_444_800_000)?;
     {
         let mut state = server.state.lock().unwrap();
         state
@@ -255,13 +283,13 @@ async fn range_credit_finishes_before_an_unread_http_suffix_error() {
     }
     let range = FileAccess::new(file.path().into(), 2, file.deadline_unix_ms()).unwrap();
     assert_eq!(
-        read_file_at(&provider, machine(), range, 3).await.unwrap(),
+        read_file_at(&provider, machine()?, range, 3).await.unwrap(),
         FileRead::Data(vec![128, 1, 2])
     );
     // The same truncation is still an error if it lies inside the requested
     // range; bounded reading never turns partial bytes into successful EOF.
     assert!(matches!(
-        read_file_at(&provider, machine(), file, 9).await,
+        read_file_at(&provider, machine()?, file, 9).await,
         Err(ProviderError::Unavailable)
     ));
     let state = server.state.lock().unwrap();
@@ -274,7 +302,8 @@ async fn range_credit_finishes_before_an_unread_http_suffix_error() {
         2
     );
     drop(state);
-    server.all_authorized();
+    server.all_authorized().await?;
+    Ok(())
 }
 
 // Real HTTP responses are buffered here to make bytes/EOF deterministically
@@ -295,9 +324,14 @@ impl HttpTransport for BufferedAlarmTransport {
     }
     fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
         assert_eq!(duration, Duration::from_millis(1));
-        let alarm = self.alarm.lock().unwrap().take().expect("original alarm");
+        let alarm = self
+            .alarm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         Box::pin(async move {
             alarm
+                .ok_or_else(|| Error::Conflict("original alarm already taken".into()))?
                 .await
                 .map_err(|_| Error::Conflict("alarm owner dropped".into()))?
         })
@@ -311,27 +345,27 @@ impl HttpTransport for BufferedAlarmTransport {
 }
 
 #[tokio::test]
-async fn original_file_alarm_precedes_buffered_bytes_and_eof() {
+async fn original_file_alarm_precedes_buffered_bytes_and_eof() -> FixtureResult {
     const DEADLINE: u64 = 4_102_444_800_000;
     for failed in [false, true] {
         for bytes in [vec![0, 255, 128], vec![]] {
-            let server = Server::start("https://app.daytona.io/toolbox", false).await;
+            let server = Server::start("https://app.daytona.io/toolbox", false).await?;
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let transport = Arc::new(BufferedAlarmTransport {
                 http: ReqwestTransport::new().unwrap(),
                 wall: AtomicU64::new(DEADLINE - 1),
                 alarm: Mutex::new(Some(receiver)),
             });
-            let provider = server.provider_with_transport(transport.clone());
-            provider.create(request()).await.unwrap();
+            let provider = server.provider_with_transport(transport.clone())?;
+            provider.create(request()?).await.unwrap();
             server
                 .state
                 .lock()
                 .unwrap()
                 .files
-                .insert(access(DEADLINE).path().into(), bytes);
+                .insert(access(DEADLINE)?.path().into(), bytes);
             let FileDownload::Data(mut body) = provider
-                .download_file(machine(), access(DEADLINE))
+                .download_file(machine()?, access(DEADLINE)?)
                 .await
                 .unwrap()
             else {
@@ -358,15 +392,21 @@ async fn original_file_alarm_precedes_buffered_bytes_and_eof() {
                     matches!(cause.0.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Invalid(message)) if message == "original alarm failure")
                 );
             } else {
-                assert!(matches!(error, ProviderError::FileIndeterminate(id) if id == machine()));
+                assert!(matches!(error, ProviderError::FileIndeterminate(id) if id == machine()?));
             }
             assert!(body.next().await.is_none());
-            server.all_authorized();
+            server.all_authorized().await?;
         }
     }
+    Ok(())
 }
 
 struct Binding(String);
+fn secret_reference() -> Result<acyclic_auth::secrets::SecretRef> {
+    acyclic_auth::secrets::SecretRef::new("sandboxes".into(), "daytona".into(), 1)
+        .map_err(|error| Error::Invalid(error.to_string()))
+}
+
 struct Protected {
     address: String,
     origin: String,
@@ -383,11 +423,7 @@ impl CredentialResolver for Binding {
         let CredentialSource::SecretReference(reference) = source else {
             return Err(Error::Invalid("raw fixture credential refused".into()));
         };
-        assert_eq!(
-            reference,
-            &acyclic_auth::secrets::SecretRef::new("sandboxes".into(), "daytona".into(), 1)
-                .unwrap()
-        );
+        assert_eq!(reference, &secret_reference()?);
         assert_eq!(scheme, AuthorizationScheme::Bearer);
         if !ORIGINS.contains(&origin) {
             return Err(Error::Unauthorized("origin refused by fake binding".into()));
@@ -405,7 +441,8 @@ impl CredentialResolver for Binding {
 impl HttpTransport for Protected {
     fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            let url = Url::parse(&request.url).unwrap();
+            let url =
+                Url::parse(&request.url).map_err(|error| Error::Invalid(error.to_string()))?;
             assert_eq!(url.origin().ascii_serialization(), self.origin);
             assert!(
                 !request
@@ -433,31 +470,30 @@ impl HttpTransport for Protected {
         self.transport.now()
     }
 }
-fn image() -> Image {
-    Image::custom([17; 32]).unwrap()
+fn image() -> FixtureResult<Image> {
+    Ok(Image::custom([17; 32])?)
 }
-fn request() -> CreateMachine {
+fn request() -> FixtureResult<CreateMachine> {
     let mut request = CreateMachine::new(
-        IdempotencyKey::parse("b1000000-0000-0000-0000-000000000001").unwrap(),
-        Some(image()),
+        IdempotencyKey::parse("b1000000-0000-0000-0000-000000000001")?,
+        Some(image()?),
         [19; 32],
     );
     request.suspension = SuspensionPolicy::Manual;
-    request
+    Ok(request)
 }
-fn machine() -> MachineId {
-    MachineId::parse(MACHINE).unwrap()
+fn machine() -> FixtureResult<MachineId> {
+    Ok(MachineId::parse(MACHINE)?)
 }
-fn access(deadline: u64) -> FileAccess {
-    FileAccess::new("/tmp/binary file?#".into(), 0, deadline).unwrap()
+fn access(deadline: u64) -> FixtureResult<FileAccess> {
+    Ok(FileAccess::new("/tmp/binary file?#".into(), 0, deadline)?)
 }
 
 #[tokio::test]
-async fn protected_http_adapter_passes_shared_capability_and_file_conformance()
--> std::result::Result<(), Box<dyn std::error::Error>> {
-    let server = Server::start("https://proxy.app.daytona.io/toolbox", false).await;
-    let provider = server.provider();
-    let mut selected = request();
+async fn protected_http_adapter_passes_shared_capability_and_file_conformance() -> FixtureResult {
+    let server = Server::start("https://proxy.app.daytona.io/toolbox", false).await?;
+    let provider = server.provider()?;
+    let mut selected = request()?;
     selected.secrets.insert(
         "TOKEN".into(),
         acyclic_auth::secrets::SecretRef::new("models".into(), "credential".into(), 1)?,
@@ -474,14 +510,14 @@ async fn protected_http_adapter_passes_shared_capability_and_file_conformance()
             .requests
             .is_empty()
     );
-    conformance::verify(&conformance::Fixture::new(provider, image(), [19; 32]))
+    conformance::verify(&conformance::Fixture::new(provider, image()?, [19; 32]))
         .await
         .unwrap();
-    let provider = server.provider();
+    let provider = server.provider()?;
     conformance::verify_files(
         &provider,
-        machine(),
-        access(4_102_444_800_000).path(),
+        machine()?,
+        access(4_102_444_800_000)?.path(),
         4_102_444_800_000,
     )
     .await
@@ -493,16 +529,17 @@ async fn protected_http_adapter_passes_shared_capability_and_file_conformance()
     );
     assert!(matches!(
         provider
-            .attach_volume(machine(), Default::default(), IdempotencyKey::new())
+            .attach_volume(machine()?, Default::default(), IdempotencyKey::new())
             .await,
         Err(ProviderError::Unsupported(_))
     ));
-    server.all_authorized();
+    server.all_authorized().await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn sandbox_reported_origins_outside_the_binding_are_refused_before_toolbox_io() {
+async fn sandbox_reported_origins_outside_the_binding_are_refused_before_toolbox_io()
+-> FixtureResult {
     for proxy in [
         "https://attacker.example/toolbox",
         "https://proxy.app.daytona.io.attacker.example/toolbox",
@@ -510,11 +547,11 @@ async fn sandbox_reported_origins_outside_the_binding_are_refused_before_toolbox
         "http://proxy.app.daytona.io/toolbox",
         "https://user@proxy.app.daytona.io/toolbox",
     ] {
-        let server = Server::start(proxy, false).await;
-        let provider = server.provider();
-        provider.create(request()).await.unwrap();
+        let server = Server::start(proxy, false).await?;
+        let provider = server.provider()?;
+        provider.create(request()?).await.unwrap();
         assert!(
-            matches!(provider.download_file(machine(), access(4_102_444_800_000)).await, Err(ProviderError::Rejected(message)) if message.contains("binding") || message.contains("HTTPS"))
+            matches!(provider.download_file(machine()?, access(4_102_444_800_000)?).await, Err(ProviderError::Rejected(message)) if message.contains("binding") || message.contains("HTTPS"))
         );
         assert!(
             server
@@ -525,15 +562,17 @@ async fn sandbox_reported_origins_outside_the_binding_are_refused_before_toolbox
                 .iter()
                 .all(|(path, _)| !path.starts_with("/toolbox"))
         );
-        server.all_authorized();
+        server.all_authorized().await?;
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_never_send() {
-    let server = Server::start("https://app.daytona.io/toolbox", true).await;
-    let provider = server.provider();
-    let request = request();
+async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_never_send()
+-> FixtureResult {
+    let server = Server::start("https://app.daytona.io/toolbox", true).await?;
+    let provider = server.provider()?;
+    let request = request()?;
     let key = request.idempotency_key;
     assert!(
         matches!(provider.create(request.clone()).await, Err(ProviderError::Indeterminate(actual)) if actual == key)
@@ -543,20 +582,20 @@ async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_nev
     );
     let recovered = provider.recover(key).await.unwrap();
     assert!(
-        matches!(recovered, MutationOutcome::Created(observation) if observation.id == machine())
+        matches!(recovered, MutationOutcome::Created(observation) if observation.id == machine()?)
     );
     assert_eq!(server.state.lock().unwrap().posts, 1);
     write_file_at(
         &provider,
-        machine(),
-        access(4_102_444_800_000),
+        machine()?,
+        access(4_102_444_800_000)?,
         vec![0, 255],
         true,
     )
     .await
     .unwrap();
     assert_eq!(
-        read_file_at(&provider, machine(), access(4_102_444_800_000), 2)
+        read_file_at(&provider, machine()?, access(4_102_444_800_000)?, 2)
             .await
             .unwrap(),
         FileRead::Data(vec![0, 255])
@@ -564,12 +603,12 @@ async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_nev
     // A server failure after replacement does not certify that no write happened.
     server.state.lock().unwrap().fail_upload = true;
     assert!(matches!(
-        provider.upload_file(machine(), access(4_102_444_800_000), vec![9]).await,
-        Err(ProviderError::FileIndeterminate(actual)) if actual == machine()
+        provider.upload_file(machine()?, access(4_102_444_800_000)?, vec![9]).await,
+        Err(ProviderError::FileIndeterminate(actual)) if actual == machine()?
     ));
     assert_eq!(
         provider
-            .download_file(machine(), access(4_102_444_800_000))
+            .download_file(machine()?, access(4_102_444_800_000)?)
             .await
             .unwrap()
             .collect()
@@ -579,36 +618,38 @@ async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_nev
     );
     let count = server.state.lock().unwrap().requests.len();
     assert!(matches!(
-        provider.download_file(machine(), access(1)).await,
+        provider.download_file(machine()?, access(1)?).await,
         Err(ProviderError::Cancelled)
     ));
     assert_eq!(server.state.lock().unwrap().requests.len(), count);
-    server.all_authorized();
+    server.all_authorized().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn textual_exec_refuses_expired_or_stdin_requests_and_never_retries_a_lost_reply() {
-    let server = Server::start("https://app.daytona.io/toolbox", false).await;
-    let provider = server.provider();
-    provider.create(request()).await.unwrap();
+async fn textual_exec_refuses_expired_or_stdin_requests_and_never_retries_a_lost_reply()
+-> FixtureResult {
+    let server = Server::start("https://app.daytona.io/toolbox", false).await?;
+    let provider = server.provider()?;
+    provider.create(request()?).await.unwrap();
     let command = ExecCommand::new(vec!["bash".into(), "-c".into(), ":".into()], None).unwrap();
     let before = server.state.lock().unwrap().requests.len();
     assert!(matches!(
         provider
-            .exec_request(machine(), command.clone().with_expiry(1))
+            .exec_request(machine()?, command.clone().with_expiry(1))
             .await,
         Err(ProviderError::Cancelled)
     ));
     assert!(matches!(
         provider
-            .exec_request(machine(), command.clone().with_stdin(vec![0]))
+            .exec_request(machine()?, command.clone().with_stdin(vec![0]))
             .await,
         Err(ProviderError::Unsupported(_))
     ));
     assert_eq!(server.state.lock().unwrap().requests.len(), before);
     server.state.lock().unwrap().lose_exec = true;
-    assert!(matches!(provider.exec_request(machine(), command).await,
-        Err(ProviderError::CommandIndeterminate(actual)) if actual == machine()));
+    assert!(matches!(provider.exec_request(machine()?, command).await,
+        Err(ProviderError::CommandIndeterminate(actual)) if actual == machine()?));
     assert_eq!(
         server
             .state
@@ -620,18 +661,20 @@ async fn textual_exec_refuses_expired_or_stdin_requests_and_never_retries_a_lost
             .count(),
         1
     );
-    server.all_authorized();
+    server.all_authorized().await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_limits() {
+async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_limits()
+-> FixtureResult {
     use acyclic_harness_core::{
         machines::MachinesHost,
         resources::{ProviderRef, SandboxRef},
     };
-    let server = Server::start("https://app.daytona.io/toolbox", false).await;
-    let provider = server.provider();
-    provider.create(request()).await.unwrap();
+    let server = Server::start("https://app.daytona.io/toolbox", false).await?;
+    let provider = server.provider()?;
+    provider.create(request()?).await.unwrap();
     let reference = ProviderRef::new(
         "io.daytona".into(),
         "machines".into(),
@@ -639,7 +682,7 @@ async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_li
         &mut None,
     )
     .unwrap();
-    let sandbox = SandboxRef::new(reference.clone(), machine().as_bytes().into(), None).unwrap();
+    let sandbox = SandboxRef::new(reference.clone(), machine()?.as_bytes().into(), None).unwrap();
     let host = MachinesHost::new(Arc::new(provider), reference).unwrap();
     let command = ExecCommand::new(vec!["bash".into(), "-c".into(), ":".into()], None).unwrap();
     let output = capture_exec(host.exec(&sandbox, command.clone()).await.unwrap(), 1024)
@@ -671,5 +714,6 @@ async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_li
             ..
         })
     ));
-    server.all_authorized();
+    server.all_authorized().await?;
+    Ok(())
 }

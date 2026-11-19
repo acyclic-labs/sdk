@@ -137,8 +137,10 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
 
 #[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod model_checking;
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

@@ -4,8 +4,8 @@ use crate::Adapter;
 use serde_json::Value;
 
 pub(super) fn join(mut parts: Vec<String>, separator: &str) -> String {
-    if parts.len() == 1 {
-        parts.pop().unwrap()
+    if let [part] = parts.as_mut_slice() {
+        std::mem::take(part)
     } else {
         parts.join(separator)
     }
@@ -59,6 +59,12 @@ pub(super) fn normalize(adapter: Adapter, parts: &mut Vec<Item<'_>>) {
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn assert_normalization(fragments: &[String]) {
+    let result = check_normalization(fragments);
+    assert!(result.is_ok(), "text normalization failed: {result:?}");
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+fn check_normalization(fragments: &[String]) -> crate::fuzzing::CheckResult {
     let expected = fragments.concat();
     for adapter in [Adapter::Anthropic, Adapter::Gemini] {
         let mut parts: Vec<_> = fragments
@@ -66,12 +72,16 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
             .map(|text| Item::Json(serde_json::json!({"text":text})))
             .collect();
         normalize(adapter, &mut parts);
-        let encoded = serde_json::to_vec(&parts).unwrap();
-        let values: Vec<Value> = serde_json::from_slice(&encoded).unwrap();
-        let actual: String = values
-            .iter()
-            .map(|value| value["text"].as_str().unwrap())
-            .collect();
+        let encoded = serde_json::to_vec(&parts)?;
+        let values: Vec<Value> = serde_json::from_slice(&encoded)?;
+        let mut actual = String::new();
+        for value in &values {
+            actual.push_str(
+                value["text"]
+                    .as_str()
+                    .ok_or("expected a normalized text part")?,
+            );
+        }
         assert_eq!(
             actual,
             if adapter == Adapter::Anthropic && expected.trim().is_empty() {
@@ -81,7 +91,7 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
             }
         );
         normalize(adapter, &mut parts);
-        assert_eq!(serde_json::to_vec(&parts).unwrap(), encoded);
+        assert_eq!(serde_json::to_vec(&parts)?, encoded);
         let mut messages = Vec::new();
         for fragment in fragments.iter().filter(|fragment| !fragment.is_empty()) {
             let item = Item::Json(serde_json::json!({"type":"text", "text":fragment}));
@@ -96,9 +106,9 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
                     parts: vec![item],
                 }
             };
-            super::sequence::push(adapter, &mut messages, message).unwrap();
+            super::sequence::push(adapter, &mut messages, message)?;
         }
-        super::sequence::finish(adapter, &mut messages, false).unwrap();
+        super::sequence::finish(adapter, &mut messages, false)?;
         let joined: String = messages
             .iter()
             .flat_map(|message| match message {
@@ -122,6 +132,7 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
             "cross-message normalization differs from whole-run normalization"
         );
     }
+    Ok(())
 }
 
 #[cfg(test)]

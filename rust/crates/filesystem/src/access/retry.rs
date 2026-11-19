@@ -42,6 +42,7 @@ async fn retry<const CHECK_MOUNT: bool, T, E, F: Future<Output = Result<Option<T
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
 

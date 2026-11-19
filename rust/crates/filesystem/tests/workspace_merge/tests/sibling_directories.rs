@@ -6,7 +6,8 @@ use acyclic_fs_merge::merge_driver::ConflictKind;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_merge::fixtures::fork_workspace;
+use crate::workspace_merge::transaction::commit;
 
 #[tokio::test]
 async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {

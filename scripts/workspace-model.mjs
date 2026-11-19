@@ -523,7 +523,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const universePath = universeFile ? path.resolve(sourceRoot, universeFile) : path.join(root, 'cargo-bazel-lock.json');
   const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
   if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
-  const pinnedResolution = resolution ?? bazelResolution(universePath, !universeFile);
+  const pinnedResolution = resolution === undefined ? bazelResolution(universePath, !universeFile) : resolution;
   const universe = pinnedResolution ?? {crates: {}, conditions: {}};
   const resolvedFeatures = pinnedResolution !== null || bazelTargets.length > 0;
   const bazelRules = new Map();

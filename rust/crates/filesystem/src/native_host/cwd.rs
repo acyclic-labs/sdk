@@ -503,6 +503,7 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
 
 #[cfg(test)]
 #[cfg(all(target_os = "linux"))]
+#[cfg(any(not(unit_test_split), unit_test_host))]
 mod tests {
     use super::*;
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};

@@ -17,7 +17,7 @@ async fn search_native_http_adapters_return_funded_results() -> Result<()> {
     for exa in [true, false] {
         let cancellation = CancellationToken::new();
         let work = work(&cancellation)?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let body = if exa {
             r#"{"results":[{"url":"https://example.com/native","title":"Native","highlights":["first","second"]}]}"#
         } else {
@@ -41,17 +41,17 @@ async fn search_native_http_adapters_return_funded_results() -> Result<()> {
         );
         assert_eq!(result.1.bytes(), response_bytes(&result.0)?);
         assert!(result.1.work().shares_ledger(&work));
-        assert!(work.live_allocation_bytes() >= baseline + result.1.bytes());
+        assert!(work.live_allocation_bytes()? >= baseline + result.1.bytes());
         drop(result);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         let request = super::tests::joined(server).await?;
         assert!(
             request
                 .to_ascii_lowercase()
                 .contains("x-api-key: test-only-placeholder")
         );
-        assert_eq!(work.receipt().backend_read_operations, 1);
-        assert!(work.receipt().source_bytes_read > 0);
+        assert_eq!(work.receipt()?.backend_read_operations, 1);
+        assert!(work.receipt()?.source_bytes_read > 0);
     }
     Ok(())
 }
@@ -73,7 +73,7 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
             (200, deep.as_str()),
         ] {
             let work = work(&CancellationToken::new())?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             assert_eq!(
                 baseline,
                 NativeMaterializationWork::accounting_state_bytes()
@@ -98,7 +98,7 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
             assert!(!error.to_string().contains("test-only-placeholder"));
             drop(error);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 baseline,
                 "exa={exa}, status={status}, body={body}"
             );
@@ -118,7 +118,7 @@ async fn search_native_decode_errors_release_their_original_custody() -> Result<
             r#"{"results":"test-only-placeholder"}"#,
         ] {
             let work = work(&CancellationToken::new())?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             assert_eq!(
                 baseline,
                 NativeMaterializationWork::accounting_state_bytes()
@@ -132,7 +132,7 @@ async fn search_native_decode_errors_release_their_original_custody() -> Result<
             assert!(!error.is_native_failure());
             drop(error);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 baseline,
                 "exa={exa}, body={body}"
             );
@@ -161,7 +161,7 @@ async fn search_native_decode_accounting_failures_are_not_provider_rejections() 
                 &CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let error = if exa {
                 codec::exa(body, 1, Some(&work)).unwrap_err()
             } else {
@@ -179,7 +179,7 @@ async fn search_native_decode_accounting_failures_are_not_provider_rejections() 
             );
             assert!(error.is_native_failure());
             drop(error);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -234,7 +234,7 @@ async fn search_native_http_one_byte_allowance_cannot_read_a_whole_body() -> Res
             &CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let (endpoint, server) = super::tests::serve(200, r#"{"results":[]}"#.into()).await?;
         let provider: Arc<dyn SearchProvider> = if exa {
             Arc::new(Exa::with_endpoint("test-only-placeholder", &endpoint)?)
@@ -250,9 +250,9 @@ async fn search_native_http_one_byte_allowance_cannot_read_a_whole_body() -> Res
             .await
             .unwrap_err();
         assert!(matches!(error, Error::NativeWork { .. }), "{error:?}");
-        assert_eq!(work.receipt().source_bytes_read, 1);
+        assert_eq!(work.receipt()?.source_bytes_read, 1);
         drop(error);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         super::tests::joined(server).await?;
     }
     Ok(())

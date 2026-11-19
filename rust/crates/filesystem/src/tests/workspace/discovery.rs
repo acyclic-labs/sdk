@@ -57,7 +57,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
     assert_eq!(bounded.entries()[0].1.len(), 1);
     assert!(!bounded.is_complete());
     for admitted_reads in [0, budget.backend_read_operations] {
-        let source = crate::workspace::accounting_tests::Prefunded {
+        let source = crate::workspace::Prefunded {
             budget: WorkBudget {
                 backend_read_operations: admitted_reads,
                 ..budget

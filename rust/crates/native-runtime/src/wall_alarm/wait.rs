@@ -23,18 +23,23 @@ impl WallAlarm {
     /// The returned future retains native failure, including producer loss.
     /// Dropping it unregisters only this deadline, even before its first poll.
     pub fn wait(deadline_unix_ms: u64) -> io::Result<AlarmWait> {
+        AlarmWait::register(|fire| Self::register(deadline_unix_ms, fire))
+    }
+}
+
+impl AlarmWait {
+    pub(crate) fn register(
+        register: impl FnOnce(super::AlarmCallback) -> io::Result<WallAlarm>,
+    ) -> io::Result<Self> {
         let (sender, receiver) = oneshot::channel();
         let sender = Mutex::new(Some(sender));
-        let registration = Self::register(
-            deadline_unix_ms,
-            Arc::new(move |outcome| {
-                let sender = sender.lock().unwrap_or_else(PoisonError::into_inner).take();
-                if let Some(sender) = sender {
-                    let _cancelled = sender.send(outcome);
-                }
-            }),
-        )?;
-        Ok(AlarmWait {
+        let registration = register(Arc::new(move |outcome| {
+            let sender = sender.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(sender) = sender {
+                let _cancelled = sender.send(outcome);
+            }
+        }))?;
+        Ok(Self {
             receiver,
             _registration: registration,
         })

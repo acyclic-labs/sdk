@@ -46,6 +46,7 @@ impl<T, E> Future for NativeFutureBundle<'_, T, E> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
     use crate::{CancellationToken, WorkBudget};

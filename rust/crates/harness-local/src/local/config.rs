@@ -78,6 +78,7 @@ pub struct LocalHarnessConfig {
     /// Explicit composition that never discovers user settings or their tools.
     pub(super) without_user_settings: bool,
     pub(super) signing_store: Option<Arc<dyn SigningStore>>,
+    private_file_signing: bool,
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
@@ -284,6 +285,7 @@ impl LocalHarnessConfig {
             hermetic: false,
             without_user_settings: false,
             signing_store: None,
+            private_file_signing: false,
             test_state: None,
             model,
             model_base: None,
@@ -392,6 +394,30 @@ impl LocalHarnessConfig {
         self
     }
 
+    /// Uses owner-only signing files rooted in the selected state directory.
+    /// An explicitly injected signing store takes precedence.
+    #[must_use]
+    pub fn private_file_signing(mut self) -> Self {
+        self.private_file_signing = true;
+        self
+    }
+
+    pub(super) fn uses_private_file_signing(&self) -> bool {
+        self.private_file_signing || self.without_user_settings
+    }
+
+    pub(super) fn signing_custody<'a>(
+        &'a self,
+        directory: &'a Path,
+    ) -> acyclic_native_runtime::signing_key::SigningCustody<'a> {
+        use acyclic_native_runtime::signing_key::SigningCustody;
+        match self.signing_store.as_deref() {
+            Some(store) => SigningCustody::Store(store),
+            None if self.uses_private_file_signing() => SigningCustody::PrivateFile(directory),
+            None => SigningCustody::Configured,
+        }
+    }
+
     /// Delete an inactive store and its exact signing credential. All users must
     /// first disconnect. Deleting directories externally bypasses this operation.
     /// Credential refusal leaves the store intact; retry after restoring custody.
@@ -408,14 +434,7 @@ impl LocalHarnessConfig {
         };
         owner::planned_separated_directory(&directory, workspace)?;
         let private = directory.join("signing-custody");
-        let custody = match self.signing_store.as_deref() {
-            Some(store) => acyclic_native_runtime::signing_key::SigningCustody::Store(store),
-            None if self.without_user_settings => {
-                acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(&private)
-            }
-            None => acyclic_native_runtime::signing_key::SigningCustody::Configured,
-        };
-        owner::Owner::remove(&directory, custody)
+        owner::Owner::remove(&directory, self.signing_custody(&private))
     }
     /// Refuses ambient state/settings discovery and allocates state lazily unless explicitly rooted.
     #[must_use]
@@ -445,7 +464,7 @@ impl LocalHarnessConfig {
             TEMPORARY_STATES.with(|count| count.set(count.get() + 1));
             let state = tempfile::tempdir().map_err(storage)?;
             self.state_directory = Some(state.path().to_path_buf());
-            if self.signing_store.is_none() {
+            if self.signing_store.is_none() && !self.private_file_signing {
                 self.signing_store = Some(Arc::new(MemorySigningStore::new().map_err(storage)?));
             }
             self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));

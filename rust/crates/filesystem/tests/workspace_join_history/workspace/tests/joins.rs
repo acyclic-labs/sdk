@@ -7,8 +7,9 @@ use acyclic_fs_work::performance::WorkBudget;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
-use crate::join_plan::apply_planned;
+use crate::workspace_join_history::fixtures::fork_workspace;
+use crate::workspace_join_history::join_plan::apply_planned;
+use crate::workspace_join_history::transaction::commit;
 
 /// Joins planned together against one target head, writing disjoint keys,
 /// all apply in that one round when the authority composes independent

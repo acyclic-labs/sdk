@@ -12,6 +12,7 @@ rust_library(
         "//rust/crates/filesystem:src/arc_layout.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

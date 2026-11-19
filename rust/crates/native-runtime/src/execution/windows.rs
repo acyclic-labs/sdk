@@ -11,7 +11,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{
+    ERROR_DLL_NOT_FOUND, ERROR_MOD_NOT_FOUND, ERROR_PROC_NOT_FOUND, GetLastError, HANDLE,
+};
 
 mod objects;
 pub(super) use objects::{open_beneath, validate_stdio};
@@ -37,7 +39,25 @@ type Create = unsafe extern "system" fn(*const c_void, u32, u32, *mut HANDLE) ->
 type Close = unsafe extern "system" fn(HANDLE);
 type Version = unsafe extern "system" fn(u32, *mut u8, *mut u32) -> i32;
 
-struct Api {
+enum ProbeFailure {
+    Unavailable,
+    Loader(u32),
+    Version(i32),
+}
+
+impl ProbeFailure {
+    fn from_last_error(missing: &[u32]) -> Self {
+        // SAFETY: the preceding loader call set this thread's last error.
+        let code = unsafe { GetLastError() };
+        if missing.contains(&code) {
+            Self::Unavailable
+        } else {
+            Self::Loader(code)
+        }
+    }
+}
+
+pub(super) struct Api {
     create: Create,
     close: Close,
     /// The highest PSEC schema minor version the host supports, capped at the
@@ -45,34 +65,79 @@ struct Api {
     minor: u32,
 }
 impl Api {
-    fn get() -> io::Result<&'static Self> {
-        static API: OnceLock<Option<Api>> = OnceLock::new();
+    fn probe() -> Result<&'static Self, &'static ProbeFailure> {
+        static API: OnceLock<Result<Api, ProbeFailure>> = OnceLock::new();
         API.get_or_init(|| {
-            use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
+            use windows_sys::Win32::System::LibraryLoader::{
+                GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+            };
             let name: Vec<u16> = "processmodel.dll\0".encode_utf16().collect();
             // SAFETY: terminated system-only DLL name. The module is retained
             // for the process lifetime, keeping every published pointer valid.
             unsafe {
-                let module = LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
-                if module.is_null() { return None; }
+                let module = LoadLibraryExW(
+                    name.as_ptr(),
+                    std::ptr::null_mut(),
+                    LOAD_LIBRARY_SEARCH_SYSTEM32,
+                );
+                if module.is_null() {
+                    return Err(ProbeFailure::from_last_error(&[
+                        ERROR_MOD_NOT_FOUND,
+                        ERROR_DLL_NOT_FOUND,
+                    ]));
+                }
+                let missing_export = || ProbeFailure::from_last_error(&[ERROR_PROC_NOT_FOUND]);
                 let create = std::mem::transmute::<unsafe extern "system" fn() -> isize, Create>(
-                    GetProcAddress(module, c"CreateProcessSecurityEnvironment".as_ptr().cast())?);
+                    GetProcAddress(module, c"CreateProcessSecurityEnvironment".as_ptr().cast())
+                        .ok_or_else(missing_export)?,
+                );
                 let close = std::mem::transmute::<unsafe extern "system" fn() -> isize, Close>(
-                    GetProcAddress(module, c"CloseProcessSecurityEnvironment".as_ptr().cast())?);
+                    GetProcAddress(module, c"CloseProcessSecurityEnvironment".as_ptr().cast())
+                        .ok_or_else(missing_export)?,
+                );
                 let version = std::mem::transmute::<unsafe extern "system" fn() -> isize, Version>(
-                    GetProcAddress(module, c"IsProcessSecurityEnvironmentVersionSupported".as_ptr().cast())?);
+                    GetProcAddress(
+                        module,
+                        c"IsProcessSecurityEnvironmentVersionSupported"
+                            .as_ptr()
+                            .cast(),
+                    )
+                    .ok_or_else(missing_export)?,
+                );
                 let (mut supported, mut minor) = (0, 0);
-                if version(1, &raw mut supported, &raw mut minor) < 0 || supported == 0 { return None; }
-                Some(Api { create, close, minor: minor.min(1) })
+                let status = version(1, &raw mut supported, &raw mut minor);
+                if status < 0 {
+                    return Err(ProbeFailure::Version(status));
+                }
+                if supported == 0 {
+                    return Err(ProbeFailure::Unavailable);
+                }
+                Ok(Api {
+                    create,
+                    close,
+                    minor: minor.min(1),
+                })
             }
-        }).as_ref().ok_or_else(|| unavailable(format!(
-            "required-host-capability={REQUIRED_CAPABILITY}: native Process Security Environment 1.0 or later support (processmodel.dll) is required; update the Windows execution host")))
+        })
+        .as_ref()
     }
-}
 
-/// Proves the host exposes the native policy API this adapter encodes.
-pub(super) fn capability() -> io::Result<()> {
-    Api::get().map(drop)
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn is_unavailable() -> bool {
+        matches!(Self::probe(), Err(ProbeFailure::Unavailable))
+    }
+
+    pub(super) fn get() -> io::Result<&'static Self> {
+        Self::probe().map_err(|failure| match *failure {
+            ProbeFailure::Unavailable => unavailable(format!(
+                "required-host-capability={REQUIRED_CAPABILITY}: native Process Security Environment 1.0 or later support (processmodel.dll) is required; update the Windows execution host"
+            )),
+            ProbeFailure::Loader(code) => io::Error::from_raw_os_error(code.cast_signed()),
+            ProbeFailure::Version(status) => refused(format!(
+                "Windows sandbox capability query failed: HRESULT {status:#x}"
+            )),
+        })
+    }
 }
 
 pub(crate) struct Policy {

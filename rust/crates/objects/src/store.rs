@@ -886,7 +886,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn sharded_key(&self, kind: char, digest: &Digest, suffix: impl std::fmt::Display) -> String {
         let hex = digest.encoded_hex();
         let hex = hex.as_ref();
-        format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
+        format!("{}{kind}/{hex:.2}/{hex}{suffix}", self.state.prefix)
     }
 
     fn retention_key(&self, namespace: char, root_hash: &str, name: &str) -> String {

@@ -139,27 +139,6 @@ fn source_cleanup_cases() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub(in crate::native_mount) fn native_source_io_control(
-    borrowed: &MemorySource,
-    original: &crate::NativeMaterializationWork,
-) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    Ok(CheckoutMountSource::new_at_meter(
-        Arc::clone(&borrowed.checkout),
-        VolumeConfig::portable(Lifecycle::Ephemeral),
-        NamespacePath::new(Vec::new(), borrowed.config.limits)?,
-        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-        original,
-        Some(original),
-    )?
-    .with_access_view(Arc::clone(
-        borrowed
-            .access_view
-            .as_ref()
-            .ok_or("missing fixture access")?,
-    ))?
-    .into_arc_meter(original)?)
-}
-
 #[test]
 #[allow(unsafe_code, reason = "imports the fresh overlapped fixture handle")]
 fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std::error::Error>> {
@@ -479,7 +458,12 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             weak.upgrade().is_none(),
             "physical source owner was retained after quiescence"
         );
-        let completed = root.receipt().unwrap();
+        let completed = root.receipt();
+        if recording_refused {
+            assert_eq!(completed, Err(crate::WorkObservationError::Poisoned));
+        } else {
+            completed?;
+        }
         let changed = if driver_owned {
             packet.retire(
                 None,
@@ -489,7 +473,7 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?
         };
         assert!(!changed);
-        assert_eq!(root.receipt().unwrap(), completed);
+        assert_eq!(root.receipt(), completed);
     }
     Ok(())
 }

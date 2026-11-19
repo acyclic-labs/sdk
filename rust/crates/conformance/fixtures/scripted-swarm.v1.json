@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "prompts": {
+    "delegate": [
+      [
+        {"type":"event","kind":"tool_call","call_id":"spawn-kid","name":"spawn","arguments":{"name":"kid","task":"work","role":"worker","model":"scripted/default"}},
+        {"type":"event","kind":"completed","metadata":{}}
+      ],
+      "root delegated"
+    ],
+    "work": ["child settled"],
+    "again": ["root continued"],
+    "fork": ["fork settled"]
+  },
+  "child_settled": ["root saw child settle"]
+}

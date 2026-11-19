@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn stopped_session_reports_each_cause_after_releasing_its_fence()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -109,6 +110,7 @@ pub(in crate::native_mount) fn retired(
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -147,6 +149,7 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn detached_session_retirement_completes_fence_after_waiter_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -175,6 +178,7 @@ fn detached_session_retirement_completes_fence_after_waiter_cancellation()
     Ok(())
 }
 
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 #[test]
 fn terminal_source_outcome_is_reported_after_its_destination_retires()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -222,6 +226,7 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(not(unit_test_split), unit_test_mount_watch))]
 #[test]
 fn stopped_watch_outcome_releases_the_driver_and_session_fences()
 -> Result<(), Box<dyn std::error::Error>> {

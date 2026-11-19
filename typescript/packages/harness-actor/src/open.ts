@@ -14,13 +14,14 @@ const binding = <T>(name: string, run: () => T): T => readinessStep(cause => new
 export async function openGuest(env: Bound, config: HarnessActorConfig): Promise<AgentGuest> {
   await step("harness.hosting", () => initializeHosting());
   const { options, model } = config;
-  const selected = { ...options, children: false };
+  const selected = { ...options, children: options.children ?? false };
   const owner = binding(HARNESS_BINDINGS.authority, () => new BrowserAgentAuthority(env.authority));
   const registry = new BrowserAgentRegistry();
   try {
     const models = step("harness.model", () => new ModelRegistry({}, model.limits));
     try {
-      binding(MODEL_FETCH, () => models.bindCredentials(env.model));
+      const credentials = env.model;
+      if (credentials !== undefined) binding(MODEL_FETCH, () => models.bindCredentials(credentials));
       step("harness.model", () => {
         models.register(model.provider, model.spec);
         const provider = models.resolve(model.selection);

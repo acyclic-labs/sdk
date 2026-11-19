@@ -23,7 +23,7 @@ fn funded(request: &ModelRequest, maximum: u64, expected: u64, succeeds: bool) {
     assert_eq!(result.is_ok(), succeeds, "digest admission outcome");
     let actual = ACTUAL_HASHED.with(std::cell::Cell::get);
     assert_eq!(
-        work.receipt().bytes_hashed,
+        work.receipt().unwrap().bytes_hashed,
         actual,
         "every hash must be funded first"
     );

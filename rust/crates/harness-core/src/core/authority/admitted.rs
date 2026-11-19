@@ -51,9 +51,10 @@ pub enum ScopeDerivation<'a> {
     /// could select another agent's journal or private volume by role: it is
     /// replaced by explicit labels for the agent's own bindings within its
     /// actions, and a reading ceiling adds the agent's [`OwnJournalRead`].
-    /// Nothing else is added, so a workload never widens its parent; a
-    /// ceiling the explicit labels cannot carry exactly refuses the
-    /// derivation. Admitted agents derive only this way.
+    /// Selected staged inputs carry exact reads when the parent can already
+    /// read them using its host role. A workload never widens its parent.
+    /// A ceiling the explicit labels cannot carry exactly refuses derivation.
+    /// Admitted agents derive only this way.
     ///
     /// [`OwnJournalRead`]: crate::conversation::OwnJournalRead
     Workload {
@@ -116,13 +117,13 @@ impl<'a> ScopeDerivation<'a> {
                         "a workload derives only for its own journal's agent".into(),
                     ));
                 }
-                let mut grants: Vec<String> = parent
-                    .capabilities
-                    .iter()
-                    .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
-                    .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX))
-                    .map(str::to_owned)
-                    .collect();
+                let mut grants = crate::filesystem::inherited_workload_grants(
+                    parent.capabilities(),
+                    volumes,
+                    journal,
+                    external,
+                    *owner,
+                )?;
                 if let Some(ceiling) =
                     crate::core::filesystem_scope_label(&parent.capabilities, &mut None)?
                 {

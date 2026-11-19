@@ -334,8 +334,8 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
         let discovery: std::collections::BTreeMap<String, String> =
             serde_json::from_str(&prepared.environment["ACYCLIC_WORKSPACES"]).map_err(storage)?;
         assert_eq!(
-            discovery.get("home"),
-            Some(&view.to_string_lossy().into_owned())
+            std::fs::canonicalize(&discovery["home"]).map_err(storage)?,
+            prepared.cwd
         );
         write_projected(&view.join("data"), b"acknowledged")?;
         assert!(
@@ -350,7 +350,9 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
     let (started, began) = tokio::sync::oneshot::channel();
     let (retired, retirement) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
-    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    // The projection's callbacks run on real OS workers. The channels below
+    // order the writes, caller drop and cleanup while those workers stay live.
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
     // The existing native admission was issued on the real clock before this
     // scope; keep that clock origin while controlling the discard's task.
     schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
@@ -361,7 +363,7 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
         tokio::task::spawn_blocking(move || {
             write_projected(&view.join("data"), b"unverified").unwrap();
             write_projected(&view.join("partial"), b"unverified").unwrap();
-            started.send(()).unwrap();
+            started.send(view).unwrap();
             released.recv().unwrap();
             drop(claims);
             retired.send(()).unwrap();
@@ -373,27 +375,30 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
         Err::<((), Claims), _>(Error::Conflict("unverified worker".into()))
     })));
     let mut began = std::pin::pin!(began);
-    loop {
+    let abandoned_view = loop {
         tokio::select! {
             started = &mut began => {
-                started.map_err(storage)?;
-                break;
+                break started.map_err(storage)?;
             },
             result = &mut lost => panic!("worker did not remain active: {result:?}"),
             boundary = boundaries.recv() => boundary.unwrap().release(),
         }
-    }
+    };
     drop(lost);
     assert_eq!(published(scratch, "/data").await?, b"acknowledged");
     release.send(()).map_err(storage)?;
-    retirement.await.map_err(storage)?;
-    let mut drained = std::pin::pin!(schedule.drained());
+    let mut drained = std::pin::pin!(async {
+        retirement.await.map_err(storage)?;
+        schedule.drained().await;
+        Ok::<_, Error>(())
+    });
     loop {
         tokio::select! {
-            () = &mut drained => break,
+            result = &mut drained => { result?; break; }
             boundary = boundaries.recv() => boundary.unwrap().release(),
         }
     }
+    assert!(!abandoned_view.try_exists().map_err(storage)?);
     // All or nothing: neither unverified write reached the volume.
     assert_eq!(
         published(scratch, "/data").await?,
@@ -650,7 +655,8 @@ async fn task_mounts_share_external_bindings_without_authoring_aliases() -> Resu
         bound.native_root.override_path().map(PathBuf::as_path),
         Some(original.destination.as_path())
     );
-    assert!(original.destination.starts_with(state.path()));
+    let state_root = std::fs::canonicalize(state.path()).map_err(storage)?;
+    assert!(original.destination.starts_with(state_root));
     assert!(!root.path().join(".volumes").exists());
     assert_eq!(std::fs::read(authored).map_err(storage)?, b"user content");
     Ok(())
@@ -864,8 +870,8 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         let discovery: std::collections::BTreeMap<String, String> =
             serde_json::from_str(&prepared.environment["ACYCLIC_WORKSPACES"]).map_err(storage)?;
         assert_eq!(
-            discovery.get("home"),
-            Some(&view.to_string_lossy().into_owned())
+            std::fs::canonicalize(&discovery["home"]).map_err(storage)?,
+            prepared.cwd
         );
         assert_eq!(discovery.get("project"), discovery.get("home"));
         Ok(((), claims))

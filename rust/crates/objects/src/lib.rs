@@ -52,7 +52,7 @@ mod tests;
 pub use acyclic_stream::SealedBytes as Sealed;
 pub use availability::{Availability, AvailabilityCursor, AvailabilitySource};
 pub use blob::{ByteRange, ContentDigests, ContentHasher, Digest, Kind, Manifest, Part};
-pub use error::Error;
+pub use error::{Error, ReadLimitExceeded};
 pub use manifest_builder::ManifestBuilder;
 #[cfg(any(test, feature = "test-support"))]
 pub use medium::{Fault, Injected};

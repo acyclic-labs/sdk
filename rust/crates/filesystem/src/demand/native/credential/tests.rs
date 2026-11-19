@@ -292,6 +292,7 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
     let publications = Arc::new(AtomicUsize::new(0));
     let attempts = publications.clone();
     let refresh_path = path.clone();
+    let (admit_publication, admission) = tokio::sync::watch::channel(false);
     let source = NativeCredentialSource::bind(
         root,
         selected,
@@ -300,6 +301,7 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
         move |rejected, revision, _, file| {
             let path = refresh_path.clone();
             let attempts = attempts.clone();
+            let mut admission = admission.clone();
             async move {
                 drop(file);
                 if rejected.is_none() && attempts.load(Ordering::Relaxed) == 0 {
@@ -310,6 +312,10 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
                     )
                     .map(NativeCredentialUpdate::Observed);
                 }
+                admission
+                    .wait_for(|admitted| *admitted)
+                    .await
+                    .map_err(|_| error(CredentialSourceError::Unavailable))?;
                 // Exercise the real original private publisher, not a synthetic
                 // SourceChange or a reconstructed receipt. Its descriptor remains
                 // open across the original native fence and cache admission.
@@ -383,7 +389,14 @@ async fn publication_control(control: PublicationControl, retire_original: bool)
     .await?;
     let first = source.resolve().await?;
     assert!(first.reject().await?);
-    let (replacement, follower) = tokio::join!(source.resolve(), source.resolve());
+    // Admit both resolvers to the original flight before its publisher can
+    // settle. Fast native I/O can otherwise finish before the second poll.
+    let mut replacement = source.resolve();
+    let mut follower = source.resolve();
+    assert!(futures::poll!(replacement.as_mut()).is_pending());
+    assert!(futures::poll!(follower.as_mut()).is_pending());
+    admit_publication.send_replace(true);
+    let (replacement, follower) = tokio::join!(replacement, follower);
     if control == PublicationControl::Attributes {
         // Restore the fixture's permissions after both admission decisions,
         // so native cleanup does not depend on deleting a read-only file.

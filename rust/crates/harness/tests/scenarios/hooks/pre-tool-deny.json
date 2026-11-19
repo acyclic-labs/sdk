@@ -1,4 +1,5 @@
 {
+ "requires_native_hook": true,
  "home": {
   ".claude/settings.json": {
    "hooks": {

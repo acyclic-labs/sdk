@@ -106,7 +106,7 @@ impl DirectoryRead {
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     buffer: *mut c_void,
     filler: DirectoryFiller,

@@ -719,7 +719,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                 * 2
                 >= wire.bytes.len() as u64
         );
-        let body = json(&wire.bytes)?;
+        let body = acyclic_harness_provider_response::json(&wire.bytes)?;
         let marker = format!("[file: {}]", serde_json::to_string(&file).unwrap());
         let texts = |parts: &Value| {
             parts

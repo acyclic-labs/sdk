@@ -234,6 +234,7 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;
 
 impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatStore<P> {

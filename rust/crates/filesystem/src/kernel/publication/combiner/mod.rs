@@ -568,7 +568,7 @@ async fn prepare_delta<O: crate::AsyncObjectStore>(
         let changes = crate::PublicationChanges::proposed(
             objects,
             (base, base_id),
-            &root.value,
+            (&root.value, &delta.value.files),
             request,
             config,
             accounting,
@@ -613,6 +613,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests {
     use super::*;
     use crate::{FsError, WorkBudget};

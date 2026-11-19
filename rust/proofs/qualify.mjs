@@ -1192,10 +1192,10 @@ const claims = {
     ] },
   ],
   "public-pause-retirement": [
-    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
+    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-conformance",
     "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
     "abandoned public pause lost its original native transition",
-    ["--features", "test-support"],
+    [],
     { target: ["--test", "main"] },
   ],
   "public-settlement-source": [

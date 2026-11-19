@@ -32,7 +32,7 @@ impl SummaryCache {
             self.io = io.map(PreparationIo::scoped).transpose()?;
             self.summary.operation = Some(operation);
         } else if let (Some(retained), Some(current)) = (&mut self.io, io) {
-            retained.use_current_context(current);
+            retained.use_current_context(current)?;
         }
         self.trim_published(io)?;
         Ok(())
@@ -113,13 +113,6 @@ impl SummaryCache {
             return Ok(false);
         }
         let key = crate::model::hash_bytes(retry.as_bytes(), io)?;
-        let digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                event,
-                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
-                work,
-            )
-        })?;
         let indexed = self.summary.retries.get(&key, io)?;
         if indexed.is_none()
             && self
@@ -129,6 +122,13 @@ impl SummaryCache {
         {
             return Ok(false);
         }
+        let digest = crate::executor::with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(
+                event,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
+                work,
+            )
+        })?;
         if indexed == Some(&(sequence, digest)) {
             Ok(true)
         } else {

@@ -194,18 +194,13 @@ pub(crate) fn normalization<S>(
     Ok(())
 }
 
-/// Fuzz entry: the model JSON round trip plus every invariant, as panics.
-pub(crate) fn assert_normalization(value: &Value) {
+/// Checks the model JSON round trip and every argument normalization invariant.
+pub(crate) fn check_normalization(value: &Value) -> Result<(), String> {
     crate::fuzzing::assert_model_json_round_trip(value);
-    let judged = normalization(value, &CODEC, &mut |seen| {
+    normalization(value, &CODEC, &mut |seen| {
         for (name, check) in INVARIANTS {
-            if let Err(detail) = check(&seen) {
-                panic!("{name}: {detail}");
-            }
+            check(&seen).map_err(|detail| format!("{name}: {detail}"))?;
         }
-        Ok::<(), std::convert::Infallible>(())
-    });
-    if let Err(never) = judged {
-        match never {}
-    }
+        Ok(())
+    })
 }

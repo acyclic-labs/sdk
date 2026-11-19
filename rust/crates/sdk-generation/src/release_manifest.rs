@@ -311,14 +311,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path();
         let candidate = output_path(
-            &output,
+            output,
             &Channel::Release,
             &PublicationStatus::Candidate,
             "1.0.0",
         )
         .unwrap();
         let released = output_path(
-            &output,
+            output,
             &Channel::Release,
             &PublicationStatus::RegistryReleased,
             "1.0.0",
@@ -381,7 +381,7 @@ mod tests {
         );
         expected.insert(release_digest, "sha256:sidecar".into());
         let error = validate(
-            &root,
+            root,
             &output,
             &release,
             SourceIdentity {

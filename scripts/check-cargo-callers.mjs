@@ -5,24 +5,31 @@
 // evidence and vendored code are not tooling.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
+import { repositoryRoot as root, starlarkCargoCallers, trackedFiles } from "./policy-core.mjs";
 
 export const RECORD = "scripts/cargo-callers.json";
 const TOOLING = /(?:\.(?:mjs|cjs|js|mts|ts|sh|ps1|py|ya?ml|bzl|bazel)|(?:^|\/)package\.json|(?:^|\/)\.bazelrc)$/;
 const NOT_TOOLING = /(?:^|\/)(?:fixtures|corpus|evidence|vendor|node_modules|golden)(?:\/|$)/;
-// A Cargo subcommand on a command line, after any toolchain and global flags (`cargo +nightly --quiet -C dir
-// build`), or Cargo spawned by its program name: every built-in subcommand and the external ones tooling runs.
-const INVOCATION = /\bcargo(?:\s+(?:\+\S+|-{1,2}[A-Za-z][\w-]*(?:[= ][^\s-]\S*)?))*\s+(?:add|bench|build|check|clean|clippy|config|deny|doc|fetch|fix|fmt|fuzz|generate-lockfile|init|install|kani|llvm-cov|locate-project|metadata|miri|new|nextest|package|pkgid|publish|remove|run|rustc|rustdoc|search|test|tree|uninstall|update|vendor|verify-project|version|xtask|yank)(?![\w-])|["'`]cargo(?:\.exe)?["'`]/;
+// A Cargo subcommand after any toolchain and global flags, or a quoted program name.
+const SUBCOMMAND = /\bcargo(?:\s+(?:\+\S+|-{1,2}[A-Za-z][\w-]*(?:[= ][^\s-]\S*)?))*\s+(?:add|bench|build|check|clean|clippy|config|deny|doc|fetch|fix|fmt|fuzz|generate-lockfile|init|install|kani|llvm-cov|locate-project|metadata|miri|new|nextest|package|pkgid|publish|remove|run|rustc|rustdoc|search|test|tree|uninstall|update|vendor|verify-project|version|xtask|yank)(?![\w-])/;
+const PROGRAM = /["'`]cargo(?:\.exe)?["'`]/;
+const STARLARK = /\.(?:bzl|bazel)$/;
 
 /** Tracked tooling files that invoke Cargo, sorted. @param {string} root */
 export function cargoCallers(root) {
   const files = trackedFiles(root).filter(file => TOOLING.test(file) && !NOT_TOOLING.test(file));
-  return files.filter(file => {
+  const starlark = Object.create(null);
+  const callers = files.filter(file => {
     let text;
     try { text = readFileSync(join(root, file), "utf8"); }
     catch (error) { if (error.code === "ENOENT") return false; throw error; }
-    return INVOCATION.test(text);
-  }).sort();
+    if (SUBCOMMAND.test(text)) return true;
+    if (!PROGRAM.test(text)) return false;
+    if (!STARLARK.test(file)) return true;
+    starlark[file] = text;
+    return false;
+  });
+  return [...callers, ...starlarkCargoCallers(starlark)].sort();
 }
 
 /** Refusals of the current tree against the record. @param {string} root @param {string[]} recorded */

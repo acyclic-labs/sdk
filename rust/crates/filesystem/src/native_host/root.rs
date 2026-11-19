@@ -128,6 +128,19 @@ impl HostRoot {
         let (directory, identity) = open_root_directory(path, work)?;
         Ok(Self::from_parts(directory, identity))
     }
+
+    /// Holds an ambient parent through aliases. Callers must open or verify
+    /// the actual destination leaf relative to this capability.
+    pub(crate) fn open_ambient_parent<W: NativeHostWork>(
+        path: &Path,
+        work: &mut W,
+    ) -> Result<Self, W::Error> {
+        let directory =
+            open_root_directory_handle(path, DirectoryAccess::Read, DirectoryLinks::Follow, work)?;
+        let identity = directory_identity(&directory, work)?;
+        Ok(Self::from_parts(directory, identity))
+    }
+
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
     }

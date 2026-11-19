@@ -74,17 +74,22 @@ pub(crate) use work::NativeMaterializationActionPhase;
 #[cfg(test)]
 #[cfg(any(target_os = "macos", windows))]
 #[path = "tests/clone_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod clone_tests;
 #[cfg(test)]
 #[path = "tests/flush_group_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod flush_group_tests;
 #[cfg(test)]
 #[path = "tests/policy_metadata.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod policy_metadata_tests;
 #[cfg(test)]
 #[path = "tests/restore_recovery_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod restore_recovery_tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests/windows_name_tests.rs"]
+#[cfg(any(not(unit_test_split), unit_test_mount_views))]
 mod windows_name_tests;

@@ -2,7 +2,7 @@ use acyclic_fs::WorkspaceId;
 use acyclic_fs::git_compat::*;
 use std::collections::BTreeSet;
 
-use crate::fixtures::{TestExecutor, TestExecutorError, generation, tree, workspace};
+use crate::git_history::fixtures::{TestExecutor, TestExecutorError, generation, tree, workspace};
 
 #[tokio::test]
 async fn log_pages_stop_at_external_publication_parents() {

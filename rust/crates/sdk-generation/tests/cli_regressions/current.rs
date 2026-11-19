@@ -28,7 +28,11 @@ fn scenario_failure_leaves_docs_unadmitted() {
 #[test]
 fn source_mutation_during_profiles_leaves_docs_unadmitted() {
     runtime::time_control();
-    let fixture = feature_profile_fixture();
+    let fixture = profile_source(
+        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+        "src/lib.rs",
+        "pub struct Original;\n",
+    );
     fs::write(fixture.root.join("rust/crates/demo/build.rs"), r#"
 fn main() {
     use std::io::Write;
@@ -37,11 +41,7 @@ fn main() {
     writeln!(file, "// source mutated during profile execution").unwrap();
 }
 "#).unwrap();
-    git(&fixture.root, &["add", "."]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "source mutation fixture"],
-    );
+    init_git(&fixture.root, "source mutation fixture");
     let result = run_generate_execute_profiles(&fixture);
     assert!(!result.status.success(), "{}", output_message(&result));
     assert!(

@@ -346,45 +346,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        use crate::kernel::allocation::KernelOwnedAllocation;
-        use crate::kernel::{Owned, retire_allocation, split_allocation};
-        #[cfg(not(target_arch = "wasm32"))]
         self.validate_authored_input(&input, accounting)?;
         accounting.check()?;
-        let maximum = usize::MAX;
         let mut candidate = self.private_candidate(accounting, cancellation)?;
-        let backing =
-            crate::foundation::usize_to_u64(input.value.capacity() * size_of::<AuthoredMutation>());
-        let mut input = (input.value.into_iter(), input.allocation);
-        let mut batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
-        for mutation in input.0.by_ref() {
-            batch.ensure_for_push(maximum, accounting)?;
-            let bytes = mutation.logical_owned_bytes();
-            let allocation = split_allocation(&mut input.1, bytes)?;
-            let mut mutation = Owned::new(mutation, allocation, bytes);
-            accounting.charge(WorkCounters {
-                bytes_copied: crate::foundation::usize_to_u64(size_of::<AuthoredMutation>()),
-                ..WorkCounters::UNCHARGED
-            })?;
-            batch.value.push(mutation.value);
-            batch.allocation.absorb(&mut mutation.allocation)?;
-            batch.bytes = batch.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-        }
-        drop(input.0);
-        if batch.value.is_empty() {
-            batch.retire(accounting)?;
+        if input.value.is_empty() {
+            input.retire(accounting)?;
         } else {
             candidate
-                .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
+                .apply_authored_transaction_with_accounting(input, accounting, cancellation)
                 .await?
                 .retire(accounting)?;
         }
-        let backing = match &input.1 {
-            KernelOwnedAllocation::Standalone => backing,
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(guard) => guard.bytes(),
-        };
-        retire_allocation(input.1, backing, accounting)?;
         *self = candidate;
         Ok(())
     }

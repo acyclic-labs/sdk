@@ -67,7 +67,7 @@ impl CheckoutTools {
                 )?
                 .await?;
             }
-            let control = ProcessControl::open(self.expiry_unix_ms).map_err(storage)?;
+            let control = self.process_control()?;
             // A dropped turn stops its hooks; their workers still reap them.
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
@@ -214,12 +214,10 @@ mod tests {
         let check = owner_check(Arc::clone(workspace), control.clone());
         check().map_err(storage)?;
         control.stop();
-        assert_eq!(
-            check()
-                .expect_err("stopped command retained authority")
-                .kind(),
-            std::io::ErrorKind::Interrupted
-        );
+        let Err(stopped) = check() else {
+            return Err(Error::Invalid("stopped command retained authority".into()));
+        };
+        assert_eq!(stopped.kind(), std::io::ErrorKind::Interrupted);
 
         let check = owner_check(
             Arc::clone(workspace),
@@ -227,12 +225,10 @@ mod tests {
         );
         std::fs::rename(&root, directory.path().join("retired")).map_err(storage)?;
         std::fs::create_dir(&root).map_err(storage)?;
-        assert_eq!(
-            check()
-                .expect_err("replacement root retained authority")
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
+        let Err(replaced) = check() else {
+            return Err(Error::Invalid("replacement root retained authority".into()));
+        };
+        assert_eq!(replaced.kind(), std::io::ErrorKind::PermissionDenied);
         Ok(())
     }
 }

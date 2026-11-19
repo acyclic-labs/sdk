@@ -183,6 +183,7 @@ fn authority_code(error: &AuthorityStoreError) -> Code {
         E::AccountingHandoffActive
         | E::RejectedStatic(_)
         | E::Rejected(_)
+        | E::PublicationConditionFailed
         | E::ReplayCursorAhead { .. }
         | E::ReservationOriginalHeadUnavailable { .. } => Code::FailedPrecondition,
         E::InvalidReplayLimit | E::ReplayCursorProcessOverflow { .. } => Code::InvalidArgument,
@@ -441,4 +442,5 @@ fn local_objects_code(error: &acyclic_objects::local::LocalOpenError) -> Code {
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests;

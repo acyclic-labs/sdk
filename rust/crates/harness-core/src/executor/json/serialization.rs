@@ -135,14 +135,22 @@ impl Write for Writer<'_, '_, '_, '_, '_> {
                 };
                 let charge =
                     RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
+                let mut indexed = if self.prefix == 0 {
+                    None
+                } else {
+                    Some(checked(
+                        self.output
+                            .as_deref_mut()
+                            .and_then(|output| output.get_mut(..self.prefix)),
+                        "JSON index prefix was not reserved",
+                    )?)
+                };
                 for byte in bytes {
                     let depth = lexical.depth;
                     let string = lexical.string;
                     let item = lexical.byte(*byte, *bounds, *code, &charge)?;
-                    if self.prefix != 0 {
-                        let output = self.output.as_deref_mut().expect("indexed output");
-                        self.index
-                            .byte(&mut output[..self.prefix], *byte, depth, string, item)?;
+                    if let Some(output) = &mut indexed {
+                        self.index.byte(output, *byte, depth, string, item)?;
                     }
                 }
             }
@@ -541,11 +549,22 @@ pub(crate) fn borrowed_digest_with_work<T: Serialize + ?Sized>(
     code: Option<crate::wire::ErrorCode>,
     observer: &mut dyn crate::store::HistoryIo,
 ) -> Result<[u8; 32]> {
+    let mut digest = blake3::Hasher::new();
+    borrowed_update_with_work(value, bounds, code, observer, &mut digest)?;
+    Ok(*digest.finalize().as_bytes())
+}
+
+pub(crate) fn borrowed_update_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    bounds: JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    observer: &mut dyn crate::store::HistoryIo,
+    digest: &mut blake3::Hasher,
+) -> Result<u64> {
     let observer = RefCell::new(observer);
     let mut charge = |event| observer.borrow_mut().codec_charge(event);
     let mut scope = scope(bounds, code, &mut charge);
-    let mut digest = blake3::Hasher::new();
-    write(
+    let written = write(
         value,
         &mut scope,
         None,
@@ -559,7 +578,7 @@ pub(crate) fn borrowed_digest_with_work<T: Serialize + ?Sized>(
         false,
     )?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    Ok(*digest.finalize().as_bytes())
+    Ok(written)
 }
 
 /// Sorted-key encoding with funded buffers and Value storage.

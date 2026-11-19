@@ -125,4 +125,5 @@ pub(crate) fn partition_point_with_accounting<T>(
 
 #[cfg(test)]
 #[path = "tests/search.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

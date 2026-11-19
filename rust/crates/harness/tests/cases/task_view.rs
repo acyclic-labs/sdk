@@ -13,8 +13,12 @@ use std::{
     sync::Arc,
 };
 
-fn workspace_hints(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    serde_json::from_str(&environment["ACYCLIC_WORKSPACES"]).expect("native discovery is JSON")
+fn workspace_hints(environment: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
+    let encoded = environment
+        .get("ACYCLIC_WORKSPACES")
+        .ok_or_else(|| Error::NotFound("native workspace discovery".into()))?;
+    serde_json::from_str(encoded)
+        .map_err(|error| Error::Invalid(format!("native workspace discovery: {error}")))
 }
 
 fn volume_config() -> acyclic_fs::VolumeConfig {
@@ -124,8 +128,9 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
         source: (),
     })
 }
-fn root() -> PathBuf {
-    std::env::current_dir().unwrap().join("task-view")
+fn root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().map_err(|error| Error::Storage(error.to_string()))?;
+    Ok(cwd.join("task-view"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -174,7 +179,7 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
             .collect(),
     )?;
     let mut table = compose(
-        root(),
+        root()?,
         &caller,
         &capability(),
         CONTEXT,
@@ -182,7 +187,7 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
         [alias, other, data],
     )?;
     assert!(
-        workspace_hints(&table.environment()?).is_empty(),
+        workspace_hints(&table.environment()?)?.is_empty(),
         "a source subtree must not expose its whole native volume implicitly"
     );
     let (project, path) = table.file_for(Action::Read, None, "src/file", CONTEXT.now, None)?;
@@ -280,9 +285,9 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
         native_relative, "result",
         "native projections already select the source root"
     );
-    let projected = root().with_file_name("projected-app");
-    let read_only_root = root().with_file_name("readonly-reports");
-    let writable_root = root().with_file_name("writable-reports");
+    let projected = root()?.with_file_name("projected-app");
+    let read_only_root = root()?.with_file_name("readonly-reports");
+    let writable_root = root()?.with_file_name("writable-reports");
     for (relative, mount) in table.mounts_mut() {
         match relative {
             "" => mount.native_root = NativeRoot::Path(projected.clone()),
@@ -292,7 +297,7 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
         }
     }
     assert_eq!(
-        Path::new(&workspace_hints(&table.environment()?)["project"]),
+        Path::new(&workspace_hints(&table.environment()?)?["project"]),
         projected.as_path()
     );
     {
@@ -361,7 +366,7 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
     duplicate.entry = project.entry;
     assert!(matches!(
         compose(
-            root(),
+            root()?,
             &caller,
             &capability(),
             CONTEXT,
@@ -373,7 +378,7 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
     for invalid in ["../peer", "/absolute", "packages/../peer"] {
         let mut project = volume("B", "project", policy.clone())?;
         project.root = invalid.into();
-        assert!(compose(root(), &caller, &capability(), CONTEXT, project, []).is_err());
+        assert!(compose(root()?, &caller, &capability(), CONTEXT, project, []).is_err());
     }
     // The mount mode belongs to the selected subtree, not a permission union
     // over unrelated paths in the same volume.
@@ -390,7 +395,7 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
     let mut project = volume("B", "project", restricted)?;
     project.root = "packages/app".into();
     assert!(matches!(
-        compose(root(), &caller, &capability(), CONTEXT, project, []),
+        compose(root()?, &caller, &capability(), CONTEXT, project, []),
         Err(Error::Unauthorized(_))
     ));
     Ok(())
@@ -407,7 +412,7 @@ fn workspace_discovery_json_preserves_names_and_only_exposes_native_bindings() -
         .collect::<Result<Vec<_>>>()?;
     others.push(volume("C", "hidden", policy.clone())?);
     let mut table = compose(
-        root(),
+        root()?,
         &caller,
         &capability(),
         CONTEXT,
@@ -421,14 +426,14 @@ fn workspace_discovery_json_preserves_names_and_only_exposes_native_bindings() -
         "one discovery protocol replaces per-name variables"
     );
     assert_eq!(
-        workspace_hints(&logical).len(),
+        workspace_hints(&logical)?.len(),
         1,
         "logical and denied entries have no native path"
     );
-    expose_native_projections(&mut table);
+    expose_native_projections(&mut table)?;
     let hints = table.environment()?;
     assert_eq!(hints.len(), 1);
-    let workspaces = workspace_hints(&hints);
+    let workspaces = workspace_hints(&hints)?;
     assert_eq!(workspaces.len(), names.len() + 1);
     for name in names {
         let (_, mount) = table
@@ -443,18 +448,21 @@ fn workspace_discovery_json_preserves_names_and_only_exposes_native_bindings() -
     assert!(!workspaces.contains_key("hidden"));
     Ok(())
 }
-fn expose_native_projections(table: &mut MountTable<()>) {
+fn expose_native_projections(table: &mut MountTable<()>) -> Result<()> {
     let root = table.root.clone();
     for (relative, mount) in table.mounts_mut() {
         if !relative.is_empty() {
             let name = relative
                 .strip_prefix("volume:///")
                 .or_else(|| relative.strip_prefix("volume://"))
-                .expect("explicit volume address");
+                .ok_or_else(|| {
+                    Error::Invalid(format!("expected explicit volume address: {relative}"))
+                })?;
             mount.native_root =
                 NativeRoot::Path(root.with_file_name(format!("native-{}", name.replace('/', "-"))));
         }
     }
+    Ok(())
 }
 
 const CONTEXT: Context = Context {
@@ -467,7 +475,7 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
     let principal = principal("B");
     let policy = policy(false);
     let mut table = compose(
-        root(),
+        root()?,
         &principal,
         &capability(),
         CONTEXT,
@@ -482,12 +490,12 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
         table.context_line(),
         "Volumes: . (rw), volume:///data (logical, rw)"
     );
-    assert!(!workspace_hints(&table.environment()?).contains_key("data"));
-    expose_native_projections(&mut table);
+    assert!(!workspace_hints(&table.environment()?)?.contains_key("data"));
+    expose_native_projections(&mut table)?;
     let hints = table.environment()?;
     assert_eq!(
-        workspace_hints(&hints).get("data").map(PathBuf::from),
-        Some(root().with_file_name("native-data"))
+        workspace_hints(&hints)?.get("data").map(PathBuf::from),
+        Some(root()?.with_file_name("native-data"))
     );
     let (data, path) = table.resolve(Path::new("volume:///data/x"))?;
     assert_eq!(data.view.volume.id(), "B-data");
@@ -506,7 +514,7 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
         table.resolve(Path::new("../x")),
         Err(Error::Invalid(_))
     ));
-    assert!(matches!(table.resolve(&root()), Err(Error::Invalid(_))));
+    assert!(matches!(table.resolve(&root()?), Err(Error::Invalid(_))));
     Ok(())
 }
 
@@ -520,7 +528,7 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
             others.push(volume("C", "project", policy.clone())?);
         }
         compose(
-            root(),
+            root()?,
             &principal,
             &capability(),
             CONTEXT,
@@ -529,8 +537,8 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
         )
     };
     let mut table = build(false)?;
-    assert!(!workspace_hints(&table.environment()?).contains_key("A/project"));
-    expose_native_projections(&mut table);
+    assert!(!workspace_hints(&table.environment()?)?.contains_key("A/project"));
+    expose_native_projections(&mut table)?;
     let (foreign, path) = table.resolve(Path::new("volume://A/project/x"))?;
     let own = table
         .by_entry(foreign.view.entry)
@@ -541,7 +549,7 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
     );
     own.check(Action::Write, "x", CONTEXT.now)?;
     assert!(foreign.mode.read_only());
-    assert!(workspace_hints(&table.environment()?).contains_key("A/project"));
+    assert!(workspace_hints(&table.environment()?)?.contains_key("A/project"));
     foreign.check(Action::Read, &path, 100)?;
     assert!(matches!(
         foreign.check(Action::Write, &path, 100),
@@ -557,7 +565,7 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
     stale.generation -= 1;
     assert!(matches!(
         compose(
-            root(),
+            root()?,
             &principal,
             &capability(),
             CONTEXT,
@@ -581,7 +589,7 @@ fn descendant_rules_choose_a_writable_mount_and_keep_path_denials() -> Result<()
         ]],
     });
     let table = compose(
-        root(),
+        root()?,
         &principal,
         &capability(),
         CONTEXT,
@@ -602,7 +610,7 @@ fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<
     let mut hidden = volume("A", "project", policy.clone())?;
     hidden.generation -= 1;
     let table = compose(
-        root(),
+        root()?,
         &caller,
         &capability(),
         CONTEXT,
@@ -619,7 +627,7 @@ fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<
         Err(Error::NotFound(_))
     ));
     assert_eq!(table.context_line(), "Volumes: . (rw)");
-    assert!(!workspace_hints(&table.environment()?).contains_key("A/project"));
+    assert!(!workspace_hints(&table.environment()?)?.contains_key("A/project"));
     Ok(())
 }
 
@@ -629,7 +637,7 @@ fn duplicate_hidden_mount_paths_are_rejected() -> Result<()> {
     let policy = policy(false);
     assert!(matches!(
         compose(
-            root(),
+            root()?,
             &caller,
             &capability(),
             CONTEXT,
@@ -654,7 +662,7 @@ proptest! {
         if create { actions.push(Action::Create); }
         let policy = Arc::new(Policy { schema_version: POLICY_SCHEMA_VERSION, version: 1, layers: vec![vec![rule("selected", &actions, own, "**")]] });
         let capability = capability();
-        let table = compose(root(), &caller, &capability, CONTEXT, volume("B", "project", policy.clone()).unwrap(), [volume("A", "project", policy.clone()).unwrap()]).unwrap();
+        let table = compose(root().map_err(|error| TestCaseError::fail(error.to_string()))?, &caller, &capability, CONTEXT, volume("B", "project", policy.clone()).unwrap(), [volume("A", "project", policy.clone()).unwrap()]).unwrap();
         for agent in ["A", "B"] {
             let lineage = vec!["root".into(), agent.into()];
             let id = format!("{agent}-project");

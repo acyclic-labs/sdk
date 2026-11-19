@@ -86,7 +86,8 @@ impl Selection {
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
+#[cfg(any(not(unit_test_split), unit_test_foundation))]
 mod tests {
     use super::*;
     use crate::session::ChangeProvider;
@@ -416,7 +417,7 @@ mod tests {
         assert!(futures::poll!(terminal.as_mut()).is_pending());
         crate::access::fixtures::publish_policy(
             &workspace,
-            &crate::access::fixtures::denied(crate::access::Action::List, "watched"),
+            &crate::access::fixtures::denied(crate::access::Action::List, "watched")?,
         )
         .await?;
         assert!(matches!(revalidate(), Err(StreamError::AccessDenied)));
@@ -485,18 +486,23 @@ mod tests {
             selected.next().await.ok_or("missing opening")??,
             FollowUpdate::Opening { .. }
         ));
-        // Far more paths than one command can list, all in one publication.
+        // A publication lists its delta in its own commit only while it fits
+        // half a command's bytes; past that it is published by reference. These
+        // paths exceed that limit by a third, the smallest publication that
+        // still exercises the reference path.
+        const GROUPS: usize = 16;
+        const FILES_PER_GROUP: usize = 160;
         let module = "/watched/crates/publication-reference-delta-regression-module";
         let mut directories = vec!["/watched", "/watched/crates", module];
-        let groups: Vec<_> = (0..16)
+        let groups: Vec<_> = (0..GROUPS)
             .map(|group| format!("{module}/generated-source-group-{group:02}"))
             .collect();
         directories.extend(groups.iter().map(String::as_str));
-        let files: Vec<_> = (0..6144)
+        let files: Vec<_> = (0..GROUPS * FILES_PER_GROUP)
             .map(|index| {
                 format!(
                     "{}/a-source-file-with-a-descriptive-name-{index:05}.rs",
-                    groups[index % 16]
+                    groups[index % GROUPS]
                 )
             })
             .collect();
@@ -562,8 +568,11 @@ mod tests {
         // Expanding it cannot apply excluded paths, including a query whose
         // entire selected range was unchanged by this publication.
         for (prefix, expected) in [
-            (format!("{module}/generated-source-group-01"), 384),
-            (module.to_owned(), 384),
+            (
+                format!("{module}/generated-source-group-01"),
+                FILES_PER_GROUP,
+            ),
+            (module.to_owned(), FILES_PER_GROUP),
             ("/watched/crates/unchanged-selection".to_owned(), 0),
         ] {
             let credential = filtered_credential(

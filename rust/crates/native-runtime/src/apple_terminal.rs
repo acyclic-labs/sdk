@@ -116,7 +116,11 @@ impl<S: Sources<N>, const N: usize> Readiness<S, N> {
             .transpose()?;
         for (number, enabled) in self.fds.iter().zip(enabled) {
             if enabled {
-                self.words[number / WORD_BITS] |= 1 << (number % WORD_BITS);
+                let word = self
+                    .words
+                    .get_mut(number / WORD_BITS)
+                    .ok_or(io::ErrorKind::InvalidInput)?;
+                *word |= 1 << (number % WORD_BITS);
             }
         }
         let selected = self.words.as_mut_ptr().cast::<libc::fd_set>();
@@ -129,7 +133,11 @@ impl<S: Sources<N>, const N: usize> Readiness<S, N> {
         // Clear only our original source bits, including previously-ready
         // sources disabled on the next wait. No descriptor-set scan.
         for number in self.fds {
-            self.words[number / WORD_BITS] &= !(1 << (number % WORD_BITS));
+            let word = self
+                .words
+                .get_mut(number / WORD_BITS)
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            *word &= !(1 << (number % WORD_BITS));
         }
         if result >= 0 {
             return Ok(result != 0);

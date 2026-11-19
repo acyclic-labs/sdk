@@ -2,6 +2,7 @@
 use super::*;
 use {
     acyclic_fs_format::identity::{Digest, FileId, VolumeId},
+    acyclic_fs_format::metadata::{FileMetadata, MetadataField},
     acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
 };

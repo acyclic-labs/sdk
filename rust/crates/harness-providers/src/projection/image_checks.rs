@@ -17,18 +17,26 @@ use serde_json::{Value, json};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-struct NoHttp;
+#[derive(Default)]
+struct NoHttp(AtomicBool);
+
 impl HttpTransport for NoHttp {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        panic!("encoding must not send HTTP")
+        self.0.store(true, Ordering::Relaxed);
+        Box::pin(std::future::ready(Err(crate::invalid(
+            "encoding must not send HTTP",
+        ))))
     }
     fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        panic!("encoding must not wait")
+        self.0.store(true, Ordering::Relaxed);
+        Box::pin(std::future::ready(Err(crate::invalid(
+            "encoding must not wait",
+        ))))
     }
     fn now(&self) -> Duration {
         Duration::ZERO
@@ -58,7 +66,7 @@ impl ContentResidencyVerifier for Reader {
                 self.bytes
                     .iter()
                     .find(|bytes| bytes.len() as u64 == file.descriptor().byte_length())
-                    .expect("generated image length")
+                    .ok_or_else(|| crate::invalid("image length is absent from the fixture"))?
                     .clone()
                     .into(),
             ))
@@ -67,64 +75,73 @@ impl ContentResidencyVerifier for Reader {
 }
 
 pub(super) fn assert_roundtrip(input: &[u8]) {
-    futures::executor::block_on(async {
-        let images: Vec<Vec<u8>> = [
-            b"\x89PNG\r\n\x1a\n".as_slice(),
-            b"\xff\xd8\xff",
-            b"GIF89a",
-            b"RIFF0000WEBP",
-            b"%PDF-1.7\n",
-        ]
-        .into_iter()
-        .map(|header| [header, input].concat())
-        .collect();
-        let maximum_bytes = images.iter().map(Vec::len).max().unwrap() as u64;
-        for adapter in [
-            Adapter::Responses,
-            Adapter::Chat,
-            Adapter::Anthropic,
-            Adapter::Gemini,
-        ] {
-            let reader = Arc::new(Reader {
-                bytes: images.clone(),
-                reads: AtomicUsize::new(0),
-            });
-            let mut registry = Registry::with_transport(
-                Credentials::explicit(Default::default()),
-                Arc::new(NoHttp),
-            )
-            .with_content(reader.clone(), Some(maximum_bytes * 2));
-            registry.register("image-test".into(), serde_json::from_value(json!({
+    let result = futures::executor::block_on(check_roundtrip(input));
+    assert!(result.is_ok(), "native media round trip failed: {result:?}");
+}
+
+async fn check_roundtrip(input: &[u8]) -> crate::fuzzing::CheckResult {
+    let images: Vec<Vec<u8>> = [
+        b"\x89PNG\r\n\x1a\n".as_slice(),
+        b"\xff\xd8\xff",
+        b"GIF89a",
+        b"RIFF0000WEBP",
+        b"%PDF-1.7\n",
+    ]
+    .into_iter()
+    .map(|header| [header, input].concat())
+    .collect();
+    let maximum_bytes = images
+        .iter()
+        .map(Vec::len)
+        .max()
+        .ok_or("missing image fixtures")? as u64;
+    for adapter in [
+        Adapter::Responses,
+        Adapter::Chat,
+        Adapter::Anthropic,
+        Adapter::Gemini,
+    ] {
+        let reader = Arc::new(Reader {
+            bytes: images.clone(),
+            reads: AtomicUsize::new(0),
+        });
+        let transport = Arc::new(NoHttp::default());
+        let mut registry =
+            Registry::with_transport(Credentials::explicit(Default::default()), transport.clone())
+                .with_content(reader.clone(), Some(maximum_bytes * 2));
+        registry.register("image-test".into(), serde_json::from_value(json!({
                 "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",
                 "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":true}}},
                 "max_event_bytes":4096,
                 "token_counter":{"path":"count_tokens","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
-            })).unwrap()).unwrap();
-            let provider = registry.resolve("image-test/tiny").unwrap();
-            for bytes in &images {
-                reader.reads.store(0, Ordering::SeqCst);
-                let media = image_media_type(bytes).unwrap_or("application/pdf");
-                let encoded_work = bytes.len() as u64;
-                let file = FileRef::new(
-                    serde_json::from_value(json!({
-                        "provider":{"namespace":"test","family":"filesystem","version":"2"},
-                        "id":"project","class":"project","owner":{"kind":"project","id":"project"}
-                    }))
-                    .unwrap(),
-                    format!("image-{}", bytes.len()),
-                    "1".into(),
-                    FileDescriptor::from_bytes(&bytes, media, &mut None).unwrap(),
-                    "image".into(),
-                    &mut None,
-                )
-                .unwrap();
-                for work in [1, encoded_work - 1, encoded_work] {
-                    check_projection(&provider, &reader, &file, bytes, adapter, work).await;
-                }
+            }))?)?;
+        let provider = registry.resolve("image-test/tiny")?;
+        for bytes in &images {
+            reader.reads.store(0, Ordering::SeqCst);
+            let media = image_media_type(bytes).unwrap_or("application/pdf");
+            let encoded_work = bytes.len() as u64;
+            let file = FileRef::new(
+                serde_json::from_value(json!({
+                    "provider":{"namespace":"test","family":"filesystem","version":"2"},
+                    "id":"project","class":"project","owner":{"kind":"project","id":"project"}
+                }))?,
+                format!("image-{}", bytes.len()),
+                "1".into(),
+                FileDescriptor::from_bytes(bytes, media, &mut None)?,
+                "image".into(),
+                &mut None,
+            )?;
+            for work in [1, encoded_work - 1, encoded_work] {
+                check_projection(&provider, &reader, &file, bytes, adapter, work).await?;
             }
         }
-    });
+        assert!(
+            !transport.0.load(Ordering::Relaxed),
+            "encoding performed HTTP or waited"
+        );
+    }
     let _ = image_media_type(input);
+    Ok(())
 }
 
 async fn check_projection(
@@ -134,7 +151,7 @@ async fn check_projection(
     bytes: &[u8],
     adapter: Adapter,
     work: u64,
-) {
+) -> crate::fuzzing::CheckResult {
     let encoded_work = bytes.len() as u64;
     let request = PreparedModelRequest::prepare(
         ModelRequest {
@@ -168,8 +185,7 @@ async fn check_projection(
         },
         Limits::default(),
         None,
-    )
-    .unwrap();
+    )?;
     let encoded = crate::dispatch::encode(
         provider,
         &request,
@@ -179,77 +195,74 @@ async fn check_projection(
     )
     .await;
     if work < encoded_work {
-        assert!(
-            encoded
-                .unwrap_err()
-                .to_string()
-                .contains("projection work limit")
-        );
+        let Err(error) = encoded else {
+            return Err("projection accepted work beyond its limit".into());
+        };
+        assert!(error.to_string().contains("projection work limit"));
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-        return;
+        return Ok(());
     }
-    let body: Value = serde_json::from_slice(&encoded.unwrap().bytes).unwrap();
+    let body: Value = serde_json::from_slice(&encoded?.bytes)?;
     assert!(crate::validate_input(adapter, &body).is_empty(), "{body}");
-    let parts: Vec<_> = match adapter {
-        Adapter::Responses => body["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|item| item["content"].as_array().unwrap())
-            .collect(),
-        Adapter::Chat | Adapter::Anthropic => body["messages"][0]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .collect(),
-        Adapter::Gemini => body["contents"][0]["parts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .collect(),
-    };
-    assert_eq!(parts.len(), 3);
-    assert_eq!(parts[0]["text"], "before");
-    assert_eq!(parts[2]["text"], "after");
-    let data = match adapter {
-        Adapter::Responses if file.descriptor().media_type() == "application/pdf" => {
-            parts[1]["file_data"]
-                .as_str()
-                .unwrap()
-                .split_once(',')
-                .unwrap()
-                .1
-        }
-        Adapter::Chat if file.descriptor().media_type() == "application/pdf" => {
-            parts[1]["file"]["file_data"]
-                .as_str()
-                .unwrap()
-                .split_once(',')
-                .unwrap()
-                .1
-        }
+    let mut parts = Vec::new();
+    match adapter {
         Adapter::Responses => {
-            parts[1]["image_url"]
-                .as_str()
-                .unwrap()
-                .split_once(',')
-                .unwrap()
-                .1
+            for item in body
+                .get("input")
+                .and_then(Value::as_array)
+                .ok_or("missing Responses input")?
+            {
+                parts.extend(
+                    item.get("content")
+                        .and_then(Value::as_array)
+                        .ok_or("missing Responses content")?,
+                );
+            }
         }
-        Adapter::Chat => {
-            parts[1]["image_url"]["url"]
-                .as_str()
-                .unwrap()
-                .split_once(',')
-                .unwrap()
-                .1
+        Adapter::Chat | Adapter::Anthropic => {
+            parts.extend(
+                body.pointer("/messages/0/content")
+                    .and_then(Value::as_array)
+                    .ok_or("missing message content")?,
+            );
         }
-        Adapter::Anthropic => parts[1]["source"]["data"].as_str().unwrap(),
-        Adapter::Gemini => parts[1]["inlineData"]["data"].as_str().unwrap(),
+        Adapter::Gemini => {
+            parts.extend(
+                body.pointer("/contents/0/parts")
+                    .and_then(Value::as_array)
+                    .ok_or("missing Gemini parts")?,
+            );
+        }
     };
-    assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes);
+    let &[before, media, after] = parts.as_slice() else {
+        return Err("expected text, media and trailing text in projection".into());
+    };
+    assert_eq!(before.get("text").and_then(Value::as_str), Some("before"));
+    assert_eq!(after.get("text").and_then(Value::as_str), Some("after"));
+    let pointer = match adapter {
+        Adapter::Responses if file.descriptor().media_type() == "application/pdf" => "/file_data",
+        Adapter::Chat if file.descriptor().media_type() == "application/pdf" => "/file/file_data",
+        Adapter::Responses => "/image_url",
+        Adapter::Chat => "/image_url/url",
+        Adapter::Anthropic => "/source/data",
+        Adapter::Gemini => "/inlineData/data",
+    };
+    let media = media.pointer(pointer).ok_or("missing projected media")?;
+    let data = match adapter {
+        Adapter::Responses | Adapter::Chat => data_uri(media)?,
+        Adapter::Anthropic | Adapter::Gemini => media.as_str().ok_or("invalid projected media")?,
+    };
+    assert_eq!(STANDARD.decode(data)?.as_slice(), bytes);
     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-    check_result_media(provider, reader, request.request(), file, bytes, adapter).await;
+    check_result_media(provider, reader, request.request(), file, bytes, adapter).await
+}
+
+fn data_uri(value: &Value) -> std::result::Result<&str, &'static str> {
+    value
+        .as_str()
+        .and_then(|uri| uri.split_once(','))
+        .map(|(_, data)| data)
+        .ok_or("missing data URI payload")
 }
 
 async fn check_result_media(
@@ -259,9 +272,13 @@ async fn check_result_media(
     file: &FileRef,
     bytes: &[u8],
     adapter: Adapter,
-) {
-    let ModelContentPart::File { policy, .. } = &request.messages[0].content.parts()[1] else {
-        panic!("generated native input");
+) -> crate::fuzzing::CheckResult {
+    let Some(ModelContentPart::File { policy, .. }) = request
+        .messages
+        .first()
+        .and_then(|message| message.content.parts().get(1))
+    else {
+        return Err("fixture request lacks its native file input".into());
     };
     let mut request = request.clone();
     request
@@ -314,7 +331,7 @@ async fn check_result_media(
             }),
         });
     }
-    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None).unwrap();
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     reader.reads.store(0, Ordering::SeqCst);
     let encoded = crate::dispatch::encode(
         provider,
@@ -323,42 +340,41 @@ async fn check_result_media(
         None,
         &provider.reasoning_origin(None, None),
     )
-    .await
-    .unwrap();
-    let body: Value = serde_json::from_slice(&encoded.bytes).unwrap();
+    .await?;
+    let body: Value = serde_json::from_slice(&encoded.bytes)?;
     assert!(
         crate::validate_input(adapter, &body).is_empty(),
         "{adapter:?}: {body}"
     );
     let mut found = Vec::new();
-    collect_media(&body, &mut found);
+    collect_media(&body, &mut found)?;
     assert_eq!(found, vec![bytes.to_vec(), bytes.to_vec()]);
     assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
-    let marker = |file| {
-        crate::files::FileText::default()
-            .project(file, &FileProjectionPolicy::Reference)
-            .unwrap()
-    };
-    assert!(contains_text(&body, &marker(file)));
-    let mut relocated = serde_json::to_value(file).unwrap();
+    let marker =
+        |file| crate::files::FileText::default().project(file, &FileProjectionPolicy::Reference);
+    assert!(contains_text(&body, &marker(file)?));
+    let mut relocated = serde_json::to_value(file)?;
     relocated["path"] = json!(format!("moved/{}", file.path()));
-    let relocated: FileRef = serde_json::from_value(relocated).unwrap();
+    let relocated: FileRef = serde_json::from_value(relocated)?;
     let mut changed = prepared.request().clone();
-    let ModelContent::Part(ModelContentPart::ToolResult {
+    let Some(ModelContent::Part(ModelContentPart::ToolResult {
         content: ToolResultContent::Parts { parts },
         ..
-    }) = &mut changed.messages[2].content
+    })) = changed
+        .messages
+        .get_mut(2)
+        .map(|message| &mut message.content)
     else {
-        panic!("generated native tool result");
+        return Err("fixture request lacks its native tool result".into());
     };
-    let ModelDataPart::File { file, .. } = &mut parts[1] else {
-        panic!("generated native file");
+    let Some(ModelDataPart::File { file, .. }) = parts.get_mut(1) else {
+        return Err("fixture tool result lacks its native file".into());
     };
     *file = relocated.clone();
-    let changed = PreparedModelRequest::prepare(changed, Limits::default(), None).unwrap();
+    let changed = PreparedModelRequest::prepare(changed, Limits::default(), None)?;
     assert_ne!(
-        prepared.replay_key().unwrap(),
-        changed.replay_key().unwrap(),
+        prepared.replay_key()?,
+        changed.replay_key()?,
         "a changed visible tool reference must invalidate replay"
     );
     let changed_encoded = crate::dispatch::encode(
@@ -368,14 +384,13 @@ async fn check_result_media(
         None,
         &provider.reasoning_origin(None, None),
     )
-    .await
-    .unwrap();
-    let changed_body: Value = serde_json::from_slice(&changed_encoded.bytes).unwrap();
+    .await?;
+    let changed_body: Value = serde_json::from_slice(&changed_encoded.bytes)?;
     assert!(crate::validate_input(adapter, &changed_body).is_empty());
     assert_eq!(reader.reads.load(Ordering::SeqCst), 4);
-    assert!(contains_text(&changed_body, &marker(&relocated)));
+    assert!(contains_text(&changed_body, &marker(&relocated)?));
     let mut changed_media = Vec::new();
-    collect_media(&changed_body, &mut changed_media);
+    collect_media(&changed_body, &mut changed_media)?;
     assert_eq!(changed_media, found, "only the visible reference changed");
     if matches!(adapter, Adapter::Chat | Adapter::Responses) {
         let items = body[if adapter == Adapter::Chat {
@@ -384,21 +399,23 @@ async fn check_result_media(
             "input"
         }]
         .as_array()
-        .unwrap();
+        .ok_or("missing replayed messages")?;
         let last_result = items
             .iter()
             .rposition(|item| item["role"] == "tool" || item["type"] == "function_call_output")
-            .unwrap();
-        let first_media = items
-            .iter()
-            .position(|item| {
-                let mut media = Vec::new();
-                collect_media(item, &mut media);
-                !media.is_empty()
-            })
-            .unwrap();
-        assert!(last_result < first_media);
+            .ok_or("missing tool result")?;
+        let mut first_media = None;
+        for (index, item) in items.iter().enumerate() {
+            let mut media = Vec::new();
+            collect_media(item, &mut media)?;
+            if !media.is_empty() {
+                first_media = Some(index);
+                break;
+            }
+        }
+        assert!(last_result < first_media.ok_or("missing tool result media")?);
     }
+    Ok(())
 }
 
 fn contains_text(value: &Value, needle: &str) -> bool {
@@ -410,25 +427,26 @@ fn contains_text(value: &Value, needle: &str) -> bool {
     }
 }
 
-fn collect_media(value: &Value, found: &mut Vec<Vec<u8>>) {
+fn collect_media(value: &Value, found: &mut Vec<Vec<u8>>) -> crate::fuzzing::CheckResult {
     match value {
         Value::String(text) if text.starts_with("data:") => {
-            found.push(STANDARD.decode(text.split_once(',').unwrap().1).unwrap())
+            found.push(STANDARD.decode(data_uri(value)?)?);
         }
         Value::Object(fields) => {
             for (key, value) in fields {
                 if key == "data" {
-                    found.push(STANDARD.decode(value.as_str().unwrap()).unwrap());
+                    found.push(STANDARD.decode(value.as_str().ok_or("missing base64 media")?)?);
                 } else {
-                    collect_media(value, found);
+                    collect_media(value, found)?;
                 }
             }
         }
         Value::Array(items) => {
             for item in items {
-                collect_media(item, found);
+                collect_media(item, found)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }

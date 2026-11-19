@@ -403,6 +403,7 @@ fn probe_platform(
 
 #[cfg(test)]
 #[cfg(windows)]
+#[cfg(any(not(unit_test_split), unit_test_mount))]
 mod tests {
     use super::{
         NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,

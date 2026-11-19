@@ -1242,4 +1242,5 @@ where
 
 #[cfg(test)]
 #[path = "tests/persistent_btree.rs"]
+#[cfg(any(not(unit_test_split), unit_test_kernel))]
 mod tests;

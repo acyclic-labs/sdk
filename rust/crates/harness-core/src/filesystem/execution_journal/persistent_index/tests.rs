@@ -51,6 +51,10 @@ async fn check_roots(_native: bool) -> Result<()> {
     let old = root;
     root = Some(writer.set(root, key(0), b"replacement", false).await?);
     let tail = writer.tail()?;
+    assert_eq!(
+        tail, 1_001,
+        "small rewrites publish one physical record per key"
+    );
     for (index, records) in writer.records().chunks(128).enumerate() {
         let outcome = provider
             .append(acyclic_stream::AppendRequest {
@@ -191,5 +195,41 @@ async fn record_framing_never_substitutes_for_the_authenticated_value_digest() -
             "truncated value reused its parent's proof"
         );
     }
+    let sequence = (bytes.len() - node::LEAF_HEADER_BYTES) as u64;
+    let leaf = NodeRef {
+        sequence: 0,
+        digest,
+    };
+    let (bundle, root) = node::encode_branch_bundle(
+        sequence,
+        &node::BundleLeaf::Separate(leaf),
+        [(4, 0, [leaf; 2]), (1, 0, [leaf; 2])].into_iter(),
+        None,
+    )?;
+    let mut damaged = bundle.to_vec();
+    let last = damaged
+        .last_mut()
+        .ok_or_else(|| invalid(None, "empty branch bundle"))?;
+    *last ^= 1;
+    provider
+        .append(acyclic_stream::AppendRequest {
+            path: path.clone(),
+            records: vec![damaged.into()],
+            if_tail: Some(sequence),
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
+    let reader = Reader {
+        provider: &provider,
+        path: &path,
+        base: sequence + 1,
+        staged: &[],
+        io: None,
+        cache: None,
+    };
+    assert!(
+        reader.read(root).await.is_err(),
+        "bundled branch bypassed its digest"
+    );
     Ok(())
 }

@@ -256,6 +256,7 @@ pub(in crate::core_state) fn compare_native_context(
 }
 
 #[cfg(test)]
+#[cfg(any(not(unit_test_split), unit_test_publication))]
 mod tests {
     use super::*;
 

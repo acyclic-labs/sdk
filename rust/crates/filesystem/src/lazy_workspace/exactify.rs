@@ -1,4 +1,28 @@
 use super::*;
+use crate::kernel::allocation::fixed_index::FixedIndex;
+use crate::model::CaseSensitivity;
+
+#[derive(Default)]
+struct PendingExactifyFiles {
+    mutations: Option<Owned<Vec<AuthoredMutation>>>,
+    identities: FixedIndex<()>,
+}
+
+impl PendingExactifyFiles {
+    async fn apply<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+        &mut self,
+        transaction: &mut crate::Transaction<A, O>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        if let Some(mutations) = self.mutations.take() {
+            self.identities = FixedIndex::default();
+            transaction
+                .apply_authored(mutations, ctx, cancellation(ctx))
+                .await?;
+        }
+        Ok(())
+    }
+}
 
 /// Full-tree materializations performed in this process, for cost tests.
 #[cfg(feature = "test-support")]
@@ -29,6 +53,26 @@ impl<
         }
         let cut = self.snapshot(ctx).await?;
         let observation = match self.overlay_fact(cut.overlay, root, ctx).await? {
+            Some(LazyOverlayChange::Observe {
+                source,
+                complete: true,
+                ..
+            }) if source == cut.source => {
+                // This cut already owns every source binding under the root.
+                // Revalidate the binding against the head sampled by snapshot.
+                let state = self.state(ctx).await?;
+                if state.overlay != cut.overlay
+                    || state.source != cut.source
+                    || state.shadows != cut.shadows
+                {
+                    return Err(LazyWorkspaceError::Concurrent);
+                }
+                return accounted!(ctx, |work, cancel| self.workspace.generation(
+                    cut.authored_generation,
+                    work,
+                    cancel,
+                ));
+            }
             Some(LazyOverlayChange::Observe { source, node, .. }) if source == cut.source => {
                 Some((source, node))
             }
@@ -496,44 +540,14 @@ impl<
                     .await?;
                 let mut transaction =
                     crate::Transaction::from_checkout(workspace, checkout, key, false);
-                for path in chunk {
-                    let (lookup, _, guard) = self
-                        .inspect_unauthored(
-                            &mut transaction.checkout,
-                            path,
-                            InspectBasis {
-                                state: Some(&state),
-                                retain_pinned_observation: true,
-                                ..InspectBasis::default()
-                            },
-                            ctx,
-                        )
-                        .await?;
-                    if let Some(lookup) = lookup {
-                        let promoted = async {
-                            // A live materialization must retain the source
-                            // version before authored rows can hide its origin.
-                            // Historical scratch cuts do not observe the owner.
-                            if live {
-                                overlay =
-                                    self.observed_overlay(overlay, path, &lookup, ctx).await?;
-                            }
-                            self.apply_resolved_promotion(
-                                &mut transaction,
-                                path,
-                                &lookup,
-                                u64::MAX,
-                                ctx,
-                            )
-                            .await
-                        }
-                        .await;
-                        self.retire_lookup((lookup, guard), ctx)?;
-                        promoted?;
-                    } else {
-                        crate::kernel::retire_allocation(guard, 0, ctx)?;
-                    }
-                }
+                self.stage_exactify_chunk(
+                    &mut transaction,
+                    &state,
+                    chunk,
+                    live.then_some(&mut overlay),
+                    ctx,
+                )
+                .await?;
                 if !transaction.checkout.has_pending_mutations() {
                     continue;
                 }
@@ -556,6 +570,143 @@ impl<
         }
         .await;
         paths.retire(ctx)?;
+        result
+    }
+
+    async fn stage_exactify_chunk(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        state: &LazyWorkspaceState,
+        paths: &[String],
+        mut overlay: Option<&mut LazyOverlayId>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        let mut pending = PendingExactifyFiles::default();
+        let exact_names =
+            self.workspace.volume_config().case_sensitivity == CaseSensitivity::Sensitive;
+        let result = async {
+            let mut previous = None;
+            for path in paths {
+                let depth = path.matches('/').count();
+                // Distinct paths at the same depth cannot name a pending file
+                // as an ancestor. They can share one mutation plan even when
+                // they are under different directories.
+                if let Some((previous_path, previous_depth)) = previous
+                    && (previous_path == path.as_str() || previous_depth != depth)
+                {
+                    pending.apply(transaction, ctx).await?;
+                }
+                previous = Some((path.as_str(), depth));
+
+                let (lookup, _, guard) = self
+                    .inspect_unauthored(
+                        &mut transaction.checkout,
+                        path,
+                        InspectBasis {
+                            state: Some(state),
+                            retain_pinned_observation: true,
+                            ..InspectBasis::default()
+                        },
+                        ctx,
+                    )
+                    .await?;
+                let Some(lookup) = lookup else {
+                    crate::kernel::retire_allocation(guard, 0, ctx)?;
+                    continue;
+                };
+                let promoted = async {
+                    // Record live source versions before the authored binding
+                    // hides them. Scratch cuts have no live overlay to update.
+                    if let Some(overlay) = overlay.as_deref_mut() {
+                        *overlay = self.observed_overlay(*overlay, path, &lookup, ctx).await?;
+                    }
+                    // Unequal spellings can resolve to one name in a folded
+                    // volume. They must observe each preceding mutation.
+                    if exact_names
+                        && let LazyLookup::Source { source, node } = &lookup
+                        && node.kind == SourceNodeKind::RegularFile
+                    {
+                        self.stage_exactify_regular(
+                            transaction,
+                            path,
+                            (source.clone(), *node),
+                            &mut pending,
+                            ctx,
+                        )
+                        .await?;
+                    } else {
+                        pending.apply(transaction, ctx).await?;
+                        self.apply_resolved_promotion(transaction, path, &lookup, u64::MAX, ctx)
+                            .await?;
+                    }
+                    Ok::<_, LazyWorkspaceError>(())
+                }
+                .await;
+                self.retire_lookup((lookup, guard), ctx)?;
+                promoted?;
+            }
+            pending.apply(transaction, ctx).await
+        }
+        .await;
+        if let Some(mutations) = pending.mutations.take() {
+            mutations.retire(ctx)?;
+        }
+        result
+    }
+
+    async fn stage_exactify_regular(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        path: &str,
+        source_node: (SourceReference, SourceNode),
+        pending: &mut PendingExactifyFiles,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        let mut namespace = None;
+        let result = async {
+            crate::heap_future::in_borrowed_frame!(ctx, |ctx| async {
+                namespace = Some(self.namespace_path(path, ctx)?);
+                let node = source_node.1;
+                node.logical_bytes
+                    .ok_or(LazyWorkspaceError::NotRegularFile)?;
+                let id = self.source_file_id(&node.file_identity, ctx)?;
+                let key = id.into_bytes();
+                if pending.identities.get(key, ctx)?.is_some() {
+                    // Any following hard link must see the first binding and
+                    // restore the same authored record through the shared path.
+                    pending.apply(transaction, ctx).await?;
+                }
+                if let Some(record) = self.authored_source_record(transaction, id, ctx).await? {
+                    pending.apply(transaction, ctx).await?;
+                    return Self::restore_source_record(transaction, record, &mut namespace, ctx)
+                        .await;
+                }
+                pending
+                    .identities
+                    .get_or_try_insert_with(key, ctx, |_| Ok(()))?;
+                let mutations = match &mut pending.mutations {
+                    Some(mutations) => mutations,
+                    slot @ None => slot.insert(Owned::allocate(1, ctx)?),
+                };
+                mutations.ensure_for_push(usize::MAX, ctx)?;
+                let mutation = self
+                    .prepare_source_mutation(
+                        transaction,
+                        path,
+                        source_node,
+                        u64::MAX,
+                        &mut namespace,
+                        ctx,
+                    )
+                    .await?;
+                crate::Transaction::<A, O>::push_mutation(mutations, mutation, ctx)?;
+                Ok(())
+            })
+        }
+        .await;
+        if let Some(namespace) = namespace {
+            namespace.retire(ctx)?;
+        }
         result
     }
 
