@@ -128,16 +128,19 @@ fn block_clone_probe(
 
 #[cfg(test)]
 mod tests {
-    use super::NativeSparseAccelerationEvidence;
+    use super::super::{
+        NativeSparseAccelerationEvidence, NativeStorageCapabilityError,
+        probe_native_storage_accelerations,
+    };
     use super::*;
 
     #[test]
     fn live_probe_bounds_work_and_cleans_up() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let evidence = match super::probe_native_storage_accelerations(directory.path()) {
+        let evidence = match probe_native_storage_accelerations(directory.path()) {
             Ok(evidence) => evidence,
             Err(NativeStorageAccelerationError::Capability(
-                super::super::storage_capabilities::NativeStorageCapabilityError::UnsupportedTarget,
+                NativeStorageCapabilityError::UnsupportedTarget,
             )) => return Ok(()),
             Err(error) => return Err(error.into()),
         };

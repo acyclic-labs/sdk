@@ -111,8 +111,10 @@ pub(super) fn probe(
 
 #[cfg(test)]
 mod tests {
-    use super::super::storage_capabilities::probe_native_storage_capabilities;
-    use super::NativeSparseAccelerationEvidence;
+    use super::super::{
+        NativeSparseAccelerationEvidence, probe_native_storage_accelerations,
+        probe_native_storage_capabilities,
+    };
     use super::*;
 
     #[test]
@@ -125,7 +127,7 @@ mod tests {
         }
         assert!(capabilities.sparse_files);
         assert!(capabilities.block_cloning);
-        let evidence = super::probe_native_storage_accelerations(directory.path())?;
+        let evidence = probe_native_storage_accelerations(directory.path())?;
         assert!(matches!(
             evidence.sparse,
             NativeSparseAccelerationEvidence::Available { .. }
