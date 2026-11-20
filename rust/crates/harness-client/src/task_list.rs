@@ -97,6 +97,11 @@ pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
                 let value = match event {
                     Event::Start(Tag::Paragraph) if !item.text.is_empty() => Cow::Borrowed("\n\n"),
                     Event::TaskListMarker(done) => {
+                        // The parser also admits other whitespace between the
+                        // brackets; only the canonical markers are tasks.
+                        if !matches!(markdown.get(span.clone())?, "[ ]" | "[x]" | "[X]") {
+                            return None;
+                        }
                         item.state = Some(if done {
                             TaskState::Completed
                         } else {

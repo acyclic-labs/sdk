@@ -676,13 +676,15 @@ proptest! {
             let lineage = vec!["root".into(), agent.into()];
             let id = format!("{agent}-project");
             let selected = if agent == "B" { path.to_owned() } else { format!("volume://A/project/{path}") };
-            let (mount, _) = table.resolve(Path::new(&selected)).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            // A volume the caller may not list is absent from the view, so
+            // every action on it is refused exactly as the direct decision is.
+            let resolved = table.resolve(Path::new(&selected)).ok();
             for action in [Action::Read, Action::Write, Action::Create] {
                 let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, reference: None, generation: 10, head: 10, path, config: volume_config() }, CONTEXT, &capability).allowed;
                 let descendant = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, reference: None, generation: 10, head: 10, path: "output/x", config: volume_config() }, CONTEXT, &capability).allowed;
-                let mounted = table.resolve(Path::new(&selected)).is_ok_and(|(mount, relative)| mount.check(action, &relative, 100).is_ok());
+                let mounted = resolved.as_ref().is_some_and(|(mount, relative)| mount.check(action, relative, 100).is_ok());
                 prop_assert_eq!(mounted, direct);
-                prop_assert_eq!(mount.mode.allows(action), direct || descendant);
+                prop_assert_eq!(resolved.as_ref().is_some_and(|(mount, _)| mount.mode.allows(action)), direct || descendant);
             }
         }
     }
