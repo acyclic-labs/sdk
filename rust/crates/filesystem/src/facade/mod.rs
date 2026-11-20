@@ -106,6 +106,10 @@ use std::sync::{OnceLock, Weak};
 
 mod fork_selection;
 
+#[cfg(test)]
+#[path = "../tests/facade/mod.rs"]
+mod tests;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_snapshot;
 
@@ -124,7 +128,7 @@ mod content;
 mod content_model;
 mod detached;
 mod diff;
-pub mod policy_cache;
+pub(crate) mod policy_cache;
 use crate::kernel::diff_generation_file_tables;
 mod directory;
 mod error;

@@ -17,10 +17,9 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         .read_metadata(&path("source")?, B, &cancel)
         .await?
         .value;
-    let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(
-        &mut acyclic_fs::kernel::allocation::KernelAccounting::native(&original, &cancel),
+        &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancel),
         &cancel,
     )?;
     candidate.bind_authored_operation(OperationId::new());
@@ -37,7 +36,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     )?;
     let mut accounting = KernelAccounting::native(&original, &cancel);
     let applying = candidate.apply_authored_transaction_with_accounting(
-        acyclic_fs::kernel::Owned {
+        crate::kernel::Owned {
             value: input.0,
             bytes: input.1.bytes(),
             allocation: KernelOwnedAllocation::NativeOriginal(input.1),
@@ -118,7 +117,7 @@ async fn bound_operation_recreates_a_renamed_away_name_with_replayable_ids() -> 
         let mut replays = Vec::new();
         for _replay in 0..2 {
             let mut candidate = checkout.private_candidate(
-                &mut acyclic_fs::kernel::allocation::KernelAccounting::standalone(B, &cancel),
+                &mut crate::kernel::allocation::KernelAccounting::standalone(B, &cancel),
                 &cancel,
             )?;
             candidate.bind_authored_operation(operation);
@@ -166,9 +165,9 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let control = Arc::new(FaultControl::disabled());
-    let objects = Arc::new(acyclic_fs::memory::MemoryObjectStore::default());
+    let objects = Arc::new(crate::memory::MemoryObjectStore::default());
     let fs = Fs::new(
-        acyclic_fs::memory::MemoryAuthorityStore::default(),
+        crate::memory::MemoryAuthorityStore::default(),
         PostPutObjectStore {
             inner: Arc::clone(&objects),
             control: Arc::clone(&control),
@@ -190,11 +189,11 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     ] {
         checkout
             .create(
-                acyclic_fs::AuthoredMutation::CreateFile {
+                crate::AuthoredMutation::CreateFile {
                     file_id: None,
                     path: requested.clone(),
                     bytes: (bytes::Bytes::copy_from_slice(body)).into(),
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    metadata: crate::kernel::FileMetadata::default(),
                 },
                 B,
                 &cancellation,
@@ -209,9 +208,9 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         .metadata;
     metadata.modified_ns = MetadataField::Value(99);
     let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(
-        &mut acyclic_fs::kernel::allocation::KernelAccounting::native(&original, &cancellation),
+        &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
         &cancellation,
     )?;
     let input = original_borrowed_path_changes(

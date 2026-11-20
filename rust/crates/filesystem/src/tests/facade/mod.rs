@@ -1,48 +1,48 @@
-use crate::test_support::allow_publication::allow;
-use acyclic_fs::foundation::Epoch;
-use acyclic_fs::kernel::{InlineFileData, LogicalName, NameEncoding};
-use acyclic_fs::storage::{
+use super::*;
+use crate::foundation::Epoch;
+use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
+use crate::storage::{
     CreateAuthorityOutcome, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError,
     ObjectWrite,
 };
-use acyclic_fs::*;
+use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[path = "../../tests/support/checkout_fixture.rs"]
+#[path = "../../../tests/support/checkout_fixture.rs"]
 mod checkout_fixture;
 use checkout_fixture::{config, path, path_parts, writable_pinned};
 
-#[path = "../../tests/support/checkout_manual.rs"]
+#[path = "../../../tests/support/checkout_manual.rs"]
 mod checkout_manual;
 use checkout_manual::writable_manual;
 
-#[path = "../../tests/support/checkout_tracking.rs"]
+#[path = "../../../tests/support/checkout_tracking.rs"]
 mod checkout_tracking;
 use checkout_tracking::tracking;
 
-#[path = "../../tests/support/checkout_live_fixture.rs"]
+#[path = "../../../tests/support/checkout_live_fixture.rs"]
 mod live_fixture;
 use live_fixture::writable_live;
-#[path = "../../tests/support/checkout_serialized.rs"]
+#[path = "../../../tests/support/checkout_serialized.rs"]
 mod checkout_serialized;
 use checkout_serialized::serialized_config;
 
-use acyclic_fs::facade::test_snapshot::checkout_state;
+use crate::facade::test_snapshot::checkout_state;
 
-#[path = "../../../filesystem-test-support/src/faults.rs"]
+#[path = "../../../../filesystem-test-support/src/faults.rs"]
 mod faults;
 use faults::{FaultControl, PostPutObjectStore};
 
 struct CountingObjectStore {
-    inner: acyclic_fs::MemoryObjectStore,
+    inner: crate::MemoryObjectStore,
     tracked: Arc<std::sync::Mutex<Option<ObjectId>>>,
     reads: Arc<AtomicUsize>,
     unreadable: Arc<std::sync::Mutex<Option<ObjectKind>>>,
 }
 
-fn object_context(work: &acyclic_fs::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+fn object_context(work: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     if work.is_native() {
         return Err(ObjectStoreError::NativeUnavailable);
@@ -76,7 +76,7 @@ impl AsyncObjectStore for CountingObjectStore {
         &self,
         id: ObjectId,
         bytes: OwnedBytes,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         object_context(work)?;
         self.inner.put(id, bytes, work).await
@@ -84,7 +84,7 @@ impl AsyncObjectStore for CountingObjectStore {
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         object_context(work)?;
         self.inner.put_many(writes, work).await
@@ -93,7 +93,7 @@ impl AsyncObjectStore for CountingObjectStore {
         &self,
         id: ObjectId,
         maximum: u64,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         object_context(work)?;
         self.record(id)?;
@@ -102,8 +102,8 @@ impl AsyncObjectStore for CountingObjectStore {
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), ObjectStoreError> {
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         object_context(work)?;
         for request in requests {
             self.record(request.object_id)?;
@@ -113,7 +113,7 @@ impl AsyncObjectStore for CountingObjectStore {
     async fn contains(
         &self,
         id: ObjectId,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        work: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
         object_context(work)?;
         self.inner.contains(id, work).await
@@ -136,12 +136,12 @@ mod transactions;
 
 mod protocol_helpers;
 use protocol_helpers::*;
-#[path = "../../tests/support/volume_fixture.rs"]
+#[path = "../../../tests/support/volume_fixture.rs"]
 mod fixtures;
 use fixtures::*;
-#[path = "../../tests/support/volume_commit.rs"]
+#[path = "../../../tests/support/volume_commit.rs"]
 mod volume_commit;
-#[path = "../../tests/support/volume_read.rs"]
+#[path = "../../../tests/support/volume_read.rs"]
 mod volume_read;
 use volume_commit::commit;
 use volume_read::read;

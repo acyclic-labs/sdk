@@ -87,9 +87,9 @@ async fn tracking_reads_capture_only_their_terminal_regions() -> TestResult {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn mutation_subsumption_cost_and_custody() -> TestResult {
-    use acyclic_fs::kernel::KernelAccounting;
-    use acyclic_fs::kernel::allocation::retained::RetainedAllocation;
-    type MemoryCheckout = Checkout<acyclic_fs::MemoryAuthorityStore, acyclic_fs::MemoryObjectStore>;
+    use crate::kernel::KernelAccounting;
+    use crate::kernel::allocation::retained::RetainedAllocation;
+    type MemoryCheckout = Checkout<crate::MemoryAuthorityStore, crate::MemoryObjectStore>;
     type Region = (Option<FileRecord>, DependencyRegion);
     let bytes = std::mem::size_of::<Region>() as u64;
     let mut counts = Vec::new();
@@ -137,8 +137,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
             ..acyclic_fs_work::performance::BOUNDARY_BUDGET
         };
         let cancel = CancellationToken::new();
-        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
-            .map_err(|(error, _)| error)?;
+        let original =
+            crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let prior = RetainedAllocation::claim(29, 1, &mut accounting)?;
@@ -214,8 +214,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
             items_examined: allowance,
             ..acyclic_fs_work::performance::BOUNDARY_BUDGET
         };
-        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
-            .map_err(|(error, _)| error)?;
+        let original =
+            crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut regions = input.clone();

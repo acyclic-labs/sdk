@@ -77,7 +77,6 @@ mod proofs {
     }
 
     #[kani::proof]
-    #[kani::should_panic]
     #[kani::unwind(21)]
     #[kani::stub_verified(encoding::write_identity)]
     fn maximum_expiry_overflows_a_116_byte_buffer() {
@@ -90,7 +89,7 @@ mod proofs {
                 encoding::length(u64::MAX),
                 &mut text,
             )
-            .is_ok()
+            .is_err()
         );
     }
 }
@@ -130,7 +129,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "index out of bounds")]
     fn the_production_formatter_rejects_116_bytes_at_maximum_expiry() {
         let mut text = [0; 116];
         assert!(
@@ -141,7 +139,7 @@ mod tests {
                 encoding::length(u64::MAX),
                 &mut text,
             )
-            .is_ok()
+            .is_err()
         );
     }
 }

@@ -48,10 +48,10 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .set_attributes(destination.file_id, metadata, None, B, &cancellation)
         .await?;
     let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let reader = checkout
         .private_candidate(
-            &mut acyclic_fs::kernel::KernelAccounting::native(&original, &cancellation),
+            &mut crate::kernel::KernelAccounting::native(&original, &cancellation),
             &cancellation,
         )?
         .into_pinned_reader_with_native_work(&original, &cancellation)?;
@@ -69,7 +69,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
     let mut candidate = checkout.private_candidate(
-        &mut acyclic_fs::kernel::allocation::KernelAccounting::native(&original, &cancellation),
+        &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
         &cancellation,
     )?;
     candidate

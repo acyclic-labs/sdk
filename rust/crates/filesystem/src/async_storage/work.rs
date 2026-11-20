@@ -122,6 +122,7 @@ pub struct AuthorityWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     /// The original native ledger, when present.
     pub original: Option<&'a crate::NativeMaterializationWork>,
+    /// Allocations the operation holds against its budget.
     pub allocations: crate::kernel::allocation::AllocationLedger,
     pub(crate) scratch_floor: u64,
     pub(crate) read_observation: Option<&'a crate::kernel::ProofDataCustody>,
@@ -274,6 +275,11 @@ impl<'a> AuthorityWork<'a> {
         self.work.admit(&delta, &self.budget).map_err(Into::into)
     }
 
+    /// Charges completed work to the operation and to its original native ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns the budget or ledger refusal; nothing is charged then.
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {

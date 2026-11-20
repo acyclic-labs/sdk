@@ -187,7 +187,7 @@ async fn disjoint_rebase_adoption_fences_reads_added_during_preparation() -> Tes
         accounting.claim_owned(0, 0)?,
     );
     let result = local.adopt_rebased_head(
-        acyclic_fs::facade::rebase::RebaseAdoption {
+        crate::facade::rebase::RebaseAdoption {
             object,
             head,
             classified,
@@ -225,8 +225,7 @@ async fn disjoint_native_rebase_retains_original_custody_and_rejects_unfunded_wo
         .await?;
     }
     commit(&mut seed, &cancel).await?;
-    let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let mut local = volume
         .checkout(
             GenerationSelector::Head,
@@ -298,9 +297,9 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
     let tracked = Arc::default();
     let reads = Arc::new(AtomicUsize::new(0));
     let fs = Fs::new(
-        acyclic_fs::MemoryAuthorityStore::default(),
+        crate::MemoryAuthorityStore::default(),
         CountingObjectStore {
-            inner: acyclic_fs::MemoryObjectStore::default(),
+            inner: crate::MemoryObjectStore::default(),
             tracked: Arc::clone(&tracked),
             reads: Arc::clone(&reads),
             unreadable: unreadable.clone(),

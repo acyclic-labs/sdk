@@ -118,7 +118,10 @@ impl ProjectionState {
         while let Some((inode, credit)) = attributes.next() {
             self.invalidation
                 .deferred
-                .push(KernelCacheItem::Attributes { inode, credit });
+                .push(KernelCacheItem::Attributes {
+                    inode,
+                    credit: Box::new(credit),
+                });
         }
     }
 

@@ -18,9 +18,9 @@ categories = ["filesystem", "data-structures"]
 integration-test-shards = 16
 mounts-fuse = true
 share-separate-deps = true
-linked-unit-tests = ["acyclic_fs_test_facade_recovery", "acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress", "fs_concurrency_bench", "accounting", "facade", "checkout", "codec", "engine", "git", "native", "wire", "workspace"]
-test-narrow-runfiles = ["acyclic_fs_test_facade_recovery", "acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress", "fs_concurrency_bench", "accounting", "facade"]
-test-without-build-script = ["acyclic_fs_test_facade_recovery", "acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress", "fs_concurrency_bench", "accounting", "facade"]
+linked-unit-tests = ["acyclic_fs_test_facade_recovery", "acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress", "fs_concurrency_bench", "accounting", "checkout", "codec", "engine", "git", "native", "wire", "workspace"]
+test-narrow-runfiles = ["acyclic_fs_test_facade_recovery", "acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress", "fs_concurrency_bench", "accounting"]
+test-without-build-script = ["acyclic_fs_test_facade_recovery", "acyclic_fs_test_facade_rounds", "acyclic_fs_test_host_fsevents_stress", "fs_concurrency_bench", "accounting"]
 unit-test-only-sources = [
     "src/access/trie/shared/tests.rs",
     "src/async_storage/work/frame/tests.rs",
@@ -109,7 +109,6 @@ acyclic_fs_test_facade_rounds = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_
 acyclic_fs_test_host_fsevents_stress = ["acyclic_fs", "tempfile"]
 fs_concurrency_bench = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "futures", "hex", "serde_json", "tokio"]
 accounting = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_objects", "acyclic_stream", "bytes", "futures", "hex", "proptest", "tempfile", "tokio"]
-facade = ["acyclic_collections", "acyclic_fs", "acyclic_fs_format", "acyclic_fs_test_support", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_objects", "acyclic_stream", "bytes", "futures", "hex", "proptest", "tempfile", "tokio"]
 
 
 [[test]]
@@ -151,10 +150,6 @@ path = "tests/fs_concurrency_bench.rs"
 [[test]]
 name = "accounting"
 path = "tests/accounting.rs"
-
-[[test]]
-name = "facade"
-path = "tests/facade.rs"
 
 [[test]]
 name = "acyclic_fs_test_facade_rounds"

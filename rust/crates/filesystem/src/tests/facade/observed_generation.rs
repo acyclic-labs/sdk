@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::foundation::Epoch;
+use crate::foundation::Epoch;
 use proptest::prelude::*;
 
 fn observations(steps: &[(bool, u8)], forget_operation: bool) {

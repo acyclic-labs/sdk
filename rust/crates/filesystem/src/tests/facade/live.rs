@@ -20,8 +20,7 @@ async fn original_guarded_live_conflict_requires_explicit_rebase() -> TestResult
     )
     .await?;
     commit(&mut seed, &cancel).await?;
-    let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let mut local = volume
         .checkout(
             GenerationSelector::Head,
@@ -53,7 +52,7 @@ async fn original_guarded_live_conflict_requires_explicit_rebase() -> TestResult
     let callbacks = Arc::new(AtomicUsize::new(0));
     let calls = callbacks.clone();
     let shared = original.clone();
-    let mut guard = move |meter: &acyclic_fs::NativeMaterializationWork| {
+    let mut guard = move |meter: &crate::NativeMaterializationWork| {
         assert!(meter.shares_ledger(&shared));
         calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(Ok::<(), FsError>(()))

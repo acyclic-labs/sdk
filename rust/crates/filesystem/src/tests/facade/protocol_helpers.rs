@@ -12,8 +12,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
     .await?;
     commit(&mut seed, &cancel).await?;
     #[cfg(not(target_arch = "wasm32"))]
-    let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
     for (local_offset, remote_offset, local_bytes, remote_bytes, safe) in [
         (0, 64, b"LOCAL".as_slice(), b"REMOTE".as_slice(), true),
         (10, 12, b"local".as_slice(), b"remote".as_slice(), false),
@@ -42,7 +41,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
         #[cfg(not(target_arch = "wasm32"))]
         if native {
             local = local.private_candidate(
-                &mut acyclic_fs::kernel::KernelAccounting::native(&original, &cancel),
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel),
                 &cancel,
             )?;
         }
@@ -104,15 +103,13 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
 pub(super) fn original_authored_creates(
     requests: &[(&NamespacePath, OwnedBytes)],
     metadata: FileMetadata,
-    original: &acyclic_fs::NativeMaterializationWork,
+    original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<(Vec<AuthoredMutation>, acyclic_fs::NativeAllocation), FsError> {
-    use acyclic_fs::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+) -> Result<(Vec<AuthoredMutation>, crate::NativeAllocation), FsError> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
     let mut accounting = KernelAccounting::native(original, cancellation);
-    let mut input = acyclic_fs::kernel::Owned::<Vec<AuthoredMutation>>::allocate(
-        requests.len(),
-        &mut accounting,
-    )?;
+    let mut input =
+        crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(requests.len(), &mut accounting)?;
     for (requested, content) in requests {
         let mut path = clone_authored_path(requested, &mut accounting)?;
         accounting.charge(WorkCounters {
@@ -144,19 +141,19 @@ pub(super) fn original_borrowed_path_changes(
     destination: &NamespacePath,
     removed: &NamespacePath,
     metadata: FileMetadata,
-    original: &acyclic_fs::NativeMaterializationWork,
+    original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
 ) -> Result<
     (
         Vec<AuthoredMutation>,
-        acyclic_fs::NativeAllocation,
-        acyclic_fs::NativeAllocation,
+        crate::NativeAllocation,
+        crate::NativeAllocation,
     ),
     FsError,
 > {
-    use acyclic_fs::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
     let mut accounting = KernelAccounting::native(original, cancellation);
-    let input = acyclic_fs::kernel::Owned::<Vec<AuthoredMutation>>::allocate(4, &mut accounting)?;
+    let input = crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(4, &mut accounting)?;
     let mut source_allocation = accounting.claim_owned(0, 0)?;
     let mut copy_path = |requested: &NamespacePath| -> Result<NamespacePath, FsError> {
         let mut path = clone_authored_path(requested, &mut accounting)?;
@@ -172,7 +169,7 @@ pub(super) fn original_borrowed_path_changes(
         bytes_copied: (4 * size_of::<AuthoredMutation>()) as u64,
         ..WorkCounters::UNCHARGED
     })?;
-    let acyclic_fs::kernel::Owned {
+    let crate::kernel::Owned {
         mut value,
         allocation,
         ..
@@ -209,13 +206,13 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
     create(&mut checkout, "identity", OwnedBytes::new(), &cancel).await?;
     commit(&mut checkout, &cancel).await?;
     let authority = &volume.fs.inner.authority;
-    let mut work = acyclic_fs::AuthorityWork::new(B, &cancel);
+    let mut work = crate::AuthorityWork::new(B, &cancel);
     let payload_bytes = work.remaining()?.authority_bytes_read;
     let (records, _) = authority
         .replay(
             volume_authority_id(volume.id),
             Sequence::GENESIS,
-            acyclic_fs::ReplayLimit {
+            crate::ReplayLimit {
                 records: 2,
                 payload_bytes,
             },
@@ -248,7 +245,7 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
     let creation = &records[0];
     let appended = authority
         .compare_and_append(
-            acyclic_fs::GuardedAppend {
+            crate::GuardedAppend {
                 authority_id,
                 epoch: head.epoch,
                 expected: head,
@@ -267,7 +264,7 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
     assert!(
         matches!(
             appended,
-            Err(acyclic_fs::AuthorityError::Authority(
+            Err(crate::AuthorityError::Authority(
                 AuthorityStoreError::CorruptStatic(_)
             ))
         ),

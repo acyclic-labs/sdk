@@ -1,6 +1,6 @@
 use super::*;
-use acyclic_fs::workspace::ForkOptions;
-use acyclic_fs::{Generation, IdempotencyKey, TransactionCommit, WorkspaceDelete};
+use crate::workspace::ForkOptions;
+use crate::{Generation, IdempotencyKey, TransactionCommit, WorkspaceDelete};
 use std::error::Error;
 
 #[tokio::test]
@@ -9,7 +9,7 @@ async fn settled_ephemeral_forks_retire_their_proof_cache_without_retiring_the_s
     for settled in [false, true] {
         let directory = tempfile::tempdir()?;
         let cancel = CancellationToken::new();
-        let fs = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
         let source = fs.create_workspace("proof-owner", B, &cancel).await?.value;
         source.write_text("/base", "base").await?;
         let head = source.head(B, &cancel).await?.value;
@@ -62,18 +62,18 @@ async fn settled_ephemeral_forks_retire_their_proof_cache_without_retiring_the_s
 }
 
 async fn retained_source_fork_work(
-    fs: &acyclic_fs::LocalFs,
-    source: &Generation<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
+    fs: &crate::LocalFs,
+    source: &Generation<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     name: &str,
-    accounting: &mut acyclic_fs::kernel::allocation::KernelAccounting<'_>,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancel: &CancellationToken,
-) -> Result<acyclic_fs::WorkCounters, Box<dyn Error>> {
+) -> Result<crate::WorkCounters, Box<dyn Error>> {
     // Each probe starts with empty disposable proof, byte and decoded caches. The source
     // must carry its own original witness rather than inherit an earlier probe's slot.
     let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
     drop(discarded);
     fs.clear_object_cache()?;
-    let name = acyclic_fs::WorkspaceName::new(name, &WorkBudget::UNBOUNDED, cancel)?.value;
+    let name = crate::WorkspaceName::new(name, &WorkBudget::UNBOUNDED, cancel)?.value;
     let destination = fs.workspace_id_for_name(&name, accounting)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
@@ -82,7 +82,7 @@ async fn retained_source_fork_work(
         .materialize_forked_generation_root(
             source,
             destination,
-            acyclic_fs::kernel::Owned::new(None, allocation, 0),
+            crate::kernel::Owned::new(None, allocation, 0),
             accounting,
             cancel,
         )
@@ -92,11 +92,11 @@ async fn retained_source_fork_work(
     assert!(pending.is_some());
     drop((proof, pending));
     let end = accounting.spent().unwrap();
-    Ok(acyclic_fs::WorkCounters {
+    Ok(crate::WorkCounters {
         backend_read_operations: end.backend_read_operations - start.backend_read_operations,
         object_bytes_read: end.object_bytes_read - start.object_bytes_read,
         items_examined: end.items_examined - start.items_examined,
-        ..acyclic_fs::WorkCounters::UNCHARGED
+        ..crate::WorkCounters::UNCHARGED
     })
 }
 
@@ -125,7 +125,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
     for files in [4, 32] {
         let directory = tempfile::tempdir()?;
         let cancel = CancellationToken::new();
-        let fs = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
         let workspace = fs
             .create_workspace("registered-source", B, &cancel)
             .await?
@@ -143,7 +143,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
             transaction
                 .commit::<WorkspaceError, _, _>(
                     None,
-                    acyclic_fs::PublicationPermit::Unrestricted,
+                    crate::PublicationPermit::Unrestricted,
                     B,
                     &cancel,
                     allow::<WorkspaceError>
@@ -153,7 +153,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
             TransactionCommit::Committed(_)
         ));
         drop(transaction);
-        let original = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let source = workspace.head(B, &cancel).await?.value;
@@ -163,7 +163,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
             GenerationSelector::Head,
             GenerationSelector::Exact(source.id()),
         ] {
-            let mut accounting = acyclic_fs::kernel::allocation::KernelAccounting::standalone(
+            let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
                 WorkBudget::UNBOUNDED,
                 &cancel,
             );
@@ -200,10 +200,8 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
         // A new observation after the epoch changed cannot inherit the stale summary.
         // It forks into the forgotten probe's destination, so both charge the same keys.
         let late = workspace.head(B, &cancel).await?.value;
-        let mut accounting = acyclic_fs::kernel::allocation::KernelAccounting::standalone(
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        );
+        let mut accounting =
+            crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
         let held =
             retained_source_fork_work(&fs, &source, "held", &mut accounting, &cancel).await?;
         let walked =
@@ -213,7 +211,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
             retained_source_fork_work(&fs, &late, "forgotten", &mut accounting, &cancel).await?;
         let native_work = {
             let mut accounting =
-                acyclic_fs::kernel::allocation::KernelAccounting::native(&original, &cancel);
+                crate::kernel::allocation::KernelAccounting::native(&original, &cancel);
             retained_source_fork_work(&fs, &native, "native", &mut accounting, &cancel).await?
         };
         eprintln!(
@@ -242,7 +240,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
             .fork::<_, _, WorkspaceError>(
                 "registered-child",
                 ForkOptions::from_generation(source.clone(), IdempotencyKey::new()),
-                acyclic_fs::PublicationPermit::Unrestricted,
+                crate::PublicationPermit::Unrestricted,
                 B,
                 &cancel,
                 &mut allow::<FsError>,
@@ -299,7 +297,7 @@ fn fork_then_crash_child() -> Result<(), Box<dyn Error>> {
         .build()?
         .block_on(async {
             let cancel = CancellationToken::new();
-            let fs = Fs::local(acyclic_fs::LocalOptions::new(&root)).await?;
+            let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
             let source = fs.create_workspace("source", B, &cancel).await?.value;
             source.write_text("/base", "base").await?;
             let log = std::fs::metadata(root.join("objects/log"))?.len();
@@ -311,7 +309,7 @@ fn fork_then_crash_child() -> Result<(), Box<dyn Error>> {
                     .fork::<_, _, WorkspaceError>(
                         "fork",
                         options,
-                        acyclic_fs::PublicationPermit::Unrestricted,
+                        crate::PublicationPermit::Unrestricted,
                         B,
                         &cancel,
                         &mut allow::<FsError>,
@@ -391,7 +389,7 @@ fn an_ephemeral_fork_leaves_nothing_after_its_owner_crashes() -> Result<(), Box<
             .build()?
             .block_on(async {
                 let cancel = CancellationToken::new();
-                let fs = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+                let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
                 let source = fs.open_workspace("source", B, &cancel).await?.value;
                 let head = source.head(B, &cancel).await?.value;
                 assert_eq!(
@@ -427,13 +425,13 @@ async fn idle_ephemeral_authority_retains_private_history_without_open_generatio
 -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let cancel = CancellationToken::new();
-    let fs = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+    let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
     let source = fs.create_workspace("idle-source", B, &cancel).await?.value;
     source
         .write_text("/private", &"foreign-old".repeat(2_000))
         .await?;
     let foreign_previous = source.head(B, &cancel).await?.value.id();
-    let mut foreign = acyclic_fs::kernel::Marker::new(&fs.inner.objects, &cancel);
+    let mut foreign = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
     foreign.generation(foreign_previous).await?;
     let foreign_objects = foreign.marked().clone();
     drop(foreign);
@@ -452,7 +450,7 @@ async fn idle_ephemeral_authority_retains_private_history_without_open_generatio
         .value;
     fork.write_text("/private", &"older".repeat(2_000)).await?;
     let previous = fork.head(B, &cancel).await?.value.id();
-    let mut expected = acyclic_fs::kernel::Marker::new(&fs.inner.objects, &cancel);
+    let mut expected = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
     expected.generation(previous).await?;
     let previous_objects = expected.marked().clone();
     drop(expected);
@@ -462,7 +460,7 @@ async fn idle_ephemeral_authority_retains_private_history_without_open_generatio
     let (base, volume, config) = held
         .into_iter()
         .find_map(|held| match held {
-            acyclic_fs::collection::Held::Ephemeral {
+            crate::collection::Held::Ephemeral {
                 base,
                 volume,
                 config,
@@ -479,7 +477,7 @@ async fn idle_ephemeral_authority_retains_private_history_without_open_generatio
     let (head, _) = authority
         .resolve_head_generation(&mut accounting, &cancel)
         .await?;
-    let mut marker = acyclic_fs::kernel::Marker::new(&fs.inner.objects, &cancel);
+    let mut marker = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
     marker.generation(GenerationId::from_root(base)).await?;
     marker
         .history(volume, GenerationId::from_root(head))
@@ -492,7 +490,7 @@ async fn idle_ephemeral_authority_retains_private_history_without_open_generatio
     );
 
     // Negative control uses the real objects and old metadata-only ancestry walk.
-    let mut incomplete = acyclic_fs::kernel::Marker::new(&fs.inner.objects, &cancel);
+    let mut incomplete = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
     incomplete.generation(GenerationId::from_root(base)).await?;
     incomplete.generation(GenerationId::from_root(head)).await?;
     incomplete.lineage_roots().await?;
@@ -515,7 +513,7 @@ async fn idle_ephemeral_authority_retains_private_history_without_open_generatio
             .held()
             .iter()
             .any(|held| matches!(held,
-        acyclic_fs::collection::Held::Ephemeral { volume: held_volume, .. } if *held_volume == volume))
+        crate::collection::Held::Ephemeral { volume: held_volume, .. } if *held_volume == volume))
     );
     Ok(())
 }

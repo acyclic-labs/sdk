@@ -544,7 +544,7 @@ mod tests {
                 store,
                 &TreePage::Leaf(vec![TreeEntry {
                     name: name.clone(),
-                    file_id: FileId::from_bytes([index as u8; 16]),
+                    file_id: FileId::from_bytes([u8::try_from(index)?; 16]),
                     kind: FileKind::Regular,
                 }]),
                 1,

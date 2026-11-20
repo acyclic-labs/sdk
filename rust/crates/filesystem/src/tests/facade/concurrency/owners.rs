@@ -3,7 +3,7 @@ use super::*;
 
 #[derive(Clone)]
 struct ForeignOwner {
-    inner: Arc<acyclic_fs::StreamAuthorityStore<acyclic_stream::MemoryStream>>,
+    inner: Arc<crate::StreamAuthorityStore<acyclic_stream::MemoryStream>>,
     claims: Arc<acyclic_stream::OperationClaims>,
     forbid_probe: Arc<std::sync::atomic::AtomicBool>,
     racing_operation: Option<OperationId>,
@@ -27,10 +27,10 @@ impl AsyncAuthorityStore for ForeignOwner {
         self.inner.retains_operation_payload()
     }
 
-    fn own_group<G: acyclic_fs::OwnedAuthorityGuard>(
+    fn own_group<G: crate::OwnedAuthorityGuard>(
         &self,
-        group: acyclic_fs::OwnedAuthorityGroup<G>,
-    ) -> Option<acyclic_fs::OwnedAuthorityTask> {
+        group: crate::OwnedAuthorityGroup<G>,
+    ) -> Option<crate::OwnedAuthorityTask> {
         group.bind(self.clone())
     }
 
@@ -46,10 +46,10 @@ impl AsyncAuthorityStore for ForeignOwner {
     async fn head(
         &self,
         authority: AuthorityId,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<Head, acyclic_fs::AuthorityStoreError> {
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Head, crate::AuthorityStoreError> {
         if self.forbid_probe.load(Ordering::SeqCst) {
-            return Err(acyclic_fs::AuthorityStoreError::RejectedStatic(
+            return Err(crate::AuthorityStoreError::RejectedStatic(
                 "head probe after a rejected group",
             ));
         }
@@ -59,13 +59,10 @@ impl AsyncAuthorityStore for ForeignOwner {
         &self,
         authority: AuthorityId,
         maximum: u64,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        work: &mut crate::AuthorityWork<'_>,
     ) -> Result<
-        (
-            (Head, Option<bytes::Bytes>),
-            acyclic_fs::AuthorityAllocation,
-        ),
-        acyclic_fs::AuthorityStoreError,
+        ((Head, Option<bytes::Bytes>), crate::AuthorityAllocation),
+        crate::AuthorityStoreError,
     > {
         if let Some(gate) = &self.dispatch_gate {
             gate.observe_preflight();
@@ -76,17 +73,12 @@ impl AsyncAuthorityStore for ForeignOwner {
         &self,
         authority: AuthorityId,
         after: Sequence,
-        limit: acyclic_fs::ReplayLimit,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<
-        (
-            Vec<acyclic_fs::DurableCommit>,
-            acyclic_fs::AuthorityAllocation,
-        ),
-        acyclic_fs::AuthorityStoreError,
-    > {
+        limit: crate::ReplayLimit,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError>
+    {
         if self.forbid_replay.load(Ordering::SeqCst) {
-            return Err(acyclic_fs::AuthorityStoreError::RejectedStatic(
+            return Err(crate::AuthorityStoreError::RejectedStatic(
                 "recent actor witness required",
             ));
         }
@@ -96,16 +88,16 @@ impl AsyncAuthorityStore for ForeignOwner {
         &self,
         authority: AuthorityId,
         operation: OperationId,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityStoreError> {
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
         self.inner.find_operation(authority, operation, work).await
     }
     async fn quote_group_append(
         &self,
-        request: &acyclic_fs::GuardedAppend,
+        request: &crate::GuardedAppend,
         growth: usize,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<Option<acyclic_fs::AuthorityGroupCost>, acyclic_fs::AuthorityStoreError> {
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::AuthorityGroupCost>, crate::AuthorityStoreError> {
         if let Some(gate) = &self.dispatch_gate
             && gate.active.load(Ordering::SeqCst)
         {
@@ -122,21 +114,21 @@ impl AsyncAuthorityStore for ForeignOwner {
             self.inner.quote_group_append(request, growth, work).await
         }
     }
-    async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(
+    async fn compare_and_append<G: crate::AuthorityGuard>(
         &self,
-        request: acyclic_fs::GuardedAppend,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        request: crate::GuardedAppend,
+        work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> Result<acyclic_fs::AppendOutcome, acyclic_fs::AuthorityError<G::Error>> {
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
         self.inner.compare_and_append(request, work, guard).await
     }
-    async fn compare_and_append_group<G: acyclic_fs::AuthorityGuard>(
+    async fn compare_and_append_group<G: crate::AuthorityGuard>(
         &self,
-        requests: &[acyclic_fs::GuardedAppend],
-        cuts: &[acyclic_fs::PolicyCut],
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        requests: &[crate::GuardedAppend],
+        cuts: &[crate::PolicyCut],
+        work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> Result<acyclic_fs::AppendGroupOutcome, acyclic_fs::AuthorityError<G::Error>> {
+    ) -> Result<crate::AppendGroupOutcome, crate::AuthorityError<G::Error>> {
         if let Some(gate) = &self.dispatch_gate {
             gate.appends.fetch_add(1, Ordering::SeqCst);
             gate.active.store(true, Ordering::SeqCst);
@@ -158,7 +150,7 @@ impl AsyncAuthorityStore for ForeignOwner {
             .inner
             .compare_and_append_group(requests, cuts, work, guard)
             .await;
-        if matches!(result, Ok(acyclic_fs::AppendGroupOutcome::Rejected { .. })) {
+        if matches!(result, Ok(crate::AppendGroupOutcome::Rejected { .. })) {
             self.forbid_probe.store(true, Ordering::SeqCst);
         }
         if let Some(gate) = &self.dispatch_gate {
@@ -204,12 +196,12 @@ pub(super) async fn submit_proposal<
     // group path's own idempotency admission and rejected-group reply.
     let outcome = if native {
         let original =
-            acyclic_fs::NativeMaterializationWork::new(B, cancel).map_err(|(error, _)| error)?;
+            crate::NativeMaterializationWork::new(B, cancel).map_err(|(error, _)| error)?;
         *rejected =
             rejected.private_candidate(&mut KernelAccounting::native(&original, cancel), cancel)?;
         rejected.validate_native_work(&original)?;
         let mut seal =
-            |_: &acyclic_fs::NativeMaterializationWork| std::future::ready(Ok::<_, FsError>(()));
+            |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<_, FsError>(()));
         rejected
             .publish_pending_against_with_native_work(
                 operation,
@@ -283,7 +275,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
         .await?;
     let observer = Fs::new(
         ForeignOwner {
-            inner: Arc::new(acyclic_fs::StreamAuthorityStore::new(
+            inner: Arc::new(crate::StreamAuthorityStore::new(
                 volume.fs.inner.authority.provider(),
             )),
             claims: Default::default(),
@@ -293,7 +285,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
             dispatch_gate: None,
             _retirement: None,
         },
-        acyclic_fs::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -314,10 +306,10 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
 #[tokio::test]
 async fn independent_owners_use_durable_frontiers_and_recover_original_operations() -> TestResult {
     let cancel = CancellationToken::new();
-    let authority = Arc::new(acyclic_fs::StreamAuthorityStore::new(Arc::new(
+    let authority = Arc::new(crate::StreamAuthorityStore::new(Arc::new(
         acyclic_stream::MemoryStream::default(),
     )));
-    let objects = Arc::new(acyclic_fs::MemoryObjectStore::default());
+    let objects = Arc::new(crate::MemoryObjectStore::default());
     let first = Fs::new(
         Arc::clone(&authority),
         Arc::clone(&objects),
@@ -473,7 +465,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
     commit(&mut seed, &cancel).await?;
     let observer = Fs::new(
         ForeignOwner {
-            inner: Arc::new(acyclic_fs::StreamAuthorityStore::new(
+            inner: Arc::new(crate::StreamAuthorityStore::new(
                 volume.fs.inner.authority.provider(),
             )),
             claims: Default::default(),
@@ -483,7 +475,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
             dispatch_gate: None,
             _retirement: None,
         },
-        acyclic_fs::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -641,7 +633,7 @@ async fn check_successor_intake(
     let operations = [OperationId::new(), OperationId::new(), OperationId::new()];
     let observer = Fs::new(
         ForeignOwner {
-            inner: Arc::new(acyclic_fs::StreamAuthorityStore::new(
+            inner: Arc::new(crate::StreamAuthorityStore::new(
                 volume.fs.inner.authority.provider(),
             )),
             claims: Default::default(),
@@ -651,7 +643,7 @@ async fn check_successor_intake(
             dispatch_gate: Some(Arc::clone(&gate)),
             _retirement: None,
         },
-        acyclic_fs::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -686,12 +678,12 @@ async fn check_successor_intake(
     if prepare {
         // Drive the existing bounded collection window, without releasing the
         // durability owner or sleeping for a test-dependent timeout.
-        for _ in 0..=acyclic_fs::async_storage::MAX_AUTHORITY_GROUP_MEMBERS {
+        for _ in 0..=crate::async_storage::MAX_AUTHORITY_GROUP_MEMBERS {
             acyclic_stream::runtime::yield_now().await?;
             assert!(futures::poll!(next.as_mut()).is_pending());
         }
         let mut inspection = KernelAccounting::standalone(B, &cancel);
-        let actor = acyclic_fs::kernel::authority_actor(
+        let actor = crate::kernel::authority_actor(
             observer.inner.authority.operation_claims(),
             observer.inner.authority.actor_scope(),
             volume_authority_id(volume.id()),
@@ -741,7 +733,7 @@ async fn check_successor_intake(
                     .find_operation(
                         volume_authority_id(volume.id()),
                         operation,
-                        &mut acyclic_fs::AuthorityWork::new(B, &cancel),
+                        &mut crate::AuthorityWork::new(B, &cancel),
                     )
                     .await?
                     .is_none()
@@ -783,7 +775,7 @@ async fn check_successor_intake(
             .find_operation(
                 volume_authority_id(volume.id()),
                 abandoned_operation,
-                &mut acyclic_fs::AuthorityWork::new(B, &cancel)
+                &mut crate::AuthorityWork::new(B, &cancel)
             )
             .await?
             .is_none(),
@@ -829,7 +821,7 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
     let gate = Arc::new(DispatchGate::default());
     let observer = Fs::new(
         ForeignOwner {
-            inner: Arc::new(acyclic_fs::StreamAuthorityStore::new(
+            inner: Arc::new(crate::StreamAuthorityStore::new(
                 volume.fs.inner.authority.provider(),
             )),
             claims: Default::default(),
@@ -839,7 +831,7 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
             dispatch_gate: Some(Arc::clone(&gate)),
             _retirement: None,
         },
-        acyclic_fs::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -848,7 +840,7 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
     for (name, client) in ["a", "b"].into_iter().zip(&clients) {
         let mut checkout = edit(&observed, name, &cancel).await?;
         let original =
-            acyclic_fs::NativeMaterializationWork::new(B, client).map_err(|(error, _)| error)?;
+            crate::NativeMaterializationWork::new(B, client).map_err(|(error, _)| error)?;
         checkout =
             checkout.private_candidate(&mut KernelAccounting::native(&original, client), client)?;
         checkout.validate_native_work(&original)?;
@@ -865,7 +857,7 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
                 let refused = Arc::clone(&refused);
                 let final_checks = Arc::clone(&final_checks);
                 async move {
-                    let mut seal = move |_: &acyclic_fs::NativeMaterializationWork| {
+                    let mut seal = move |_: &crate::NativeMaterializationWork| {
                         let result = if index == 0 && refused.load(Ordering::SeqCst) {
                             final_checks.fetch_add(1, Ordering::SeqCst);
                             Err(FsError::InvalidDiff)
@@ -906,8 +898,8 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
         matches!(
             &outcomes[1],
             Err(FsError::Publication(
-                acyclic_fs::kernel::PublicationError::GroupAborted(
-                    acyclic_fs::kernel::GroupAbort::SealFailed
+                crate::kernel::PublicationError::GroupAborted(
+                    crate::kernel::GroupAbort::SealFailed
                 )
             ))
         ),
@@ -935,7 +927,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
         let gate = Arc::new(DispatchGate::default());
         let observer = Fs::new(
             ForeignOwner {
-                inner: Arc::new(acyclic_fs::StreamAuthorityStore::new(
+                inner: Arc::new(crate::StreamAuthorityStore::new(
                     volume.fs.inner.authority.provider(),
                 )),
                 claims: Default::default(),
@@ -945,7 +937,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
                 dispatch_gate: Some(Arc::clone(&gate)),
                 _retirement: None,
             },
-            acyclic_fs::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+            crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
             EmbeddedCapabilities::MEMORY,
         );
         let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -1017,7 +1009,7 @@ async fn verify_owned_operations<const N: usize>(
     operations: [OperationId; N],
     cancel: &CancellationToken,
 ) -> TestResult {
-    let mut work = acyclic_fs::AuthorityWork::new(B, cancel);
+    let mut work = crate::AuthorityWork::new(B, cancel);
     for operation in operations {
         assert!(
             volume
@@ -1025,7 +1017,7 @@ async fn verify_owned_operations<const N: usize>(
                 .inner
                 .authority
                 .find_operation(
-                    acyclic_fs::kernel::volume_authority_id(volume.id()),
+                    crate::kernel::volume_authority_id(volume.id()),
                     operation,
                     &mut work,
                 )
@@ -1064,7 +1056,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
     let (retired, retirement) = tokio::sync::oneshot::channel();
     let observer = Fs::new(
         ForeignOwner {
-            inner: Arc::new(acyclic_fs::StreamAuthorityStore::new(
+            inner: Arc::new(crate::StreamAuthorityStore::new(
                 volume.fs.inner.authority.provider(),
             )),
             claims: Default::default(),
@@ -1074,7 +1066,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
             dispatch_gate: Some(Arc::clone(&gate)),
             _retirement: Some(Arc::new(Retirement(Some(retired)))),
         },
-        acyclic_fs::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let actual = Arc::downgrade(&observer.inner);

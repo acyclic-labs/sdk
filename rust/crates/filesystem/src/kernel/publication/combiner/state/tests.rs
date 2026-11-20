@@ -130,6 +130,44 @@ fn selected_prefix_has_one_preparation_owner() {
 }
 
 #[test]
+fn a_vacated_closed_group_completes_for_its_deferred_proposals() {
+    for order in [[0, 1], [1, 0]] {
+        loom::model(move || {
+            let mut state = State::<usize, u8>::new(Vec::with_capacity(2));
+            assert_eq!(state.enqueue(0), Ok(0));
+            assert_eq!(state.enqueue(1), Ok(1));
+            assert_eq!(state.enqueue(2), Err(2), "a full group defers the proposal");
+            state.close();
+            let state = Arc::new(Mutex::new(state));
+            let workers: Vec<_> = order
+                .into_iter()
+                .map(|index| {
+                    let state = Arc::clone(&state);
+                    loom::thread::spawn(move || {
+                        state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .withdraw(Some(index));
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            let state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(
+                state.phase,
+                Phase::Complete,
+                "a group with no remaining member stranded its deferred proposals"
+            );
+            assert_eq!(state.selected().count(), 0);
+        });
+    }
+}
+
+#[test]
 fn pending_admission_and_collection_owner_withdrawal_preserve_the_survivor() {
     for withdrawn in 0..2 {
         loom::model(move || {

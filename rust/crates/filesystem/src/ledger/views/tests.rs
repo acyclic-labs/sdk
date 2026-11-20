@@ -113,7 +113,10 @@ fn invocation_layout_matches_allocator_through_the_last_alias() {
         assert_eq!(observed.count_total, 1);
         assert_eq!(observed.count_current, 1);
         assert_eq!(observed.bytes_total, observed.bytes_max);
-        assert_eq!(observed.bytes_current as u64, observed.bytes_total);
+        assert_eq!(
+            u64::try_from(observed.bytes_current).unwrap(),
+            observed.bytes_total
+        );
         assert_eq!(
             work.live_allocation_bytes().unwrap(),
             baseline + observed.bytes_total
@@ -141,7 +144,10 @@ fn invocation_layout_matches_allocator_through_the_last_alias() {
         let (_, released) = measured(|| drop(alias));
         assert_eq!(released.count_total, 0);
         assert_eq!(released.count_current, -1);
-        assert_eq!(released.bytes_current, -(observed.bytes_total as i64));
+        assert_eq!(
+            released.bytes_current,
+            -i64::try_from(observed.bytes_total).unwrap()
+        );
         assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
             work.receipt().unwrap().allocation_operations,
@@ -254,7 +260,11 @@ fn independent_ceiling_case(
     assert_eq!(observed.bytes_total, if expected { required } else { 0 });
     assert_eq!(
         observed.bytes_current,
-        if expected { required as i64 } else { 0 }
+        if expected {
+            i64::try_from(required).unwrap()
+        } else {
+            0
+        }
     );
     assert_eq!(
         live_with_owner,

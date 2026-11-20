@@ -1,4 +1,5 @@
 use super::*;
+use crate::facade::local::run_local_initialization;
 
 #[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 fn assert_local_open_pending(opening: std::pin::Pin<&mut impl std::future::Future>) {
@@ -36,7 +37,7 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        policy_cache: acyclic_fs::facade::policy_cache::PolicyCache::default(),
+        policy_cache: crate::facade::policy_cache::PolicyCache::default(),
         publication_proof: Default::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };

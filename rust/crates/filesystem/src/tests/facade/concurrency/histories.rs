@@ -50,7 +50,7 @@ async fn propose(
 ) -> TestResult<Proposal> {
     let mut checkout = open_checkout(volume, writable_manual(), cancel).await?;
     edit(&mut checkout, command, round, cancel).await?;
-    let (delta, allocation) = acyclic_fs::kernel::diff_generation_file_tables(
+    let (delta, allocation) = crate::kernel::diff_generation_file_tables(
         &volume.fs.inner.objects,
         checkout.base_root.file_table,
         checkout.root.file_table,
@@ -92,12 +92,12 @@ async fn check_history(mut pending: Vec<(u8, u8)>) -> TestResult {
             let proposal = propose(&volume, command, round, &mut accounting, &cancel).await?;
             let mut independent = true;
             for prior in &selected {
-                let query = acyclic_fs::kernel::CommitFootprint {
+                let query = crate::kernel::CommitFootprint {
                     reads: Some(&proposal.reads),
                     writes: &proposal.delta.value,
                 }
                 .independent(
-                    acyclic_fs::kernel::CommitFootprint {
+                    crate::kernel::CommitFootprint {
                         reads: Some(&prior.reads),
                         writes: &prior.delta.value,
                     },
@@ -116,7 +116,7 @@ async fn check_history(mut pending: Vec<(u8, u8)>) -> TestResult {
         assert!(!selected.is_empty(), "bounded selection made no progress");
         let mut composed = serial.root.file_table;
         for proposal in selected {
-            composed = acyclic_fs::kernel::apply_generation_delta(
+            composed = crate::kernel::apply_generation_delta(
                 &volume.fs.inner.objects,
                 composed,
                 &proposal.delta.value,

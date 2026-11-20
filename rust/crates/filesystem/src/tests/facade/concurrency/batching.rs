@@ -12,7 +12,7 @@ async fn native_group_seals_each_member_with_its_original_ledger() -> TestResult
     let mut proposals = Vec::new();
     for name in ["a", "b"] {
         let original =
-            acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+            crate::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
         let mut checkout = volume
             .checkout(
                 GenerationSelector::Head,
@@ -41,7 +41,7 @@ async fn native_group_seals_each_member_with_its_original_ledger() -> TestResult
             async move {
                 let owner = original.clone();
                 let calls = Arc::clone(calls);
-                let mut guard = move |work: &acyclic_fs::NativeMaterializationWork| {
+                let mut guard = move |work: &crate::NativeMaterializationWork| {
                     assert!(
                         owner.shares_ledger(work),
                         "member seal ran on another producer's ledger"
@@ -181,7 +181,7 @@ async fn verify_withdrawn_member(
     survivor: usize,
     cancel: &CancellationToken,
 ) -> TestResult {
-    let mut work = acyclic_fs::AuthorityWork::new(B, cancel);
+    let mut work = crate::AuthorityWork::new(B, cancel);
     for (index, operation) in operations.into_iter().enumerate() {
         assert_eq!(
             volume

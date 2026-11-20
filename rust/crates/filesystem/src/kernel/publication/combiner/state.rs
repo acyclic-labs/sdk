@@ -81,6 +81,16 @@ impl<T, R: Copy> State<T, R> {
         if self.phase == Phase::Collecting {
             self.phase = Phase::Admitting;
         }
+        self.complete_if_vacated();
+    }
+
+    /// A closed group whose every member withdrew selects nothing, exactly as
+    /// `collect` would. No member remains to run that collection, so complete it
+    /// here; otherwise proposals deferred behind it would wait forever.
+    fn complete_if_vacated(&mut self) {
+        if self.phase == Phase::Admitting && self.members.iter().all(|member| member.withdrawn) {
+            self.phase = Phase::Complete;
+        }
     }
 
     pub(super) fn can_collect(&self, mut admitted: impl FnMut(&T) -> bool) -> bool {
@@ -236,6 +246,7 @@ impl<T, R: Copy> State<T, R> {
             if index == 0 {
                 self.close();
             }
+            self.complete_if_vacated();
         } else if self.phase != Phase::Appending {
             self.abort_with(GroupAbort::MemberWithdrawn);
         }

@@ -27,7 +27,6 @@ proptest! {
             };
             let destination = match relation {
                 0 => original.clone(),
-                1 => original.native_volume_work(resource_budget).unwrap(),
                 2 => foreign.clone(),
                 3 => source_work.clone(),
                 _ => original.native_volume_work(resource_budget).unwrap(),

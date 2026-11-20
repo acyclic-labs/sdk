@@ -105,6 +105,14 @@ impl NativeResourceCredit {
         work
     }
 }
+/// One scope's step of a visit: the outer error stops the walk, the inner one is
+/// that scope's own verdict.
+type ScopeVisit<'a> = dyn Fn(
+        &NativeResourceAllowance,
+        &mut NativeResourceState,
+    ) -> Result<Result<(), DemandError>, DemandError>
+    + 'a;
+
 impl NativeResourceAllowance {
     pub(crate) fn admitted_item_limit(&self) -> u64 {
         self.parent
@@ -177,10 +185,7 @@ impl NativeResourceAllowance {
     fn visit(
         &self,
         excluded: Option<&Self>,
-        operation: &dyn Fn(
-            &Self,
-            &mut NativeResourceState,
-        ) -> Result<Result<(), DemandError>, DemandError>,
+        operation: &ScopeVisit<'_>,
     ) -> Result<(), DemandError> {
         if excluded.is_some_and(|scope| scope.contains_scope(self)) {
             return Ok(());

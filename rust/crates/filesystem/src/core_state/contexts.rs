@@ -478,28 +478,16 @@ impl LocalCoreStateStore {
         cancellation: &crate::CancellationToken,
     ) -> Result<
         Option<(WorkspaceContext, crate::NativeAllocation)>,
-        (
-            crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
-            Option<crate::ledger::NativeAllocation>,
-        ),
+        crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
     > {
-        native_records::check(original, cancellation).map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })?;
+        native_records::check(original, cancellation)
+            .map_err(crate::workspace_context::WorkspaceContextError::Store)?;
         let cancellation = cancellation.clone();
         native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::load::<WorkspaceContext>(&root, log, context_id, work, &cancellation)
         })
         .await
-        .map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })
+        .map_err(crate::workspace_context::WorkspaceContextError::Store)
     }
 
     /// Compares and updates a context on the original native ledger.
@@ -513,28 +501,14 @@ impl LocalCoreStateStore {
         replacement: (WorkspaceContext, crate::NativeAllocation),
         original: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<
-        bool,
-        (
-            crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
-            Option<crate::ledger::NativeAllocation>,
-        ),
-    > {
-        native_records::check(original, cancellation).map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })?;
+    ) -> Result<bool, crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>>
+    {
+        native_records::check(original, cancellation)
+            .map_err(crate::workspace_context::WorkspaceContextError::Store)?;
         let replacement = native_records::checked_packet(replacement, original, |value| {
             native_records::native_context_owned_bytes(value, original)
         })
-        .map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })?;
+        .map_err(crate::workspace_context::WorkspaceContextError::Store)?;
         let cancellation = cancellation.clone();
         native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::compare_native_context(
@@ -548,12 +522,7 @@ impl LocalCoreStateStore {
             )
         })
         .await
-        .map_err(|error| {
-            (
-                crate::workspace_context::WorkspaceContextError::Store(error),
-                None,
-            )
-        })
+        .map_err(crate::workspace_context::WorkspaceContextError::Store)
     }
 }
 
@@ -570,13 +539,10 @@ impl LocalCoreStateStore {
         cancellation: &crate::CancellationToken,
     ) -> Result<
         Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
-        (
-            crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
-            Option<crate::ledger::NativeAllocation>,
-        ),
+        crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
     > {
         native_records::check(original, cancellation)
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+            .map_err(crate::lineage::WorkspaceLineageError::Store)?;
         let cancellation = cancellation.clone();
         native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::load::<WorkspaceLineageRecord>(
@@ -588,7 +554,7 @@ impl LocalCoreStateStore {
             )
         })
         .await
-        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+        .map_err(crate::lineage::WorkspaceLineageError::Store)
     }
 
     /// Compares and updates lineage on the original native ledger.
@@ -602,19 +568,13 @@ impl LocalCoreStateStore {
         replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
         original: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<
-        bool,
-        (
-            crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
-            Option<crate::ledger::NativeAllocation>,
-        ),
-    > {
+    ) -> Result<bool, crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>> {
         native_records::check(original, cancellation)
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+            .map_err(crate::lineage::WorkspaceLineageError::Store)?;
         let replacement = native_records::checked_packet(replacement, original, |value| {
             native_records::native_lineage_owned_bytes(value, original)
         })
-        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+        .map_err(crate::lineage::WorkspaceLineageError::Store)?;
         let cancellation = cancellation.clone();
         native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::compare_native_lineage(
@@ -628,6 +588,6 @@ impl LocalCoreStateStore {
             )
         })
         .await
-        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+        .map_err(crate::lineage::WorkspaceLineageError::Store)
     }
 }

@@ -80,7 +80,7 @@ fn check(count: u8, bindings: bool, sealed: bool, fault: u8) -> Result<(), &'sta
         &cancellation,
         &crate::services::ServicesInitialized::for_kernel_tests(),
     )
-    .unwrap();
+    .map_err(|_| "native work")?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let decode = |accounting: &mut KernelAccounting<'_>| {
         crate::kernel::decode_owned(accounting, |observe| {

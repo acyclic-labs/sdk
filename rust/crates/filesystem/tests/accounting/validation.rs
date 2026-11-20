@@ -55,7 +55,9 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
                 }
                 Damage::Payload if limit.records > 1 => {
                     let mut payload = record.payload.to_vec();
-                    payload[0] ^= 1;
+                    if let Some(byte) = payload.first_mut() {
+                        *byte ^= 1;
+                    }
                     record.payload = payload.into();
                 }
                 Damage::MissingTime => record.settled_at_micros = None,
@@ -63,8 +65,7 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
                 Damage::RegressingTime(later) if record.sequence == Sequence::new(1) => {
                     record.settled_at_micros = Some(later)
                 }
-                Damage::RegressingTime(_) => (),
-                Damage::SequenceGap | Damage::Payload => (),
+                Damage::RegressingTime(_) | Damage::SequenceGap | Damage::Payload => (),
             }
         }
         Ok((records, allocation))

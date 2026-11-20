@@ -121,7 +121,7 @@ fn check(
                 + crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
                     crate::ledger::CaptureTransientCustody,
                 >())
-                .unwrap() as u64
+                .map_err(|error| TestCaseError::fail(error.to_string()))? as u64
                 + leaf_bytes,
             ..WorkCounters::UNCHARGED
         };

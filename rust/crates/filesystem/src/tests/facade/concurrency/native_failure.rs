@@ -24,7 +24,7 @@ async fn native_batch_preserves_the_failing_members_typed_error_and_publishes_no
     let mut proposals = Vec::new();
     for name in ["a", "b"] {
         let original =
-            acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+            crate::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
         let mut checkout = volume
             .checkout(
                 GenerationSelector::Head,
@@ -51,7 +51,7 @@ async fn native_batch_preserves_the_failing_members_typed_error_and_publishes_no
         |(index, (checkout, original))| {
             let cancel = &cancel;
             async move {
-                let mut seal = move |_: &acyclic_fs::NativeMaterializationWork| {
+                let mut seal = move |_: &crate::NativeMaterializationWork| {
                     std::future::ready(if index == 0 {
                         Err(SealFailure::Owner(7))
                     } else {
@@ -82,8 +82,8 @@ async fn native_batch_preserves_the_failing_members_typed_error_and_publishes_no
         match outcome {
             Err(SealFailure::Owner(7)) => owners += 1,
             Err(SealFailure::Filesystem(FsError::Publication(
-                acyclic_fs::kernel::PublicationError::GroupAborted(
-                    acyclic_fs::kernel::GroupAbort::SealFailed,
+                crate::kernel::PublicationError::GroupAborted(
+                    crate::kernel::GroupAbort::SealFailed,
                 ),
             ))) => {}
             outcome => return Err(format!("wrong producer seal result: {outcome:?}").into()),

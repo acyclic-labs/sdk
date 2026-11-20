@@ -32,7 +32,7 @@ async fn metadata_reads_preserve_the_original_decoder_work() -> TestResult {
 }
 
 async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
-    use acyclic_fs::kernel::{DecodeLimits, ReadAllocationStep, decode_file_metadata};
+    use crate::kernel::{DecodeLimits, ReadAllocationStep, decode_file_metadata};
 
     let cancel = CancellationToken::new();
     let (volume, mut checkout) = fixture(config(), &cancel).await?;
@@ -59,7 +59,7 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
     // Capture the actual stored object and its physical read work. The same
     // production decoder supplies the independent completion trace; no codec
     // sizes or adapter counters are restated in this oracle.
-    let mut physical = acyclic_fs::AuthorityWork::new(B, &cancel);
+    let mut physical = crate::AuthorityWork::new(B, &cancel);
     let limits = DecodeLimits::for_volume(config());
     let read = volume
         .fs
@@ -75,7 +75,7 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
                 ReadAllocationStep::Item => examined += 1,
                 _ => {}
             }
-            Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(())
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
         })?,
         metadata
     );
@@ -111,10 +111,10 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
         }
     }
     commit(&mut checkout, &cancel).await?;
-    let proof = acyclic_fs::kernel::prove_generation_closure(
+    let proof = crate::kernel::prove_generation_closure(
         volume.fs.objects(),
         checkout.generation_root,
-        acyclic_fs::facade::closure_limits(config()),
+        crate::facade::closure_limits(config()),
         B,
         &cancel,
     )
@@ -142,11 +142,10 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
     )
     .await?;
     commit(&mut checkout, &cancel).await?;
-    let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let reader = checkout
         .private_candidate(
-            &mut acyclic_fs::kernel::KernelAccounting::native(&original, &cancel),
+            &mut crate::kernel::KernelAccounting::native(&original, &cancel),
             &cancel,
         )?
         .into_pinned_reader_with_native_work(&original, &cancel)?;
@@ -197,7 +196,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
         b"real detached stream"
     );
     let before = detached.read_metadata(B, &cancel).await?.value;
-    let denied = acyclic_fs::NativeMaterializationWork::new(
+    let denied = crate::NativeMaterializationWork::new(
         WorkBudget {
             bytes_encoded: 0,
             ..B

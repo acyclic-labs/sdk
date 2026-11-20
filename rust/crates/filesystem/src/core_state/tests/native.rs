@@ -159,11 +159,8 @@ async fn native_lineage_cancellation_owns_physical_completion() {
             }
             let cancelled = matches!(
                 futures::poll!(publish.as_mut()),
-                Poll::Ready(Err((
-                    crate::lineage::WorkspaceLineageError::Store(
-                        LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::Cancelled)
-                    ),
-                    None
+                Poll::Ready(Err(crate::lineage::WorkspaceLineageError::Store(
+                    LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::Cancelled)
                 )))
             );
             drop(publish);
@@ -231,7 +228,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         .await
         .unwrap_err();
     assert!(matches!(
-        error.0,
+        error,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
             crate::LazyWorkspaceError::NativeLedgerMismatch
         ))
@@ -246,7 +243,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         .await
         .unwrap_err();
     assert!(matches!(
-        error.0,
+        error,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::Integrity)
     ));
     assert!(!store.root().exists());
@@ -254,7 +251,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     let before = work.receipt().unwrap();
     let error = store.load_lineage(id, &work, &cxl).await.unwrap_err();
     assert!(matches!(
-        error.0,
+        error,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
             crate::LazyWorkspaceError::Cancelled
         ))
@@ -284,7 +281,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
         .unwrap();
     let error = store.load_context(id, &tight, &cxl).await.unwrap_err();
     assert!(matches!(
-        error.0,
+        error,
         crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::LazyWork(
             crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
         ))
@@ -391,7 +388,7 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
         .unwrap_err();
     let crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
         crate::LazyWorkspaceError::NativeRecordCorrupt(path, Some(allocation)),
-    )) = error.0
+    )) = error
     else {
         panic!("corrupt log lost its typed path");
     };

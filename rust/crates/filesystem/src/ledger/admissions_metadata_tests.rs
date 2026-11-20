@@ -24,9 +24,11 @@ fn measured<T>(run: impl FnOnce() -> T) -> (T, acyclic_test_support::AllocationI
 fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .unwrap();
-    let baseline = original.live_allocation_bytes().unwrap();
-    let before = original.receipt().unwrap();
+            .map_err(|_| "work observation")?;
+    let baseline = original
+        .live_allocation_bytes()
+        .map_err(|_| "work observation")?;
+    let before = original.receipt().map_err(|_| "work observation")?;
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -38,14 +40,19 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
     if allocated.count_total != 1 || allocated.count_current != 1 || allocated.count_max != 1 {
         return Err("one shared allocation");
     }
-    if allocated.bytes_total != allocated.bytes_current as u64
+    if allocated.bytes_total
+        != u64::try_from(allocated.bytes_current).map_err(|_| "negative heap")?
         || allocated.bytes_total != allocated.bytes_max
     {
         return Err("exact shared allocation");
     }
     // Keep a publisher alive while checking the real heap delta: a terminal
     // reconciliation would otherwise discard the aggregate before comparison.
-    if original.live_allocation_bytes().unwrap() != baseline + allocated.bytes_total {
+    if original
+        .live_allocation_bytes()
+        .map_err(|_| "work observation")?
+        != baseline + allocated.bytes_total
+    {
         return Err("shared metadata must fund its complete physical allocation");
     }
     let expected = before
@@ -54,8 +61,8 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
             peak_allocation_bytes: baseline + allocated.bytes_total,
             ..WorkCounters::UNCHARGED
         })
-        .unwrap();
-    if original.receipt().unwrap() != expected {
+        .map_err(|_| "work observation")?;
+    if original.receipt().map_err(|_| "work observation")? != expected {
         return Err("metadata receipt");
     }
     let ((), retired) = measured(|| {
@@ -64,12 +71,16 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
     });
     if retired.count_total != 0
         || retired.count_current != -1
-        || retired.bytes_current != -(allocated.bytes_total as i64)
+        || retired.bytes_current
+            != -i64::try_from(allocated.bytes_total).map_err(|_| "heap size")?
     {
         return Err("final owner releases the physical allocation once");
     }
-    if original.live_allocation_bytes().unwrap() != baseline
-        || original.receipt().unwrap() != expected
+    if original
+        .live_allocation_bytes()
+        .map_err(|_| "work observation")?
+        != baseline
+        || original.receipt().map_err(|_| "work observation")? != expected
     {
         return Err("final owner restores standing bytes and keeps the receipt");
     }

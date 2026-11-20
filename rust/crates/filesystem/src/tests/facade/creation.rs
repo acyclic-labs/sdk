@@ -30,16 +30,16 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
         for deny_hash in [true, false] {
             let fs = Fs::memory();
             let caller = CancellationToken::new();
-            let original = acyclic_fs::NativeMaterializationWork::new(B, &caller)
-                .map_err(|(cause, _)| cause)?;
+            let original =
+                crate::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
             original.charge(WorkCounters {
                 items_examined: 7,
                 ..WorkCounters::UNCHARGED
             })?;
             let initial_live = original.live_allocation_bytes().unwrap();
-            let held = acyclic_fs::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
+            let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
                 4096,
-                &mut acyclic_fs::kernel::KernelAccounting::native(&original, &cancel),
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel),
             )?;
             let restricted = original.native_volume_work(WorkBudget {
                 bytes_hashed: if deny_hash { 0 } else { B.bytes_hashed },
@@ -53,9 +53,9 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
             if deny_hash {
                 assert!(matches!(
                     result,
-                    Err(FsError::Object(acyclic_fs::ObjectStoreError::Native(
-                        acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                    Err(FsError::Object(crate::ObjectStoreError::Native(
+                        crate::NativeTreeMaterializationError::Work(
+                            crate::WorkError::BudgetExceeded {
                                 counter: "bytes_hashed",
                                 ..
                             }
@@ -126,13 +126,13 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 fs.create_volume_with_id(id, config(), &restricted, &cancel)
                     .await,
                 Err(FsError::NativeKernel(
-                    acyclic_fs::NativeTreeMaterializationError::Cancelled
+                    crate::NativeTreeMaterializationError::Cancelled
                 ))
             ));
             assert!(matches!(
                 fs.create_volume(config(), &restricted, &cancel).await,
                 Err(FsError::NativeKernel(
-                    acyclic_fs::NativeTreeMaterializationError::Cancelled
+                    crate::NativeTreeMaterializationError::Cancelled
                 ))
             ));
             assert_eq!(original.receipt().unwrap(), spent);
@@ -171,16 +171,16 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
         acyclic_native_runtime::initialize_native_io_services().expect("native I/O test services");
         for admitted in [0, 2] {
             let caller = CancellationToken::new();
-            let original = acyclic_fs::NativeMaterializationWork::new(B, &caller)
-                .map_err(|(cause, _)| cause)?;
+            let original =
+                crate::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
             original.charge(WorkCounters {
                 items_examined: 7,
                 ..WorkCounters::UNCHARGED
             })?;
             let initial_live = original.live_allocation_bytes().unwrap();
-            let held = acyclic_fs::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
+            let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
                 4096,
-                &mut acyclic_fs::kernel::KernelAccounting::native(&original, &cancel),
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel),
             )?;
             let restricted = original.native_volume_work(WorkBudget {
                 backend_read_operations: admitted,
@@ -193,9 +193,9 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                     matches!(
                         result,
                         Err(FsError::Authority(
-                            acyclic_fs::AuthorityStoreError::NativeOriginal(
-                                acyclic_fs::NativeTreeMaterializationError::Work(
-                                    acyclic_fs::WorkError::BudgetExceeded {
+                            crate::AuthorityStoreError::NativeOriginal(
+                                crate::NativeTreeMaterializationError::Work(
+                                    crate::WorkError::BudgetExceeded {
                                         counter: "backend_read_operations",
                                         ..
                                     }
@@ -220,7 +220,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
             assert!(matches!(
                 fs.open_volume(id, &restricted, &cancel).await,
                 Err(FsError::NativeKernel(
-                    acyclic_fs::NativeTreeMaterializationError::Cancelled
+                    crate::NativeTreeMaterializationError::Cancelled
                 ))
             ));
             assert_eq!(original.receipt().unwrap(), spent);

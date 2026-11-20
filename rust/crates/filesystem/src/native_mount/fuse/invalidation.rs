@@ -11,7 +11,7 @@ pub(super) enum KernelCacheItem {
     Reply(Box<super::deferred_reply::DeferredReply>),
     Attributes {
         inode: u64,
-        credit: crate::ledger::NativeWorkReservation,
+        credit: Box<crate::ledger::NativeWorkReservation>,
     },
     Inode(u64),
     Entry {

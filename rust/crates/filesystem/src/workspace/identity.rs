@@ -261,6 +261,7 @@ impl IdempotencyKey {
         self.0
     }
 
+    /// The operation id these bytes name.
     pub const fn operation_id(self) -> OperationId {
         OperationId::from_bytes(self.0)
     }

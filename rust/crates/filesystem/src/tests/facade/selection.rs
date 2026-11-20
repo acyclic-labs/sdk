@@ -4,7 +4,7 @@ use super::*;
 async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
-    use acyclic_fs::workspace::WorkspaceError;
+    use crate::workspace::WorkspaceError;
     let fs = Fs::memory();
     let workspace = fs
         .create_workspace("selected-fork-invalid-paths", B, &cancel)
@@ -28,7 +28,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
     {
         let owned = (paths.capacity() * std::mem::size_of::<String>()
             + paths.iter().map(String::capacity).sum::<usize>()) as u64;
-        let mut accounting = acyclic_fs::kernel::allocation::KernelAccounting::standalone(
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
             WorkBudget {
                 allocation_operations: 0,
                 ..B
@@ -37,7 +37,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
         );
         let (allocation, admitted) = accounting.record_actual_owned(owned)?;
         admitted?;
-        let paths = acyclic_fs::kernel::Owned::new(paths, allocation, owned);
+        let paths = crate::kernel::Owned::new(paths, allocation, owned);
         let failure = fs
             .select_fork_paths(
                 &source,
@@ -66,7 +66,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     #[cfg(not(target_arch = "wasm32"))]
     selected_record_membership_cost_and_custody()?;
     let cancel = CancellationToken::new();
-    use acyclic_fs::workspace::ForkOptions;
+    use crate::workspace::ForkOptions;
     let fs = Fs::memory();
     let workspace = fs
         .create_workspace("selected-fork-closure-controls", B, &cancel)
@@ -74,7 +74,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         .map_err(|error| format!("create selected-fork source: {error:?}"))?
         .value;
     let mut transaction = workspace
-        .begin_transaction(acyclic_fs::IdempotencyKey::new(), B, &cancel)
+        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
         .await
         .map_err(|error| format!("begin selected-fork source transaction: {error:?}"))?
         .value;
@@ -114,16 +114,14 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     transaction
         .commit(
             None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                    acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::default(),
-                    },
-                )
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::default(),
+                })
             },
         )
         .await
@@ -135,17 +133,17 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         "/tree".to_owned(),
     ];
     let child = workspace
-        .fork::<_, _, acyclic_fs::WorkspaceError>(
+        .fork::<_, _, crate::WorkspaceError>(
             "selected-fork-closure-child",
-            ForkOptions::from_generation(source.clone(), acyclic_fs::IdempotencyKey::new())
+            ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(paths.clone()),
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: crate::WorkCounters::UNCHARGED,
                 }))
             },
         )
@@ -202,17 +200,17 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     .map(str::to_owned)
     .collect();
     let leaf_child = workspace
-        .fork::<_, _, acyclic_fs::WorkspaceError>(
+        .fork::<_, _, crate::WorkspaceError>(
             "selected-fork-leaf-child",
-            ForkOptions::from_generation(source.clone(), acyclic_fs::IdempotencyKey::new())
+            ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(leaves.clone()),
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: crate::WorkCounters::UNCHARGED,
                 }))
             },
         )
@@ -263,17 +261,17 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     assert_eq!(replay.value, baseline.value);
     replay.work.verify(finite)?;
     let all = workspace
-        .fork::<_, _, acyclic_fs::WorkspaceError>(
+        .fork::<_, _, crate::WorkspaceError>(
             "selected-fork-root-child",
-            ForkOptions::from_generation(source.clone(), acyclic_fs::IdempotencyKey::new())
+            ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: crate::WorkCounters::UNCHARGED,
                 }))
             },
         )
@@ -301,16 +299,16 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
 
 #[cfg(not(target_arch = "wasm32"))]
 fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_fs::kernel::allocation::fixed_index::FixedIndex;
-    use acyclic_fs::kernel::allocation::retained::RetainedAllocation;
-    use acyclic_fs::kernel::{FilePayload, FileRecord, KernelAccounting};
+    use crate::kernel::allocation::fixed_index::FixedIndex;
+    use crate::kernel::allocation::retained::RetainedAllocation;
+    use crate::kernel::{FilePayload, FileRecord, KernelAccounting};
     let own = FileRecord {
-        file_id: acyclic_fs::FileId::from_bytes([255; 16]),
-        kind: acyclic_fs::kernel::FileKind::Fifo,
+        file_id: crate::FileId::from_bytes([255; 16]),
+        kind: crate::kernel::FileKind::Fifo,
         link_count: 1,
         metadata: ObjectId {
             kind: ObjectKind::Metadata,
-            digest: acyclic_fs::Digest::from_bytes([7; 32]),
+            digest: crate::Digest::from_bytes([7; 32]),
             storage: None,
         },
         bindings: None,
@@ -320,9 +318,9 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
     // provider/index owners during a read. Cleanup owns only call scratch.
     let cancel = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(B, &cancel);
-    let caller = acyclic_fs::kernel::Owned::<Vec<u8>>::allocate(97, &mut accounting)?;
+    let caller = crate::kernel::Owned::<Vec<u8>>::allocate(97, &mut accounting)?;
     let independent = RetainedAllocation::claim(61, 1, &mut accounting)?;
-    let before = acyclic_fs::facade::readonly_standalone_live(&accounting);
+    let before = crate::facade::readonly_standalone_live(&accounting);
     let initial_live = accounting
         .standalone_parts()
         .ok_or("ordinary ledger missing")?
@@ -335,7 +333,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         .ok_or("ordinary ledger missing")?
         .0
         .live_bytes();
-    let discarded = acyclic_fs::kernel::Owned::<Vec<u8>>::allocate(37, &mut accounting)?;
+    let discarded = crate::kernel::Owned::<Vec<u8>>::allocate(37, &mut accounting)?;
     drop(discarded);
     let ledger = accounting
         .standalone_parts()
@@ -348,7 +346,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         .checked_sub(initial_live)
         .ok_or("ordinary live count underflow")?;
     assert!(ledger.release(old_retired).is_err());
-    acyclic_fs::facade::readonly_cleanup_standalone(&mut accounting, before, 0)?;
+    crate::facade::readonly_cleanup_standalone(&mut accounting, before, 0)?;
     assert_eq!(
         accounting
             .standalone_parts()
@@ -361,8 +359,8 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         retained.get(own.file_id.into_bytes(), &mut accounting)?,
         Some(&own)
     );
-    let output = acyclic_fs::kernel::Owned::<Vec<u8>>::allocate(43, &mut accounting)?;
-    acyclic_fs::facade::readonly_cleanup_standalone(&mut accounting, before, output.bytes)?;
+    let output = crate::kernel::Owned::<Vec<u8>>::allocate(43, &mut accounting)?;
+    crate::facade::readonly_cleanup_standalone(&mut accounting, before, output.bytes)?;
     assert_eq!(
         accounting
             .standalone_parts()
@@ -412,8 +410,8 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             ..B
         };
         let cancel = CancellationToken::new();
-        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
-            .map_err(|(error, _)| error)?;
+        let original =
+            crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut records = FixedIndex::default();
@@ -422,7 +420,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             let mut bytes = [0; 16];
             bytes[8..].copy_from_slice(&ordinal.to_be_bytes());
             let record = FileRecord {
-                file_id: acyclic_fs::FileId::from_bytes(bytes),
+                file_id: crate::FileId::from_bytes(bytes),
                 ..own
             };
             records.get_or_try_insert_with(bytes, &mut accounting, |_| Ok(record))?;
@@ -468,7 +466,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             .ok_or("original selected record disappeared")?
             .link_count = 2;
         let first = FileRecord {
-            file_id: acyclic_fs::FileId::from_bytes([0; 16]),
+            file_id: crate::FileId::from_bytes([0; 16]),
             ..own
         };
         let position = old
@@ -526,13 +524,13 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
 async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
-    use acyclic_fs::workspace::{ForkOptions, WorkspaceError};
+    use crate::workspace::{ForkOptions, WorkspaceError};
     let tracked = Arc::new(std::sync::Mutex::new(None));
     let reads = Arc::new(AtomicUsize::new(0));
     let fs = Fs::new(
-        acyclic_fs::memory::MemoryAuthorityStore::default(),
+        crate::memory::MemoryAuthorityStore::default(),
         CountingObjectStore {
-            inner: acyclic_fs::memory::MemoryObjectStore::default(),
+            inner: crate::memory::MemoryObjectStore::default(),
             tracked: Arc::clone(&tracked),
             reads: Arc::clone(&reads),
             unreadable: Arc::default(),
@@ -551,17 +549,17 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
             .map_err(|failure| failure.error)
     })
     .await?;
-    let child = (workspace.fork::<_, _, acyclic_fs::WorkspaceError>(
+    let child = (workspace.fork::<_, _, crate::WorkspaceError>(
         "selected-fork-verification-child",
-        ForkOptions::from_generation(source.clone(), acyclic_fs::IdempotencyKey::new())
+        ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-        acyclic_fs::PublicationPermit::Unrestricted,
+        crate::PublicationPermit::Unrestricted,
         B,
         &cancel,
         &mut |_| {
-            std::future::ready(Ok(acyclic_fs::OperationReceipt {
+            std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
-                work: acyclic_fs::WorkCounters::UNCHARGED,
+                work: crate::WorkCounters::UNCHARGED,
             }))
         },
     ))

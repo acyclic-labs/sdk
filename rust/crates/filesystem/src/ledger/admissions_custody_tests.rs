@@ -14,10 +14,10 @@ fn logical_growth_uses_retired_credit_before_admission() -> TestResult {
     let survivor = NativeMountAllocationCustody::new(&mut original)?;
     drop(retired);
 
-    let remaining = BUDGET.peak_allocation_bytes - original.live_allocation_bytes().unwrap();
+    let remaining = BUDGET.peak_allocation_bytes - original.live_allocation_bytes()?;
     allocation.resize(remaining)?;
     assert_eq!(
-        original.live_allocation_bytes().unwrap(),
+        original.live_allocation_bytes()?,
         BUDGET.peak_allocation_bytes
     );
     drop(allocation);

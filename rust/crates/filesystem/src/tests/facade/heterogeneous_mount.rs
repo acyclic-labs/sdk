@@ -1,7 +1,7 @@
 use super::*;
-use acyclic_fs::model::VolumeLimits;
-use acyclic_fs::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectWrite};
-use acyclic_fs::{
+use crate::model::VolumeLimits;
+use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectWrite};
+use crate::{
     AsyncAuthorityStore, AsyncObjectStore, EmbeddedCapabilities, LocalFs, LocalOptions, MemoryFs,
 };
 use acyclic_stream::OwnedBytes;
@@ -29,7 +29,7 @@ macro_rules! delegate {
                 $(async fn $method(&self, $($argument: $type,)* $context: $context_type) -> $result {
                     #[cfg(not(target_arch = "wasm32"))]
                     if $context.original.is_some() {
-                        return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+                        return Err(crate::ObjectStoreError::NativeUnavailable);
                     }
                     match self {
                         Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument,)* $context).await,
@@ -57,18 +57,18 @@ impl AsyncAuthorityStore for Stores {
         [0; 16]
     }
 
-    async fn create_authority<G: acyclic_fs::AuthorityGuard>(
+    async fn create_authority<G: crate::AuthorityGuard>(
         &self,
-        authority: acyclic_fs::AuthorityId,
-        epoch: acyclic_fs::Epoch,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        authority: crate::AuthorityId,
+        epoch: crate::Epoch,
+        work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<acyclic_fs::CreateAuthorityOutcome, acyclic_fs::AuthorityError<G::Error>> {
+    ) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
         }
-        acyclic_fs::async_storage::seal(guard.as_deref_mut(), work).await?;
+        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
         let value = delegate!(
             self,
             AsyncAuthorityStore,
@@ -76,26 +76,26 @@ impl AsyncAuthorityStore for Stores {
             create_authority(authority, epoch, work, None::<&mut ()>)
         )
         .map_err(|error| {
-            acyclic_fs::AuthorityError::Authority(error.into_error(std::convert::identity))
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
         })?;
-        if matches!(value, acyclic_fs::CreateAuthorityOutcome::Existing(_)) {
-            acyclic_fs::async_storage::seal(guard, work).await?;
+        if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
+            crate::async_storage::seal(guard, work).await?;
         }
         Ok(value)
     }
-    async fn fork_authority<G: acyclic_fs::AuthorityGuard>(
+    async fn fork_authority<G: crate::AuthorityGuard>(
         &self,
-        source: acyclic_fs::GenerationForkSource,
-        destination: acyclic_fs::AuthorityId,
-        operation: acyclic_fs::OperationId,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        source: crate::GenerationForkSource,
+        destination: crate::AuthorityId,
+        operation: crate::OperationId,
+        work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<acyclic_fs::CreateAuthorityOutcome, acyclic_fs::AuthorityError<G::Error>> {
+    ) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
         }
-        acyclic_fs::async_storage::seal(guard.as_deref_mut(), work).await?;
+        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
         let value = delegate!(
             self,
             AsyncAuthorityStore,
@@ -103,21 +103,21 @@ impl AsyncAuthorityStore for Stores {
             fork_authority(source, destination, operation, work, None::<&mut ()>)
         )
         .map_err(|error| {
-            acyclic_fs::AuthorityError::Authority(error.into_error(std::convert::identity))
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
         })?;
-        if matches!(value, acyclic_fs::CreateAuthorityOutcome::Existing(_)) {
-            acyclic_fs::async_storage::seal(guard, work).await?;
+        if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
+            crate::async_storage::seal(guard, work).await?;
         }
         Ok(value)
     }
     // A store with prefix lineage forks atomically, its changes included.
-    async fn fork_workspace<G: acyclic_fs::AuthorityGuard>(
+    async fn fork_workspace<G: crate::AuthorityGuard>(
         &self,
-        fork: acyclic_fs::WorkspaceForkCommit,
-        permit: acyclic_fs::PublicationPermit,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        fork: crate::WorkspaceForkCommit,
+        permit: crate::PublicationPermit,
+        work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> Result<acyclic_fs::WorkspaceForkOutcome, acyclic_fs::AuthorityError<G::Error>> {
+    ) -> Result<crate::WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
         delegate!(
             self,
             AsyncAuthorityStore,
@@ -125,61 +125,54 @@ impl AsyncAuthorityStore for Stores {
             fork_workspace(fork, permit, work, guard)
         )
     }
-    async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(
+    async fn compare_and_append<G: crate::AuthorityGuard>(
         &self,
-        request: acyclic_fs::GuardedAppend,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
+        request: crate::GuardedAppend,
+        work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> Result<acyclic_fs::AppendOutcome, acyclic_fs::AuthorityError<G::Error>> {
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
         }
-        if request.permit != acyclic_fs::PublicationPermit::Unrestricted {
-            return Err(acyclic_fs::AuthorityStoreError::Rejected(
+        if request.permit != crate::PublicationPermit::Unrestricted {
+            return Err(crate::AuthorityStoreError::Rejected(
                 "authority backend cannot atomically evaluate operation leases".to_owned(),
             )
             .into());
         }
-        acyclic_fs::async_storage::seal(guard, work).await?;
+        crate::async_storage::seal(guard, work).await?;
         delegate!(
             self,
             AsyncAuthorityStore,
             authority,
             compare_and_append(request, work, None::<&mut ()>)
         )
-        .map_err(|error| {
-            acyclic_fs::AuthorityError::Authority(error.into_error(std::convert::identity))
-        })
+        .map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
     }
     async fn head(
         &self,
-        authority: acyclic_fs::AuthorityId,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<acyclic_fs::Head, acyclic_fs::AuthorityStoreError> {
+        authority: crate::AuthorityId,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::Head, crate::AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported);
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(self, AsyncAuthorityStore, authority, head(authority, work))
     }
     async fn replay(
         &self,
-        authority: acyclic_fs::AuthorityId,
-        after: acyclic_fs::Sequence,
-        limit: acyclic_fs::ReplayLimit,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<
-        (
-            Vec<acyclic_fs::DurableCommit>,
-            acyclic_fs::AuthorityAllocation,
-        ),
-        acyclic_fs::AuthorityStoreError,
-    > {
+        authority: crate::AuthorityId,
+        after: crate::Sequence,
+        limit: crate::ReplayLimit,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError>
+    {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported);
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(
@@ -191,13 +184,13 @@ impl AsyncAuthorityStore for Stores {
     }
     async fn fence(
         &self,
-        authority: acyclic_fs::AuthorityId,
-        expected: acyclic_fs::Head,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<acyclic_fs::FenceOutcome, acyclic_fs::AuthorityStoreError> {
+        authority: crate::AuthorityId,
+        expected: crate::Head,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported);
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(
@@ -209,13 +202,13 @@ impl AsyncAuthorityStore for Stores {
     }
     async fn find_operation(
         &self,
-        authority: acyclic_fs::AuthorityId,
-        operation: acyclic_fs::OperationId,
-        work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityStoreError> {
+        authority: crate::AuthorityId,
+        operation: crate::OperationId,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported);
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(
@@ -241,7 +234,7 @@ delegate!(
     AsyncObjectStore,
     objects,
     {
-        fn collection(&self) -> Option<&Arc<acyclic_fs::Collection>> {
+        fn collection(&self) -> Option<&Arc<crate::Collection>> {
             match self {
                 Self::Memory(_) => None,
                 Self::Local(fs) => fs.inner.objects.collection(),
@@ -250,31 +243,31 @@ delegate!(
     },
     {
         fn put(
-            context: &mut acyclic_fs::AuthorityWork<'_>,
+            context: &mut crate::AuthorityWork<'_>,
             id: ObjectId,
             bytes: OwnedBytes,
-        ) -> Result<(), acyclic_fs::ObjectStoreError>;
+        ) -> Result<(), crate::ObjectStoreError>;
         fn put_many(
-            context: &mut acyclic_fs::AuthorityWork<'_>,
+            context: &mut crate::AuthorityWork<'_>,
             writes: &[ObjectWrite],
-        ) -> Result<(), acyclic_fs::ObjectStoreError>;
+        ) -> Result<(), crate::ObjectStoreError>;
         fn read(
-            context: &mut acyclic_fs::AuthorityWork<'_>,
+            context: &mut crate::AuthorityWork<'_>,
             id: ObjectId,
             maximum: u64,
-        ) -> Result<ObjectRead, acyclic_fs::ObjectStoreError>;
+        ) -> Result<ObjectRead, crate::ObjectStoreError>;
         fn read_many(
-            context: &mut acyclic_fs::AuthorityWork<'_>,
+            context: &mut crate::AuthorityWork<'_>,
             requests: &[ObjectReadRequest],
-        ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), acyclic_fs::ObjectStoreError>;
+        ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>;
         fn contains(
-            context: &mut acyclic_fs::AuthorityWork<'_>,
+            context: &mut crate::AuthorityWork<'_>,
             id: ObjectId,
-        ) -> Result<bool, acyclic_fs::ObjectStoreError>;
+        ) -> Result<bool, crate::ObjectStoreError>;
         fn flush_before_publish(
-            context: &mut acyclic_fs::AuthorityWork<'_>,
-            scope: acyclic_fs::PublicationScope<'_>,
-        ) -> Result<acyclic_fs::PublicationHold, acyclic_fs::ObjectStoreError>;
+            context: &mut crate::AuthorityWork<'_>,
+            scope: crate::PublicationScope<'_>,
+        ) -> Result<crate::PublicationHold, crate::ObjectStoreError>;
     }
 );
 
@@ -304,60 +297,60 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
     let scratch_head = scratch.head(B, &cancel).await?.value;
     assert!(matches!(
         scratch
-            .fork::<_, _, acyclic_fs::WorkspaceError>(
+            .fork::<_, _, crate::WorkspaceError>(
                 "foreign",
-                acyclic_fs::ForkOptions::from_generation(
+                crate::ForkOptions::from_generation(
                     root_head.clone(),
-                    acyclic_fs::IdempotencyKey::from_bytes([60; 16]),
+                    crate::IdempotencyKey::from_bytes([60; 16]),
                 ),
-                acyclic_fs::PublicationPermit::Unrestricted,
+                crate::PublicationPermit::Unrestricted,
                 B,
                 &cancel,
-                &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                &mut |_| std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED
+                    work: crate::WorkCounters::UNCHARGED
                 }))
             )
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error),
-        Err(acyclic_fs::WorkspaceError::ForeignGeneration)
+        Err(crate::WorkspaceError::ForeignGeneration)
     ));
     assert!(matches!(
-        root.fork::<_, _, acyclic_fs::WorkspaceError>(
+        root.fork::<_, _, crate::WorkspaceError>(
             "foreign",
-            acyclic_fs::ForkOptions::from_generation(
+            crate::ForkOptions::from_generation(
                 scratch_head.clone(),
-                acyclic_fs::IdempotencyKey::from_bytes([61; 16]),
+                crate::IdempotencyKey::from_bytes([61; 16]),
             ),
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
-            &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
+            &mut |_| std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
-                work: acyclic_fs::WorkCounters::UNCHARGED
+                work: crate::WorkCounters::UNCHARGED
             }))
         )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error),
-        Err(acyclic_fs::WorkspaceError::ForeignGeneration)
+        Err(crate::WorkspaceError::ForeignGeneration)
     ));
     for (workspace, head) in [(&root, &root_head), (&scratch, &scratch_head)] {
         let fork = workspace
-            .fork::<_, _, acyclic_fs::WorkspaceError>(
+            .fork::<_, _, crate::WorkspaceError>(
                 "child",
-                acyclic_fs::ForkOptions::from_generation(
+                crate::ForkOptions::from_generation(
                     head.clone(),
-                    acyclic_fs::IdempotencyKey::from_bytes([62; 16]),
+                    crate::IdempotencyKey::from_bytes([62; 16]),
                 ),
-                acyclic_fs::PublicationPermit::Unrestricted,
+                crate::PublicationPermit::Unrestricted,
                 B,
                 &cancel,
                 &mut |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: crate::WorkCounters::UNCHARGED,
                     }))
                 },
             )
@@ -367,7 +360,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         assert_eq!(workspace.head(B, &cancel).await?.value.id(), head.id());
         assert_ne!(fork.head(B, &cancel).await?.value.id(), head.id());
     }
-    let mut view = acyclic_fs::MountedView::builder()
+    let mut view = crate::MountedView::builder()
         .mount(
             "/",
             root.checkout(
@@ -393,9 +386,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         )?
         .build()?;
     let cancellation = CancellationToken::new();
-    let root_path = acyclic_fs::path::PortablePath::parse("/file", VolumeLimits::default())?;
-    let scratch_path =
-        acyclic_fs::path::PortablePath::parse("/.scratch/file", VolumeLimits::default())?;
+    let root_path = crate::path::PortablePath::parse("/file", VolumeLimits::default())?;
+    let scratch_path = crate::path::PortablePath::parse("/.scratch/file", VolumeLimits::default())?;
     for path in [&root_path, &scratch_path] {
         let route = view.route_mut(path)?;
         assert!(
@@ -425,7 +417,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
     );
     assert_eq!(
         view.validate_rename(&root_path, &scratch_path),
-        Err(acyclic_fs::MountError::CrossVolume)
+        Err(crate::MountError::CrossVolume)
     );
     assert_eq!(
         root.read("/file", 32, B, &cancellation)

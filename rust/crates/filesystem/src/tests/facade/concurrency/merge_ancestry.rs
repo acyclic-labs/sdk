@@ -61,10 +61,9 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
         2,
         "fixture must contain a real prepared merge"
     );
-    let original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
     let other_original =
-        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+        crate::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
     if native {
         // Copy through the production candidate owner; a standalone checkout
         // cannot borrow an unrelated native ledger for publication.
@@ -165,12 +164,12 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
 
 async fn publish(
     checkout: &mut TestCheckout,
-    original: Option<&acyclic_fs::NativeMaterializationWork>,
+    original: Option<&crate::NativeMaterializationWork>,
     cancel: &CancellationToken,
 ) -> TestResult {
     let outcome = if let Some(original) = original {
         let owner = original.clone();
-        let mut guard = move |work: &acyclic_fs::NativeMaterializationWork| {
+        let mut guard = move |work: &crate::NativeMaterializationWork| {
             assert!(owner.shares_ledger(work));
             std::future::ready(Ok::<_, FsError>(()))
         };

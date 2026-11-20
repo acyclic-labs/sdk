@@ -1,8 +1,8 @@
 //! A fork's proof extends its source's published proof instead of walking it.
 
 use super::*;
-use acyclic_fs::WorkCounters;
-use acyclic_fs::kernel::allocation::KernelAccounting;
+use crate::WorkCounters;
+use crate::kernel::allocation::KernelAccounting;
 
 #[derive(Clone, Copy)]
 enum ForkSource {
@@ -40,7 +40,7 @@ async fn fork_proof_work(
         source_kind,
         ForkSource::NativePinned | ForkSource::NativeObservedHead
     )
-    .then(|| acyclic_fs::NativeMaterializationWork::new(B, &cancel))
+    .then(|| crate::NativeMaterializationWork::new(B, &cancel))
     .transpose()
     .map_err(|(error, _)| error)?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -50,7 +50,7 @@ async fn fork_proof_work(
     #[cfg(not(target_arch = "wasm32"))]
     let mut transaction = if let Some(original) = &original {
         let mut transaction = workspace
-            .begin_transaction(acyclic_fs::IdempotencyKey::new(), original, &cancel)
+            .begin_transaction(crate::IdempotencyKey::new(), original, &cancel)
             .await?;
         let (bytes, allocation) = original.copy_bytes(b"original")?;
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
@@ -65,7 +65,7 @@ async fn fork_proof_work(
         transaction
     } else {
         let mut transaction = workspace
-            .begin_transaction(acyclic_fs::IdempotencyKey::new(), B, &cancel)
+            .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction.write_text("/retained", "original").await?;
@@ -74,22 +74,22 @@ async fn fork_proof_work(
     #[cfg(target_arch = "wasm32")]
     let mut transaction = {
         let mut transaction = workspace
-            .begin_transaction(acyclic_fs::IdempotencyKey::new(), B, &cancel)
+            .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction.write_text("/retained", "original").await?;
         transaction
     };
-    let commit_ordinary = async |transaction: &mut acyclic_fs::Transaction<_, _>| {
+    let commit_ordinary = async |transaction: &mut crate::Transaction<_, _>| {
         transaction
             .commit(
                 None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                crate::PublicationPermit::Unrestricted,
                 B,
                 &cancel,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
                             value: (),
                             work: WorkCounters::UNCHARGED,
                         },
@@ -101,9 +101,9 @@ async fn fork_proof_work(
     #[cfg(not(target_arch = "wasm32"))]
     let committed = if let Some(original) = &original {
         transaction
-            .commit_with_native_work::<acyclic_fs::WorkspaceError, _, _>(
+            .commit_with_native_work::<crate::WorkspaceError, _, _>(
                 None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                crate::PublicationPermit::Unrestricted,
                 original,
                 &cancel,
                 &mut |_| std::future::ready(Ok(())),
@@ -114,7 +114,7 @@ async fn fork_proof_work(
     };
     #[cfg(target_arch = "wasm32")]
     let committed = commit_ordinary(&mut transaction).await?.value;
-    let acyclic_fs::TransactionCommit::Committed(mut older) = committed else {
+    let crate::TransactionCommit::Committed(mut older) = committed else {
         return Err("the source must be published".into());
     };
     let observed = match source_kind {
@@ -138,7 +138,7 @@ async fn fork_proof_work(
         }
         ForkSource::Pinned => {
             older.pin("source-proof-pin", B, &cancel).await?;
-            let Some(acyclic_fs::facade::GenerationClosure::Publication(custody)) =
+            let Some(crate::facade::GenerationClosure::Publication(custody)) =
                 older.publication_closure.as_ref()
             else {
                 return Err("committed generation must retain its publication handback".into());
@@ -211,7 +211,7 @@ async fn fork_proof_work(
         let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
         drop(discarded);
     }
-    let name = acyclic_fs::WorkspaceName::new("fork-proof-child", &B, &cancel)?.value;
+    let name = crate::WorkspaceName::new("fork-proof-child", &B, &cancel)?.value;
     let mut accounting = KernelAccounting::standalone(B, &cancel);
     let destination = fs.workspace_id_for_name(&name, &mut accounting)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
@@ -221,7 +221,7 @@ async fn fork_proof_work(
         .materialize_forked_generation_root(
             &source,
             destination,
-            acyclic_fs::kernel::Owned::new(None, allocation, 0),
+            crate::kernel::Owned::new(None, allocation, 0),
             &mut accounting,
             &cancel,
         )
@@ -340,17 +340,14 @@ async fn first_publication_work(
     }
     let source = workspace.head(B, &cancel).await?.value;
     let child = workspace
-        .fork::<_, _, acyclic_fs::WorkspaceError>(
+        .fork::<_, _, crate::WorkspaceError>(
             "first-publish-child",
-            acyclic_fs::workspace::ForkOptions::from_generation(
-                source,
-                acyclic_fs::IdempotencyKey::new(),
-            ),
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::workspace::ForkOptions::from_generation(source, crate::IdempotencyKey::new()),
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: WorkCounters::UNCHARGED,
                 }))
@@ -365,29 +362,27 @@ async fn first_publication_work(
         drop(discarded);
     }
     let mut transaction = child
-        .begin_transaction(acyclic_fs::IdempotencyKey::new(), B, &cancel)
+        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     transaction.write_text("/new", "child only").await?;
     let receipt = transaction
         .commit(
             None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                    acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    },
-                )
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
             },
         )
         .await?;
     assert!(matches!(
         receipt.value,
-        acyclic_fs::TransactionCommit::Committed(_)
+        crate::TransactionCommit::Committed(_)
     ));
     assert_eq!(
         child.read("/new", 32, B, &cancel).await?.value.as_ref(),
@@ -434,9 +429,9 @@ async fn composed_publication_work(
     let cancel = CancellationToken::new();
     let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
     let fs = Fs::new(
-        acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-        acyclic_fs::MemoryObjectStore::default(),
-        acyclic_fs::EmbeddedCapabilities::MEMORY,
+        crate::StreamAuthorityStore::new(stream.clone()),
+        crate::MemoryObjectStore::default(),
+        crate::EmbeddedCapabilities::MEMORY,
     );
     let workspace = fs
         .create_workspace("composed-proof", B, &cancel)
@@ -448,13 +443,13 @@ async fn composed_publication_work(
             .await?;
     }
     let source = workspace.head(B, &cancel).await?.value;
-    let forks = [acyclic_fs::ForkSpec {
-        destination: acyclic_fs::WorkspaceName::new("composed-child", &B, &cancel)?.value,
+    let forks = [crate::ForkSpec {
+        destination: crate::WorkspaceName::new("composed-child", &B, &cancel)?.value,
         source: &source,
         paths: None,
-        idempotency_key: acyclic_fs::IdempotencyKey::new(),
+        idempotency_key: crate::IdempotencyKey::new(),
     }];
-    let mut commit = acyclic_fs::FilesystemCommit::new(acyclic_stream::CommitRequest {
+    let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
         effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
         idempotency_key: acyclic_stream::IdempotencyKey::new(OwnedBytes::from_static(
@@ -473,7 +468,7 @@ async fn composed_publication_work(
         fs.settle_commit(commit, outcome, B, &cancelled)
             .await?
             .value,
-        acyclic_fs::FilesystemCommitOutcome::Committed(_)
+        crate::FilesystemCommitOutcome::Committed(_)
     ));
     if discard_proof {
         let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
@@ -490,7 +485,7 @@ async fn composed_publication_work(
         "workspace open embeds {opening_bytes} bytes"
     );
     let child = opening.await?.value;
-    let beginning = child.begin_transaction(acyclic_fs::IdempotencyKey::new(), B, &cancel);
+    let beginning = child.begin_transaction(crate::IdempotencyKey::new(), B, &cancel);
     let beginning_bytes = std::mem::size_of_val(&beginning);
     assert!(
         beginning_bytes <= bound,
@@ -502,15 +497,15 @@ async fn composed_publication_work(
     let receipt = transaction
         .commit(
             None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<acyclic_fs::WorkspaceError>,
+            allow::<crate::WorkspaceError>,
         )
         .await?;
     assert!(matches!(
         receipt.value,
-        acyclic_fs::TransactionCommit::Committed(_)
+        crate::TransactionCommit::Committed(_)
     ));
     assert_eq!(
         child.read("/new", 32, B, &cancel).await?.value.as_ref(),

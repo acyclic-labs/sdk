@@ -197,11 +197,15 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
         .create_workspace("dense-accounting", B, &cancel)
         .await?
         .value;
-    let id = volume_authority_id(workspace.id().volume_id());
+    let volume_id = workspace.id().volume_id();
+    let id = volume_authority_id(volume_id);
     let mut expected = vec![(root(workspace.head(B, &cancel).await?.value.id()), 0_u128)];
     for (index, length) in lengths.iter().copied().enumerate() {
         workspace
-            .write("/file", bytes::Bytes::from(vec![index as u8 + 1; length]))
+            .write(
+                "/file",
+                bytes::Bytes::from(vec![u8::try_from(index + 1)?; length]),
+            )
             .await?;
         expected.push((
             root(workspace.head(B, &cancel).await?.value.id()),
@@ -210,48 +214,9 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
     }
     let original = records(&authority, id).await?;
     assert_eq!(original.len(), expected.len());
-    let mut position = AccountingCursor::genesis();
-    let mut consumed = Vec::new();
-    loop {
-        let next = page(&authority, &objects, id, position, page_size).await?;
-        assert!(!next.facts().is_empty());
-        assert!(next.facts().len() <= page_size as usize);
-        assert_eq!(
-            next.watermark_sequence,
-            original.last().ok_or("no records")?.sequence
-        );
-        assert_eq!(next.facts()[0].sequence.get(), position.sequence.get() + 1);
-        next.work.verify(BUDGET)?;
-        position = next.next;
-        let complete = next.complete;
-        consumed.push(next);
-        if complete {
-            break;
-        }
-    }
-    let facts = || consumed.iter().flat_map(AccountingPage::facts);
-    assert_eq!(facts().count(), original.len());
-    for ((fact, record), (generation_root, logical_regular_file_bytes)) in
-        facts().zip(&original).zip(expected)
-    {
-        assert_eq!(fact.authority_id, id);
-        assert_eq!(fact.sequence, record.sequence);
-        assert_eq!(fact.operation_id, record.operation_id);
-        assert_eq!(fact.commit_digest, record.digest);
-        assert_eq!(Some(fact.settled_at_micros), record.settled_at_micros);
-        assert_eq!(
-            fact.operation_class,
-            AccountingOperationClass::CustomerMutation
-        );
-        assert_eq!(
-            fact.transition,
-            AccountingTransition::Published {
-                volume_id: workspace.id().volume_id(),
-                generation_root,
-                logical_regular_file_bytes
-            }
-        );
-    }
+    let (consumed, position) =
+        consume_pages(&authority, &objects, id, page_size, &original).await?;
+    assert_published_facts(&consumed, &original, expected, id, volume_id);
     workspace
         .write("/file", bytes::Bytes::from(vec![99; 73]))
         .await?;
@@ -262,23 +227,7 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
         .ok_or("later record missing")?;
     let deletion = IdempotencyKey::new();
     workspace.delete(deletion).await?;
-    let mut anchor = AccountingCursor::genesis();
-    for retained in consumed {
-        assert_eq!(
-            authority
-                .accounting_page(
-                    &objects,
-                    id,
-                    anchor,
-                    retained.facts().len() as u32,
-                    &mut AuthorityWork::new(BUDGET, &cancel)
-                )
-                .await?
-                .facts(),
-            retained.facts()
-        );
-        anchor = retained.next;
-    }
+    retained_pages_repeat(&authority, &objects, id, &consumed, &cancel).await?;
     let terminal = authority
         .accounting_page(
             &objects,
@@ -288,46 +237,91 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
             &mut AuthorityWork::new(BUDGET, &cancel),
         )
         .await?;
-    assert!(terminal.complete);
-    assert_eq!(terminal.facts().len(), 2);
-    assert_eq!(
-        terminal.facts()[0].transition,
-        AccountingTransition::Published {
-            volume_id: workspace.id().volume_id(),
-            generation_root: later_root,
-            logical_regular_file_bytes: 73
+    assert_terminal(&terminal, &later, (id, volume_id, later_root), deletion)?;
+    retired_after(&authority, &objects, id, &terminal, later.epoch, &cancel).await
+}
+
+/// Pages from genesis to the watermark, `page_size` facts at a time.
+async fn consume_pages(
+    authority: &StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    objects: &MemoryObjectBackend,
+    id: AuthorityId,
+    page_size: u32,
+    original: &[DurableCommit],
+) -> Result<(Vec<AccountingPage>, AccountingCursor), Box<dyn Error>> {
+    let watermark = original.last().ok_or("no records")?.sequence;
+    let mut position = AccountingCursor::genesis();
+    let mut consumed = Vec::new();
+    loop {
+        let next = page(authority, objects, id, position, page_size).await?;
+        let first = next
+            .facts()
+            .first()
+            .ok_or("an incomplete page is never empty")?;
+        assert!(next.facts().len() <= page_size as usize);
+        assert_eq!(next.watermark_sequence, watermark);
+        assert_eq!(first.sequence.get(), position.sequence.get() + 1);
+        next.work.verify(BUDGET)?;
+        position = next.next;
+        let complete = next.complete;
+        consumed.push(next);
+        if complete {
+            return Ok((consumed, position));
         }
-    );
-    assert_eq!(terminal.facts()[0].operation_id, later.operation_id);
-    assert_eq!(terminal.facts()[0].commit_digest, later.digest);
-    assert_eq!(
-        Some(terminal.facts()[0].settled_at_micros),
-        later.settled_at_micros
-    );
-    assert_eq!(
-        terminal.facts()[1].transition,
-        AccountingTransition::WorkspaceDeleted {
-            volume_id: workspace.id().volume_id()
-        }
-    );
-    assert_eq!(terminal.facts()[1].operation_id, deletion.operation_id());
-    assert!(terminal.facts().iter().all(|fact| fact.authority_id == id
-        && fact.operation_class == AccountingOperationClass::CustomerMutation));
-    assert_eq!(terminal.next.digest, terminal.facts()[1].commit_digest);
+    }
+}
+
+/// Every consumed page reads back unchanged after later publication and deletion.
+async fn retained_pages_repeat(
+    authority: &StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    objects: &MemoryObjectBackend,
+    id: AuthorityId,
+    consumed: &[AccountingPage],
+    cancel: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
+    let mut anchor = AccountingCursor::genesis();
+    for retained in consumed {
+        assert_eq!(
+            authority
+                .accounting_page(
+                    objects,
+                    id,
+                    anchor,
+                    u32::try_from(retained.facts().len())?,
+                    &mut AuthorityWork::new(BUDGET, cancel)
+                )
+                .await?
+                .facts(),
+            retained.facts()
+        );
+        anchor = retained.next;
+    }
+    Ok(())
+}
+
+/// After the terminal page the authority is empty and retired.
+async fn retired_after(
+    authority: &StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    objects: &MemoryObjectBackend,
+    id: AuthorityId,
+    terminal: &AccountingPage,
+    epoch: acyclic_fs::foundation::Epoch,
+    cancel: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
     let empty = authority
         .accounting_page(
-            &objects,
+            objects,
             id,
             terminal.next,
             2,
-            &mut AuthorityWork::new(BUDGET, &cancel),
+            &mut AuthorityWork::new(BUDGET, cancel),
         )
         .await?;
     assert!(empty.complete && empty.facts().is_empty());
     assert_eq!(empty.next, terminal.next);
     assert!(matches!(
         authority
-            .head(id, &mut AuthorityWork::new(BUDGET, &cancel))
+            .head(id, &mut AuthorityWork::new(BUDGET, cancel))
             .await,
         Err(AuthorityStoreError::Retired)
     ));
@@ -336,11 +330,11 @@ async fn dense_paging(lengths: &[usize], page_size: u32) -> Result<(), Box<dyn E
             .fence(
                 id,
                 Head {
-                    epoch: later.epoch,
+                    epoch,
                     sequence: terminal.next.sequence,
                     digest: terminal.next.digest
                 },
-                &mut AuthorityWork::new(BUDGET, &cancel)
+                &mut AuthorityWork::new(BUDGET, cancel)
             )
             .await,
         Err(AuthorityStoreError::Retired)
@@ -737,5 +731,71 @@ async fn record_admission_refusals_preserve_proven_prefix() -> Result<(), Box<dy
             prefix.work.verify(budget)?;
         }
     }
+    Ok(())
+}
+
+/// Every consumed fact matches its durable record and publication.
+fn assert_published_facts(
+    consumed: &[AccountingPage],
+    original: &[DurableCommit],
+    expected: Vec<(ObjectId, u128)>,
+    id: AuthorityId,
+    volume_id: acyclic_fs::VolumeId,
+) {
+    let facts = || consumed.iter().flat_map(AccountingPage::facts);
+    assert_eq!(facts().count(), original.len());
+    for ((fact, record), (generation_root, logical_regular_file_bytes)) in
+        facts().zip(original).zip(expected)
+    {
+        assert_eq!(fact.authority_id, id);
+        assert_eq!(fact.sequence, record.sequence);
+        assert_eq!(fact.operation_id, record.operation_id);
+        assert_eq!(fact.commit_digest, record.digest);
+        assert_eq!(Some(fact.settled_at_micros), record.settled_at_micros);
+        assert_eq!(
+            fact.operation_class,
+            AccountingOperationClass::CustomerMutation
+        );
+        assert_eq!(
+            fact.transition,
+            AccountingTransition::Published {
+                volume_id,
+                generation_root,
+                logical_regular_file_bytes
+            }
+        );
+    }
+}
+
+/// The terminal page holds the later publication and then the deletion.
+fn assert_terminal(
+    terminal: &AccountingPage,
+    later: &DurableCommit,
+    (id, volume_id, later_root): (AuthorityId, acyclic_fs::VolumeId, ObjectId),
+    deletion: IdempotencyKey,
+) -> Result<(), Box<dyn Error>> {
+    assert!(terminal.complete);
+    let [published, deleted] = terminal.facts() else {
+        return Err("the terminal page holds the later publication and the deletion".into());
+    };
+    assert_eq!(
+        published.transition,
+        AccountingTransition::Published {
+            volume_id,
+            generation_root: later_root,
+            logical_regular_file_bytes: 73
+        }
+    );
+    assert_eq!(published.operation_id, later.operation_id);
+    assert_eq!(published.commit_digest, later.digest);
+    assert_eq!(Some(published.settled_at_micros), later.settled_at_micros);
+    assert_eq!(
+        deleted.transition,
+        AccountingTransition::WorkspaceDeleted { volume_id }
+    );
+    assert_eq!(deleted.operation_id, deletion.operation_id());
+    assert!(terminal.facts().iter().all(|fact| fact.authority_id == id
+        && fact.operation_class == AccountingOperationClass::CustomerMutation));
+    assert_eq!(terminal.next.digest, deleted.commit_digest);
     Ok(())
 }
