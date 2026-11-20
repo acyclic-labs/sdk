@@ -413,6 +413,33 @@ test("a library and a binary of the same name get distinct rule names", () => {
   }
 });
 
+test("the loom split walks each listed package a workspace holds, and a workspace holding none of them (Cloud's) generates", () => {
+  const generator = fixture(), other = fixture();
+  try {
+    const stream = join(generator.root, "rust/crates/stream");
+    mkdirSync(join(stream, "src"), { recursive: true });
+    writeFileSync(join(stream, "Cargo.toml"), '[package]\nname = "stream"\nversion = "0.1.0"\nedition = "2024"\n');
+    writeFileSync(join(stream, "src/lib.rs"), "#[cfg(loom)]\npub fn model(value: Option<u8>) -> u8 {\n    value.unwrap()\n}\n");
+    const workspace = join(generator.root, "Cargo.toml");
+    writeFileSync(workspace, readFileSync(workspace, "utf8").replace('members = ["member"]', 'members = ["member", "rust/crates/stream"]'));
+    writeFileSync(join(generator.root, "Cargo.lock"), readFileSync(join(generator.root, "Cargo.lock"), "utf8") + '\n[[package]]\nname = "stream"\nversion = "0.1.0"\n');
+    execFileSync("git", ["add", "-A"], { cwd: generator.root });
+    const generate = (...root) => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", ...root, "write", "--output", join(generator.root, "generated.json")],
+      { cwd: generator.root, encoding: "utf8" });
+    const refused = generate();
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /loom split: rust\/crates\/stream\/src\/lib\.rs:3 \.unwrap\(\) is Loom code the stream library build reaches/);
+    writeFileSync(join(stream, "src/lib.rs"), readFileSync(join(stream, "src/lib.rs"), "utf8").replace("#[cfg(loom)]", "#[cfg(all(loom, test))]"));
+    const split = generate();
+    assert.equal(split.status, 0, split.stderr);
+    const cloud = generate("--root", other.root, "--source-repository", generator.root, "@sdk_source");
+    assert.equal(cloud.status, 0, cloud.stderr);
+  } finally {
+    rmSync(generator.root, { recursive: true, force: true });
+    rmSync(other.root, { recursive: true, force: true });
+  }
+});
+
 test("the generator refuses multiple integration binaries and repeated roots", () => {
   const { root, run } = fixture();
   const manifest = join(root, "member/Cargo.toml");

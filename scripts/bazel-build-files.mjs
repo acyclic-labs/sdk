@@ -668,7 +668,8 @@ for (const id of workspace) {
 // verification code: they compile only under cfg(test) (a separate #[cfg(test)], which clippy's
 // in-test allowances recognise) or in a models test crate. So Loom code a non-test library build
 // reaches never unwraps, expects or panics, and no library build reaches a Loom model or test.
-// Each package is a directory relative to the repository root whose library this walks.
+// Each package is a directory relative to the repository root whose library this walks. The list
+// names this repository's packages; a workspace without the directory (Cloud's) has none of them.
 const LOOM_SPLIT_PACKAGES = ["rust/crates/stream", "rust/crates/stream-contract", "rust/crates/stream-contract-core", "rust/crates/stream-contract-engine"];
 // A #[cfg] predicate as a tree: { op: "all" | "any" | "not", args } or { atom }, where an atom is
 // a bare name (`test`, `loom`) or a `key = "value"` pair.
@@ -767,7 +768,7 @@ function itemEnd(code, at) {
   return code.length;
 }
 const LOOM_FORBIDDEN = /\bloom::model\b|#\[test\]|\.unwrap\(\)|\.expect\(|\bpanic!\(/g;
-for (const dir of LOOM_SPLIT_PACKAGES) {
+for (const dir of LOOM_SPLIT_PACKAGES.filter(dir => fs.existsSync(path.join(root, dir)))) {
   const p = [...packages.values()].find(candidate => dir === path.relative(root, path.dirname(candidate.manifest_path)).replaceAll("\\", "/"));
   const lib = p?.targets.find(target => target.kind.some(kind => kind === "lib" || kind === "rlib"));
   if (!lib) throw new Error(`STEP_FAILED bazel-build-files: loom split: LOOM_SPLIT_PACKAGES names ${dir}, which has no library; recovery: correct the list`);
