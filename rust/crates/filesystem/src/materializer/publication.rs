@@ -380,11 +380,7 @@ fn validate_generation_journal(
 ) -> Result<(), NativeWorkspacePublicationError> {
     if !valid_journal(journal, request.operation_id)
         || journal.root_identity != Some(request.source_root_identity.to_bytes())
-        || journal.plan.intent
-            != (MaterializationIntent::GenerationTransition {
-                from: request.from,
-                to: request.to,
-            })
+        || journal.plan.intent.generation_transition() != Some((request.from, request.to))
     {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
     }

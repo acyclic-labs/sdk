@@ -212,13 +212,10 @@ impl CheckoutPublication {
         // the caller's from/to are not the journal's transition. Resume the
         // journal's own transition; completion belongs to the journal, so
         // post-ack host edits cannot be overwritten by replaying another plan.
-        let (original, target) = match journal.plan().intent {
-            acyclic_fs::MaterializationIntent::GenerationTransition { from, to } => (from, to),
-            _ => {
-                return Err(Error::Conflict(
-                    "checkout publication is not a generation transition".into(),
-                ));
-            }
+        let Some((original, target)) = journal.plan().intent.generation_transition() else {
+            return Err(Error::Conflict(
+                "checkout publication is not a generation transition".into(),
+            ));
         };
         if completed(&journal, self.identity, original, target)? {
             cleanup_directory(&self.directory)?;
@@ -303,8 +300,7 @@ fn completed(
     to: acyclic_fs_format::object_reference::GenerationId,
 ) -> Result<bool> {
     if journal.root_identity != Some(root.to_bytes())
-        || journal.plan().intent
-            != (acyclic_fs::MaterializationIntent::GenerationTransition { from, to })
+        || journal.plan().intent.generation_transition() != Some((from, to))
     {
         return Err(Error::Conflict(
             "checkout publication differs from its original generation transition".into(),

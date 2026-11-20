@@ -156,6 +156,7 @@ async fn bounded_feedback_windows_discard_only_oldest_samples()
     else {
         return Err("first candidate was not admitted".into());
     };
+    let first_permit = *first_permit;
     engine.finish(first_permit.candidate().operation_id, true)?;
     engine.record_foreground(128)?;
     let ResidencyAdmission::Admitted(second_permit) =
@@ -163,6 +164,7 @@ async fn bounded_feedback_windows_discard_only_oldest_samples()
     else {
         return Err("second candidate was not admitted".into());
     };
+    let second_permit = *second_permit;
     engine.finish(second_permit.candidate().operation_id, false)?;
     assert_eq!(engine.outcomes.len(), 1);
     assert_eq!(engine.traffic.len(), 1);
@@ -198,6 +200,7 @@ async fn admission_is_generation_fenced_adaptive_and_exact()
     let ResidencyAdmission::Admitted(permit) = engine.admit(admitted)? else {
         return Err("candidate was not admitted".into());
     };
+    let permit = *permit;
     assert_eq!(permit.candidate(), admitted);
     assert_eq!(
         engine.admit(candidate(3, volume_id, current, first))?,
@@ -312,6 +315,7 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
     else {
         return Err("candidate was not admitted".into());
     };
+    let permit = *permit;
     let cancellation = CancellationToken::new();
     let first = (execute_residency(
         &engine,
@@ -389,6 +393,7 @@ async fn every_accounting_failure_rolls_back_the_complete_residency_transition()
     else {
         return Err("rollback fixture was not admitted".into());
     };
+    let permit = *permit;
     engine.metrics.wasted = u64::MAX;
     let before_replace = engine.metrics();
     assert_eq!(
@@ -442,6 +447,7 @@ async fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback
     else {
         return Err("cancellation fixture was not admitted".into());
     };
+    let permit = *permit;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let failure = (execute_residency(
@@ -493,6 +499,7 @@ async fn embedded_fs_executes_residency_against_its_one_shared_object_backend()
     else {
         return Err("embedded fixture was not admitted".into());
     };
+    let permit = *permit;
     assert_eq!(
         engine.active_permit(permit.candidate().operation_id),
         Some(permit)

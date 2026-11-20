@@ -171,11 +171,12 @@ impl ResidencyPermit {
     }
 }
 
-/// Exact admission outcome for one prediction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Exact admission outcome for one prediction. The permit carries the whole
+/// generation-bound candidate, so it is boxed to keep a rejection one byte.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResidencyAdmission {
     /// Candidate may execute through the ordinary authenticated object store.
-    Admitted(ResidencyPermit),
+    Admitted(Box<ResidencyPermit>),
     /// Candidate performed no backend work.
     Rejected(ResidencyRejection),
 }
@@ -302,7 +303,7 @@ impl ResidencySpeculator {
                 .checked_add(candidate.request.maximum_bytes)
                 .ok_or(ResidencySpeculatorError::Overflow)?;
             self.traffic_bytes(foreground, Some(candidate.request.maximum_bytes))?;
-            ResidencyAdmission::Admitted(ResidencyPermit { candidate })
+            ResidencyAdmission::Admitted(Box::new(ResidencyPermit { candidate }))
         };
         self.metrics = metrics;
         if let Some(bytes) = foreground {

@@ -380,17 +380,17 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     )
                     .await
                     .map(|receipt| {
-                        WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(
+                        WorkspaceOperationFinish::Reconciled(Box::new(WorkspaceRebase::Current(
                             receipt.value,
-                        ))
+                        )))
                     })
                     .map_err(|failure| OperationWindowError::Workspace(failure.error));
             }
             (OperationWindowFinish::Reconcile(reconcile), false) => reconcile,
         };
-        self.reconcile_workspace(workspace, reconcile, limits)
+        self.reconcile_workspace(workspace, *reconcile, limits)
             .await
-            .map(WorkspaceOperationFinish::Reconciled)
+            .map(|rebase| WorkspaceOperationFinish::Reconciled(Box::new(rebase)))
     }
 
     /// Runs one previously claimed reconciliation ticket.
@@ -685,5 +685,5 @@ fn close_lease(
         pending_parent: reconcile.pending_parent,
         subsequent_parent: None,
     };
-    requested_live.then_some(OperationWindowFinish::Reconcile(reconcile))
+    requested_live.then(|| OperationWindowFinish::Reconcile(Box::new(reconcile)))
 }

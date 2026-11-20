@@ -28,10 +28,10 @@ async fn interrupted_preparation(prefix: usize, foreign: Option<usize>) -> TestR
         revision: 1,
         plan: MaterializationPlan {
             operation_id,
-            intent: MaterializationIntent::GenerationTransition {
-                from: GenerationId::new(crate::Digest::from_bytes([1; 32])),
-                to: GenerationId::new(crate::Digest::from_bytes([2; 32])),
-            },
+            intent: MaterializationIntent::transition(
+                GenerationId::new(crate::Digest::from_bytes([1; 32])),
+                GenerationId::new(crate::Digest::from_bytes([2; 32])),
+            ),
             edits: Vec::new(),
         },
         root_identity: Some(root_identity),

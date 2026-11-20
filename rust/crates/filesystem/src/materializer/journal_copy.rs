@@ -83,6 +83,9 @@ fn copy_bytes(
             return Err(sdk::NativeTreeMaterializationError::InvalidLayout);
         }
     }
+    if let Intent::GenerationTransition { .. } = &journal.plan.intent {
+        add(1, Intent::TRANSITION_HEAP_BYTES)?;
+    }
     if let Intent::NativePreparation {
         selection,
         original,

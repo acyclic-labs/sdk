@@ -193,6 +193,7 @@ fn planned(
     else {
         return Err("promotion was not planned".into());
     };
+    let plan = *plan;
     Ok(plan)
 }
 
@@ -349,6 +350,7 @@ async fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
     else {
         return Err("promotion was not planned".into());
     };
+    let plan = *plan;
     assert_eq!(plan.source, source);
     assert_eq!(
         plan.destination.location_id,
@@ -437,6 +439,7 @@ fn residency_handoff_preemption_and_adaptive_feedback_are_exact()
     else {
         return Err("residency was not admitted".into());
     };
+    let permit = *permit;
     let promotion = PromotionCandidate::from_residency(
         permit,
         vec![StorageTier::NodeLocal, StorageTier::SharedCache],
@@ -516,6 +519,7 @@ fn complete_location_facts_select_exact_priorities_and_reject_late_duplicates()
     else {
         return Err("complete location facts were refused".into());
     };
+    let plan = *plan;
     assert_eq!(Some(&plan.source), residency.last());
     assert_eq!(Some(&plan.destination), destinations.last());
     engine.finish(request.operation_id, true)?;

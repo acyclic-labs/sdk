@@ -71,6 +71,7 @@ fn composed_preemption_and_generation_replacement_are_atomic_and_ordered()
     else {
         return Err("residency hint was not admitted".into());
     };
+    let permit = *permit;
     let (source, destination) = promotion_inputs(permit.candidate().request.object_id);
     assert!(matches!(
         controller.plan_promotion(
@@ -132,6 +133,7 @@ fn controller_exposes_only_exact_active_engine_state() -> Result<(), Box<dyn std
     else {
         return Err("controller rejected an admitted residency hint".into());
     };
+    let permit = *permit;
     assert_eq!(
         controller.active_residency_permit(operation_id),
         Some(permit)
@@ -181,6 +183,7 @@ fn prepared_transitions_preserve_atomicity() -> Result<(), Box<dyn std::error::E
         else {
             return Err("rollback fixture rejected residency".into());
         };
+        let permit = *permit;
         let (source, destination) = promotion_inputs(permit.candidate().request.object_id);
         assert!(matches!(
             controller.plan_promotion(
@@ -218,6 +221,7 @@ fn prepared_transitions_preserve_atomicity() -> Result<(), Box<dyn std::error::E
         else {
             return Err("rollback changed the residency generation".into());
         };
+        let next = *next;
         let (source, destination) = promotion_inputs(next.candidate().request.object_id);
         assert!(matches!(
             controller.plan_promotion(
@@ -332,6 +336,7 @@ fn explore_observe(state: &HistoryState, depth: u8) -> Result<u64, Box<dyn std::
     else {
         return Err("generated residency admission was rejected".into());
     };
+    let permit = *permit;
     observed.active.push((operation_id, permit, false));
     observed.next_operation += 1;
     observed.model.active_residency += 1;

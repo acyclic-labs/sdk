@@ -64,10 +64,7 @@ use journal::{CrashJournalStore, CrashStoreError};
 fn plan(case: u8) -> MaterializationPlan {
     MaterializationPlan {
         operation_id: OperationId::from_bytes([case; 16]),
-        intent: MaterializationIntent::GenerationTransition {
-            from: generation(1),
-            to: generation(2),
-        },
+        intent: MaterializationIntent::transition(generation(1), generation(2)),
         edits: vec![
             MaterializationEdit::Install {
                 path: "a".to_owned(),

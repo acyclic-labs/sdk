@@ -59,10 +59,7 @@ async fn native_prepared_packet(
     });
     let plan = MaterializationPlan {
         operation_id: OperationId::from_bytes([case; 16]),
-        intent: MaterializationIntent::GenerationTransition {
-            from: generation(1),
-            to: generation(2),
-        },
+        intent: MaterializationIntent::transition(generation(1), generation(2)),
         edits,
     };
     JournaledMaterializer::new(store.clone(), backend.clone())

@@ -160,8 +160,9 @@ pub struct OperationWindowReconcile {
     pub pending_parent: Option<GenerationId>,
 }
 
-/// Result of closing or recovering a lease.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Result of closing or recovering a lease. The reconciliation ticket carries
+/// two generation identities, so it is boxed to keep the other outcomes small.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationWindowFinish {
     /// Other live leases still pin the view.
     StillActive {
@@ -169,7 +170,7 @@ pub enum OperationWindowFinish {
         remaining: u32,
     },
     /// The caller owns the one reconciliation attempt.
-    Reconcile(OperationWindowReconcile),
+    Reconcile(Box<OperationWindowReconcile>),
     /// The lease was already closed or expired.
     AlreadyClosed,
 }
@@ -209,7 +210,8 @@ fn validate_reconcile_limits(limits: OperationReconcileLimits) -> Result<(), Wor
     Ok(())
 }
 
-/// Workspace-aware result of closing one tool lease.
+/// Workspace-aware result of closing one tool lease. The rebase outcome is
+/// boxed to keep the lease-count and closed outcomes small.
 pub enum WorkspaceOperationFinish<A: 'static, O: 'static> {
     /// Other live leases still pin the shared mount.
     StillActive {
@@ -219,7 +221,7 @@ pub enum WorkspaceOperationFinish<A: 'static, O: 'static> {
     /// The lease was already closed or expired.
     AlreadyClosed,
     /// The final close ran the core live-rebase operation.
-    Reconciled(WorkspaceRebase<A, O>),
+    Reconciled(Box<WorkspaceRebase<A, O>>),
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.

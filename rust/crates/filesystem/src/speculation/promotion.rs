@@ -203,13 +203,14 @@ pub enum PromotionRejection {
     LowUsefulness,
 }
 
-/// Exact planning outcome.
+/// Exact planning outcome. A plan carries its candidate, source and
+/// destination, so it is boxed to keep the other outcomes small.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PromotionAdmission {
     /// An accepted tier already contains the exact object.
     Satisfied(ObjectResidency),
     /// A bounded idempotent movement may execute.
-    Planned(PromotionPlan),
+    Planned(Box<PromotionPlan>),
     /// No movement may begin.
     Rejected(PromotionRejection),
 }
@@ -284,7 +285,7 @@ impl PromotionSpeculator {
         let admission = self.prepare_plan(candidate, residency, destinations, &mut metrics)?;
         self.metrics = metrics;
         if let PromotionAdmission::Planned(plan) = &admission {
-            self.active.insert(plan.clone());
+            self.active.insert(PromotionPlan::clone(plan));
         }
         Ok(admission)
     }
@@ -335,7 +336,7 @@ impl PromotionSpeculator {
             .active_cost_units
             .checked_add(plan.estimated_cost_units)
             .ok_or(PromotionSpeculatorError::Overflow)?;
-        Ok(PromotionAdmission::Planned(plan))
+        Ok(PromotionAdmission::Planned(Box::new(plan)))
     }
 
     /// Completes one active plan exactly once.

@@ -103,14 +103,10 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
         work: crate::WorkCounters::UNCHARGED,
         plan: crate::MaterializationPlan {
             operation_id,
-            intent: crate::MaterializationIntent::GenerationTransition {
-                from: acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes(
-                    [1; 32],
-                )),
-                to: acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes(
-                    [2; 32],
-                )),
-            },
+            intent: crate::MaterializationIntent::transition(
+                acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes([1; 32])),
+                acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes([2; 32])),
+            ),
             edits: Vec::new(),
         },
         preimages: Vec::new(),

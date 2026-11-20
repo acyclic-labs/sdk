@@ -60,7 +60,7 @@ proptest! {
         let to = to_variants[to_case];
         let phases = [MaterializationPhase::Preparing, MaterializationPhase::Prepared, MaterializationPhase::Applying, MaterializationPhase::Applied, MaterializationPhase::RollingBack, MaterializationPhase::RolledBack];
         let mut journal = MaterializationJournal::empty(
-            MaterializationPlan { operation_id: OperationId::from_bytes([1; 16]), intent: MaterializationIntent::GenerationTransition { from, to }, edits: Vec::new() },
+            MaterializationPlan { operation_id: OperationId::from_bytes([1; 16]), intent: MaterializationIntent::transition(from, to), edits: Vec::new() },
             Some(root),
         ).unwrap();
         journal.phase = phases[phase];

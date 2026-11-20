@@ -99,10 +99,7 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
         .await
         .expect("initial apply");
     let mut altered = original;
-    altered.intent = MaterializationIntent::GenerationTransition {
-        from: generation(1),
-        to: generation(9),
-    };
+    altered.intent = MaterializationIntent::transition(generation(1), generation(9));
     assert!(matches!(
         materializer.apply(altered, &mut permit).await,
         Err(MaterializationError::PlanConflict)

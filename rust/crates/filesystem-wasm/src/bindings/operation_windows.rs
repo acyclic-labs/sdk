@@ -315,7 +315,7 @@ impl BrowserOperationWindowCoordinator {
                 }
                 WorkspaceOperationFinish::Reconciled(value) => {
                     BrowserWorkspaceOperationClose::Reconciled {
-                        rebase: browser_workspace_rebase_result(value),
+                        rebase: browser_workspace_rebase_result(*value),
                     }
                 }
             },

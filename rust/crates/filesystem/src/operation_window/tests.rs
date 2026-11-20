@@ -237,7 +237,8 @@ async fn parent_advance_after_child_close_rebases_without_another_tool() {
             .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
             .await
             .expect("child close"),
-        WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(_))
+        WorkspaceOperationFinish::Reconciled(rebase)
+            if matches!(*rebase, WorkspaceRebase::Current(_))
     ));
     parent
         .write_text("/parent", "upstream")
@@ -324,7 +325,8 @@ async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
             .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
             .await
             .expect("final close"),
-        WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(_))
+        WorkspaceOperationFinish::Reconciled(rebase)
+            if matches!(*rebase, WorkspaceRebase::Current(_))
     ));
     let closed = coordinator.inspect(child.id()).await.expect("window");
     assert_eq!(closed.phase, OperationWindowPhase::Idle);
@@ -363,7 +365,8 @@ async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
             .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
             .await
             .expect("final close"),
-        WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
+        WorkspaceOperationFinish::Reconciled(rebase)
+            if matches!(*rebase, WorkspaceRebase::Rebased(_))
     ));
     assert_eq!(
         child
@@ -435,7 +438,8 @@ async fn parent_advance_during_child_tool_rebases_at_final_close() {
             .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
             .await
             .expect("final close"),
-        WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
+        WorkspaceOperationFinish::Reconciled(rebase)
+            if matches!(*rebase, WorkspaceRebase::Rebased(_))
     ));
     assert_eq!(
         child

@@ -34,15 +34,9 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             assert_eq!(retained.phase, MaterializationPhase::Preparing);
 
             let mut changed_from = original.clone();
-            changed_from.intent = MaterializationIntent::GenerationTransition {
-                from: generation(8),
-                to: generation(2),
-            };
+            changed_from.intent = MaterializationIntent::transition(generation(8), generation(2));
             let mut changed_to = original.clone();
-            changed_to.intent = MaterializationIntent::GenerationTransition {
-                from: generation(1),
-                to: generation(9),
-            };
+            changed_to.intent = MaterializationIntent::transition(generation(1), generation(9));
             let mut changed_image = original.clone();
             changed_image.edits[0] = MaterializationEdit::Install {
                 path: "a".to_owned(),
