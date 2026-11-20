@@ -10,7 +10,14 @@
 #   cgroup          a scope of the caller's systemd user manager (addressed through the host bus, so it works
 #                   from a private PID namespace) delegating its subtree: the case runs in a leaf, and ACYCLIC_TEST_CGROUP
 #                   names its sibling parent, with every delegated controller enabled for children
-#   fs-verity       the verity-capable directory the leg provisions, ACYCLIC_TEST_VERITY_DIR
+#   fs-verity       the verity-capable directory the leg provisions, ACYCLIC_TEST_VERITY_DIR. Its cases check that a
+#                   fixture is owned by host root, which no user namespace can show: linux-sandbox maps only the
+#                   caller's uid, so root:root reads as the overflow id. So fs-verity is a target's only privilege, and
+#                   isolated_test runs it outside linux-sandbox (no-sandbox), with no namespace from this wrapper
+#                   either: the case runs as the leg's own host user, with that user's identity view and no
+#                   capability. It gains nothing a plain process of that user lacks. It loses net isolation (the
+#                   host's network namespace, not a private loopback) and mount isolation (it sees and can write
+#                   whatever that user can, not only its sandbox's writable paths).
 #   kvm, local-cell granted outside the wrapper: the host's /dev/kvm ACL, and the local-cell leg's cell
 set -eu
 fail() { echo "privileged.sh: $*" >&2; exit 1; }
@@ -23,7 +30,14 @@ if [ -z "$stage" ]; then
   for privilege in $ACYCLIC_TEST_PRIVILEGES; do
     grep -qx -- "$privilege" "$known" || fail "unknown privilege $privilege (not in $known)"
   done
-  if has fs-verity && [ ! -d "${ACYCLIC_TEST_VERITY_DIR:-}" ]; then fail "fs-verity: the leg provisions no ACYCLIC_TEST_VERITY_DIR"; fi
+  if has fs-verity; then
+    [ -d "${ACYCLIC_TEST_VERITY_DIR:-}" ] || fail "fs-verity: the leg provisions no ACYCLIC_TEST_VERITY_DIR"
+    [ "$ACYCLIC_TEST_PRIVILEGES" = fs-verity ] || fail "fs-verity is a target's only privilege, not with: $ACYCLIC_TEST_PRIVILEGES"
+    # Owners read true only in the initial user namespace: refuse any other view instead of admitting by it.
+    [ "$(tr -s ' ' </proc/self/uid_map)" = " 0 0 4294967295" ] ||
+      fail "fs-verity: the case runs in a user namespace (uid_map $(tr -s ' ' </proc/self/uid_map)), where host root reads as overflow"
+    exec "$@"
+  fi
   if has cgroup; then
     # A test action starts with a clean environment; the user manager's bus lives in its runtime directory.
     XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} ACYCLIC_TEST_PRIVILEGE_STAGE=scope exec systemd-run --user --machine="$(id -un)@.host" --scope --quiet --collect -p Delegate=yes -- /bin/sh "$0" "$@"

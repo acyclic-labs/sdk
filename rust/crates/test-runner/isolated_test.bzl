@@ -153,4 +153,10 @@ def isolated_test(name, cpus = 2, tags = [], privileges = [], **kwargs):
     if "privileged" in tags:
         fail("isolated_test %s: `privileges` writes the privileged tag" % name)
     privileged = ["privileged"] + ["requires-" + privilege for privilege in privileges] if privileges else []
+    if "fs-verity" in privileges:
+        # Its cases check host root's ownership, which linux-sandbox's user namespace hides (privileged.sh).
+        if len(privileges) > 1:
+            fail("isolated_test %s: fs-verity is a target's only privilege, not with %s" % (name, privileges))
+        if "no-sandbox" not in tags:
+            privileged.append("no-sandbox")
     _isolated_test(name = name, cpus = cpus, tags = tags + privileged + ["cpu:%d" % cpus], privileges = privileges, **kwargs)
