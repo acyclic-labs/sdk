@@ -97,9 +97,6 @@ pub(super) fn plan_owned_bytes(
             }
         }
     }
-    if let MaterializationIntent::GenerationTransition { .. } = &plan.intent {
-        add(1, MaterializationIntent::TRANSITION_HEAP_BYTES)?;
-    }
     if let MaterializationIntent::NativePreparation {
         selection,
         original,

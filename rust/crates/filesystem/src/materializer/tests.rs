@@ -11,28 +11,6 @@ use std::fmt::Error;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn generation_transition_heap_is_charged_exactly() {
-    let from = GenerationId::new(Digest::from_bytes([1; 32]));
-    let to = GenerationId::new(Digest::from_bytes([2; 32]));
-    let mut plan = None;
-    let heap = acyclic_test_support::measure(|| {
-        plan = Some(MaterializationPlan {
-            operation_id: OperationId::from_bytes([3; 16]),
-            intent: MaterializationIntent::transition(from, to),
-            edits: Vec::new(),
-        });
-    });
-    let plan = plan.expect("plan was built");
-    assert_eq!(heap.count_total, 2);
-    assert_eq!(
-        heap.bytes_total,
-        plan_owned_bytes(&plan).expect("plan bytes")
-    );
-    assert_eq!(plan.intent.generation_transition(), Some((from, to)));
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
 fn prepared_codec_credit_excludes_competing_work_and_survives_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::{NativeCodecReservation, NativeCodecWork, NativeReadMeter};

@@ -6,9 +6,9 @@ pub enum MaterializationIntent {
     /// Transition between authenticated generations.
     GenerationTransition {
         /// Source generation.
-        from: Box<GenerationId>,
+        from: GenerationId,
         /// Target generation.
-        to: Box<GenerationId>,
+        to: GenerationId,
     },
     /// Authenticated provider selection and request provenance.
     NativePreparation {
@@ -19,21 +19,15 @@ pub enum MaterializationIntent {
     },
 }
 impl MaterializationIntent {
-    /// Heap bytes owned by a generation transition's two boxed ids.
-    pub(crate) const TRANSITION_HEAP_BYTES: usize = 2 * std::mem::size_of::<GenerationId>();
-
     /// Transition from one authenticated generation to another.
     pub fn transition(from: GenerationId, to: GenerationId) -> Self {
-        Self::GenerationTransition {
-            from: Box::new(from),
-            to: Box::new(to),
-        }
+        Self::GenerationTransition { from, to }
     }
 
     /// The source and target of a generation transition.
     pub fn generation_transition(&self) -> Option<(GenerationId, GenerationId)> {
         match self {
-            Self::GenerationTransition { from, to } => Some((**from, **to)),
+            Self::GenerationTransition { from, to } => Some((*from, *to)),
             Self::NativePreparation { .. } => None,
         }
     }

@@ -62,12 +62,6 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         }
     }
     drop(changed_allocation);
-    let mut transition = work.claim(
-        crate::foundation::usize_to_u64(MaterializationIntent::TRANSITION_HEAP_BYTES),
-        0,
-        crate::WorkCounters::UNCHARGED,
-    )?;
-    allocation.absorb(&mut transition)?;
     let plan = MaterializationPlan {
         operation_id: request.operation_id,
         intent: MaterializationIntent::transition(request.from, request.to),
