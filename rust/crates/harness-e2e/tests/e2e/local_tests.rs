@@ -168,7 +168,9 @@ async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult 
     let baseline = super::scenario::load_value(&root, &root.join(path))?;
     super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;
-    broken["turns"][0][0]["arguments"]["command"] = command.into();
+    *broken
+        .pointer_mut("/turns/0/0/arguments/command")
+        .ok_or("the scenario's first turn has no command")? = command.into();
     let Err(error) = super::drivers::run(broken).await else {
         return Err("a different command passed unchanged family expectations".into());
     };

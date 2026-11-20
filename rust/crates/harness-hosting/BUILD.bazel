@@ -15,7 +15,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    tags = ["resources:memory:256"],
+    tags = ["resources:memory:384"],
     clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
@@ -87,7 +87,7 @@ rust_test(
         "--skip",
         "::full_cloud::",
     ],
-    tags = ["manual","resources:memory:256"],
+    tags = ["manual","resources:memory:384"],
 )
 
 isolated_test(
@@ -360,7 +360,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    tags = ["resources:memory:256"],
+    tags = ["resources:memory:384"],
     clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",

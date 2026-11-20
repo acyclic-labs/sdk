@@ -10,14 +10,14 @@ use crate::layers::{Layer, is_off};
 use crate::model::ResolvedModel;
 
 /// The settings admitted from one original source cut.
-pub(super) struct Settings {
+pub struct Settings {
     pub(super) model: Arc<ResolvedModel>,
     pub(super) sampling: Option<Sampling>,
     pub(super) effort: Option<crate::config::Effort>,
 }
 
 /// Resolves a model selection the settings name.
-pub(super) type Resolve<'a> = Option<&'a (dyn Fn(&str) -> Result<Arc<ResolvedModel>> + Sync)>;
+pub type Resolve<'a> = Option<&'a (dyn Fn(&str) -> Result<Arc<ResolvedModel>> + Sync)>;
 
 /// What a session's settings are read from and recorded in.
 #[derive(Clone)]

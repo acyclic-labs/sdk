@@ -108,13 +108,6 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         }
     }
 
-    /// Live follows currently open.
-    #[cfg(test)]
-    #[must_use]
-    fn open_follows(&self) -> usize {
-        self.follows.len() + self.pending.len()
-    }
-
     /// Register this provider's source before restoring or accessing retained
     /// state. Repeated attachment of the same pair does no work. Replacing
     /// either member retires outstanding observations and cached authority.

@@ -14,13 +14,15 @@ pub(super) fn bind_seed_files(
                     && matches!(call.name.as_str(), "read" | "edit")
                     && let Some(path) = call.arguments.get("version").and_then(Value::as_str)
                 {
-                    call.arguments["version"] = serde_json::to_string(
+                    let version = serde_json::to_string(
                         references
                             .get(path)
                             .ok_or_else(|| format!("unknown seed file: {path}"))?,
                     )
-                    .map_err(|error| error.to_string())?
-                    .into();
+                    .map_err(|error| error.to_string())?;
+                    if let Some(arguments) = call.arguments.as_object_mut() {
+                        arguments.insert("version".into(), version.into());
+                    }
                 }
             }
         }

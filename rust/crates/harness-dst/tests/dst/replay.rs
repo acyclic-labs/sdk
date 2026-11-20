@@ -12,7 +12,7 @@ use acyclic_harness::{
         WorkspaceMounting,
         agent_conversation::{Conversation, Settlement},
     },
-    model::{Model, ModelEvent, ModelProvider, ModelRole, ToolCall},
+    model::{Model, ModelEvent, ModelRole, ToolCall},
     runtime::ToolContext,
     test_support::{
         PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
@@ -29,8 +29,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-
-const FILES: [(&str, &str); 2] = [("a.txt", "alpha\n"), ("b.txt", "beta\n")];
 
 /// Counts every dispatch of the one custom tool.
 struct Counting(Arc<AtomicUsize>);
@@ -82,7 +80,6 @@ enum Feature {
     LengthStop,
     Refusal,
     Interrupted,
-    Summary,
     Approve,
     Deny,
 }
@@ -95,7 +92,6 @@ impl Feature {
             Self::LengthStop => "length_stop",
             Self::Refusal => "refusal",
             Self::Interrupted => "interrupted",
-            Self::Summary => "summary",
             Self::Approve => "approve",
             Self::Deny => "deny",
         }

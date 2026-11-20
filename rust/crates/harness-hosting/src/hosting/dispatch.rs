@@ -32,9 +32,8 @@ where
         } else {
             1
         };
-        let chunk = page
-            .items()
-            .min((acyclic_stream::MAX_ITEMS as u32 - u32::from(peers)) / row_heads);
+        let max_items = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
+        let chunk = page.items().min((max_items - u32::from(peers)) / row_heads);
         let requester = match command {
             AgentCommand::Sessions { requester, .. } => requester.as_ref().unwrap_or(&self.root),
             _ => &self.root,
@@ -53,7 +52,7 @@ where
             _ => return Err(Error::Record("this host serves one tree")),
         };
         use base64::{Engine as _, engine::general_purpose::STANDARD};
-        let cursor_context = peers.then(|| format!("peer-page-v1\0{}\0{}", requester, parent));
+        let cursor_context = peers.then(|| format!("peer-page-v1\0{requester}\0{parent}"));
         let mut credit = PageCredit::new(page, |next| AgentReply::Children {
             items: Vec::new(),
             next,
@@ -211,24 +210,15 @@ where
                 {
                     return Err(Error::Record("peer discovery requires an enabled root"));
                 }
-                let mut index = 0;
-                items.retain(|_| {
-                    let keep = eligible[index];
-                    index += 1;
-                    keep
-                });
-                let mut index = 0;
-                listed_paths.retain(|_| {
-                    let keep = eligible[index];
-                    index += 1;
-                    keep
-                });
+                let mut keep = eligible.iter().copied();
+                items.retain(|_| keep.next().unwrap_or(false));
+                let mut keep = eligible.iter().copied();
+                listed_paths.retain(|_| keep.next().unwrap_or(false));
             }
         }
-        for (index, item) in items.iter().enumerate() {
+        for (index, (item, listed_path)) in items.iter().zip(&listed_paths).enumerate() {
             let next_bytes = (index + 1 < items.len() || listed.next_after.is_some()).then(|| {
-                let bytes =
-                    children_cursor_bytes(&listed.hierarchy_version, listed_paths[index].as_str());
+                let bytes = children_cursor_bytes(&listed.hierarchy_version, listed_path.as_str());
                 (if peers {
                     acyclic_auth::cursor::CursorKey::sealed_len(bytes).div_ceil(3) * 4
                 } else {

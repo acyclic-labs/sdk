@@ -44,6 +44,14 @@ impl Rng {
     fn below(&mut self, bound: u64) -> u64 {
         self.next() % bound.max(1)
     }
+
+    /// A draw below a small `bound`, in the type the caller counts in.
+    fn small<T: TryFrom<u64>>(&mut self, bound: u64) -> T
+    where
+        T::Error: std::fmt::Debug,
+    {
+        T::try_from(self.below(bound)).unwrap()
+    }
 }
 
 /// One provider plus the authoritative history the oracle compares against.
@@ -60,7 +68,10 @@ impl World {
     fn new(seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         let mut world = Self {
-            provider: MemoryStream::default(),
+            provider: MemoryStream::new_with_clock(
+                acyclic_stream::MemoryLimits::default(),
+                Arc::new(std::sync::atomic::AtomicU64::new(1_700_000_000_000)),
+            ),
             history: BTreeMap::new(),
             forks: BTreeMap::new(),
             keys: 0,
@@ -220,7 +231,7 @@ impl Oracle {
                 None if !settled => {
                     self.visible.insert(want.clone(), frame);
                 }
-                Some(since) if settled => {
+                Some(_) if settled => {
                     self.visible.remove(want);
                 }
                 Some(since) => assert!(
@@ -278,15 +289,15 @@ impl Sim {
     fn new(seed: u64) -> Self {
         let mut rng = Rng::new(seed ^ 0x5DEE_CE66_D1CE_4E5B);
         let policy = ReaderPolicy {
-            cache_bytes: 64 + 64 * rng.below(8) as usize,
-            streams: 2 + rng.below(3) as usize,
-            requests: 2 + rng.below(3) as usize,
+            cache_bytes: 64 + 64 * rng.small::<usize>(8),
+            streams: 2 + rng.small::<usize>(3),
+            requests: 2 + rng.small::<usize>(3),
             prefetch_requests: 1,
-            follow_requests: 1 + rng.below(2) as usize,
-            read_limit: 1 + rng.below(3) as u32,
-            listing_limit: 1 + rng.below(3) as u32,
+            follow_requests: 1 + rng.small::<usize>(2),
+            read_limit: 1 + rng.small::<u32>(3),
+            listing_limit: 1 + rng.small::<u32>(3),
             lag: 1 + rng.below(3),
-            deliveries: 1 + rng.below(3) as usize,
+            deliveries: 1 + rng.small::<usize>(3),
             ..ReaderPolicy::default()
         };
         Self {
@@ -483,10 +494,10 @@ fn script(seed: u64) -> Vec<Step> {
         count,
     };
     let listing = Want::Listing {
-        parent: parent.clone(),
+        parent: parent,
         index: 0,
         limit: 2,
-        tail: Some(status.clone()),
+        tail: Some(status),
         witness: None,
     };
     let visible = |wants: Vec<Want>| {
@@ -505,7 +516,7 @@ fn script(seed: u64) -> Vec<Step> {
             Faults::default(),
         ),
         Step::Frame(
-            visible(vec![last(&a, 2), last(&c, 1), listing.clone()]),
+            visible(vec![last(&a, 2), last(&c, 1), listing]),
             Faults::default(),
         ),
         Step::Frame(
@@ -739,13 +750,14 @@ fn source_change_hides_retained_data_before_it_is_served() {
         stream: path.clone(),
         count: 1,
     };
+    let last = world.tail(&path) - 1;
     reader.begin_frame(1);
     reader.plan([(want, Priority::Visible)]);
     for op in reader.poll(1) {
         let outcome = futures::executor::block_on(driver::execute(&world.provider, op.clone()));
         reader.complete(op.id(), outcome, 1);
     }
-    assert!(reader.cache().record(&path, 0).is_some());
+    assert!(reader.cache().record(&path, last).is_some());
     let snapshot = reader.snapshot().unwrap();
     assert!(!snapshot.is_empty());
 
@@ -753,14 +765,14 @@ fn source_change_hides_retained_data_before_it_is_served() {
     validity.lock().unwrap().revision = Some(CredentialRevision::from([2; 32]));
     source.invalidate().unwrap();
     assert!(!reader.readable());
-    assert!(reader.cache().record(&path, 0).is_none());
+    assert!(reader.cache().record(&path, last).is_none());
     assert!(reader.snapshot().unwrap().is_empty());
     assert!(reader.restore(&snapshot).is_err());
     assert!(ready.0.load(Ordering::SeqCst));
     assert!(reader.advance_credentials(2, &mut cx));
     assert_eq!(reader.credential_status(), CredentialStatus::Current);
     assert!(reader.readable());
-    assert!(reader.cache().record(&path, 0).is_none());
+    assert!(reader.cache().record(&path, last).is_none());
 }
 
 /// Drive one frame of the reader against the world's provider.
@@ -811,7 +823,14 @@ fn live_projection_follows_the_original_source_and_retires_on_replacement() {
         (1, 1, 1)
     );
 
-    // A new original record arrives and the same projection consumes it.
+    // A new original record arrives on the source's follow, and the same
+    // projection consumes it. Growth past the known tail is the follow's: a
+    // range read never extends it.
+    reader.set_follows([path.clone()]);
+    let mut follow = acyclic_stream::records_only(
+        futures::executor::block_on(world.provider.follow(FollowRequest::new(path.clone(), 1)))
+            .unwrap(),
+    );
     let finish = TraceRecord::V1(SpanEvent::Finished {
         id,
         at_ns: 30,
@@ -819,7 +838,8 @@ fn live_projection_follows_the_original_source_and_retires_on_replacement() {
         result: TraceOutcome::Unsettled,
     });
     world.append(&path, serde_json::to_vec(&finish).unwrap());
-    load(&mut reader, &world.provider, file.want(page).unwrap(), 2);
+    let record = futures::executor::block_on(follow.next()).unwrap().unwrap();
+    reader.deliver(&path, driver::fetched(record), world.tail(&path));
     assert_eq!(file.advance(&reader, page).unwrap(), 1);
     let value = file.value(&reader).unwrap();
     assert_eq!(value.active_waits, 0);
@@ -851,8 +871,8 @@ fn live_source_borrows_only_the_requested_original_window() {
     // Only the observed head is loaded, so the earlier gap stays Pending.
     let page = NonZeroU32::new(2).unwrap();
     {
-        let mut window = source.page(&reader, 0, page).unwrap();
-        assert_eq!(window.end, 2.min(tail));
+        let mut window = source.page(&reader, tail - 2, page).unwrap();
+        assert_eq!(window.end, tail);
         assert!(matches!(
             window.next().unwrap().1,
             Err(live::Error::Pending)

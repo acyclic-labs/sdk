@@ -209,7 +209,7 @@ impl World {
                 approval_policy: Default::default(),
             },
         )?;
-        let agent = AgentId::from_bytes([seed as u8; 16]);
+        let agent = AgentId::from_bytes([seed.to_le_bytes()[0]; 16]);
         let private = WorkspaceEntry::initial_volume(
             crate::agent::WorkspaceRole::Private,
             PRIVATE_VOLUME.into(),
@@ -440,7 +440,7 @@ impl World {
             assert_eq!(
                 (requests.data(), requests.control()),
                 (0, 0),
-                "replaying {step:?} touched storage"
+                "replaying {step:?} touched storage after {reply:?}"
             );
         }
         Ok(())
@@ -465,7 +465,7 @@ impl World {
         use crate::conversation::{ContentAccess, ContentPublisher};
         use acyclic_harness_client::MAX_READ_BYTES;
 
-        let mut world = Self::new(seed).await?;
+        let world = Self::new(seed).await?;
         let mut draws = Draws::new(seed ^ 0x4ead);
         let length = 1 + draws.below(usize::try_from(MAX_READ_BYTES)? + 17);
         let body: Vec<u8> = (0..length).map(|index| index.to_le_bytes()[0]).collect();
@@ -506,8 +506,9 @@ impl World {
                 .await??;
                 let (bytes, total) = reply.content()?;
                 assert_eq!(total, body.len() as u64);
-                let start = usize::try_from(offset)?;
-                let expected: Vec<u8> = body[start..]
+                let expected: Vec<u8> = body
+                    .get(offset..)
+                    .ok_or("a read offset past the body")?
                     .iter()
                     .take(usize::try_from(MAX_READ_BYTES)?)
                     .copied()
@@ -556,6 +557,14 @@ impl World {
                 ContentAccess::default(),
             )?
             .await?;
+        world.refused_reads(&file, path).await?;
+        world.denied_staged_head().await?;
+        Ok(world.trace)
+    }
+
+    /// Reads the agent or its admission refuses: traversal, unpublished paths, foreign agents, foreign files and foreign credentials.
+    async fn refused_reads(&self, file: &crate::conversation::FileRef, path: &str) -> Result {
+        let world = self;
         // Traversal is refused by the original command admission before transport.
         assert!(matches!(
             PreparedCommand::new(&AgentCommand::Read {
@@ -656,7 +665,12 @@ impl World {
             .await
             .is_err()
         );
-        // A denied staged head reads no part, however many parts it names.
+        Ok(())
+    }
+
+    /// A denied staged head reads no part, however many parts it names.
+    async fn denied_staged_head(&self) -> Result {
+        let world = self;
         let digest = blake3::hash(b"{}").to_hex().to_string();
         let stage = AgentCommand::Stage {
             agent: world.root.clone(),
@@ -689,7 +703,7 @@ impl World {
             "a denied head reads no part"
         );
         world.owner.denied.store(false, Ordering::SeqCst);
-        Ok(world.trace)
+        Ok(())
     }
 
     /// The authority scenario: a peer credential, a foreign tree, a revoked
@@ -697,7 +711,18 @@ impl World {
     /// spawn, a spawn retry and a closed input all refuse before storage or
     /// settle.
     async fn authority(seed: u64) -> Result<Vec<String>> {
-        let mut world = Self::new(seed).await?;
+        let world = Self::new(seed).await?;
+        world.peer_and_foreign_refusals().await?;
+        world.revoked_child_queries().await?;
+        world.revoked_diff_query().await?;
+        world.empty_pages_and_spawns().await?;
+        world.closed_input_settles().await?;
+        Ok(world.trace)
+    }
+
+    /// A peer credential reaches no user command, and a foreign tree needs its own credential; neither touches storage.
+    async fn peer_and_foreign_refusals(&self) -> Result {
+        let world = self;
         // A peer credential may discover peers but never a user command.
         let peer = Client::in_process_with_products(
             world.stream.clone(),
@@ -753,30 +778,33 @@ impl World {
         // A foreign tree needs its own credential: refuse before dispatch.
         let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
         let before = world.stream.requests();
-        let refused = match call(
-            &world.client,
-            "agents",
-            &AgentCommand::Cancel {
-                conversation: 0,
-                input: 1,
-                agent: stranger,
-                id: IntentId::try_from("foreign-cancel")?,
-            },
-        )
-        .await?
-        {
-            Ok(reply) => {
+        // The session's credential does not cover the stranger's actor, so the
+        // refusal is the call's own, before any command reply.
+        let cancel = AgentCommand::Cancel {
+            conversation: 0,
+            input: 1,
+            agent: stranger,
+            id: IntentId::try_from("foreign-cancel")?,
+        };
+        match call(&world.client, "agents", &cancel).await {
+            Ok(Ok(reply)) => {
                 return Err(format!("a foreign tree needs its own credential: {reply:?}").into());
             }
-            Err(refused) => refused,
-        };
-        assert!(access_denied(&refused), "{refused:?}");
+            Ok(Err(refused)) => assert!(access_denied(&refused), "{refused:?}"),
+            Err(refused) => assert!(access_denied(&*refused), "{refused:?}"),
+        }
         let requests = world.stream.requests().since(before);
         assert_eq!(
             (requests.data(), requests.control()),
             (0, 0),
             "a foreign tree observed storage"
         );
+        Ok(())
+    }
+
+    /// A revoked query, and a suspended child admission revoked while it waits, both refuse.
+    async fn revoked_child_queries(&self) -> Result {
+        let world = self;
         // A revoked query is refused after admission.
         world.owner.revoke_query.store(true, Ordering::SeqCst);
         let refused = match call(
@@ -831,7 +859,12 @@ impl World {
         };
         assert!(access_denied(&refused), "{refused:?}");
         world.owner.denied.store(false, Ordering::SeqCst);
-        // A suspended diff source that is revoked refuses the original query.
+        Ok(())
+    }
+
+    /// A suspended diff source that is revoked refuses the original query.
+    async fn revoked_diff_query(&self) -> Result {
+        let world = self;
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, resume) = tokio::sync::oneshot::channel();
         *world
@@ -866,6 +899,12 @@ impl World {
         };
         assert!(access_denied(&refused), "{refused:?}");
         world.owner.denied.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Empty pages reserve their envelope, a childless host refuses spawns, and a spawn retry names the same child.
+    async fn empty_pages_and_spawns(&self) -> Result {
+        let world = self;
         // An empty page must reserve its complete canonical envelope.
         for query in [
             AgentCommand::History {
@@ -932,9 +971,14 @@ impl World {
             )
             .await?,
             Ok(AgentReply::Children { items, next: None })
-                if items.len() == 1 && items[0].agent == child && items[0].status.is_some()
+                if items.len() == 1 && items.first().is_some_and(|item| item.agent == child && item.status.is_some())
         ));
-        // A closed input settles both live queries.
+        Ok(())
+    }
+
+    /// A closed input settles both live queries.
+    async fn closed_input_settles(&self) -> Result {
+        let world = self;
         call(
             &world.client,
             "agents",
@@ -982,42 +1026,39 @@ impl World {
                 ..
             })
         ));
-        Ok(world.trace)
+        Ok(())
     }
 }
 
-#[tokio::test]
-async fn seeded_serve_dispatch_holds_the_oracle() -> Result {
+/// Runs `scenario` once per seed, each in its own seeded world, so its ids,
+/// `select!` order and time come from that seed.
+fn each_seed<F: Future<Output = Result<Vec<String>>>>(scenario: impl Fn(u64) -> F) -> Result {
     for seed in SEEDS {
-        World::dispatch(seed).await?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn seeded_serve_reads_hold_the_oracle() -> Result {
-    for seed in SEEDS {
-        World::reads(seed).await?;
+        acyclic_native_runtime::testing::seeded_test(seed, || scenario(seed))??;
     }
     Ok(())
 }
 
-#[tokio::test]
-async fn seeded_serve_authority_holds_the_oracle() -> Result {
-    for seed in SEEDS {
-        World::authority(seed).await?;
-    }
-    Ok(())
+#[test]
+fn seeded_serve_dispatch_holds_the_oracle() -> Result {
+    each_seed(World::dispatch)
 }
 
-#[tokio::test]
-async fn seeded_serve_replays_identically() -> Result {
+#[test]
+fn seeded_serve_reads_hold_the_oracle() -> Result {
+    each_seed(World::reads)
+}
+
+#[test]
+fn seeded_serve_authority_holds_the_oracle() -> Result {
+    each_seed(World::authority)
+}
+
+#[test]
+fn seeded_serve_replays_identically() -> Result {
     for seed in SEEDS {
-        assert_eq!(
-            World::dispatch(seed).await?,
-            World::dispatch(seed).await?,
-            "seed {seed} did not replay identically"
-        );
+        let run = || acyclic_native_runtime::testing::seeded_test(seed, || World::dispatch(seed));
+        assert_eq!(run()??, run()??, "seed {seed} did not replay identically");
     }
     Ok(())
 }

@@ -73,10 +73,10 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
             },
             // A refused turn settles failed; the agent stays open.
             Ok(Event::Turn { entry, .. }) if entry.inbox == inbox => {
-                return if settles != matches!(entry.outcome, TurnOutcome::Failed { .. }) {
-                    Ok(())
-                } else {
+                return if settles == matches!(entry.outcome, TurnOutcome::Failed { .. }) {
                     Err(format!("turn settled {:?}", entry.outcome).into())
+                } else {
+                    Ok(())
                 };
             }
             Ok(Event::Turn { .. } | Event::Delta | Event::Input { .. }) => {}

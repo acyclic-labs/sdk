@@ -106,7 +106,7 @@ proptest! {
     fn subsets_preserve_values_presence_and_types(value in value(), extra in value()) {
         prop_assert!(subset(&value, &value));
         let encoded = serde_json::to_string(&value).unwrap();
-        prop_assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), value.clone());
+        prop_assert_eq!(&serde_json::from_str::<Value>(&encoded).unwrap(), &value);
         prop_assert!(subset(&json!({"$json": value}), &Value::String(encoded)), "encoded JSON subset");
         let expected = json!({"required": value});
         let actual = json!({"required": value, "extra": extra});

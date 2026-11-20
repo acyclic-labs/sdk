@@ -220,7 +220,7 @@ mod tests {
         use futures::FutureExt as _;
         let guard = progress_guard::Guard::new();
         let registry = guard.registry.clone();
-        let io = guard.io.clone();
+        let io = guard.io;
         let dropped = Arc::new(AtomicUsize::new(0));
         struct Retire(Arc<AtomicUsize>);
         impl Drop for Retire {
@@ -230,7 +230,6 @@ mod tests {
         }
         let case = {
             let dropped = dropped.clone();
-            let io = io.clone();
             let registry = registry.clone();
             async move {
                 let _retire = Retire(dropped);

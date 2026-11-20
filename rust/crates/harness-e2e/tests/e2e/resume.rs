@@ -127,7 +127,7 @@ async fn journal<P: acyclic_harness::store::JournalProvider + 'static>(
         kind: AggregateKind::Conversation,
         id: identity.conversation.clone(),
     };
-    let issuer = AuthorityRoot::new("resume", identity.key, conversation.clone());
+    let issuer = AuthorityRoot::new("resume", identity.key, conversation);
     let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
@@ -264,7 +264,9 @@ impl ModelProvider for PausedPrefix {
                 // append before requesting this next item. Verify that prefix once;
                 // a producer prefetched before append must fail, never signal ready.
                 match observed(self.journal.as_ref(), self.operation).await {
-                    Ok(events) if check_observed(&events, &expected()[..4]).is_ok() => {}
+                    Ok(events)
+                        if check_observed(&events, expected().get(..4).unwrap_or_default())
+                            .is_ok() => {}
                     result => {
                         return Some((
                             Err(acyclic_harness::Error::Storage(format!(

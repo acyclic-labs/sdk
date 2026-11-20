@@ -57,6 +57,8 @@ pub mod sessions;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod settings;
 pub mod study;
+#[cfg(test)]
+mod tests;
 mod tool_output;
 mod verifier;
 #[cfg(any(test, feature = "test-support"))]
@@ -163,6 +165,8 @@ impl LocalHarness {
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<PreparedLocalHarness>> {
         Box::pin(open::prepare(config))
     }
+    /// The model and provider this harness's own agent loop runs, which
+    /// native hosts do not have.
     #[cfg(any(test, feature = "test-support"))]
     pub fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {
@@ -278,6 +282,7 @@ impl LocalHarness {
     }
 }
 
+/// A storage error carrying `error`'s message.
 pub fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }

@@ -11,7 +11,7 @@ use acyclic_harness::{
         WorkspaceMounting,
         agent_conversation::{Conversation, Settlement},
     },
-    model::{Model, ModelEvent, ModelProvider, ModelRole, ToolCall},
+    model::{Model, ModelEvent, ModelRole, ToolCall},
     runtime::ToolContext,
     test_support::{
         PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
@@ -139,16 +139,16 @@ impl Cut {
     }
 }
 
-/// Sends `id`, settles it, and decides the approval at the named cut. The
-/// archive, when interleaved, is a compaction between the ask and the decision.
+/// Sends `id`, settles it, and decides the approval at the schedule's named
+/// cut. The archive, when interleaved, is a compaction between the ask and
+/// the decision.
 async fn settle(
     harness: &Arc<LocalHarness>,
     id: &str,
     prompt: &str,
     verdict: ApprovalVerdict,
-    cut: Cut,
+    (schedule, cut): (&Schedule, Cut),
     archive: bool,
-    schedule: Option<&Schedule>,
     asks: &Mutex<Vec<String>>,
 ) -> Result<PromptOutcome> {
     let conversation = Conversation::open(harness.connect().await?);
@@ -168,18 +168,14 @@ async fn settle(
         }
         // Before the decision's write, the decision is lost; after it has
         // committed, the next write is the one that loses its acknowledgement.
-        if let Some(schedule) = schedule {
-            if matches!(cut, Cut::BeforeDecision) {
-                schedule.cut_next(DurableFault::Before);
-            }
+        if matches!(cut, Cut::BeforeDecision) {
+            schedule.cut_next(DurableFault::Before);
         }
         conversation
             .decide_with_binding(&request, binding, verdict)
             .await?;
-        if let Some(schedule) = schedule {
-            if matches!(cut, Cut::AfterDecision) {
-                schedule.cut_next(DurableFault::After);
-            }
+        if matches!(cut, Cut::AfterDecision) {
+            schedule.cut_next(DurableFault::After);
         }
         settlement = conversation.wait_reply(id, inbox, &mut events).await?;
     }
@@ -239,9 +235,8 @@ async fn run_variant(
                 "approval",
                 "[dst:approvals]",
                 verdict,
-                cut,
+                (&schedule, cut),
                 archive,
-                Some(&schedule),
                 &asks,
             )
             .await
@@ -262,8 +257,7 @@ async fn run_variant(
         Outcome::Crashed(cause) => {
             if matches!(cut, Cut::None) {
                 return Err(format!(
-                    "{} none archive={archive}: uncut run crashed: {cause}",
-                    outcome
+                    "{outcome} none archive={archive}: uncut run crashed: {cause}"
                 ));
             }
             // Reopen the original files with independent providers, stores and
@@ -284,9 +278,8 @@ async fn run_variant(
                         "approval",
                         "[dst:approvals]",
                         verdict,
-                        Cut::None,
+                        (&schedule, Cut::None),
                         archive,
-                        Some(&schedule),
                         &asks,
                     )
                     .await
@@ -308,7 +301,7 @@ async fn run_variant(
     // The reopened host reopens the request the paused turn still waits on, so
     // it names the same request and its retried decision replays instead of
     // conflicting: one request, one decision, one wake.
-    let asks = asks.lock().map_err(|_| "ask log".to_string())?;
+    let asks = asks.lock().map_err(|_| "ask log".to_owned())?;
     let expected_asks = if matches!(cut, Cut::None) { 1 } else { 2 };
     if asks.len() != expected_asks {
         return Err(format!(
@@ -318,7 +311,7 @@ async fn run_variant(
             asks.len()
         ));
     }
-    if asks.iter().any(|request| *request != asks[0]) {
+    if asks.iter().any(|request| Some(request) != asks.first()) {
         return Err(format!(
             "{} {} archive={archive}: the reopened host asked a different request: {asks:?}",
             outcome,
@@ -346,19 +339,17 @@ async fn run_variant(
     Ok(())
 }
 
-const OUTCOMES: [&str; 2] = ["approve", "deny"];
-const CUTS: [Cut; 3] = [Cut::None, Cut::BeforeDecision, Cut::AfterDecision];
-const ARCHIVES: [bool; 2] = [false, true];
-
 /// One world per (outcome, cut, archive): a world that ran all twelve would
-/// open twelve harnesses and outlast the per-case limit.
+/// open twelve harnesses and outlast the per-case limit. The outcome varies
+/// fastest, then the cut, then the archive.
 fn variant(seed: u64) -> (&'static str, Cut, bool) {
-    let seed = seed as usize;
-    (
-        OUTCOMES[seed % OUTCOMES.len()],
-        CUTS[(seed / OUTCOMES.len()) % CUTS.len()],
-        ARCHIVES[(seed / (OUTCOMES.len() * CUTS.len())) % ARCHIVES.len()],
-    )
+    let outcome = if seed % 2 == 0 { "approve" } else { "deny" };
+    let cut = match (seed / 2) % 3 {
+        0 => Cut::None,
+        1 => Cut::BeforeDecision,
+        _ => Cut::AfterDecision,
+    };
+    (outcome, cut, (seed / 6) % 2 == 1)
 }
 
 fn variants(seed: u64) -> Vec<family::Variant> {

@@ -32,6 +32,8 @@ pub(super) struct Binding<'a> {
     pub(super) workspace: Option<Arc<LocalWorkspace>>,
 }
 
+/// The publication operation for `key` in `domain`: one hash of both, so a
+/// replay of the same publication names the same operation.
 pub fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(domain);

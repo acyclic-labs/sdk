@@ -44,6 +44,7 @@ struct Storage {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
+/// Prepares and opens a local harness from `config`.
 pub async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
     // One allocation holds both phases, keeping their state machines out of
     // the entry frame without allocating again between preparation and open.
