@@ -24,16 +24,21 @@ use std::sync::Arc;
 /// this driver's one future.
 pub(super) async fn run(case: LocalCase) -> TestResult {
     case.validate()?;
-    let needs_shell = case
-        .expect
-        .results
+    // A scripted call to a tool that starts host processes needs native
+    // execution: `shell` directly, `code` through the tools it reaches.
+    let needs_execution = case
+        .turns
         .iter()
-        .flat_map(|results| results.values())
-        .any(|result| {
-            result.get("name").and_then(Value::as_str) == Some("shell")
-                && result.pointer("/content/kind").and_then(Value::as_str) == Some("parts")
+        .filter_map(|turn| match turn {
+            ScriptedTurn::Events(events) => Some(events),
+            ScriptedTurn::Text(_) => None,
+        })
+        .flatten()
+        .any(|event| {
+            matches!(event, ScriptedEvent::Event(ModelEvent::ToolCall(call))
+                if matches!(call.name.split('@').next(), Some("shell" | "code")))
         });
-    if (needs_shell || case.requires_native_hook)
+    if (needs_execution || case.requires_native_hook)
         && acyclic_native_runtime::execution::skip_if_windows_psec_unavailable()
     {
         return Ok(());
