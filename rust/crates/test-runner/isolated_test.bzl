@@ -44,6 +44,8 @@ def _isolated_test_impl(ctx):
         runfiles = runfiles.merge(ctx.runfiles(files = [ctx.file._privileged, ctx.file._privileges]))
         if "fs-verity" in ctx.attr.privileges:
             inherited.append("ACYCLIC_TEST_VERITY_DIR")
+        if "machines-native" in ctx.attr.privileges or "host-root" in ctx.attr.privileges:
+            inherited.append("ACYCLIC_TEST_VERITY_FIXTURES")
 
     # Cargo's CARGO_BIN_EXE_<name>, relative to the runfiles root; the runner makes it absolute.
     # A filegroup with one file, such as the toolchain's Cargo, is that executable.
@@ -153,10 +155,11 @@ def isolated_test(name, cpus = 2, tags = [], privileges = [], **kwargs):
     if "privileged" in tags:
         fail("isolated_test %s: `privileges` writes the privileged tag" % name)
     privileged = ["privileged"] + ["requires-" + privilege for privilege in privileges] if privileges else []
-    if "fs-verity" in privileges:
-        # Its cases check host root's ownership, which linux-sandbox's user namespace hides (privileged.sh).
-        if len(privileges) > 1:
-            fail("isolated_test %s: fs-verity is a target's only privilege, not with %s" % (name, privileges))
-        if "no-sandbox" not in tags:
-            privileged.append("no-sandbox")
+    for alone in ["fs-verity", "host-root", "machines-native"]:
+        if alone in privileges:
+            # Its cases check host root's ownership, which linux-sandbox's user namespace hides (privileged.sh).
+            if len(privileges) > 1:
+                fail("isolated_test %s: %s is a target's only privilege, not with %s" % (name, alone, privileges))
+            if "no-sandbox" not in tags:
+                privileged.append("no-sandbox")
     _isolated_test(name = name, cpus = cpus, tags = tags + privileged + ["cpu:%d" % cpus], privileges = privileges, **kwargs)

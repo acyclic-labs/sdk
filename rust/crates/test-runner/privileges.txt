@@ -2,8 +2,10 @@
 # scripts/bazel-build-files.mjs accepts only them in [package.metadata.bazel.privileged] groups.
 cgroup
 fs-verity
+host-root
 kvm
 local-cell
+machines-native
 net-admin
 nft
 root

@@ -994,6 +994,28 @@ mod tests {
         }
     }
 
+    /// The privileged wrapper hands its case every variable, whatever the name: dash, as `/bin/sh`, drops each one
+    /// that is no shell identifier, such as Cargo's `CARGO_BIN_EXE_<name>` of a hyphenated binary.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_privileged_wrapper_passes_every_variable_to_its_case() {
+        let output = Command::new("./privileged.sh")
+            .arg("/usr/bin/env")
+            .env("ACYCLIC_TEST_PRIVILEGES", "user-namespace")
+            .env("CARGO_BIN_EXE_a-b", "hyphenated")
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && out
+                    .lines()
+                    .any(|line| line == "CARGO_BIN_EXE_a-b=hyphenated"),
+            "{out}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// The longest per-case directory (any runner, any case) leaves a socket name of
     /// `SOCKET_NAME_ROOM` bytes inside this platform's `sun_path`.
     #[cfg(unix)]
