@@ -342,15 +342,78 @@ pub struct SourceMetadata {
     pub posix_flags: Option<u64>,
     /// Windows file attributes, when available.
     pub windows_attributes: Option<u32>,
-    /// Creation/birth time in signed Unix nanoseconds.
-    pub created_ns: Option<i128>,
-    /// Last content modification time in signed Unix nanoseconds.
-    pub modified_ns: Option<i128>,
-    /// Last access time in signed Unix nanoseconds.
-    pub accessed_ns: Option<i128>,
-    /// Last metadata-change time in signed Unix nanoseconds.
-    pub changed_ns: Option<i128>,
+    /// Creation/birth time.
+    pub created_ns: Option<SourceTimestamp>,
+    /// Last content modification time.
+    pub modified_ns: Option<SourceTimestamp>,
+    /// Last access time.
+    pub accessed_ns: Option<SourceTimestamp>,
+    /// Last metadata-change time.
+    pub changed_ns: Option<SourceTimestamp>,
 }
+
+/// A source timestamp: signed Unix nanoseconds held as whole seconds and the
+/// nanoseconds past them.
+///
+/// Host clocks report an `i64` second count and a sub-second part, so every host
+/// time fits exactly. The seconds are split into 32-bit halves so the value is
+/// 12 bytes at 4-byte alignment, and the sub-second field is stored plus one and
+/// never zero, which gives `Option<SourceTimestamp>` its `None` without a tag. It serializes
+/// as the `i128` nanosecond count, and decoding refuses a count whose seconds
+/// leave `i64` instead of clamping it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceTimestamp {
+    seconds_high: i32,
+    seconds_low: u32,
+    nanos_past_plus_one: std::num::NonZeroU32,
+}
+
+impl SourceTimestamp {
+    const NANOS_PER_SECOND: i128 = 1_000_000_000;
+
+    /// The timestamp `nanos` signed nanoseconds from the Unix epoch, or `None`
+    /// when its whole seconds do not fit in an `i64`.
+    #[must_use]
+    pub fn from_nanos(nanos: i128) -> Option<Self> {
+        let seconds = i64::try_from(nanos.div_euclid(Self::NANOS_PER_SECOND)).ok()?;
+        let past = u32::try_from(nanos.rem_euclid(Self::NANOS_PER_SECOND)).ok()?;
+        Some(Self {
+            seconds_high: i32::try_from(seconds >> 32).ok()?,
+            seconds_low: u32::try_from(seconds & 0xffff_ffff).ok()?,
+            nanos_past_plus_one: std::num::NonZeroU32::new(past + 1)?,
+        })
+    }
+
+    /// Signed nanoseconds from the Unix epoch.
+    #[must_use]
+    pub fn nanos(self) -> i128 {
+        let seconds = (i64::from(self.seconds_high) << 32) | i64::from(self.seconds_low);
+        i128::from(seconds) * Self::NANOS_PER_SECOND
+            + i128::from(self.nanos_past_plus_one.get() - 1)
+    }
+}
+
+impl Serialize for SourceTimestamp {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i128(self.nanos())
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceTimestamp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let nanos = i128::deserialize(deserializer)?;
+        Self::from_nanos(nanos).ok_or_else(|| {
+            serde::de::Error::custom(format_args!(
+                "source timestamp {nanos} ns has seconds outside i64"
+            ))
+        })
+    }
+}
+
+// The never-zero sub-second field is the niche that makes the option free.
+const _: () = assert!(
+    std::mem::size_of::<Option<SourceTimestamp>>() == std::mem::size_of::<SourceTimestamp>()
+);
 
 /// Metadata returned by an exact path lookup.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

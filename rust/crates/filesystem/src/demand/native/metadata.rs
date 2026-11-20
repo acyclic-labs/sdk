@@ -58,7 +58,8 @@ fn fixture_times_from(
 ) -> Option<acyclic_native_runtime::testing::NativeTimes> {
     use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
     let identity = metadata.identity();
-    let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
+    let nanos =
+        |time: Option<SourceTimestamp>| time.and_then(|time| i64::try_from(time.nanos()).ok());
     let times = NativeTimes {
         created_ns: nanos(physical.created_ns),
         modified_ns: nanos(physical.modified_ns),
@@ -234,10 +235,18 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
     #[cfg(feature = "test-support")]
     if let Some(times) = fixture_times_from(metadata, physical) {
         return SourceMetadata {
-            created_ns: times.created_ns.map(i128::from),
-            modified_ns: times.modified_ns.map(i128::from),
-            accessed_ns: times.accessed_ns.map(i128::from),
-            changed_ns: times.changed_ns.map(i128::from),
+            created_ns: times
+                .created_ns
+                .and_then(|time| SourceTimestamp::from_nanos(i128::from(time))),
+            modified_ns: times
+                .modified_ns
+                .and_then(|time| SourceTimestamp::from_nanos(i128::from(time))),
+            accessed_ns: times
+                .accessed_ns
+                .and_then(|time| SourceTimestamp::from_nanos(i128::from(time))),
+            changed_ns: times
+                .changed_ns
+                .and_then(|time| SourceTimestamp::from_nanos(i128::from(time))),
             ..physical
         };
     }
@@ -256,7 +265,7 @@ fn physical_source_metadata(metadata: &HostStat) -> SourceMetadata {
         result.posix_mode = Some(metadata.raw.st_mode as u32);
         result.posix_uid = Some(metadata.raw.st_uid as u32);
         result.posix_gid = Some(metadata.raw.st_gid as u32);
-        result.changed_ns = Some(
+        result.changed_ns = SourceTimestamp::from_nanos(
             i128::from(metadata.raw.st_ctime as i64) * 1_000_000_000
                 + i128::from(metadata.raw.st_ctime_nsec as i64),
         );
@@ -268,14 +277,16 @@ fn physical_source_metadata(metadata: &HostStat) -> SourceMetadata {
     result
 }
 
-fn system_time_nanos(time: cap_std::time::SystemTime) -> Option<i128> {
-    match time.into_std().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => Some(
-            i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos()),
-        ),
-        Err(error) => Some(
-            -(i128::from(error.duration().as_secs()) * 1_000_000_000
-                + i128::from(error.duration().subsec_nanos())),
-        ),
-    }
+fn system_time_nanos(time: cap_std::time::SystemTime) -> Option<SourceTimestamp> {
+    SourceTimestamp::from_nanos(
+        match time.into_std().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => {
+                i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos())
+            }
+            Err(error) => {
+                -(i128::from(error.duration().as_secs()) * 1_000_000_000
+                    + i128::from(error.duration().subsec_nanos()))
+            }
+        },
+    )
 }

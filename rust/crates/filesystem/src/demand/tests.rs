@@ -106,10 +106,10 @@ async fn native_lookup_projects_fixture_times_into_metadata_and_versions()
         assert_eq!(
             node.metadata,
             SourceMetadata {
-                created_ns: Some(i128::from(timestamp)),
-                modified_ns: Some(i128::from(timestamp)),
+                created_ns: SourceTimestamp::from_nanos(i128::from(timestamp)),
+                modified_ns: SourceTimestamp::from_nanos(i128::from(timestamp)),
                 accessed_ns: None,
-                changed_ns: Some(i128::from(timestamp)),
+                changed_ns: SourceTimestamp::from_nanos(i128::from(timestamp)),
                 ..physical.metadata
             }
         );
@@ -1617,4 +1617,30 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
     assert!(both_refreshed.follows(&refreshed));
     assert_ne!(both_refreshed, refreshed);
     Ok(())
+}
+
+proptest::proptest! {
+    // Persisted bytes are unchanged from `Option<i128>`, and a count the compact
+    // form cannot hold is refused at decode, never clamped.
+    #[test]
+    fn source_timestamps_encode_exactly_as_their_i128_nanoseconds(nanos in proptest::prop_oneof![
+        proptest::num::i128::ANY,
+        i128::from(i64::MIN) * 1_000_000_000 - 2..i128::from(i64::MIN) * 1_000_000_000 + 2,
+        i128::from(i64::MAX) * 1_000_000_000 + 999_999_997..i128::from(i64::MAX) * 1_000_000_000 + 1_000_000_002,
+        -2_000_000_001_i128..2_000_000_001,
+    ]) {
+        let old = serde_json::to_vec(&Some(nanos)).unwrap();
+        let decoded = serde_json::from_slice::<Option<SourceTimestamp>>(&old);
+        match SourceTimestamp::from_nanos(nanos) {
+            Some(timestamp) => {
+                proptest::prop_assert_eq!(timestamp.nanos(), nanos);
+                proptest::prop_assert_eq!(serde_json::to_vec(&Some(timestamp)).unwrap(), old);
+                proptest::prop_assert_eq!(decoded.unwrap(), Some(timestamp));
+            }
+            None => {
+                proptest::prop_assert!(i64::try_from(nanos.div_euclid(1_000_000_000)).is_err());
+                proptest::prop_assert!(decoded.is_err());
+            }
+        }
+    }
 }

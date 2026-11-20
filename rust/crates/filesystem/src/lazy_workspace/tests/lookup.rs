@@ -236,7 +236,7 @@ async fn aliases_preserve_identity_metadata_and_latest_content() {
         let mut source = CountingSource::new(Bytes::from_static(b"shared"));
         source.node.link_count = link_count;
         source.node.metadata.posix_mode = Some(0o100640);
-        source.node.metadata.modified_ns = Some(123456);
+        source.node.metadata.modified_ns = crate::demand::SourceTimestamp::from_nanos(123456);
         let source = Arc::new(source);
         let root = attach(
             &fs,

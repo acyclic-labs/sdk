@@ -85,9 +85,9 @@ pub(super) fn record_logical_bytes(record: FileRecord) -> Option<u64> {
 }
 
 pub(crate) fn source_file_metadata(source: crate::demand::SourceMetadata) -> FileMetadata {
-    let time = |value: Option<i128>| {
+    let time = |value: Option<crate::demand::SourceTimestamp>| {
         value
-            .and_then(|value| i64::try_from(value).ok())
+            .and_then(|value| i64::try_from(value.nanos()).ok())
             .map_or(MetadataField::Unavailable, MetadataField::Value)
     };
     FileMetadata {
