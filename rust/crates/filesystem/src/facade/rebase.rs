@@ -187,8 +187,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await;
         target_root.retire(accounting)?;
         base_root.retire(accounting)?;
-        if let Ok(crate::workspace::JoinPreparation::Complete(output)) = &result {
-            scope.keep_bytes(output.bytes)?;
+        if let Ok(prepared) = &result {
+            scope.keep_bytes(prepared.owned_bytes())?;
         }
         result
     }

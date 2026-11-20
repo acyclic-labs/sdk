@@ -474,4 +474,14 @@ impl JoinPreparation {
     ) -> Result<Self, crate::FsError> {
         crate::kernel::Owned::boxed(candidate, accounting).map(Self::Candidate)
     }
+
+    /// Bytes charged to the preparing work that this preparation still owns.
+    /// An allocation scope that returns it keeps exactly these.
+    pub(crate) fn owned_bytes(&self) -> u64 {
+        match self {
+            Self::Complete(output) => output.bytes,
+            Self::Preview { conflicts, .. } => conflicts.bytes,
+            Self::Candidate(candidate) => candidate.bytes,
+        }
+    }
 }
