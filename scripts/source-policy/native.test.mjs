@@ -62,3 +62,40 @@ test('shell substitution comments do not start heredocs', () => {
  const redirect = ['text="$(printf payload#part <<EOF', "can't start a shell quote", 'EOF', ')"', 'sleep 1'].join('\n');
  assert.ok(pollingSites('control.sh', redirect).some(site => site.start === redirect.lastIndexOf('sleep')));
 });
+
+test('futures::poll! advances one state machine, like Future::poll', () => {
+ const kinds = source => pollingSites('step.rs', source).filter(site => site.kind === 'timer-or-readiness')
+  .map(site => source.slice(site.start).match(/^\w+/)[0]);
+ assert.deepEqual(kinds('fn f() { let step = futures::poll!(fut); let again = poll!(fut); drop((step, again)); }'), []);
+ assert.deepEqual(kinds('fn f() { let step = Future::poll(fut.as_mut(), cx); drop(step); }'), []);
+ // Readiness polls keep their sites: a native poll(2), a poll method, and a poll! of a sleep.
+ assert.deepEqual(kinds('fn f() { let ready = libc::poll(fds, 1, 0); drop(ready); }'), ['ready', 'poll', 'ready']);
+ assert.deepEqual(kinds('fn f() { let ready = stream.poll(); drop(ready); }'), ['ready', 'poll', 'ready']);
+ assert.deepEqual(kinds('fn f() { let late = futures::poll!(tokio::time::sleep(d)); drop(late); }'), ['late', 'sleep', 'late']);
+});
+
+test('a timer alias reaches only its own binding scope', () => {
+ const named = source => pollingSites('scope.rs', source).filter(site => site.kind === 'timer-or-readiness')
+  .map(site => `${source.slice(site.start).match(/^\w+/)[0]}@${site.start}`);
+ const source = [
+  'fn first() { let x = client.timeout(d); let request = x; request.send(); }',
+  'fn second() { let x = 1; let request = x; request.send(); }',
+ ].join('\n');
+ const second = source.indexOf('fn second');
+ const sites = named(source);
+ assert.ok(sites.some(site => site.startsWith('timeout@')));
+ assert.deepEqual(sites.filter(site => site.startsWith('request@')).length, 2, 'the tainted fn keeps its alias chain');
+ assert.deepEqual(sites.filter(site => Number(site.split('@')[1]) > second), [], 'another fn binding of the same name is not a poll');
+ // Shadowing in one block starts a new binding; a nested block still sees the outer one.
+ const shadow = 'fn f() { let x = timer.sleep(d); let x = 1; use_it(x); }';
+ assert.deepEqual(named(shadow).filter(site => site.startsWith('x@')).map(site => Number(site.split('@')[1])), [shadow.indexOf('x')]);
+ const nested = 'fn f() { let x = timer.sleep(d); { let y = x; y.await; } }';
+ assert.ok(named(nested).some(site => site.startsWith('y@')));
+ // An undeclared name (a field, a parameter, a type) keeps its file-wide identity.
+ const field = 'fn a(s: &mut S) { s.wait = interval(d); } fn b(s: &S) { s.wait.tick(); }';
+ assert.ok(named(field).some(site => site.startsWith('wait@') && Number(site.split('@')[1]) > field.indexOf('fn b')));
+ // A timer handed to another function is still caught there: by its type, and by the loop that waits on it.
+ const passed = 'fn a() { let tick = interval(d); run(tick); } fn run(tick: Interval) { loop { tick.tick().await; } }';
+ const callee = pollingSites('scope.rs', passed).filter(site => site.start > passed.indexOf('fn run'));
+ assert.deepEqual(callee.map(site => site.kind), ['timer-or-readiness', 'loop']);
+});

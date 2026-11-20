@@ -539,20 +539,61 @@ function scriptSyntax(parsed, stream) {
  return {finite};
 }
 
+const futureTrait = new Set(['Future']);
+const futureCrates = new Set(['futures', 'futures_util', 'futures_lite']);
+const declarations = new Set(['let', 'const', 'var']);
+
+// Each word's alias identity. A name declared by `let`/`const`/`var` is its own
+// binding from its declaration to the end of the enclosing block (a later
+// declaration of the same name shadows it); any other word is the file-wide
+// name. Two bindings that share a spelling in different scopes, such as `x` in
+// two test functions, are then two names, so a timer alias of one cannot taint
+// the other.
+function lexicalNames(stream, rust) {
+ const ids = new Array(stream.length);
+ const scopes = [new Map()];
+ let next = 0;
+ for (let i = 0; i < stream.length; i++) {
+  const t = stream[i];
+  if (t.kind === 'punctuation' && t.value === '{') { scopes.push(new Map()); continue; }
+  if (t.kind === 'punctuation' && t.value === '}') { if (scopes.length > 1) scopes.pop(); continue; }
+  if (t.kind !== 'word') continue;
+  const before = stream[i - 1];
+  const member = before?.value === '.' || (before?.value === ':' && stream[i - 2]?.value === ':');
+  const declared = before?.kind === 'word' && (before.value === 'mut' ? stream[i - 2]?.value === 'let' : declarations.has(before.value));
+  if (!member && declared) {
+   const id = `${t.value}#${next++}`;
+   scopes[scopes.length - 1].set(t.value, id);
+   ids[i] = id;
+   continue;
+  }
+  if (!member) {
+   for (let s = scopes.length - 1; s >= 0; s--) {
+    const id = scopes[s].get(t.value);
+    if (id) { ids[i] = id; break; }
+   }
+  }
+  ids[i] ??= t.value;
+ }
+ return i => ids[i] ?? stream[i]?.value;
+}
+
 export function pollingUnit(file, source, parser = undefined) {
  const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source, parser) : undefined;
  const stream = parsed?.stream ?? nativeTokens(source, file);
- // A direct Rust Future::poll advances one state machine. Other poll/select
+ // A direct Rust Future::poll, or the futures crate's poll! macro (one
+ // Future::poll of its operand), advances one state machine. Other poll/select
  // spellings remain conservative candidates, including native imports/aliases.
  const rust = file.endsWith('.rs');
- const futurePoll = i => rust && stream[i]?.value === 'poll'
-  && stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':'
-  && stream[i - 3]?.value === 'Future';
+ const path = (i, crate) => stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':' && crate.has(stream[i - 3]?.value);
+ const futurePoll = i => rust && stream[i]?.value === 'poll' && (path(i, futureTrait)
+  || (stream[i + 1]?.value === '!' && (path(i, futureCrates) || stream[i - 1]?.value !== ':')));
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
  const aliases = new Map();
- const forbidden = new Set(stream.filter((t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value))).map(t => t.value));
+ const name = lexicalNames(stream, rust);
+ const forbidden = new Set(stream.flatMap((t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value)) ? [name(i)] : []));
  const edge = (from, to) => {
   if (!from || !to) return;
   if (!aliases.has(from)) aliases.set(from, new Set());
@@ -574,13 +615,13 @@ export function pollingUnit(file, source, parser = undefined) {
    bindings.pop();
   }
   if (t.kind === 'word') {
-   if (bindings.length && braceDepth === bindings[bindings.length - 1].braceDepth && !futurePoll(i)) edge(t.value, bindings[bindings.length - 1].name);
-   if (!rustForms?.casts.has(i) && stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
+   if (bindings.length && braceDepth === bindings[bindings.length - 1].braceDepth && !futurePoll(i)) edge(name(i), bindings[bindings.length - 1].name);
+   if (!rustForms?.casts.has(i) && stream[i + 1]?.value === 'as' && stream[i + 2]) edge(name(i), name(i + 2));
    // A declared type is independent of its binding's value. Destructuring
    // fields and other ambiguous colons still propagate alias candidates.
    if (!rustForms?.typed.has(i) && stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word')
-    edge(t.value, stream[i + 2].value);
-   if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: t.value, depth, braceDepth, line: t.line});
+    edge(name(i), name(i + 2));
+   if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: name(i), depth, braceDepth, line: t.line});
   }
   if (t.kind === 'punctuation' && opening.has(t.value)) depth++;
   if (t.kind === 'punctuation' && closing.has(t.value)) depth--;
@@ -598,7 +639,7 @@ export function pollingUnit(file, source, parser = undefined) {
   const t = stream[i];
   const kind = t.kind === 'indirection' || t.kind === 'module-load' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) && !(rustForms ?? scriptForms)?.typeFor?.has(i) && !(rustForms ?? scriptForms)?.finite.has(i) ? 'loop'
-   : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
+   : t.kind === 'word' && !futurePoll(i) && forbidden.has(name(i)) ? 'timer-or-readiness'
    : t.kind === 'literal' ? embeddedKind(t.value) ?? embeddedKind(escapedSpelling(t.value))
    : undefined;
   if (!kind) continue;
