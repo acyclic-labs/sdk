@@ -193,7 +193,8 @@ pub(crate) use file_table::{
 };
 pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub use file_table_mutation::{
-    FileTableMutation, FileTableMutationError, FileTableMutationFailure, apply_file_table_mutations,
+    FileReplacement, FileTableMutation, FileTableMutationError, FileTableMutationFailure,
+    apply_file_table_mutations,
 };
 pub use generation::{
     GenerationRoot, decode_generation_root, encode_generation_root, generation_root_id,

@@ -1,6 +1,8 @@
 //! Content-free composition of an authenticated, independent generation delta.
 use super::allocation::KernelAccounting;
-use super::file_table_mutation::apply_file_table_mutations_with_accounting;
+use super::file_table_mutation::{
+    apply_file_table_mutations_with_accounting, push_file_table_change,
+};
 use super::persistent_btree::Format;
 use super::persistent_io::{clone_key, clone_value};
 use super::tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
@@ -90,13 +92,15 @@ async fn apply_delta<O: AsyncObjectStore>(
                 Err(FsError::InvalidDiff)
             };
             let replacement = current.retire(accounting).and(replacement)?;
-            if let Some(mutation) =
-                super::merge::file_table_mutation(change.file_id, expected, replacement)
-            {
-                // Directory composition fences the exact head record returned
-                // by the lookup, including its unrelated child-root changes.
-                mutations.value.push(mutation);
-            }
+            // Directory composition fences the exact head record returned by
+            // the lookup, including its unrelated child-root changes.
+            push_file_table_change(
+                &mut mutations,
+                change.file_id,
+                expected,
+                replacement,
+                accounting,
+            )?;
         }
         if !bindings.is_empty() {
             return Err(FsError::InvalidDiff);

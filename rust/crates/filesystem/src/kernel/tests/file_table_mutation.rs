@@ -13,10 +13,7 @@ async fn original_table_encoding_denial_precedes_native_payload_and_backend_writ
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8).await?;
-    let mutations = [FileTableMutation::Replace {
-        expected: record(1, 1),
-        replacement: record(1, 2),
-    }];
+    let mutations = [FileTableMutation::replace(record(1, 1), record(1, 2))];
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::root(
         WorkBudget {
@@ -158,14 +155,8 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
         &store,
         root,
         vec![
-            FileTableMutation::Replace {
-                expected: record(4, 4),
-                replacement: record(4, 8),
-            },
-            FileTableMutation::Replace {
-                expected: record(6, 6),
-                replacement: record(6, 9),
-            },
+            FileTableMutation::replace(record(4, 4), record(4, 8)),
+            FileTableMutation::replace(record(6, 6), record(6, 9)),
         ],
         pair_limits(),
         WorkBudget::UNBOUNDED,
@@ -244,10 +235,7 @@ async fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std
     let receipt = apply_file_table_mutations(
         &store,
         root,
-        vec![FileTableMutation::Replace {
-            expected: record(3, 3),
-            replacement: record(3, 3),
-        }],
+        vec![FileTableMutation::replace(record(3, 3), record(3, 3))],
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -288,10 +276,7 @@ async fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::e
     let failure = apply_file_table_mutations(
         &store,
         root,
-        vec![FileTableMutation::Replace {
-            expected: record(3, 7),
-            replacement: record(3, 8),
-        }],
+        vec![FileTableMutation::replace(record(3, 7), record(3, 8))],
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -448,11 +433,7 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         Err(FileTableMutationError::IdentityMismatch)
     ));
     assert!(matches!(
-        FileTableMutation::Replace {
-            expected: record(1, 1),
-            replacement: record(2, 2),
-        }
-        .validate(),
+        FileTableMutation::replace(record(1, 1), record(2, 2)).validate(),
         Err(FileTableMutationError::IdentityMismatch)
     ));
     assert!(
@@ -496,10 +477,7 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     current = Some(record(1, 2));
     assert!(remove.replacement(current.as_ref())?.is_none());
 
-    let replace = FileTableMutation::Replace {
-        expected: record(1, 1),
-        replacement: record(1, 2),
-    };
+    let replace = FileTableMutation::replace(record(1, 1), record(1, 2));
     assert!(!replace.changes_cardinality());
     current = None;
     assert!(matches!(
@@ -516,5 +494,55 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         replace.replacement(current.as_ref())?.cloned(),
         Some(record(1, 2))
     );
+    Ok(())
+}
+
+#[test]
+fn replacement_boxes_are_charged_exactly_and_released_with_their_vector()
+-> Result<(), crate::FsError> {
+    fn live(accounting: &mut super::super::allocation::KernelAccounting<'_>) -> Option<u64> {
+        accounting
+            .standalone_parts()
+            .map(|(ledger, ..)| ledger.live_bytes())
+    }
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = super::super::allocation::KernelAccounting::standalone(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
+    let mut mutations =
+        super::super::Owned::<Vec<FileTableMutation>>::allocate(2, &mut accounting)?;
+    let backing = mutations.bytes;
+    assert_eq!(live(&mut accounting), Some(backing));
+    for (file, before, after) in [
+        (1, Some(record(1, 1)), Some(record(1, 2))),
+        (2, None, Some(record(2, 2))),
+        (3, None, None),
+    ] {
+        push_file_table_change(
+            &mut mutations,
+            record(file, 0).file_id,
+            before,
+            after,
+            &mut accounting,
+        )?;
+    }
+    let Some(FileTableMutation::Replace(change)) = mutations.value.first() else {
+        panic!("the first change is a replacement");
+    };
+    // The charge is the allocator's own layout for the box just made.
+    assert_eq!(
+        FileTableMutation::REPLACEMENT_BYTES,
+        std::alloc::Layout::for_value::<FileReplacement>(change).size() as u64
+    );
+    assert_eq!(
+        FileTableMutation::heap_bytes(&mutations.value)?,
+        FileTableMutation::REPLACEMENT_BYTES
+    );
+    let charged = backing + FileTableMutation::REPLACEMENT_BYTES;
+    assert_eq!(mutations.bytes, charged);
+    assert_eq!(live(&mut accounting), Some(charged));
+    mutations.retire(&mut accounting)?;
+    assert_eq!(live(&mut accounting), Some(0));
     Ok(())
 }

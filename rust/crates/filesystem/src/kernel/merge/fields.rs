@@ -350,24 +350,6 @@ pub(crate) fn directory_entries(record: Option<FileRecord>) -> Option<ObjectId> 
         _ => None,
     }
 }
-pub(crate) fn file_table_mutation(
-    file_id: FileId,
-    before: Option<FileRecord>,
-    after: Option<FileRecord>,
-) -> Option<FileTableMutation> {
-    match (before, after) {
-        (None, Some(record)) => Some(FileTableMutation::Insert(record)),
-        (Some(expected), None) => Some(FileTableMutation::Remove {
-            file_id,
-            expected: Some(expected),
-        }),
-        (Some(expected), Some(replacement)) => Some(FileTableMutation::Replace {
-            expected,
-            replacement,
-        }),
-        (None, None) => None,
-    }
-}
 #[cfg(test)]
 pub(crate) fn tree_mutation(
     name: LogicalName,

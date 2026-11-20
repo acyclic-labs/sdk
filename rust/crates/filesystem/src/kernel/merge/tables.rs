@@ -299,11 +299,8 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
             let mut mutations = Owned::allocate(0, accounting)?;
             let result: Result<ObjectId, FsError> = async {
                 for (file, (before, after)) in &state.records.value {
-                    if before != after
-                        && let Some(mutation) = file_table_mutation(*file, *before, *after)
-                    {
-                        mutations.ensure_for_push(usize::MAX, accounting)?;
-                        mutations.value.push(mutation);
+                    if before != after {
+                        push_file_table_change(&mut mutations, *file, *before, *after, accounting)?;
                     }
                 }
                 let merged_table = if mutations.value.is_empty() {

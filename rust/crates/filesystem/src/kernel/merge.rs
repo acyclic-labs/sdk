@@ -3,7 +3,9 @@
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::checkpoint::build_checkpoint_with_accounting;
 use super::extent_mutation::{apply_extent_mutations_with_accounting, put_encoded_with_accounting};
-use super::file_table_mutation::apply_file_table_mutations_with_accounting;
+use super::file_table_mutation::{
+    apply_file_table_mutations_with_accounting, push_file_table_change,
+};
 use super::persistent_btree::Format;
 use super::persistent_diff::{
     diff_file_records_with_accounting, diff_tree_entries_with_accounting,
@@ -14,8 +16,8 @@ use super::tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
 use super::{
     CanonicalDecodeError, CheckpointError, CheckpointRequest, DecodeLimits, ExtentKind,
     ExtentMutation, ExtentMutationError, ExtentRangeRequest, ExtentReadError, ExtentSlice,
-    FileMetadata, FilePayload, FileRecord, FileTableMutation, FileTableMutationError,
-    GenerationRoot, LogicalName, MetadataField, TreeMutation, TreeMutationError,
+    FileMetadata, FilePayload, FileRecord, FileTableMutationError, GenerationRoot, LogicalName,
+    MetadataField, TreeMutation, TreeMutationError,
 };
 use crate::FsError;
 use crate::async_storage::AsyncObjectStore;

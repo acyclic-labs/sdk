@@ -131,8 +131,21 @@ impl Format for FileTableFormat {
     }
 }
 
-/// One ordered path-independent record mutation.
+/// Complete prior and replacement states of one record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileReplacement {
+    /// Exact prior record.
+    pub expected: FileRecord,
+    /// Complete replacement with the same stable identity.
+    pub replacement: FileRecord,
+}
+
+/// One ordered path-independent record mutation.
+///
+/// A replacement carries two records, so it is boxed to keep every other
+/// mutation one record wide. Kernel builders charge that box through
+/// [`FileTableMutation::REPLACEMENT_BYTES`] before allocating it.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileTableMutation {
     /// Inserts a record only if its identity is absent.
     Insert(FileRecord),
@@ -144,16 +157,33 @@ pub enum FileTableMutation {
         expected: Option<FileRecord>,
     },
     /// Replaces a record after checking its complete prior state.
-    Replace {
-        /// Exact prior record.
-        expected: FileRecord,
-        /// Complete replacement with the same stable identity.
-        replacement: FileRecord,
-    },
+    Replace(Box<FileReplacement>),
 }
 
 impl FileTableMutation {
-    fn validate(self) -> Result<(), FileTableMutationError> {
+    /// Exact heap bytes one replacement owns beyond its vector slot.
+    pub(crate) const REPLACEMENT_BYTES: u64 = size_of::<FileReplacement>() as u64;
+
+    /// Replaces `expected` with `replacement` after an exact prior-state check.
+    pub fn replace(expected: FileRecord, replacement: FileRecord) -> Self {
+        Self::Replace(Box::new(FileReplacement {
+            expected,
+            replacement,
+        }))
+    }
+
+    /// Heap bytes the mutations own beyond their vector backing.
+    pub(crate) fn heap_bytes(mutations: &[Self]) -> Result<u64, WorkError> {
+        let replacements = mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, Self::Replace(_)))
+            .count();
+        crate::foundation::usize_to_u64(replacements)
+            .checked_mul(Self::REPLACEMENT_BYTES)
+            .ok_or(WorkError::Overflow)
+    }
+
+    fn validate(&self) -> Result<(), FileTableMutationError> {
         match self {
             Self::Insert(record) => record
                 .validate()
@@ -165,15 +195,16 @@ impl FileTableMutation {
                 expected
                     .validate()
                     .map_err(|_| FileTableMutationError::InvalidRecord)?;
-                if expected.file_id != file_id {
+                if expected.file_id != *file_id {
                     return Err(FileTableMutationError::IdentityMismatch);
                 }
                 Ok(())
             }
-            Self::Replace {
-                expected,
-                replacement,
-            } => {
+            Self::Replace(change) => {
+                let FileReplacement {
+                    expected,
+                    replacement,
+                } = **change;
                 expected
                     .validate()
                     .map_err(|_| FileTableMutationError::InvalidRecord)?;
@@ -190,6 +221,46 @@ impl FileTableMutation {
     }
 }
 
+/// Appends the mutation turning `before` into `after`. A replacement's box is
+/// charged to the vector's custody before it is allocated, so retiring the
+/// vector releases exactly what it owns.
+pub(crate) fn push_file_table_change(
+    mutations: &mut super::Owned<Vec<FileTableMutation>>,
+    file_id: FileId,
+    before: Option<FileRecord>,
+    after: Option<FileRecord>,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    if before.is_none() && after.is_none() {
+        return Ok(());
+    }
+    mutations.ensure_for_push(usize::MAX, accounting)?;
+    let mutation = match (before, after) {
+        (Some(expected), Some(replacement)) => {
+            let bytes = FileTableMutation::REPLACEMENT_BYTES;
+            let total = mutations
+                .bytes
+                .checked_add(bytes)
+                .ok_or(WorkError::Overflow)?;
+            let mut claim = accounting.claim_owned(bytes, 1)?;
+            if let Err(error) = mutations.allocation.absorb(&mut claim) {
+                super::retire_allocation(claim, bytes, accounting)?;
+                return Err(error);
+            }
+            mutations.bytes = total;
+            FileTableMutation::replace(expected, replacement)
+        }
+        (None, Some(record)) => FileTableMutation::Insert(record),
+        (Some(expected), None) => FileTableMutation::Remove {
+            file_id,
+            expected: Some(expected),
+        },
+        (None, None) => return Ok(()),
+    };
+    mutations.value.push(mutation);
+    Ok(())
+}
+
 impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
     type Error = FileTableMutationError;
 
@@ -197,7 +268,7 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
         match self {
             Self::Insert(record) => &record.file_id,
             Self::Remove { file_id, .. } => file_id,
-            Self::Replace { replacement, .. } => &replacement.file_id,
+            Self::Replace(change) => &change.replacement.file_id,
         }
     }
 
@@ -207,11 +278,10 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
 
     fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
         match self {
-            Self::Replace {
-                expected,
-                replacement,
-            } => Ok(FileTableFormat::leaf_item_encoded_length(expected)?
-                != FileTableFormat::leaf_item_encoded_length(replacement)?),
+            Self::Replace(change) => {
+                Ok(FileTableFormat::leaf_item_encoded_length(&change.expected)?
+                    != FileTableFormat::leaf_item_encoded_length(&change.replacement)?)
+            }
             _ => Ok(true),
         }
     }
@@ -223,7 +293,7 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
         match self {
             Self::Insert(_) if current.is_some() => Err(FileTableMutationError::AlreadyExists),
             Self::Insert(record) => Ok(Some(record)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => {
+            Self::Remove { .. } | Self::Replace(_) if current.is_none() => {
                 Err(FileTableMutationError::Missing)
             }
             Self::Remove { expected, .. } => {
@@ -233,15 +303,12 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
                 }
                 Ok(None)
             }
-            Self::Replace {
-                expected,
-                replacement,
-            } => {
+            Self::Replace(change) => {
                 let existing = current.ok_or(FileTableMutationError::Missing)?;
-                if existing != expected {
+                if *existing != change.expected {
                     return Err(FileTableMutationError::StateConflict);
                 }
-                Ok(Some(replacement))
+                Ok(Some(&change.replacement))
             }
         }
     }

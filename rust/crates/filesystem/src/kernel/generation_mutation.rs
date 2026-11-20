@@ -732,7 +732,9 @@ impl Owned<TransactionState> {
         cancellation: &CancellationToken,
     ) -> Result<(GenerationRoot, KernelOwnedAllocation), crate::FsError> {
         let mutations = self.leaf(accounting, TransactionState::file_table_edits)?;
-        let bytes = logical_vec_bytes(&mutations)?;
+        let bytes = logical_vec_bytes(&mutations)?
+            .checked_add(FileTableMutation::heap_bytes(&mutations)?)
+            .ok_or(WorkError::Overflow)?;
         let allocation = split_allocation(&mut self.allocation, bytes)?;
         let mutations = Owned {
             value: mutations,
@@ -1058,6 +1060,12 @@ impl MutationLeaf<'_, '_> {
 
     fn items(&mut self, count: u64) -> Result<(), crate::FsError> {
         account_items(self.accounting, count)
+    }
+
+    /// Funds `bytes` of element-owned heap in `operations` allocations.
+    fn claim(&mut self, bytes: u64, operations: u64) -> Result<(), crate::FsError> {
+        let mut allocation = self.accounting.claim_owned(bytes, operations)?;
+        self.allocation.absorb(&mut allocation)
     }
 
     fn release(&mut self, bytes: u64) -> Result<(), crate::FsError> {
@@ -2169,12 +2177,25 @@ impl TransactionState {
         &mut self,
         leaf: &mut MutationLeaf<'_, '_>,
     ) -> Result<Vec<FileTableMutation>, crate::FsError> {
-        let count = self.records.iter().filter(|record| {
-            matches!((record.base, record.present), (None, true) | (Some(_), false))
-                || matches!((record.base, record.present), (Some(expected), true) if expected != record.working)
-        }).count();
+        let (mut count, mut replacements) = (0, 0_u64);
+        for record in &self.records {
+            match (record.base, record.present) {
+                (None, true) | (Some(_), false) => count += 1,
+                (Some(expected), true) if expected != record.working => {
+                    count += 1;
+                    replacements += 1;
+                }
+                (None, false) | (Some(_), true) => {}
+            }
+        }
         leaf.items(usize_to_u64(self.records.len()))?;
         let mut mutations = leaf.reserve::<FileTableMutation>(count)?;
+        // Each replacement boxes its two records; fund those boxes with the
+        // vector so `rewrite_file_table` releases exactly what was charged.
+        let boxed = replacements
+            .checked_mul(FileTableMutation::REPLACEMENT_BYTES)
+            .ok_or(WorkError::Overflow)?;
+        leaf.claim(boxed, replacements)?;
         for record in &self.records {
             match (record.base, record.present) {
                 (None, true) => mutations.push(FileTableMutation::Insert(record.working)),
@@ -2183,10 +2204,7 @@ impl TransactionState {
                     expected: Some(expected),
                 }),
                 (Some(expected), true) if expected != record.working => {
-                    mutations.push(FileTableMutation::Replace {
-                        expected,
-                        replacement: record.working,
-                    });
+                    mutations.push(FileTableMutation::replace(expected, record.working));
                 }
                 (None, false) | (Some(_), true) => {}
             }
