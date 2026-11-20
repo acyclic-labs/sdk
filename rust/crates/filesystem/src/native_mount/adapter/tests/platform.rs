@@ -1,6 +1,9 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     for (parallel, a_bytes, b_bytes) in [
         (false, b"from-a".as_slice(), b"from-b".as_slice()),
         (true, b"concurrent-a".as_slice(), b"concurrent-b".as_slice()),
@@ -44,6 +47,9 @@ fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     let source = Arc::new(source(FilesystemProfile::Posix)?);
     let temporary = tempfile::tempdir()?;
     let mut mount = mount_source(&source, temporary.path())?;
@@ -433,6 +439,9 @@ fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn std::error::Error>>
 {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     use acyclic_native_runtime::{ProcessCommand, ProcessPipeReader, ProcessStdio, ProcessTree};
     use std::io::Write as _;
     use tokio::io::BufReader;

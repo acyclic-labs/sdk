@@ -10,12 +10,15 @@ pub(super) fn restore_old_append() -> bool {
     OLD_APPEND.get()
 }
 
+#[cfg(any(target_os = "linux", windows))]
 pub(super) struct OldAppend(bool);
+#[cfg(any(target_os = "linux", windows))]
 impl OldAppend {
     pub(super) fn enter() -> Self {
         Self(OLD_APPEND.replace(true))
     }
 }
+#[cfg(any(target_os = "linux", windows))]
 impl Drop for OldAppend {
     fn drop(&mut self) {
         OLD_APPEND.set(self.0);

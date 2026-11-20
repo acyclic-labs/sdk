@@ -221,9 +221,12 @@ async fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_ret
     fixture.watch.changed_with_native_work(&original).await?;
     let batch = poll(&mut fixture.watch)?;
     match batch {
-        WatchBatch::Changes { changes, .. } => assert!(changes.iter().any(
-            |change| matches!(change, WatchChange::Renamed { from, .. } if from == &expected)
-        )),
+        // A paired rename names both ends; FSEvents cannot pair the halves,
+        // so it reports the departed name as rebound.
+        WatchBatch::Changes { changes, .. } => assert!(changes.iter().any(|change| matches!(
+            change,
+            WatchChange::Renamed { from, .. } | WatchChange::Arrived(from) if from == &expected
+        ))),
         WatchBatch::RescanRequired { reason, .. } => {
             assert_eq!(reason, WatchInvalidationReason::NativeRescanRequired);
         }

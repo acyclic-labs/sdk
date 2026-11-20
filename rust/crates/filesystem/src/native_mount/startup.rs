@@ -178,6 +178,7 @@ pub(super) struct NativeMountRetirement {
 
 impl NativeMountRetirement {
     /// Called only after the driver has actually drained namespace callbacks.
+    #[cfg(any(test, target_os = "linux"))]
     pub(super) fn retire(
         &mut self,
         wait: Option<&crate::CancellationToken>,

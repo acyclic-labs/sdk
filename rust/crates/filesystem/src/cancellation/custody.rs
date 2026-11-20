@@ -30,6 +30,7 @@ impl<T> Custody<T> {
         self.0.get_mut()
     }
 
+    #[cfg(any(test, not(target_os = "macos")))]
     pub(crate) fn lock(&self) -> MutexGuard<'_, T> {
         match self.acquire(std::future::pending::<std::convert::Infallible>(), || None) {
             Ok(guard) => guard,

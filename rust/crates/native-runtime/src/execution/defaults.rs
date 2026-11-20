@@ -39,6 +39,9 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
         "/System/Volumes/Preboot/Cryptexes/OS",
         "/System/Cryptexes/App",
         "/System/Cryptexes/OS",
+        // /bin/sh reads this link to select its shell. Its target lies under
+        // /bin; the link itself gains only lookup metadata, as an alias.
+        "/private/var/select/sh",
         "/dev/null",
     ]
     .into_iter()

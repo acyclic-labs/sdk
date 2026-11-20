@@ -68,9 +68,11 @@ impl<F: Send + Sync> ObserverControl for Observer<F> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+use notify::event::RemoveKind;
 use notify::{
     EventKind,
-    event::{ModifyKind, RemoveKind, RenameMode},
+    event::{ModifyKind, RenameMode},
 };
 
 /// The change kind of one ReadDirectoryChangesW action, so consumers can tell
@@ -157,6 +159,7 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
         work.check()?;
         for change in changes {
             match change {
+                #[cfg(not(target_os = "macos"))]
                 HostChange::Departed(path) => {
                     self.path(path, EventKind::Remove(RemoveKind::Any), work)?;
                 }

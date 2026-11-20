@@ -17,7 +17,7 @@ fn request(
     })
 }
 
-fn crashed_owner(root: PathBuf) -> TestResult {
+fn crashed_owner(root: &std::path::Path) -> TestResult {
     let began = Instant::now();
     let (source, _, work) = checkout_context(MountPublication::Manual)?;
     let owned = crate::mount_native(request(&root.join("owned"), &source)?, source.clone())?;
@@ -105,13 +105,19 @@ impl Drop for CrashRoots {
 #[test]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
     if let Some(root) = std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT") {
-        return crashed_owner(PathBuf::from(root));
+        return crashed_owner(std::path::Path::new(&root));
+    }
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
     }
     check_startup_recovery(false, crate::initialize_native_mount_services)
 }
 
 #[test]
 fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     check_startup_recovery(true, crate::initialize_native_mount_services)
 }
 

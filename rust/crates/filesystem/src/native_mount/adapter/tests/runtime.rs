@@ -16,6 +16,9 @@ fn nfs_callback_protocol_cases() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_explicit_file_fsync_reaches_mount_source() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     use std::io::Write as _;
 
     let source = Arc::new(source(FilesystemProfile::Posix)?);

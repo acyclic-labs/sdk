@@ -242,6 +242,9 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
 
 #[test]
 fn task_views_share_one_real_nfs_session_and_retire_independently() -> TestResult {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     use std::os::unix::fs::MetadataExt;
 
     let (first_source, _, _) = checkout_context(MountPublication::Manual)?;

@@ -525,6 +525,9 @@ fn seeded_command_range_publications() -> Result<(), Box<dyn std::error::Error>>
 #[tokio::test]
 async fn view_completion_unmount_and_abandon_retire_only_their_view()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     crate::initialize_native_mount_services()?;
     let cancellation = crate::CancellationToken::new();
     let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;

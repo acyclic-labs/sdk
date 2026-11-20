@@ -281,9 +281,9 @@ impl Recorded {
 
     fn reported(changes: &[HostChange], path: &Path) -> bool {
         changes.iter().any(|change| match change {
-            HostChange::Departed(reported)
-            | HostChange::Rebound(reported)
-            | HostChange::Altered(reported) => reported == path,
+            #[cfg(not(target_os = "macos"))]
+            HostChange::Departed(reported) => reported == path,
+            HostChange::Rebound(reported) | HostChange::Altered(reported) => reported == path,
             _ => false,
         })
     }

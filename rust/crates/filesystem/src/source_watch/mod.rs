@@ -104,9 +104,14 @@ pub(super) fn record_cleanup_credits(
 }
 
 /// One change the host reported beneath a watched root.
+///
+/// macOS has no `Departed`: `FSEvents` flags accumulate over a coalesced
+/// history (one event may carry both created and removed), so a removal flag never proves
+/// the name is gone now, and the backend reports such a name as `Rebound`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HostChange {
     /// The host reported removal or departure of this root-relative name.
+    #[cfg(not(target_os = "macos"))]
     Departed(PathBuf),
     /// This root-relative path (empty: the root itself) may bind another entry, or none, and so may everything reached through it.
     Rebound(PathBuf),
@@ -124,6 +129,17 @@ pub(crate) enum HostChange {
     /// Changes may not all have been delivered yet, though none is known to have been lost: a fence that cannot prove delivery (see the macOS and Windows backends) reports this instead.
     #[cfg(any(target_os = "macos", windows))]
     Unconfirmed,
+}
+
+impl HostChange {
+    /// Whether the change may bind its name to another entry, or to none.
+    pub(crate) fn rebinds_name(&self) -> bool {
+        #[cfg(not(target_os = "macos"))]
+        if matches!(self, Self::Departed(_)) {
+            return true;
+        }
+        matches!(self, Self::Rebound(_))
+    }
 }
 
 #[cfg(windows)]

@@ -278,7 +278,7 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
             budget,
             &root_cancellation,
         )));
-        let mut startup = crate::NativeMaterializationWork::from_meter((&birth).clone());
+        let mut startup = crate::NativeMaterializationWork::from_meter(Arc::clone(&birth));
         let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut startup)?);
         let watch = Arc::new(NativeSourceWatch::start_driver(
             &held,
@@ -323,7 +323,7 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
         root_cancellation.cancel();
         assert!(matches!(
             watch.stop_with_work(&mut crate::NativeMaterializationWork::from_meter(
-                (&birth).clone()
+                Arc::clone(&birth)
             )),
             Err(DemandError::Cancelled)
         ));
@@ -724,7 +724,7 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         invoked: AtomicBool::new(false),
         terminal,
     });
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let mut work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
     let fence = watch

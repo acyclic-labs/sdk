@@ -37,6 +37,19 @@ mod custody;
 #[doc(hidden)]
 pub use clock::capture_mount_clock_callbacks;
 
+/// Reports when the native probe confirms that this host denies the process
+/// data access to the SDK's own native mounts. Tests whose subject needs that
+/// access skip, with a printed reason, on such a host; elsewhere they run.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn skip_if_mount_data_access_denied() -> bool {
+    #[cfg(target_os = "macos")]
+    let denied = acyclic_fs_darwin_bridge::skip_if_network_volume_data_denied();
+    #[cfg(not(target_os = "macos"))]
+    let denied = false;
+    denied
+}
+
 mod actions;
 
 mod adapter;

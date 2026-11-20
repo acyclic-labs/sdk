@@ -131,20 +131,17 @@ impl SharedViews {
                     .ok_or(libc::ESTALE)?,
             )
         };
-        let (serial, context, path) = match path {
-            Some(path) => {
-                let (name, relative) = relative_path(path)?;
-                let (serial, context) = self.names.enter_name(name).ok_or(libc::ESTALE)?;
-                if owner.is_some_and(|owner| owner != serial) {
-                    return Err(libc::EXDEV);
-                }
-                (serial, context, Some(relative))
+        let (serial, context, path) = if let Some(path) = path {
+            let (name, relative) = relative_path(path)?;
+            let (serial, context) = self.names.enter_name(name).ok_or(libc::ESTALE)?;
+            if owner.is_some_and(|owner| owner != serial) {
+                return Err(libc::EXDEV);
             }
-            None => {
-                let serial = owner.ok_or(libc::ESTALE)?;
-                let context = self.names.enter(serial).ok_or(libc::ESTALE)?;
-                (serial, context, None)
-            }
+            (serial, context, Some(relative))
+        } else {
+            let serial = owner.ok_or(libc::ESTALE)?;
+            let context = self.names.enter(serial).ok_or(libc::ESTALE)?;
+            (serial, context, None)
         };
         Ok(Routed {
             context,
@@ -233,11 +230,8 @@ impl Drop for SharedView {
 
 fn relative_path(path: &CStr) -> Result<(&[u8], &CStr), i32> {
     let bytes = path.to_bytes().strip_prefix(b"/").ok_or(libc::EINVAL)?;
-    let end = bytes
-        .iter()
-        .position(|byte| *byte == b'/')
-        .unwrap_or(bytes.len());
-    let name = &bytes[..end];
+    let name = bytes.split(|byte| *byte == b'/').next().unwrap_or_default();
+    let end = name.len();
     if name.is_empty() {
         return Err(libc::ESTALE);
     }
@@ -326,7 +320,7 @@ impl SharedViews {
         }
         // Bound each table read, but fill the caller's frame before reporting EOF.
         // Metadata is not fetched from any volume while the root names lock is held.
-        let mut first = offset.saturating_sub(1).max(1) as u64;
+        let mut first = offset.saturating_sub(1).max(1).cast_unsigned();
         loop {
             let entries = self.listed_from(first, 64);
             if entries.is_empty() {

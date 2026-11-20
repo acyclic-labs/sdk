@@ -282,6 +282,7 @@ impl NativeChanges {
                         !matches!(action, 1 | 2 | 4 | 5),
                         Some(*file),
                     ),
+                    #[cfg(not(target_os = "macos"))]
                     HostChange::Departed(relative) => (relative, true, false, None::<u64>),
                     HostChange::Rebound(relative) => (relative, false, false, None::<u64>),
                     HostChange::Altered(relative) => (relative, false, true, None::<u64>),

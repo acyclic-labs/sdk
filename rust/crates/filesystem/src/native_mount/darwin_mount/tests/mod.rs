@@ -553,6 +553,9 @@ fn mount_socket(destination: &Path) -> Result<PathBuf, Box<dyn std::error::Error
 
 #[test]
 fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     let (temporary, source, mut mount, work) = live_mount()?;
     let (changed, created) = (
         temporary.path().join("changed"),
@@ -597,6 +600,9 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
 
 #[test]
 fn macos_server_answers_only_the_kernel() -> TestResult {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     use std::io::{Read as _, Write as _};
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -628,6 +634,9 @@ fn macos_server_answers_only_the_kernel() -> TestResult {
 
 #[test]
 fn macos_locks_exclude_other_processes() -> TestResult {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     use std::os::fd::AsRawFd as _;
 
     let (temporary, _, mut mount, _work) = live_mount()?;
@@ -676,6 +685,9 @@ fn macos_locks_exclude_other_processes() -> TestResult {
 
 #[test]
 fn macos_mode_bits_deny_access() -> TestResult {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     use std::os::unix::fs::PermissionsExt as _;
 
     let (temporary, _, mut mount, _work) = live_mount()?;

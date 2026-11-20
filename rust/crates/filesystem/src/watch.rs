@@ -603,6 +603,7 @@ impl RootHints {
                 ..WorkCounters::UNCHARGED
             })?;
             let hint: Option<PathHint<'_>> = match change {
+                #[cfg(not(target_os = "macos"))]
                 HostChange::Departed(relative) => Some((relative, WatchChange::Removed)),
                 HostChange::Rebound(relative) => Some((relative, WatchChange::Arrived)),
                 HostChange::Altered(relative) if relative.as_os_str().is_empty() => {
@@ -629,9 +630,7 @@ impl RootHints {
                 && !state.excluded.iter().any(|excluded| beneath(excluded))
             {
                 if let Some((relative, build_change)) = hint {
-                    if relative.as_os_str().is_empty()
-                        && matches!(change, HostChange::Departed(_) | HostChange::Rebound(_))
-                    {
+                    if relative.as_os_str().is_empty() && change.rebinds_name() {
                         state.invalidation = Some(WatchInvalidationReason::RootChanged);
                     } else {
                         self.enqueue(relative, build_change, &mut state, work)?;
@@ -3212,20 +3211,19 @@ impl NativeWatch {
                 .map_err(demand_watch_error)?;
         }
         #[cfg(not(any(target_os = "linux", windows)))]
-        if !self.has_subtree_registration() {
-            if self
+        if !self.has_subtree_registration()
+            && self
                 .watched_directories
                 .iter()
                 .any(|path| *path != self.root)
-            {
-                work.started_io(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(demand_watch_error)?;
-                work.check().map_err(demand_watch_error)?;
-                return Err(NativeWatchError::BoundedObservationUnavailable);
-            }
+        {
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::default()
+            })
+            .map_err(demand_watch_error)?;
+            work.check().map_err(demand_watch_error)?;
+            return Err(NativeWatchError::BoundedObservationUnavailable);
         }
         Ok((self.epoch, invalidation))
     }
@@ -4921,11 +4919,13 @@ mod demand_admission_tests {
             &held.root.join("a/b/changed"),
             crate::fsevents::ITEM_CREATED,
         );
-        assert!(matches!(
-            held.poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-                .value,
-            WatchBatch::RescanRequired { .. }
-        ));
+        let WatchBatch::Changes { changes, .. } = held
+            .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value
+        else {
+            return Err("the shared producer did not deliver the path hint".into());
+        };
+        assert_eq!(changes, [WatchChange::Arrived(namespace("/a/b/changed")?)]);
         Ok(())
     }
 

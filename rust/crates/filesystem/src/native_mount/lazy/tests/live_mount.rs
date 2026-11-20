@@ -1,6 +1,9 @@
 use super::*;
 #[tokio::test(flavor = "multi_thread")]
 async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     let root = tempfile::tempdir()?;
     let (source, mount) = (root.path().join("source"), root.path().join("mount"));
     std::fs::create_dir_all(source.join("d"))?;
@@ -56,6 +59,9 @@ async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::e
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     for watched in [true, false] {
         keeps_hard_links_one_file(watched).await?;
     }

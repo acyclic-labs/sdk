@@ -932,7 +932,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
             output.stdout,
             format!("ordinary: approved\nhome: {home}\n").as_bytes()
         );
-        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     }
     let mut collision = configured(false);
     collision
@@ -1083,7 +1083,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     let output = run(
         ShellInput {
             command: crate::tools::ShellCommand::Input {
-                argv: vec!["/usr/bin/cat".into()],
+                argv: vec!["/bin/cat".into()],
                 stdin: stdin.into(),
             },
             cwd: None,

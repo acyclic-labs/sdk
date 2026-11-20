@@ -206,10 +206,10 @@ pub(super) fn advance_directory_to_offset(
 ) -> Result<(), NativeMountError> {
     while directory.emitted < offset {
         work.charge(scan_work(1))?;
-        if directory.emitted >= 2 {
-            if directory.next_visible(context, work)?.is_none() || !directory.pop_entry() {
-                return Err(driver_errno(libc::EINVAL));
-            }
+        if directory.emitted >= 2
+            && (directory.next_visible(context, work)?.is_none() || !directory.pop_entry())
+        {
+            return Err(driver_errno(libc::EINVAL));
         }
         directory.emitted += 1;
     }

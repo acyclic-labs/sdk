@@ -75,6 +75,9 @@ async fn explicit_unmount_retires_the_native_namespace() -> Result<(), Box<dyn s
 #[tokio::test(flavor = "multi_thread")]
 async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     #[cfg(windows)]
     if let Some(path) = std::env::var_os("ACYCLIC_CUSTOMER_HOST_WRITE") {
         let parent: u32 = std::env::var("ACYCLIC_CUSTOMER_PROVIDER_PID")?.parse()?;
