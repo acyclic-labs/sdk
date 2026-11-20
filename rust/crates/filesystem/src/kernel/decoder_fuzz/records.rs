@@ -19,7 +19,8 @@ pub(crate) fn record<
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let bytes = super::canonical::<_, _, false>(expected, encoded, &decode)?;
     for end in [0, bytes.len() / 2, bytes.len() - 1] {
-        if !(decode(&bytes[..end]).is_err()) {
+        let truncated = bytes.get(..end).ok_or("a truncation is a prefix")?;
+        if decode(truncated).is_ok() {
             return Err("truncated filesystem record admitted".into());
         };
     }
@@ -28,35 +29,27 @@ pub(crate) fn record<
     if !(decode(&trailing).is_err()) {
         return Err("trailing filesystem record bytes admitted".into());
     };
-    if let Ok(value) = decode(input) {
-        if !(&(super::canonical::<_, _, false>(&value, encode(&value), &decode)?) == &(input)) {
-            return Err("filesystem record changed its original bytes".into());
-        };
+    if let Ok(value) = decode(input)
+        && super::canonical::<_, _, false>(&value, encode(&value), &decode)? != input
+    {
+        return Err("filesystem record changed its original bytes".into());
     }
     Ok(bytes)
 }
 
 fn fact(input: &[u8], selector: u8) -> SourceFact {
     let mut identity = [0; 32];
-    let length = input.len().min(identity.len());
-    identity[..length].copy_from_slice(&input[..length]);
-    let mut volume = [0; 16];
-    volume.copy_from_slice(&identity[..16]);
-    let mut root = [0; 16];
-    root.copy_from_slice(&identity[16..]);
-    let mut paths = [0; 4];
-    paths.copy_from_slice(&identity[..4]);
-    let mut extents = [0; 4];
-    extents.copy_from_slice(&identity[4..8]);
-    let reasons = [
-        SourceInvalidation::InitialSnapshotRequired,
-        SourceInvalidation::QueueOverflow,
-        SourceInvalidation::NativeRescanRequired,
-        SourceInvalidation::BackendError,
-        SourceInvalidation::UnrepresentablePath,
-        SourceInvalidation::AmbiguousRename,
-        SourceInvalidation::RootChanged,
-    ];
+    for (slot, byte) in identity.iter_mut().zip(input) {
+        *slot = *byte;
+    }
+    let (mut volume, mut root) = ([0; 16], [0; 16]);
+    for (slot, byte) in volume.iter_mut().chain(&mut root).zip(identity) {
+        *slot = byte;
+    }
+    let (mut paths, mut extents) = ([0; 4], [0; 4]);
+    for (slot, byte) in paths.iter_mut().chain(&mut extents).zip(identity) {
+        *slot = byte;
+    }
     SourceFact {
         volume_id: VolumeId::from_bytes(volume),
         root_identity: root,
@@ -73,7 +66,15 @@ fn fact(input: &[u8], selector: u8) -> SourceFact {
             1 => DurableSourceState::PendingCapture,
             2 => DurableSourceState::Conflict,
             3 => DurableSourceState::Sealed,
-            index => DurableSourceState::NeedsRescan(reasons[usize::from(index - 4)]),
+            reason => DurableSourceState::NeedsRescan(match reason {
+                4 => SourceInvalidation::InitialSnapshotRequired,
+                5 => SourceInvalidation::QueueOverflow,
+                6 => SourceInvalidation::NativeRescanRequired,
+                7 => SourceInvalidation::BackendError,
+                8 => SourceInvalidation::UnrepresentablePath,
+                9 => SourceInvalidation::AmbiguousRename,
+                _ => SourceInvalidation::RootChanged,
+            }),
         },
         generation_id: GenerationId::new(Digest::from_bytes(identity)),
     }
@@ -92,7 +93,10 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let domain = DOMAIN.len();
     for version in [0_u16, 1, u16::MAX] {
         let mut changed = bytes.clone();
-        changed[domain..domain + 2].copy_from_slice(&version.to_le_bytes());
+        changed
+            .get_mut(domain..domain + 2)
+            .ok_or("a source fact carries its version")?
+            .copy_from_slice(&version.to_le_bytes());
         if !(matches!(decode_source_fact(&changed, 4096), Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion {found, expected: 2})) if found == version))
         {
             return Err("source version admitted".into());
@@ -110,7 +114,9 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         + 32;
     for offset in [domain + 2 + 32, paths, extents, state] {
         let mut changed = bytes.clone();
-        changed[offset] = 255;
+        *changed
+            .get_mut(offset)
+            .ok_or("a source fact carries its tags")? = 255;
         if !(decode_source_fact(&changed, 4096).is_err()) {
             return Err("unknown source tag admitted".into());
         };
@@ -135,7 +141,10 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut changed = bytes.clone();
         let offset = if bound == 0 { paths } else { extents } + 1;
-        changed[offset..offset + 4].fill(0);
+        changed
+            .get_mut(offset..offset + 4)
+            .ok_or("a present source bound is encoded")?
+            .fill(0);
         if !(matches!(
             decode_source_fact(&changed, 4096),
             Err(SourceFactError::ZeroBound)
@@ -145,7 +154,9 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     }
     if matches!(value.state, DurableSourceState::NeedsRescan(_)) {
         let mut changed = bytes;
-        changed[state + 1] = 255;
+        *changed
+            .get_mut(state + 1)
+            .ok_or("a rescan state carries its reason")? = 255;
         if !(decode_source_fact(&changed, 4096).is_err()) {
             return Err("unknown source reason admitted".into());
         };
@@ -155,7 +166,7 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Original library writer output; these are authored values, not native captures.
-pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub fn seeds() -> super::Seeds {
     let mut seeds = Vec::new();
     for selector in 0..22 {
         seeds.push((format!("source-fact-{selector:02}"), {

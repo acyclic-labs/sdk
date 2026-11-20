@@ -152,8 +152,10 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     let mut bytes = encoder.finish();
     if indexed {
         let end = parents_offset + parent_bytes;
-        let (parents, remainder) =
-            bytes[parents_offset..end].as_chunks_mut::<{ ObjectId::ENCODED_LEN }>();
+        let (parents, remainder) = bytes
+            .get_mut(parents_offset..end)
+            .ok_or_else(|| invariant("the encoding holds its indexed parents"))?
+            .as_chunks_mut::<{ ObjectId::ENCODED_LEN }>();
         debug_assert!(remainder.is_empty());
         validate_unique_parents(parents, |step| {
             observe(match step {
@@ -186,7 +188,10 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
                 ..WorkCounters::UNCHARGED
             };
             observe(EncodeWorkStep::Admit(copying))?;
-            bytes[cursor..cursor + reference.len()].copy_from_slice(reference);
+            bytes
+                .get_mut(cursor..cursor + reference.len())
+                .ok_or_else(|| invariant("the encoding holds its parents"))?
+                .copy_from_slice(reference);
             cursor += reference.len();
             observe(EncodeWorkStep::Completed(copying))?;
         }
@@ -196,10 +201,15 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
             ..WorkCounters::UNCHARGED
         };
         observe(EncodeWorkStep::Admit(features))?;
-        bytes[cursor..cursor + 8].copy_from_slice(&root.required_features.to_le_bytes());
+        bytes
+            .get_mut(cursor..cursor + 8)
+            .ok_or_else(|| invariant("the encoding holds its required features"))?
+            .copy_from_slice(&root.required_features.to_le_bytes());
         observe(EncodeWorkStep::Completed(features))?;
         bytes.truncate(length);
-    } else if root.parents.len() == 2 && root.parents[0] == root.parents[1] {
+    } else if let [first, second] = root.parents.as_slice()
+        && first == second
+    {
         return Err(invariant("generation parents are duplicated").into());
     }
     Ok(bytes)
@@ -396,7 +406,9 @@ fn validate_unique_parents<T: Ord, E: From<CanonicalDecodeError>>(
     mut observe: impl FnMut(ParentWork) -> Result<(), E>,
 ) -> Result<(), E> {
     if parents.len() <= 2 {
-        if parents.len() == 2 && parents[0] == parents[1] {
+        if let [first, second] = &*parents
+            && first == second
+        {
             return Err(invariant("generation parents are duplicated").into());
         }
         return Ok(());
@@ -422,7 +434,7 @@ fn validate_unique_parents<T: Ord, E: From<CanonicalDecodeError>>(
     )?;
     for pair in parents.windows(2) {
         observe(ParentWork::BeforeItem)?;
-        let duplicate = pair[0] == pair[1];
+        let duplicate = matches!(pair, [left, right] if left == right);
         observe(ParentWork::Item)?;
         if duplicate {
             return Err(invariant("generation parents are duplicated").into());

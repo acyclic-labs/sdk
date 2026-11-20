@@ -34,8 +34,8 @@ where
             batch_seal,
         } = callbacks;
         let prepared = match preparation.prepare(accounting, prepare_roots).await? {
-            preparation::Prepared::Complete(output) => return Ok(output),
-            preparation::Prepared::Ready(prepared) => prepared,
+            preparation::Prepared::Complete(output) => return Ok(*output),
+            preparation::Prepared::Ready(prepared) => *prepared,
         };
         let preparation::PreparedGeneration {
             mut candidate,

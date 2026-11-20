@@ -16,8 +16,14 @@ impl From<CanonicalDecodeError> for Failure {
     }
 }
 
-fn event(step: ReadAllocationStep) -> (u8, u64, u64) {
-    match step {
+/// One admission step as (code, first value, second value).
+type Event = (u8, u64, u64);
+
+/// A decode result and the admission steps it took.
+type Observed = (Result<FileTablePage, Failure>, Vec<Event>);
+
+fn event(step: &ReadAllocationStep) -> Event {
+    match *step {
         ReadAllocationStep::Allocate { bytes, operations } => (0, bytes, operations),
         ReadAllocationStep::ReserveFailed(_) => (1, 0, 0),
         ReadAllocationStep::Capacity {
@@ -38,10 +44,10 @@ pub(super) fn observed<const ORDER: bool, const LEGACY: bool>(
     bytes: &[u8],
     limits: DecodeLimits,
     deny_at: usize,
-) -> (Result<FileTablePage, Failure>, Vec<(u8, u64, u64)>) {
+) -> Observed {
     let mut events = Vec::new();
     let mut observe = |step| {
-        events.push(event(step));
+        events.push(event(&step));
         if events.len() > deny_at {
             Err(Failure::Denied)
         } else {
@@ -63,7 +69,7 @@ fn compare_observed<const ORDER: bool>(
     limits: DecodeLimits,
     denied: usize,
     complete: &Result<FileTablePage, Failure>,
-    tape: &[(u8, u64, u64)],
+    tape: &[Event],
 ) -> Result<(), String> {
     let (actual, events) = observed::<ORDER, false>(bytes, limits, denied);
     let expected = if denied < tape.len() {
@@ -76,7 +82,7 @@ fn compare_observed<const ORDER: bool>(
             "decoder result differs: {actual:?} != {expected:?}"
         ));
     }
-    let expected_events = &tape[..denied.saturating_add(1).min(tape.len())];
+    let expected_events = tape.get(..denied.saturating_add(1)).unwrap_or(tape);
     if events != expected_events {
         return Err(format!(
             "decoder admission trace differs: {events:?} != {expected_events:?}"
@@ -121,14 +127,17 @@ pub(crate) fn check<const ORDER: bool>(
                     |_| Ok::<_, crate::FsError>(()),
                     |_| CanonicalDecodeError::AllocationFailed.into(),
                 )?;
-                if !(&(check_record(&encoded)?) == &(Ok(*record))) {
+                if check_record(&encoded)? != Ok(*record) {
                     return Err("standalone record differs from the fully validated page".into());
                 };
                 let index = prefix % encoded.len();
-                encoded[index] ^= 1;
-                let _ = check_record(&encoded)?;
-                encoded[index] ^= 1;
-                if !(check_record(&encoded[..index])?.is_err()) {
+                let mut flipped = encoded.clone();
+                if let Some(byte) = flipped.get_mut(index) {
+                    *byte ^= 1;
+                }
+                let _ = check_record(&flipped)?;
+                let truncated = encoded.get(..index).ok_or("a truncation is a prefix")?;
+                if check_record(truncated)?.is_ok() {
                     return Err("standalone record admitted a truncated frame".into());
                 };
                 encoded.push(0);
@@ -140,16 +149,20 @@ pub(crate) fn check<const ORDER: bool>(
         }
         FileTablePage::Internal(children) => (DecodedPageKind::Internal, children.len()),
     };
-    if !(&(shape?)
-        == &(DecodedPageShape {
+    if shape?
+        != (DecodedPageShape {
             kind,
             items,
             nested_bytes: 0,
-        }))
+        })
     {
         return Err("shape differs from the fully validated page".into());
     };
-    if !(file_table_page_decode_shape(&bytes[..prefix % bytes.len()], limits).is_err()) {
+    let truncated = prefix
+        .checked_rem(bytes.len())
+        .and_then(|end| bytes.get(..end))
+        .unwrap_or_default();
+    if file_table_page_decode_shape(truncated, limits).is_ok() {
         return Err("shape admitted a truncated frame".into());
     };
     let mut trailing = bytes.to_vec();
@@ -164,7 +177,7 @@ fn check_record(
     bytes: &[u8],
 ) -> Result<Result<FileRecord, CanonicalDecodeError>, Box<dyn std::error::Error>> {
     let result = decode_file_record(bytes);
-    if !(&(result) == &(reference::standalone_record(bytes))) {
+    if result != reference::standalone_record(bytes) {
         return Err(CanonicalDecodeError::Invariant(
             crate::kernel::codec::CanonicalInvariant::Static(
                 "standalone record result differs from the independent parser",

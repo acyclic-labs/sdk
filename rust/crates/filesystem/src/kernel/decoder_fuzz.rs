@@ -12,6 +12,9 @@ use {
 
 pub mod records;
 
+/// Named fuzz corpus seeds, each the original writer's bytes.
+pub type Seeds = Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>>;
+
 /// Re-encodes an admitted value and requires the encoding to decode to it.
 /// `PLANTED` flips one canonical byte: the negative control for this oracle.
 pub(crate) fn canonical<
@@ -41,7 +44,7 @@ pub(crate) fn canonical<
         return Err("a canonical encoding decodes".into());
     };
     let decoded = decoded.map_err(|error| format!("canonical decoding refused: {error:?}"))?;
-    if !(&(&decoded) == &(value)) {
+    if decoded != *value {
         return Err("canonical encoding changes the decoded value".into());
     };
     Ok(canonical)
@@ -111,7 +114,7 @@ fn decode<const PLANTED: bool>(
             {
                 // Full-only extent semantics and injected Truncated refusals
                 // do not establish a structural shape-decoder error.
-                if !(&(shape) == &(Err(error.clone()))) {
+                if shape != Err(error.clone()) {
                     return Err("extent shape refusal differs from the full decoder".into());
                 };
             }
@@ -120,18 +123,20 @@ fn decode<const PLANTED: bool>(
                 ExtentPage::Leaf(items) => (DecodedPageKind::Leaf, items.len()),
                 ExtentPage::Internal(items) => (DecodedPageKind::Internal, items.len()),
             };
-            if !(&(shape)
-                == &(Ok(DecodedPageShape {
+            if shape
+                != Ok(DecodedPageShape {
                     kind,
                     items: count,
                     nested_bytes: 0,
-                })))
+                })
             {
                 return Err("extent shape differs from the fully validated page".into());
             };
-            if !(super::extent::decode_extent_page_shape(&bytes[..prefix % bytes.len()], limits)
-                .is_err())
-            {
+            let truncated = prefix
+                .checked_rem(bytes.len())
+                .and_then(|end| bytes.get(..end))
+                .unwrap_or_default();
+            if super::extent::decode_extent_page_shape(truncated, limits).is_ok() {
                 return Err("extent shape admitted a truncated frame".into());
             };
             let mut trailing = bytes.to_vec();
@@ -139,14 +144,21 @@ fn decode<const PLANTED: bool>(
             if !(super::extent::decode_extent_page_shape(&trailing, limits).is_err()) {
                 return Err("extent shape admitted trailing bytes".into());
             };
-            let version = [0_u16, 2, u16::MAX][prefix % 3];
-            let mut header = bytes[..10].to_vec();
-            header[8..10].copy_from_slice(&version.to_le_bytes());
-            if !(&(super::extent::decode_extent_page_shape(&header, limits))
-                == &(Err(CanonicalDecodeError::UnsupportedVersion {
+            let version = match prefix % 3 {
+                0 => 0_u16,
+                1 => 2,
+                _ => u16::MAX,
+            };
+            let mut header = bytes
+                .get(..8)
+                .ok_or("an admitted extent page has a header")?
+                .to_vec();
+            header.extend_from_slice(&version.to_le_bytes());
+            if super::extent::decode_extent_page_shape(&header, limits)
+                != Err(CanonicalDecodeError::UnsupportedVersion {
                     found: version,
                     expected: 1,
-                })))
+                })
             {
                 return Err("extent shape did not retain version refusal".into());
             };
@@ -182,10 +194,11 @@ fn decode<const PLANTED: bool>(
 pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     records::check(input)?;
     let mut number = [0; 8];
-    let count = input.len().min(number.len());
-    number[..count].copy_from_slice(&input[..count]);
+    for (slot, byte) in number.iter_mut().zip(input) {
+        *slot = *byte;
+    }
     let number = u64::from_le_bytes(number);
-    let payload = &input[..input.len().min(MAXIMUM_INLINE_FILE_BYTES)];
+    let payload = input.get(..MAXIMUM_INLINE_FILE_BYTES).unwrap_or(input);
     for kind in 0..KINDS {
         let mut canonical = vec![kind, 255, 255, 0, 0, 0];
         canonical.extend_from_slice(&fixture(kind, payload, number)?);
@@ -199,11 +212,13 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn fixture(kind: u8, payload: &[u8], number: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let bytes = number.to_le_bytes();
+    let [low0, low1, low2, low3, ..] = bytes;
     Ok(match kind {
         0 => encode_file_metadata(
             FileMetadata {
-                posix_uid: MetadataField::Value(number as u32),
-                created_ns: MetadataField::Value(number as i64),
+                posix_uid: MetadataField::Value(u32::from_le_bytes([low0, low1, low2, low3])),
+                created_ns: MetadataField::Value(i64::from_le_bytes(bytes)),
                 ..FileMetadata::default()
             },
             |_| Ok::<_, FsError>(()),
@@ -218,8 +233,8 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Result<Vec<u8>, Box<dyn std
                     kind: ObjectKind::FileTablePage,
                     digest: Digest::from_bytes([3; 32]),
                 },
-                parents: (0..number % 3)
-                    .map(|index| GenerationId::new(Digest::from_bytes([index as u8; 32])))
+                parents: (0..u8::try_from(number % 3)?)
+                    .map(|index| GenerationId::new(Digest::from_bytes([index; 32])))
                     .collect(),
                 required_features: 0,
             },
@@ -282,7 +297,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Result<Vec<u8>, Box<dyn std
                     digest: Digest::from_bytes([4; 32]),
                 },
             }];
-            let page = if number % 2 == 0 {
+            let page = if number.is_multiple_of(2) {
                 persistent_btree::PageRef::Leaf(&leaf)
             } else {
                 persistent_btree::PageRef::Internal(&children)
@@ -301,12 +316,13 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
     let Some((&kind, input)) = input.split_first() else {
         return Err(CanonicalDecodeError::Truncated.into());
     };
-    let Some(controls) = input.get(..5) else {
+    let Some((&[maximum_low, maximum_high, mode, faults, fault_at], bytes)) =
+        input.split_first_chunk::<5>()
+    else {
         return Err(CanonicalDecodeError::Truncated.into());
     };
-    let bytes = &input[5..];
-    let maximum = u64::from(u16::from_le_bytes([controls[0], controls[1]]));
-    let mode = controls[2] % 5;
+    let maximum = u64::from(u16::from_le_bytes([maximum_low, maximum_high]));
+    let mode = mode % 5;
     let budget = WorkBudget {
         bytes_copied: maximum,
         ..WorkBudget::UNBOUNDED
@@ -386,11 +402,9 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
         maximum_page_items: 32,
         ..DecodeLimits::default()
     };
-    let prefix = usize::from(u16::from_le_bytes([controls[3], controls[4]]));
-    if kind % KINDS == 2 {
-        if !(super::file_table::check_fuzz::<true>(bytes, limits, prefix).is_ok()) {
-            return Err("filesystem oracle invariant failed".into());
-        };
+    let prefix = usize::from(u16::from_le_bytes([faults, fault_at]));
+    if kind % KINDS == 2 && super::file_table::check_fuzz::<true>(bytes, limits, prefix).is_err() {
+        return Err("filesystem oracle invariant failed".into());
     }
     let mut oracle_failure = None;
     let decoded = decode::<PLANTED>(kind % KINDS, bytes, limits, prefix, &mut |step| {
@@ -403,7 +417,7 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
                 | ReadAllocationStep::CheckCopy(_)
         );
         if before {
-            if controls[3] & 1 != 0 && admissions == controls[4] {
+            if faults & 1 != 0 && admissions == fault_at {
                 return Err(CanonicalDecodeError::Truncated.into());
             }
             admissions = admissions.wrapping_add(1);
@@ -447,7 +461,7 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
         pending.0 += reserved.0;
         pending.1 += reserved.1;
         pending.2 += reserved.2;
-        if before && controls[3] & 2 != 0 && admissions == controls[4] {
+        if before && faults & 2 != 0 && admissions == fault_at {
             cancellation.cancel();
         }
         Ok(())
@@ -456,10 +470,10 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
         return Err(error.into());
     }
     if let Ok(canonical) = &decoded {
-        if !(&(canonical) == &(bytes)) {
+        if canonical.as_slice() != bytes {
             return Err("canonical round trip changes wire bytes".into());
         };
-        if !(&(actual.bytes_copied) == &((canonical.len() - 8) as u64)) {
+        if actual.bytes_copied != (canonical.len() - 8) as u64 {
             return Err("all canonical body bytes must have completion callbacks".into());
         };
     }
@@ -470,15 +484,15 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
     };
     retired?;
     let receipt = accounting.spent()?;
-    if !(&(receipt.bytes_copied - baseline.bytes_copied) == &(actual.bytes_copied)) {
+    if receipt.bytes_copied - baseline.bytes_copied != actual.bytes_copied {
         return Err("missing copy completion callback".into());
     };
-    if !(&(receipt.bytes_hashed - baseline.bytes_hashed) == &(actual.bytes_hashed)) {
+    if receipt.bytes_hashed - baseline.bytes_hashed != actual.bytes_hashed {
         return Err("filesystem oracle invariant failed".into());
     };
     let recheck = cfg!(not(target_arch = "wasm32")) && mode >= 3;
-    if !(&(receipt.items_examined - baseline.items_examined)
-        == &(if recheck { 0 } else { actual.items_examined }))
+    if receipt.items_examined - baseline.items_examined
+        != (if recheck { 0 } else { actual.items_examined })
     {
         return Err("filesystem oracle invariant failed".into());
     };

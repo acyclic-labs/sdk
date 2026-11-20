@@ -38,7 +38,7 @@ pub(crate) async fn prepare_publication<P: PublicationOwner>(
     .prepare(accounting, &mut |_, _, _| Ok::<_, crate::FsError>(()))
     .await?;
     match prepared {
-        preparation::Prepared::Ready(prepared) => Ok(PreparedPublication(prepared)),
+        preparation::Prepared::Ready(prepared) => Ok(PreparedPublication(*prepared)),
         preparation::Prepared::Complete(_) => Err(crate::FsError::Authority(
             AuthorityStoreError::RejectedStatic("composed publication unexpectedly resolved"),
         )),

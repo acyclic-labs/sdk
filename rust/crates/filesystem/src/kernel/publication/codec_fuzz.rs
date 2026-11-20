@@ -24,13 +24,13 @@ pub fn check(bytes: &[u8]) -> Result<(), crate::FsError> {
         value.original_evidence,
         value.origin,
     );
-    if !(&(encoded.len()) == &(length)) {
+    if encoded.len() != length {
         return Err(CanonicalDecodeError::Invariant(
             crate::kernel::codec::CanonicalInvariant::Static("filesystem oracle invariant failed"),
         )
         .into());
     };
-    if !(&(encoded) == &(bytes)) {
+    if encoded != bytes {
         return Err(CanonicalDecodeError::Invariant(
             crate::kernel::codec::CanonicalInvariant::Static(
                 "retain original evidence, origin and both complete root identities",
@@ -60,7 +60,7 @@ pub fn check(bytes: &[u8]) -> Result<(), crate::FsError> {
                     Ok(())
                 }
             });
-        if !(&(result.err()) == &(Some(refused))) {
+        if result.err() != Some(refused) {
             return Err(CanonicalDecodeError::Invariant(
                 crate::kernel::codec::CanonicalInvariant::Static(
                     "filesystem oracle invariant failed",
@@ -68,7 +68,7 @@ pub fn check(bytes: &[u8]) -> Result<(), crate::FsError> {
             )
             .into());
         };
-        if !(&(calls) == &(stop + 1)) {
+        if calls != stop + 1 {
             return Err(CanonicalDecodeError::Invariant(
                 crate::kernel::codec::CanonicalInvariant::Static(
                     "filesystem oracle invariant failed",
@@ -77,20 +77,18 @@ pub fn check(bytes: &[u8]) -> Result<(), crate::FsError> {
             .into());
         };
     }
-    let mut header = bytes[..PAYLOAD_DOMAIN.len() + 2].to_vec();
+    let domain = bytes
+        .get(..PAYLOAD_DOMAIN.len())
+        .ok_or(CanonicalDecodeError::Truncated)?;
     for version in [0_u16, 1, 2, 3, 4, u16::MAX] {
-        header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
-        if !(&(decode_publication_evidence::<CanonicalDecodeError>(
-            &header,
-            u64::MAX,
-            None,
-            |_| Ok(()),
-        )
-        .err())
-            == &(Some(CanonicalDecodeError::UnsupportedVersion {
+        let mut header = domain.to_vec();
+        header.extend_from_slice(&version.to_le_bytes());
+        if decode_publication_evidence::<CanonicalDecodeError>(&header, u64::MAX, None, |_| Ok(()))
+            .err()
+            != Some(CanonicalDecodeError::UnsupportedVersion {
                 found: version,
                 expected: 5,
-            })))
+            })
         {
             return Err(CanonicalDecodeError::Invariant(
                 crate::kernel::codec::CanonicalInvariant::Static(
@@ -101,7 +99,9 @@ pub fn check(bytes: &[u8]) -> Result<(), crate::FsError> {
         };
     }
     let mut wrong = bytes.to_vec();
-    wrong[PAYLOAD_DOMAIN.len() + 2 + 16 + value.publication.generation_root.encoded_len()] = 4;
+    *wrong
+        .get_mut(PAYLOAD_DOMAIN.len() + 2 + 16 + value.publication.generation_root.encoded_len())
+        .ok_or(CanonicalDecodeError::Truncated)? = 4;
     if !(decode_publication_evidence::<CanonicalDecodeError>(&wrong, u64::MAX, None, |_| Ok(()))
         .is_err())
     {

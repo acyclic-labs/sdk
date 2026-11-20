@@ -2,6 +2,8 @@
 use super::*;
 
 const REMEMBERED_VOLUMES: usize = 256;
+// Every u8 bucket names one idle slot.
+const _: () = assert!(REMEMBERED_VOLUMES == 1 << u8::BITS);
 
 struct Entries {
     live: FixedIndex<RetainedWeak<Volume>, 32>,
@@ -63,34 +65,35 @@ impl Registry {
             .get(key, accounting)?
             .and_then(RetainedWeak::upgrade);
         let mut retired_weak = None;
-        let volume = match existing {
-            Some(volume) => volume,
-            None => {
-                // An old owner's destructor may be waiting for this lock.
-                // Replacing its dead weak entry is safe: retirement compares
-                // the exact allocation, rather than just the reused key.
-                let volume = Volume::new(accounting)?;
-                let slot = entries
-                    .live
-                    .get_or_try_insert_with(key, accounting, |_| Ok(RetainedWeak::default()))?;
-                retired_weak = Some(std::mem::replace(slot, volume.downgrade()));
-                volume
-                    .registration
-                    .set(Registration {
-                        entries: self.entries.downgrade(),
-                        key,
-                    })
-                    .unwrap_or_else(|_| unreachable!("a new volume registers once"));
-                volume
-            }
+        let volume = if let Some(volume) = existing {
+            volume
+        } else {
+            // An old owner's destructor may be waiting for this lock.
+            // Replacing its dead weak entry is safe: retirement compares
+            // the exact allocation, rather than just the reused key.
+            let volume = Volume::new(accounting)?;
+            let slot = entries
+                .live
+                .get_or_try_insert_with(key, accounting, |_| Ok(RetainedWeak::default()))?;
+            retired_weak = Some(std::mem::replace(slot, volume.downgrade()));
+            volume
+                .registration
+                .set(Registration {
+                    entries: self.entries.downgrade(),
+                    key,
+                })
+                .unwrap_or_else(|_| unreachable!("a new volume registers once"));
+            volume
         };
         // This bucket chooses retention only. Identity lookup always uses the
         // full scoped key, including when arbitrarily many live actors collide.
         let bucket = key
             .iter()
-            .fold(0_u8, |slot, byte| slot.rotate_left(1).wrapping_add(*byte))
-            as usize;
-        let retired = entries.idle[bucket].replace(volume.clone());
+            .fold(0_u8, |slot, byte| slot.rotate_left(1).wrapping_add(*byte));
+        let retired = entries
+            .idle
+            .get_mut(usize::from(bucket))
+            .and_then(|slot| slot.replace(volume.clone()));
         drop(entries);
         drop(retired_weak);
         // The last reference unregisters itself. Never run that destructor

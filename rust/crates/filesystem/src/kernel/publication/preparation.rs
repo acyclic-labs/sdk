@@ -30,9 +30,10 @@ pub(super) struct Preparation<'a, P> {
     pub(super) resolved: Option<crate::foundation::DurableCommit>,
 }
 
+/// Both outcomes are boxed: each is a large single-use value moved once.
 pub(super) enum Prepared {
-    Ready(PreparedGeneration),
-    Complete(RetainedPublication<ProofGuard>),
+    Ready(Box<PreparedGeneration>),
+    Complete(Box<RetainedPublication<ProofGuard>>),
 }
 
 // Data retires before its proof guard; both remain inside the projection and
@@ -194,7 +195,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
         if let Some(resolved) = self.0.resolved.as_ref()
             && (evidence_conflict || resolved.fingerprint != commit.fingerprint)
         {
-            return Ok(Prepared::Complete(RetainedPublication {
+            return Ok(Prepared::Complete(Box::new(RetainedPublication {
                 receipt: PublicationReceipt {
                     proof: authentication.proof,
                     outcome: AppendOutcome::IdempotencyConflict {
@@ -207,7 +208,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
                 },
                 published: None,
                 allocation: authentication.guard,
-            }));
+            })));
         }
         prepare_roots(
             &authentication.proof.root,
@@ -219,7 +220,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             let published = authentication
                 .pending
                 .and_then(|pending| pending.publish(&outcome));
-            return Ok(Prepared::Complete(RetainedPublication {
+            return Ok(Prepared::Complete(Box::new(RetainedPublication {
                 receipt: PublicationReceipt {
                     proof: authentication.proof,
                     outcome,
@@ -230,7 +231,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
                 },
                 published,
                 allocation: authentication.guard,
-            }));
+            })));
         }
         let objects = self.0.owner.objects();
         let authority = self.0.owner.authority();
@@ -316,12 +317,12 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             commit,
             permit: self.0.intent.permit,
         };
-        Ok(Prepared::Ready(PreparedGeneration {
+        Ok(Prepared::Ready(Box::new(PreparedGeneration {
             candidate,
             authentication,
             append,
             projection_fence,
             publication_hold,
-        }))
+        })))
     }
 }

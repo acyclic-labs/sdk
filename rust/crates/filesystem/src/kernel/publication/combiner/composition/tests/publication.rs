@@ -71,7 +71,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
         append,
         projection_fence,
         publication_hold,
-    } = prepared;
+    } = *prepared;
     let generation = authentication.proof.generation_id;
     let mut ticket = candidate
         .ticket
