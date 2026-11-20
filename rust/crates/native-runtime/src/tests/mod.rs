@@ -182,11 +182,12 @@ fn bounded_write_file(path: &Path, writable: bool) -> io::Result<NativeFile> {
     {
         use std::os::windows::fs::OpenOptionsExt as _;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED);
-        // SAFETY: the exact open above supplies the required flag.
-        unsafe {
-            NativeFile::from_overlapped_file_unchecked(options.open(path)?, None)
-                .map_err(|(error, _)| error)
-        }
+        let file = options.open(path)?;
+        // SAFETY: the handle was just opened with FILE_FLAG_OVERLAPPED, is idle,
+        // is associated with no completion port, and is transferred once.
+        #[allow(unsafe_code, reason = "imports a fresh overlapped handle")]
+        let native = unsafe { NativeFile::from_overlapped_file_unchecked(file, None) };
+        native.map_err(|(error, _)| error)
     }
     #[cfg(not(windows))]
     NativeFile::from_file(options.open(path)?, None).map_err(|(error, _)| error)

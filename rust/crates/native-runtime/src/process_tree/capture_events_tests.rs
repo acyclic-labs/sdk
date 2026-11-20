@@ -86,7 +86,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     let bytes = [b'w'; 64 * 1024];
     let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
     let (recorded, completion) = std::sync::mpsc::channel();
-    *meter.bytes_recorded.lock().unwrap() = Some(recorded);
+    assert!(meter.bytes_recorded.set(recorded).is_ok());
     let pipe = process.child.as_mut().unwrap().stdin.as_mut().unwrap();
     // One real unmetered fixture write fills the pipe before the measured
     // write, rather than assuming an empty pipe cannot accept a full chunk.

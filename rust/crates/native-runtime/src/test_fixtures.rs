@@ -31,7 +31,7 @@ pub struct ReadBudgetMeter {
     #[cfg(windows)]
     pub shared_owner: std::sync::Weak<Self>,
     #[cfg(windows)]
-    pub bytes_recorded: Mutex<Option<mpsc::Sender<(u64, u64)>>>,
+    pub bytes_recorded: std::sync::OnceLock<mpsc::Sender<(u64, u64)>>,
     pub used_operations: AtomicU64,
     pub read_attempts: AtomicU64,
     pub write_attempts: AtomicU64,
@@ -237,10 +237,10 @@ impl NativeReadMeter for ReadBudgetMeter {
         );
         self.read.fetch_add(actual, Ordering::AcqRel);
         #[cfg(windows)]
-        if kind == NativeOperationKind::Write {
-            if let Some(recorded) = self.bytes_recorded.lock().unwrap().take() {
-                let _ = recorded.send((maximum, actual));
-            }
+        if kind == NativeOperationKind::Write
+            && let Some(recorded) = self.bytes_recorded.get()
+        {
+            let _ = recorded.send((maximum, actual));
         }
         if self.cancel_after_read && actual != 0 {
             self.cancelled.store(true, Ordering::Release);
