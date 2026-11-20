@@ -40,6 +40,8 @@ fail() { echo "privileged.sh: $*" >&2; exit 1; }
 has() { case " $ACYCLIC_TEST_PRIVILEGES " in *" $1 "*) return 0 ;; esac; return 1; }
 # Whether the case runs as real host root (machines-native, host-root).
 native() { has machines-native || has host-root; }
+# Runs an administration tool, which a test action's PATH (no /usr/sbin or /sbin) may not reach; the case keeps its PATH.
+admin() { PATH=$PATH:/usr/sbin:/sbin "$@"; }
 # Claims a fresh case directory under $1 as $claimed, locked on descriptor 9, which every exec to the case inherits.
 claim() {
   { mkdir -p -m 0755 "$1" && exec 8>>"$1/.lock" && flock 8; } || fail "cannot lock $1"
@@ -89,7 +91,7 @@ if [ "$stage" = root ]; then
     { cp -- "$source" "$sealed" && chown -- "${owner:-0:0}" "$sealed" && chmod -- "${mode:-0555}" "$sealed"; } ||
       fail "machines-native: cannot copy $binary into $claimed"
     # chown clears file capabilities, so they are set after it; fs-verity seals last.
-    if [ -n "$capabilities" ]; then setcap "$capabilities" "$sealed" || fail "machines-native: setcap $capabilities $sealed"; fi
+    if [ -n "$capabilities" ]; then admin setcap "$capabilities" "$sealed" || fail "machines-native: setcap $capabilities $sealed"; fi
     fsverity enable "$sealed" || fail "machines-native: cannot seal $sealed (is $claimed on an fs-verity filesystem?)"
     export "$variable=$sealed"
   done <<<"${ACYCLIC_TEST_SEALED:-}"
@@ -117,7 +119,7 @@ if [ "$stage" = scope ]; then
   ACYCLIC_TEST_PRIVILEGE_STAGE=namespace exec unshare --net "$@"
 fi
 # The namespace's loopback is down until a holder of CAP_NET_ADMIN raises it.
-PATH=$PATH:/usr/sbin:/sbin ip link set lo up || fail "the namespace's loopback did not come up"
+admin ip link set lo up || fail "the namespace's loopback did not come up"
 if has root || has host-root; then exec "$@"; fi
 if has machines-native; then
   caps=-all,+setuid,+setgid,+net_admin
