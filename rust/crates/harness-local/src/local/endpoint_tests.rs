@@ -169,8 +169,15 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     let event = observer.next().await.map_err(storage)?;
                     eprintln!("remote tree: {intent}, all={all}: {event:?}");
                     match event {
-                        acyclic_harness_client::AgentEvent::Status { agent, .. } => {
+                        acyclic_harness_client::AgentEvent::Status { agent, status } => {
                             assert_eq!(agent, child);
+                            if let crate::agent::Phase::Done { outcome } = status.phase
+                                && !turn_seen
+                            {
+                                return Err(Error::Conflict(format!(
+                                    "child ended before its turn: {outcome:?}"
+                                )));
+                            }
                             status_seen = true;
                         }
                         acyclic_harness_client::AgentEvent::Conversation { agent, .. } => {
@@ -704,6 +711,47 @@ impl PersistenceCut for Cut {
             "actual journal crash simulation failed: {result:?}"
         );
         self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The selected agent's next settled turn on its own supervision feed. A run
+/// that ends without settling publishes no lifecycle event, so the agent's
+/// terminal status ends the wait with that outcome instead.
+#[cfg(not(target_arch = "wasm32"))]
+async fn turn_done(
+    feed: &mut crate::local::agent_conversation::SupervisionFeed,
+    agent: &super::Connection,
+) -> Result<()> {
+    let mut status = Observer::open(agent, 0, 0)?;
+    let settled = async {
+        loop {
+            if matches!(
+                feed.next().await?.event,
+                crate::supervision::Lifecycle::TurnDone { .. }
+            ) {
+                return Ok(());
+            }
+        }
+    };
+    let ended = async {
+        loop {
+            if let Event::Status(crate::agent::StatusRecord {
+                phase: crate::agent::Phase::Done { outcome },
+                ..
+            }) = status.next().await?
+                && !matches!(outcome, crate::agent::AgentOutcome::Succeeded { .. })
+            {
+                return Err(Error::Conflict(format!(
+                    "{} ended without settling a turn: {outcome:?}",
+                    agent.root()
+                )));
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        settled = settled => settled,
+        ended = ended => ended,
     }
 }
 
@@ -1434,11 +1482,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     let mut child_feed = child_connection.supervision_own().await?;
     let child_conversation = Conversation::open(child_connection.clone());
     // Complete the real mock-model child turn before publishing its pause.
-    loop {
-        if matches!(child_feed.next().await?.event, Lifecycle::TurnDone { .. }) {
-            break;
-        }
-    }
+    turn_done(&mut child_feed, &child_connection).await?;
     // A non-root observer uses each discovering parent's narrow read grant
     // at every depth, while selections retain the original caller identity.
     eprintln!("client file journey: opening subtree supervision");
@@ -1455,14 +1499,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     let descendant_connection = grandchild_connection.select(descendant.clone()).await?;
     eprintln!("client file journey: opening descendant supervision");
     let mut descendant_feed = descendant_connection.supervision_own().await?;
-    loop {
-        if matches!(
-            descendant_feed.next().await?.event,
-            Lifecycle::TurnDone { .. }
-        ) {
-            break;
-        }
-    }
+    turn_done(&mut descendant_feed, &descendant_connection).await?;
     let descendant_conversation = Conversation::open(descendant_connection.clone());
     descendant_conversation
         .publish_files(
