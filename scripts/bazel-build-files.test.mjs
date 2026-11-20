@@ -413,6 +413,25 @@ test("a library and a binary of the same name get distinct rule names", () => {
   }
 });
 
+test("a #[path] or mod inside an inline module resolves under that module's directory", () => {
+  const { root, run } = fixture();
+  try {
+    mkdirSync(join(root, "qualification"));
+    writeFileSync(join(root, "qualification/telemetry.rs"), "pub fn sample() {}\n");
+    mkdirSync(join(root, "member/src/tests"));
+    writeFileSync(join(root, "member/src/tests/support.rs"), "pub fn help() {}\n");
+    // The kvm shape: from src/lib.rs, `mod tests { ... }` is the src/tests/ directory.
+    writeFileSync(join(root, "member/src/lib.rs"), readFileSync(join(root, "member/src/lib.rs"), "utf8") +
+      '\n#[cfg(test)]\nmod tests {\n    #[path = "../../../qualification/telemetry.rs"]\n    mod telemetry;\n    mod support;\n}\n');
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const result = run("write");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(join(root, "member/BUILD.bazel"), "utf8"), /"\/\/:qualification\/telemetry.rs"/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the loom split walks each listed package a workspace holds, and a workspace holding none of them (Cloud's) generates", () => {
   const generator = fixture(), other = fixture();
   try {

@@ -286,6 +286,15 @@ function rustMemory(sources) {
 // A file this misses fails the sandboxed compile loudly; it is never read stale.
 const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*)?(env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"|#\[path\s*=\s*()"([^"]+)"\]/g;
 const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*;/gm;
+// A `mod` or `#[path]` module declared inside inline `mod a { mod b { ... } }` resolves under
+// `/a/b` of its file's module directory, as Rust does: the path of the inline modules around
+// `offset` in `code` (codeOnly's output), or "" at the file's top level.
+const INLINE_MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*\{/gm;
+function inlineDirs(code, offset) {
+  let dirs = "";
+  for (const match of code.matchAll(INLINE_MOD)) if (match.index < offset && offset < itemEnd(code, match.index)) dirs += `/${match[1]}`;
+  return dirs;
+}
 const TEST_DIRS = /^(tests|benches|examples)\//;
 const trackedSet = new Set(tracked);
 // A file of another package. Every package exports each of its files (exportsRule), so a test
@@ -305,12 +314,21 @@ function closure(crateDir, rootFile, seeds = [], view = source) {
     const text = view(file);
     const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
     const found = [];
-    for (const [, concat, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
-      const named = path.posix.normalize(path.posix.join(manifestRelative ? crateDir : here, literal ?? module));
-      found.push(...(concat && !trackedSet.has(named) ? tracked.filter(file => file.startsWith(named)) : [named]));
+    // Both module layouts' bases: a candidate that exists but is unused is an extra input only.
+    const code = INLINE_MOD.test(text) && codeOnly(text);
+    INLINE_MOD.lastIndex = 0;
+    const dirs = offset => (code ? inlineDirs(code, offset) : "");
+    for (const { index, 1: concat, 2: manifestRelative, 3: literal, 5: module } of text.matchAll(EMBED)) {
+      const nested = module === undefined ? "" : dirs(index);
+      const bases = nested ? [here, stem].map(base => `${base}${nested}`) : [manifestRelative ? crateDir : here];
+      for (const base of bases) {
+        const named = path.posix.normalize(path.posix.join(base, literal ?? module));
+        found.push(...(concat && !trackedSet.has(named) ? tracked.filter(file => file.startsWith(named)) : [named]));
+      }
     }
-    for (const [, name] of text.matchAll(MOD)) {
-      for (const base of [here, stem]) found.push(`${base}/${name}.rs`, `${base}/${name}/mod.rs`);
+    for (const { index, 1: name } of text.matchAll(MOD)) {
+      const nested = dirs(index);
+      for (const base of [here, stem]) found.push(`${base}${nested}/${name}.rs`, `${base}${nested}/${name}/mod.rs`);
     }
     for (const next of found) {
       if (!trackedSet.has(next) || seen.has(next)) continue;
@@ -857,7 +875,8 @@ for (const dir of LOOM_SPLIT_PACKAGES.filter(dir => fs.existsSync(path.join(root
       const context = contextAt(match.index);
       if (!values({ op: "all", args: context }, { test: false }).yes) continue;
       const named = paths.findLast(attribute => attribute.end <= match.index && !/[;{}]/.test(code.slice(attribute.end, match.index)));
-      const next = named ? [path.posix.normalize(path.posix.join(here, named.file))] : [`${stem}/${match[1]}.rs`, `${stem}/${match[1]}/mod.rs`];
+      const nested = inlineDirs(code, match.index);
+      const next = named ? [path.posix.normalize(path.posix.join(nested ? `${stem}${nested}` : here, named.file))] : [`${stem}${nested}/${match[1]}.rs`, `${stem}${nested}/${match[1]}/mod.rs`];
       for (const candidate of next) queue.push([candidate, context]);
     }
   }
