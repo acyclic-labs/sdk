@@ -59,8 +59,10 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
             source.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             budget,
             &token,
         )
@@ -78,8 +80,10 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
             source.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             limited,
             &token,
         )
@@ -105,8 +109,10 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
             reopened.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             budget,
             &token,
         )

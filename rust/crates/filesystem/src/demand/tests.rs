@@ -455,8 +455,10 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
             reference.clone(),
             &path("/seen")?,
             version,
-            3,
-            4,
+            crate::ByteRange {
+                offset: 3,
+                length: 4,
+            },
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -831,8 +833,10 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
             reference.clone(),
             &path("/file")?,
             version,
-            0,
-            6,
+            crate::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -858,8 +862,10 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
             reference.clone(),
             &path("/file")?,
             node.version,
-            0,
-            3,
+            crate::ByteRange {
+                offset: 0,
+                length: 3,
+            },
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -1116,8 +1122,10 @@ async fn assert_lossless_name(
             source_reference(&source).await?,
             &exact,
             node.version,
-            0,
-            4,
+            crate::ByteRange {
+                offset: 0,
+                length: 4,
+            },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -1537,8 +1545,10 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
                 reference.clone(),
                 &file_path,
                 node.version,
-                3,
-                4,
+                crate::ByteRange {
+                    offset: 3,
+                    length: 4
+                },
                 WorkBudget::UNBOUNDED,
                 &cancellation
             )
@@ -1567,8 +1577,10 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
                 reference.clone(),
                 &file_path,
                 stale,
-                0,
-                1,
+                crate::ByteRange {
+                    offset: 0,
+                    length: 1
+                },
                 WorkBudget::UNBOUNDED,
                 &cancellation
             )

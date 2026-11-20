@@ -231,8 +231,10 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
                 reference.clone(),
                 &file,
                 node.version,
-                0,
-                u64::MAX,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: u64::MAX,
+                },
                 &work,
                 &cancel,
             )
@@ -261,8 +263,10 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
                 reference.clone(),
                 &file,
                 node.version,
-                7,
-                19,
+                acyclic_fs::ByteRange {
+                    offset: 7,
+                    length: 19,
+                },
                 &work,
                 &cancel,
             )

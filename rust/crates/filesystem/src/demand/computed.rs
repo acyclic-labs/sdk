@@ -373,8 +373,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
-        offset: u64,
-        length: u64,
+        crate::ByteRange { offset, length }: crate::ByteRange,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {

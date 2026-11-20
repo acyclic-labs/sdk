@@ -205,8 +205,10 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
             reference.clone(),
             &status,
             node.version,
-            0,
-            u64::MAX,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
             &native,
             &cancel,
         )
@@ -226,8 +228,10 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
             reference.clone(),
             &status,
             node.version,
-            start as u64,
-            1,
+            acyclic_fs::ByteRange {
+                offset: start as u64,
+                length: 1,
+            },
             &native,
             &cancel,
         )
@@ -319,7 +323,17 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
     )
     .map_err(|(error, _)| error)?;
     let result = source
-        .read_range(reference, &status, node.version, 0, 1, &denied, &cancel)
+        .read_range(
+            reference,
+            &status,
+            node.version,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 1,
+            },
+            &denied,
+            &cancel,
+        )
         .await;
     assert!(matches!(
         result,

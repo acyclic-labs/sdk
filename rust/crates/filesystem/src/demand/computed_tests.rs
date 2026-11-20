@@ -432,10 +432,12 @@ async fn stream_only_computed_cuts_do_not_alias_authored_inputs() {
                 source.clone(),
                 &file,
                 initial.version,
-                0,
-                1,
+                crate::ByteRange {
+                    offset: 0,
+                    length: 1
+                },
                 WorkBudget::UNBOUNDED,
-                &cancel,
+                &cancel
             )
             .await
             .unwrap_err()
@@ -624,8 +626,10 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
             reference(&view).await,
             &path("/index.md"),
             node.version,
-            0,
-            1,
+            crate::ByteRange {
+                offset: 0,
+                length: 1
+            },
             WorkBudget::UNBOUNDED,
             &cancel
         )

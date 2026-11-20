@@ -92,8 +92,7 @@ impl DemandSource for NativeDemandSource {
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
-        offset: u64,
-        length: u64,
+        crate::ByteRange { offset, length }: crate::ByteRange,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {

@@ -44,8 +44,10 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
             source.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             no_output,
             &token,
         )
@@ -68,8 +70,10 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
             source.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             budget,
             &token,
         )
@@ -111,8 +115,10 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
             source.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             budget,
             &token,
         )
@@ -130,8 +136,10 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
             source.reference(),
             &path,
             node.version,
-            0,
-            6,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 6,
+            },
             limited,
             &token,
         )

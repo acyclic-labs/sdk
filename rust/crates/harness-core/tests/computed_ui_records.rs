@@ -152,8 +152,10 @@ async fn computed_role_reads_the_agents_own_adoption_after_its_fork_origin() -> 
                 cut.clone(),
                 &path,
                 node.version,
-                0,
-                u64::MAX,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: u64::MAX,
+                },
                 &native,
                 &cancellation,
             )
@@ -281,8 +283,10 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
             refreshed,
             &path,
             current_page.version,
-            0,
-            u64::MAX,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
             &native,
             &cancellation,
         )
@@ -300,8 +304,10 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
             frozen,
             &path,
             node.version,
-            0,
-            u64::MAX,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
             &native,
             &cancellation,
         )
@@ -360,8 +366,10 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
             cut,
             &path,
             node.version,
-            0,
-            u64::MAX,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
             &native,
             &cancellation,
         )
@@ -1482,8 +1490,10 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
             frozen.clone(),
             &status_path,
             old.version,
-            0,
-            u64::MAX,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
             &native,
             &cancellation,
         )
@@ -1551,8 +1561,10 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
             current,
             &status_path,
             node.version,
-            0,
-            u64::MAX,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
             &native,
             &cancellation,
         )
@@ -1675,8 +1687,10 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
                 frozen.clone(),
                 &path,
                 node.version,
-                0,
-                u64::MAX,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: u64::MAX,
+                },
                 &native,
                 &cancellation,
             )

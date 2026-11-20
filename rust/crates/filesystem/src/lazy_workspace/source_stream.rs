@@ -28,10 +28,12 @@ impl<D: DemandSource> DemandBlobSource<'_, D> {
                     self.source.clone(),
                     self.path,
                     self.version,
-                    offset,
-                    remaining,
+                    crate::ByteRange {
+                        offset,
+                        length: remaining
+                    },
                     work,
-                    cancel,
+                    cancel
                 ))?
                 .retain_received_bytes(ctx)?;
                 let read = chunk.len() as u64;
@@ -109,8 +111,10 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 self.source.clone(),
                 self.path,
                 self.version,
-                self.offset,
-                wanted,
+                crate::ByteRange {
+                    offset: self.offset,
+                    length: wanted,
+                },
                 allowance,
                 cancel,
             )
@@ -169,8 +173,10 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 self.source.clone(),
                 self.path,
                 self.version,
-                self.offset,
-                wanted,
+                crate::ByteRange {
+                    offset: self.offset,
+                    length: wanted,
+                },
                 work,
                 cancel,
             )

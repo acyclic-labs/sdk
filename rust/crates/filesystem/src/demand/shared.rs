@@ -27,7 +27,7 @@ impl<D: DemandSource> DemandSource for Arc<D> {
     }
     forward!(lookup(source: SourceReference, path: &NamespacePath) -> Option<SourceNode>);
     forward!(list_page(source: SourceReference, path: &NamespacePath, cursor: Option<SourceCursor>, maximum: u32) -> SourceDirectoryPage);
-    forward!(read_range(source: SourceReference, path: &NamespacePath, expected: SourceVersion, offset: u64, length: u64) -> crate::kernel::OwnedSourceChunk);
+    forward!(read_range(source: SourceReference, path: &NamespacePath, expected: SourceVersion, range: crate::ByteRange) -> crate::kernel::OwnedSourceChunk);
     forward!(open_file(source: SourceReference, path: &NamespacePath, expected: SourceVersion) -> Box<dyn DemandFile>);
     forward!(read_link(source: SourceReference, path: &NamespacePath, expected: SourceVersion, maximum: u64) -> crate::kernel::OwnedSourceChunk);
     forward!(read_metadata(source: SourceReference, path: &NamespacePath, expected: Option<SourceVersion>) -> Option<SourceNode>);

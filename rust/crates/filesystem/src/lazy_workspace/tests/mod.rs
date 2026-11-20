@@ -252,8 +252,7 @@ impl DemandSource for CountingSource {
         source: SourceReference,
         _path: &NamespacePath,
         version: SourceVersion,
-        offset: u64,
-        length: u64,
+        crate::ByteRange { offset, length }: crate::ByteRange,
         work: W,
         cancel: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {

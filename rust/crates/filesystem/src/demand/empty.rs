@@ -91,8 +91,7 @@ impl DemandSource for Empty {
         _: SourceReference,
         _: &NamespacePath,
         _: SourceVersion,
-        _: u64,
-        _: u64,
+        _: crate::ByteRange,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {

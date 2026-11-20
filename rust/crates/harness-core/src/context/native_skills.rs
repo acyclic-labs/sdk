@@ -446,8 +446,7 @@ impl NativeSkills {
                 record.reference.clone(),
                 &path,
                 record.node.version,
-                0,
-                length,
+                acyclic_fs::ByteRange { offset: 0, length },
                 work,
                 cancellation,
             )
@@ -899,8 +898,10 @@ impl SkillReader for UserCatalogSource<'_> {
                     reference.clone(),
                     &parsed,
                     node.version,
-                    0,
-                    length.min(u64::from(maximum)),
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: length.min(u64::from(maximum)),
+                    },
                     work,
                     cancellation,
                 )
@@ -915,8 +916,10 @@ impl SkillReader for UserCatalogSource<'_> {
                             reference.clone(),
                             parsed,
                             node.version,
-                            range.offset,
-                            range.length,
+                            acyclic_fs::ByteRange {
+                                offset: range.offset,
+                                length: range.length,
+                            },
                             work,
                             cancellation,
                         )

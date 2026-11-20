@@ -320,8 +320,7 @@ impl<
                                 source.clone(),
                                 &namespace.value,
                                 node.version,
-                                range.offset,
-                                range.length,
+                                range,
                                 work,
                                 cancel,
                             )

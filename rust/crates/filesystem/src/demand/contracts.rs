@@ -291,14 +291,13 @@ pub trait DemandSource: Send + Sync {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<SourceDirectoryPage, DemandError>> + Send;
 
-    /// Read at most `length` bytes at `offset`, using exact version evidence.
+    /// Read at most `range.length` bytes at `range.offset`, using exact version evidence.
     fn read_range<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
-        offset: u64,
-        length: u64,
+        range: crate::ByteRange,
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, DemandError>> + Send;

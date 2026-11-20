@@ -311,8 +311,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
-        offset: u64,
-        length: u64,
+        range: crate::ByteRange,
         work: W,
         cancel: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
@@ -323,12 +322,12 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
             if !self.routed(path) {
                 return delegate!(&mut ctx, cancel, |work| self
                     .base
-                    .read_range(base, path, expected, offset, length, work, cancel));
+                    .read_range(base, path, expected, range, work, cancel));
             }
             let (relative, allocation) = path.strip_first_with_accounting(&mut ctx, cancel)?;
             let result = delegate!(&mut ctx, cancel, |work| self
                 .view
-                .read_range(view, &relative, expected, offset, length, work, cancel));
+                .read_range(view, &relative, expected, range, work, cancel));
             let bytes = relative.logical_owned_bytes();
             drop(relative);
             crate::kernel::retire_allocation(allocation, bytes, &mut ctx)?;

@@ -166,8 +166,10 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
             provider.reference(),
             &wanted,
             version,
-            3,
-            4,
+            acyclic_fs::ByteRange {
+                offset: 3,
+                length: 4,
+            },
             acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
