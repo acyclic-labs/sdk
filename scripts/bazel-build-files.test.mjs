@@ -352,6 +352,29 @@ test("the dev profile's codegen-units reaches Bazel only as rules_rust's setting
   }
 });
 
+test("a loom model gets cfg(loom) only from its build script under --config=loom's ACYCLIC_LOOM", () => {
+  const { root, run } = fixture();
+  try {
+    mkdirSync(join(root, "member/tests"));
+    writeFileSync(join(root, "member/tests/model.rs"), "#![cfg(loom)]\n");
+    const silent = "fn main() {}\n";
+    writeFileSync(join(root, "member/build.rs"), silent);
+    const noCfg = run("write");
+    assert.notEqual(noCfg.status, 0);
+    assert.match(noCfg.stderr, /member loom model model has no build script emitting cargo:rustc-cfg=loom/);
+    writeFileSync(join(root, "member/build.rs"), 'fn main() {\n    if std::env::var_os("ACYCLIC_LOOM").is_some() && std::env::var_os("CARGO_FEATURE_MODEL_CHECKING").is_some() {\n        println!("cargo:rustc-cfg=loom");\n    }\n}\n');
+    const noEnv = run("write");
+    assert.notEqual(noEnv.status, 0);
+    assert.ok(noEnv.stderr.includes('.bazelrc lacks "build:loom --action_env=ACYCLIC_LOOM=1"'), noEnv.stderr);
+    // One line for every package: no per-crate rustc flag names the cfg by hand.
+    writeFileSync(join(root, ".bazelrc"), "build:loom --action_env=ACYCLIC_LOOM=1\n");
+    assert.equal(run("write").status, 0);
+    assert.doesNotMatch(readFileSync(join(root, "member/BUILD.bazel"), "utf8"), /cfg=loom/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a nextest capability profile's cases leave the default target for a manual one, and an unknown filter is refused", () => {
   const { root, run } = fixture();
   try {

@@ -768,16 +768,20 @@ if (dev["codegen-units"] && !(fs.existsSync(bazelrc) && fs.readFileSync(bazelrc,
   throw new Error(`STEP_FAILED bazel-build-files: .bazelrc lacks "${codegenUnits}" (Cargo.toml [profile.dev] codegen-units); recovery: add that line`);
 }
 // A loom model's crate root compiles only under cfg(loom), so only the loom leg checks it: it must be a
-// rendered test target, and its package must be in .bazelrc's `--config=loom` crate list.
-const LOOM_MODEL = /^\s*#!\[cfg\(loom\)\]/m;
+// rendered test target. cfg(loom) comes only from its package's build script, which emits it when
+// ACYCLIC_LOOM is set with model-checking on, as under Cargo (CONTRIBUTING.md): `--config=loom` sets
+// ACYCLIC_LOOM for build scripts, and every target builds with every feature on. A registry crate's
+// build script never reads ACYCLIC_LOOM, so its own cfg(loom) mode stays off.
+const LOOM_MODEL = /^\s*#!\[cfg\(loom\)\]/m, LOOM_ENV = "build:loom --action_env=ACYCLIC_LOOM=1";
 const bazelrcLines = new Set(fs.existsSync(bazelrc) ? fs.readFileSync(bazelrc, "utf8").split("\n") : []);
 for (const id of workspace) {
   const p = packages.get(id);
   for (const target of p?.targets ?? []) {
     if (!target.kind.includes("test") || !LOOM_MODEL.test(fs.readFileSync(target.src_path, "utf8"))) continue;
-    const flag = `build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//${path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/")}:@--cfg=loom`;
     if (!target.test) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} loom model ${target.name} sets test = false, which leaves it out of every Bazel target; recovery: drop test = false (it compiles empty without cfg(loom))`);
-    if (!bazelrcLines.has(flag)) throw new Error(`STEP_FAILED bazel-build-files: .bazelrc lacks "${flag}" for ${p.name} loom model ${target.name}; recovery: add that line`);
+    const script = p.targets.find(t => t.kind.includes("custom-build"));
+    if (!script || !fs.readFileSync(script.src_path, "utf8").includes("cargo:rustc-cfg=loom")) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} loom model ${target.name} has no build script emitting cargo:rustc-cfg=loom; recovery: emit it from build.rs when ACYCLIC_LOOM and CARGO_FEATURE_MODEL_CHECKING are set`);
+    if (!bazelrcLines.has(LOOM_ENV)) throw new Error(`STEP_FAILED bazel-build-files: .bazelrc lacks "${LOOM_ENV}" for ${p.name} loom model ${target.name}; recovery: add that line`);
   }
 }
 // Loom code a library build reaches is only a swap: a Loom primitive, executor or mutant hook that

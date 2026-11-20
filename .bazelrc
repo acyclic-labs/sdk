@@ -41,8 +41,9 @@ test:macos --strategy=TestRunner=local
 # default, 10.11, is below what rustc supports, so every macOS compile, and every Cargo a test runs, warned on stderr.
 build:macos --macos_minimum_os=11.0 --host_macos_minimum_os=11.0
 # `--config=loom` compiles the SDK's own model packages with `cfg(loom)`, as `ACYCLIC_LOOM=1` does under
-# Cargo (CONTRIBUTING.md). The flag is per crate, so a registry crate keeps its own independent
-# `cfg(loom)` mode off: Tokio's, for one, needs a `loom` dependency only its dev-dependencies carry.
+# Cargo (CONTRIBUTING.md): each model package's build script emits the cfg when ACYCLIC_LOOM is set with
+# its model-checking feature on. A registry crate's build script never reads ACYCLIC_LOOM, so it keeps its
+# own independent `cfg(loom)` mode off: Tokio's, for one, needs a `loom` dependency only its dev-dependencies carry.
 # A loom leg names one test target per invocation, because a filter selects cases inside one binary.
 # `--test_filter` carries one filter; each `--test_arg` adds another, and libtest matches any of them:
 #   bazel test --config=loom //rust/crates/harness-core:main --test_arg=mcp_loom::
@@ -50,29 +51,7 @@ build:macos --macos_minimum_os=11.0 --host_macos_minimum_os=11.0
 #     --test_arg=skill_materializer_loom::journal_owner_serializes_first_publications \
 #     --test_arg=skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake \
 #     --test_arg=--exact
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/actors:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/actors-contract:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/filesystem:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/filesystem/fuzz:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-core:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-local:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-provider-core:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-providers:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-tui:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-tui-term:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-workspace:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/mcp:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-claim:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-file:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-runtime:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream/models:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream/publication-models:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/verification/sdk-fixtures:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract-core:@--cfg=loom
-build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract-engine:@--cfg=loom
+build:loom --action_env=ACYCLIC_LOOM=1
 # `--config=fuzz-smoke` builds a fuzz target with libFuzzer's sanitizer coverage, as the fuzz READMEs'
 # RUSTFLAGS do under Cargo. The prefix `//` matches every crate in this repository, so the code under
 # test is instrumented, and no build script, which does not link the libFuzzer runtime. Registry crates
