@@ -137,7 +137,7 @@ impl ReadAccounting {
             } => Ok(Self {
                 state: ReadAccountingState::Standalone(StandaloneReadAccounting {
                     allocations,
-                    work: *work,
+                    work,
                     budget,
                 }),
                 cancellation: cancellation.clone(),

@@ -108,7 +108,7 @@ impl<'a> KernelAccounting<'a> {
         Self::Standalone {
             construction: Default::default(),
             allocations: AllocationLedger::default(),
-            work: Box::new(WorkCounters::UNCHARGED),
+            work: WorkCounters::UNCHARGED,
             budget,
             cancellation,
         }
@@ -706,7 +706,7 @@ impl<'a> KernelAccounting<'a> {
         match self {
             Self::Standalone {
                 allocations, work, ..
-            } => allocations.spent(**work),
+            } => allocations.spent(*work),
             Self::BorrowedStandalone {
                 allocations, work, ..
             } => allocations.spent(**work),

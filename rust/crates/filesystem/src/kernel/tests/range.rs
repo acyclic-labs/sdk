@@ -138,7 +138,7 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         ..WorkCounters::default()
     };
     if let KernelAccounting::Standalone { work, .. } = &mut accounting {
-        **work = prospective;
+        *work = prospective;
     }
     let overflow = accounting
         .record_completed(WorkCounters {

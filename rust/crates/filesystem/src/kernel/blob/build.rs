@@ -212,7 +212,7 @@ pub(super) fn completed_blob_backend(
             budget,
             ..
         } => {
-            **work = work.with_backend(measured, allocations.live_bytes())?;
+            *work = work.with_backend(measured, allocations.live_bytes())?;
             work.verify(*budget)?;
         }
         KernelAccounting::BorrowedStandalone {

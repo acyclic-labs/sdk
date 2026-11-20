@@ -48,7 +48,7 @@ proptest! {
             &mut ledger, &mut borrowed_work, budget, &cancellation,
         );
         let mut standalone = KernelAccounting::Standalone {
-            allocations: AllocationLedger::default(), work: Box::new(expected),
+            allocations: AllocationLedger::default(), work: expected,
             budget, cancellation: &cancellation,
         construction: Default::default(), };
         for (step, delta) in deltas.into_iter().map(counters).enumerate() {

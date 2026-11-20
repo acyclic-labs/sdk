@@ -672,8 +672,7 @@ pub enum KernelAccounting<'a> {
     Standalone {
         construction: crate::collection::ConstructionScope<'a>,
         allocations: AllocationLedger,
-        // Boxed so the owning variant stays near its borrowing sibling's size.
-        work: Box<WorkCounters>,
+        work: WorkCounters,
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
     },

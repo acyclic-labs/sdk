@@ -109,7 +109,7 @@ pub(super) fn record_write(
     };
     match work {
         KernelAccounting::Standalone { work, .. } => {
-            **work = work.checked_add(delta)?;
+            *work = work.checked_add(delta)?;
             Ok(())
         }
         KernelAccounting::BorrowedStandalone { work, .. } => {
