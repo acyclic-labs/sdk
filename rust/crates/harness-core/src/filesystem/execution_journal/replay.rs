@@ -186,7 +186,7 @@ where
                 None
             };
             let stream =
-                acyclic_stream::Stream::new(Arc::clone(&self.stream), &path).map_err(|error| {
+                acyclic_stream::Stream::new(self.stream.clone(), &path).map_err(|error| {
                     Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error)
                 })?;
             let mut history = io.map(PreparationIo::history_io);
@@ -225,7 +225,7 @@ where
                     .try_reserve_exact(entries.size_hint().1.unwrap_or(capacity).min(capacity))
                     .map_err(Error::Allocation)?;
             }
-            let mut page_root = None;
+            let mut authentication = checkpoint::ReplayAuthentication::default();
             loop {
                 let _record_hold;
                 if let Some(io) = io {
@@ -317,7 +317,7 @@ where
                                 &observation.retry_digest,
                                 &observation.event,
                                 io,
-                                &mut page_root,
+                                &mut authentication,
                             )
                             .await?;
                     if !retain_models && !authenticated {

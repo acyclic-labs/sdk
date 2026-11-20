@@ -86,7 +86,7 @@ fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn 
             {
                 return Err(format!("captured bytes differ from provenance: {name}").into());
             }
-            let golden = acyclic_proto_build::golden::frame(&format!("{prefix}/{name}"))?;
+            let golden = acyclic_compatibility_golden::frame(&format!("{prefix}/{name}"))?;
             if bytes != golden {
                 return Err(format!("captured bytes differ from shared golden: {name}").into());
             }

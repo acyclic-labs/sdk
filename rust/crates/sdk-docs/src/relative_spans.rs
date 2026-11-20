@@ -21,7 +21,7 @@ mod tests {
     proptest! {
         #[test]
         fn source_selection_keeps_only_local_relative_paths(name in any::<String>()) {
-            let decoded = crate::public_api::decode::from_slice(include_bytes!(
+            let decoded = serde_json::from_slice::<rustdoc_types::Crate>(include_bytes!(
                 "../fuzz/corpus/rustdoc_adapter/valid.json"
             )).unwrap();
             let prototype = decoded.index.values().next().unwrap();

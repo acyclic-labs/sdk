@@ -22,15 +22,6 @@ impl admitted::Work for Unbounded {
     }
 }
 
-/// Result of one three-way UTF-8 merge.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TextMerge {
-    /// Whether the result contains no conflict blocks.
-    pub clean: bool,
-    /// Complete merged content, including diff3 markers when conflicted.
-    pub content: String,
-}
-
 /// Optional input capacity selected by the caller of [`merge_bytes`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ByteMergeLimits {
@@ -47,18 +38,7 @@ pub enum ByteMergeError {
     TooLarge,
 }
 
-/// Conflict produced by a bounded byte merge.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ByteConflictKind {
-    /// Both sides changed overlapping text hunks.
-    Hunks,
-    /// Theirs deleted content that ours modified.
-    TheirsDeleted,
-    /// Ours deleted content that theirs modified.
-    OursDeleted,
-}
-
-/// Result of merging optional bounded byte values.
+/// Result of merging optional byte values.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ByteMerge {
     /// Clean merged content.
@@ -67,10 +47,6 @@ pub enum ByteMerge {
     Conflicted {
         /// Complete content including conflict markers.
         bytes: Vec<u8>,
-        /// Number of conflict blocks.
-        hunks: u32,
-        /// Shape of the conflict.
-        kind: ByteConflictKind,
     },
 }
 
@@ -108,22 +84,20 @@ fn modify_delete(
     kept: &str,
     ours_label: &str,
     theirs_label: &str,
-    kind: ByteConflictKind,
+    ours_deleted: bool,
 ) -> ByteMerge {
     let base = with_trailing_newline(base);
     let kept = with_trailing_newline(kept);
-    let (ours, theirs) = match kind {
-        ByteConflictKind::TheirsDeleted => (kept.as_ref(), ""),
-        ByteConflictKind::OursDeleted => ("", kept.as_ref()),
-        ByteConflictKind::Hunks => unreachable!("modify/delete conflict cannot be hunk-only"),
+    let (ours, theirs) = if ours_deleted {
+        ("", kept.as_ref())
+    } else {
+        (kept.as_ref(), "")
     };
     ByteMerge::Conflicted {
         bytes: format!(
             "<<<<<<< {ours_label}\n{ours}||||||| original\n{base}=======\n{theirs}>>>>>>> {theirs_label}\n"
         )
         .into_bytes(),
-        hunks: 1,
-        kind,
     }
 }
 
@@ -153,11 +127,8 @@ pub fn merge_bytes(
             if result.clean {
                 Ok(ByteMerge::Merged(result.content.into_bytes()))
             } else {
-                let hunks = conflict_hunks(&result.content);
                 Ok(ByteMerge::Conflicted {
                     bytes: result.content.into_bytes(),
-                    hunks,
-                    kind: ByteConflictKind::Hunks,
                 })
             }
         }
@@ -166,14 +137,14 @@ pub fn merge_bytes(
             ours,
             &format!("{ours_label} (modified)"),
             &format!("{theirs_label} (deleted)"),
-            ByteConflictKind::TheirsDeleted,
+            false,
         )),
         (None, Some(theirs)) => Ok(modify_delete(
             base.unwrap_or(""),
             theirs,
             &format!("{ours_label} (deleted)"),
             &format!("{theirs_label} (modified)"),
-            ByteConflictKind::OursDeleted,
+            true,
         )),
         (None, None) => Ok(ByteMerge::Merged(Vec::new())),
     }
@@ -211,7 +182,7 @@ pub fn merge_text(
     theirs: &str,
     ours_label: &str,
     theirs_label: &str,
-) -> TextMerge {
+) -> admitted::Output<()> {
     merge_optional_base(Some(base), ours, theirs, ours_label, theirs_label)
 }
 
@@ -221,13 +192,9 @@ fn merge_optional_base(
     theirs: &str,
     ours_label: &str,
     theirs_label: &str,
-) -> TextMerge {
-    let merged = admitted::merge(base, ours, theirs, ours_label, theirs_label, &mut Unbounded)
-        .unwrap_or_else(|_| std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>()));
-    TextMerge {
-        clean: merged.clean,
-        content: merged.content,
-    }
+) -> admitted::Output<()> {
+    admitted::merge(base, ours, theirs, ours_label, theirs_label, &mut Unbounded)
+        .unwrap_or_else(|_| std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>()))
 }
 
 /// Returns whether text contains a complete generated conflict block.
@@ -242,17 +209,6 @@ pub fn has_conflict_markers(content: impl AsRef<[u8]>) -> bool {
             let line = line.strip_suffix(b"\r").unwrap_or(line);
             line == b"=======" || line == b"=======\r"
         })
-}
-
-/// Counts complete opening conflict markers without overflowing.
-#[must_use]
-pub fn conflict_hunks(content: &str) -> u32 {
-    content
-        .lines()
-        .filter(|line| line.starts_with("<<<<<<< "))
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -290,10 +246,8 @@ mod tests {
                     if clean && !trailing {
                         content.pop();
                     }
-                    assert_eq!(
-                        merge_text(&base, &ours, &theirs, "ours", "theirs"),
-                        TextMerge { clean, content }
-                    );
+                    let merged = merge_text(&base, &ours, &theirs, "ours", "theirs");
+                    assert_eq!((merged.clean, merged.content), (clean, content));
                 }
             }
         }
@@ -327,9 +281,10 @@ mod tests {
                     if clean && !result_has_trailing_newline(base, ours, theirs) {
                         content.pop();
                     }
+                    let merged = merge_text(base, ours, theirs, "ours", "theirs");
                     assert_eq!(
-                        merge_text(base, ours, theirs, "ours", "theirs"),
-                        TextMerge { clean, content },
+                        (merged.clean, merged.content),
+                        (clean, content),
                         "base={base:?}, ours={ours:?}, theirs={theirs:?}"
                     );
                 }
@@ -340,13 +295,8 @@ mod tests {
 
     #[test]
     fn clean_merge_preserves_content_and_newline_choice() {
-        assert_eq!(
-            merge_text("a\nb", "a\nb", "a\nc", "fork", "main"),
-            TextMerge {
-                clean: true,
-                content: "a\nc".to_owned(),
-            }
-        );
+        let merged = merge_text("a\nb", "a\nb", "a\nc", "fork", "main");
+        assert_eq!((merged.clean, merged.content), (true, "a\nc".to_owned()));
     }
 
     #[test]
@@ -356,7 +306,6 @@ mod tests {
         assert!(result.content.contains("<<<<<<< fork\n"));
         assert!(result.content.contains(">>>>>>> main\n"));
         assert!(has_conflict_markers(&result.content));
-        assert_eq!(conflict_hunks(&result.content), 1);
         assert!(!has_conflict_markers("<<<<<<< fork\nincomplete\n"));
     }
 
@@ -387,7 +336,7 @@ mod tests {
             }
         }
         for (ours, theirs) in [("", "added"), ("added", ""), ("one\n", "two\n")] {
-            let ByteMerge::Conflicted { bytes, hunks, .. } = merge_bytes(
+            let ByteMerge::Conflicted { bytes } = merge_bytes(
                 None,
                 Some(ours.as_bytes()),
                 Some(theirs.as_bytes()),
@@ -398,7 +347,6 @@ mod tests {
             .expect("text additions") else {
                 panic!("different additions must conflict")
             };
-            assert_eq!(hunks, 1);
             assert!(has_conflict_markers(&bytes));
         }
         assert_eq!(
@@ -409,8 +357,6 @@ mod tests {
             merge_bytes(Some(b"a\n"), Some(b"b\n"), None, "fork", "main", limits),
             Ok(ByteMerge::Conflicted {
                 bytes: b"<<<<<<< fork (modified)\nb\n||||||| original\na\n=======\n>>>>>>> main (deleted)\n".to_vec(),
-                hunks: 1,
-                kind: ByteConflictKind::TheirsDeleted,
             })
         );
         assert_eq!(

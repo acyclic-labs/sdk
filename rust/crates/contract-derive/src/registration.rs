@@ -1,3 +1,4 @@
+use crate::schema::Segment;
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -203,7 +204,7 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
     let name_text = crate::options::identifier(name);
     let attrs = &input.attrs;
     let visibility = &input.vis;
-    let mut methods = Vec::new();
+    let mut segments = vec![Segment::text(format!("service {name_text} {{\n"))];
     let mut checks = vec![crate::options::owner_check(file, &quote!(#name), true)];
     let mut method_names = std::collections::BTreeSet::new();
     for variant in &mut input.variants {
@@ -252,9 +253,15 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
         } else {
             format!(" {{\n{}  }}\n", authorization.join(""))
         };
-        methods.push(quote!(schema.push_str(&format!("  rpc {}({}{}) returns ({}{}){}", #method, #client_stream, <#request as ::prost::Name>::NAME, #server_stream, <#response as ::prost::Name>::NAME, #suffix));));
+        segments.push(Segment::text(format!("  rpc {method}({client_stream}")));
+        segments.push(Segment::tokens(quote!(<#request as ::prost::Name>::NAME)));
+        segments.push(Segment::text(format!(") returns ({server_stream}")));
+        segments.push(Segment::tokens(quote!(<#response as ::prost::Name>::NAME)));
+        segments.push(Segment::text(format!("){suffix}")));
     }
-    if methods.is_empty() {
+    segments.push(Segment::text("}\n"));
+    let schema = crate::schema::build(segments);
+    if input.variants.is_empty() {
         return Err(syn::Error::new_spanned(
             name,
             "first-party services require a method",
@@ -270,7 +277,7 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
             #[doc = "Canonical protobuf service name."]
             pub const PROTO_NAME: &'static str = #name_text;
             #[doc = "Service schema derived from compiler-linked message types."]
-            pub fn schema() -> String { let mut schema = format!("service {} {{\n", #name_text); #(#methods)* schema.push_str("}\n"); schema }
+            pub fn schema() -> String { #schema }
         }
     })
 }

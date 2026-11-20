@@ -344,7 +344,7 @@ impl Intent {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(runtime_tests)))]
 mod tests {
     use super::*;
 

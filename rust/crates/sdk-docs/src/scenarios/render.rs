@@ -338,9 +338,5 @@ fn bytes_hex(value: &serde_json::Value) -> Result<String, Error> {
 }
 
 pub(super) fn digest_bytes(bytes: &[u8]) -> String {
-    crate::format_digest(
-        &["sha256:"],
-        ring::digest::digest(&ring::digest::SHA256, bytes).as_ref(),
-        "",
-    )
+    format!("sha256:{}", crate::sha256_hex(bytes))
 }

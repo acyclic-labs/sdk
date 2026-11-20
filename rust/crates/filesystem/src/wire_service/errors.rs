@@ -183,6 +183,7 @@ fn authority_code(error: &AuthorityStoreError) -> Code {
         E::AccountingHandoffActive
         | E::RejectedStatic(_)
         | E::Rejected(_)
+        | E::PublicationConditionFailed
         | E::ReplayCursorAhead { .. }
         | E::ReservationOriginalHeadUnavailable { .. } => Code::FailedPrecondition,
         E::InvalidReplayLimit | E::ReplayCursorProcessOverflow { .. } => Code::InvalidArgument,

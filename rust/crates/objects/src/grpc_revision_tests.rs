@@ -29,7 +29,7 @@ async fn admission_preserves_authority_and_original_failure() -> TestResult {
         .to_bytes()?;
     println!("OBJECT_REVISION_CAPTURE put {}", hex::encode(&captured));
     assert!(check_revision_metadata(&captured));
-    let retained = acyclic_proto_build::golden::frame("corpus/object_revisions/put-revision")?;
+    let retained = acyclic_compatibility_golden::frame("corpus/object_revisions/put-revision")?;
     assert!(check_revision_metadata(&retained));
     let committed = issued(&metadata)?.ok_or("writer omitted revision")?;
     let objects = GrpcObjects::over(

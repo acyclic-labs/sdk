@@ -468,6 +468,8 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn request_semantic_denial_preserves_an_existing_original_ledger_failure() -> TestResult {
+    use acyclic_fs_work::performance::WorkObservationError;
+
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let source = open_source(directory.path()).await?;
@@ -480,7 +482,7 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
             // An unmatched cleanup acknowledgement poisons the production meter.
             work.runtime_meter()
                 .cancel_reserved_operations(acyclic_native_runtime::NativeOperationKind::Read, 1);
-            let before = work.receipt().unwrap();
+            assert_eq!(work.receipt(), Err(WorkObservationError::Poisoned));
             if cancelled {
                 token.cancel();
             }
@@ -490,7 +492,7 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
                 .err()
                 .ok_or("poisoned request was admitted")?;
             assert!(matches!(failure, DemandError::OriginalWorkPoisoned));
-            assert_eq!(work.receipt().unwrap(), before);
+            assert_eq!(work.receipt(), Err(WorkObservationError::Poisoned));
         }
     }
     Ok(())

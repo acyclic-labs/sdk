@@ -22,6 +22,8 @@ const HOST_PIDS: Fd = 3;
 const HOST_MAGIC: [u8; 4] = *b"ACH0";
 #[cfg(target_os = "linux")]
 const MAXIMUM_HOSTS: usize = 8;
+#[cfg(target_os = "linux")]
+pub(super) const EXIT_ACTION_NAME: &CStr = c"acyclic-cleanup";
 
 #[cfg(target_os = "linux")]
 struct Hosts {
@@ -29,27 +31,26 @@ struct Hosts {
     count: usize,
 }
 
-/// A host is a direct child of this warden whose executable is this same
-/// runner image. A program cannot make an arbitrary descendant satisfy both:
-/// its descendants have another parent until the program dies, and only the
-/// runner image is the host. This is the trusted path that grants the
-/// retirement exemption.
 #[cfg(target_os = "linux")]
-fn host_is_owned(pid: Pid) -> bool {
+#[derive(PartialEq, Eq)]
+enum HostKind {
+    Shared,
+    ExitAction,
+}
+
+/// A host is a direct child in its own group running this same trusted image.
+/// Shared packet hosts may outlive the warden. Owner-exit actions are spared
+/// the tree's kill but must finish before the warden reports retirement.
+#[cfg(target_os = "linux")]
+fn owned_host(pid: Pid) -> Option<HostKind> {
     if pid <= 0 {
-        return false;
+        return None;
     }
     let mut name = [0; 24];
-    let Some(name) = record::name(pid, &mut name).map(CStr::to_bytes) else {
-        return false;
-    };
+    let name = record::name(pid, &mut name)?.to_bytes();
     let mut path = [0; 64];
-    let Some(status) = host_path(name, b"/status\0", &mut path) else {
-        return false;
-    };
-    let Ok(file) = sys::open(status, sys::O_RDONLY | sys::O_CLOEXEC) else {
-        return false;
-    };
+    let status = host_path(name, b"/status\0", &mut path)?;
+    let file = sys::open(status, sys::O_RDONLY | sys::O_CLOEXEC).ok()?;
     let mut buffer = [0_u8; 1024];
     let mut parent = None;
     let mut read = 0;
@@ -64,6 +65,12 @@ fn host_is_owned(pid: Pid) -> bool {
     }
     sys::close(file);
     let bytes = buffer.get(..read).unwrap_or_default();
+    // Only the role of the authenticated runner is taken from its name.
+    let exit_action = bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .and_then(|line| line.strip_prefix(b"Name:\t"))
+        == Some(EXIT_ACTION_NAME.to_bytes());
     let mut index = 0;
     while index < bytes.len() {
         if bytes.get(index..index + 5) == Some(b"PPid:") {
@@ -85,28 +92,28 @@ fn host_is_owned(pid: Pid) -> bool {
         index += 1;
     }
     if parent != Some(sys::getpid()) {
-        return false;
+        return None;
     }
     // The packet-device host leads its own process group. A nested warden
     // runs the same image but belongs to the runner's group, so it is not a
     // host and must still be retired with the tree.
     if sys::getpgid(pid) != Ok(pid) {
-        return false;
+        return None;
     }
-    let Some(exe) = host_path(name, b"/exe\0", &mut path) else {
-        return false;
-    };
-    let Ok(host_exe) = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC) else {
-        return false;
-    };
+    let exe = host_path(name, b"/exe\0", &mut path)?;
+    let host_exe = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC).ok()?;
     let Ok(self_exe) = sys::open(c"/proc/self/exe", sys::O_RDONLY | sys::O_CLOEXEC) else {
         sys::close(host_exe);
-        return false;
+        return None;
     };
     let same = same_executable(host_exe, self_exe);
     sys::close(host_exe);
     sys::close(self_exe);
-    same
+    same.then_some(if exit_action {
+        HostKind::ExitAction
+    } else {
+        HostKind::Shared
+    })
 }
 
 /// The runner image is a sealed memory file created independently by each
@@ -167,7 +174,7 @@ impl Hosts {
 
     fn add(&mut self, pid: Pid) {
         if pid > 0
-            && host_is_owned(pid)
+            && owned_host(pid) == Some(HostKind::Shared)
             && !self.contains(pid)
             && let Some(slot) = self.pids.get_mut(self.count)
         {
@@ -744,9 +751,8 @@ fn drain(
             // Without the children listing, the tree still dies as a group.
             return status;
         }
-        // A registered packet-device host is not part of the tree. Once only
-        // hosts remain, the tree is gone and the warden must not wait for a
-        // host that other owners still use.
+        // Shared packet-device hosts serve other trees. Exit actions belong
+        // to this tree's cleanup and must finish before returning its status.
         if only_hosts(children, hosts) {
             return status;
         }
@@ -791,7 +797,7 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
                 );
             } else if let Some(child) = current.take()
                 && !hosts.contains(child)
-                && !host_is_owned(child)
+                && owned_host(child).is_none()
             {
                 let _ = sys::kill(child, sys::SIGKILL);
             }
@@ -802,7 +808,7 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
     }
     if let Some(child) = current
         && !hosts.contains(child)
-        && !host_is_owned(child)
+        && owned_host(child).is_none()
     {
         let _ = sys::kill(child, sys::SIGKILL);
     }
@@ -829,7 +835,7 @@ fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
                         .saturating_add(Pid::from(byte - b'0')),
                 );
             } else if let Some(child) = current.take() {
-                only &= hosts.contains(child) || host_is_owned(child);
+                only &= hosts.contains(child) || owned_host(child) == Some(HostKind::Shared);
             }
         }
         if read < buffer.len() {
@@ -837,7 +843,7 @@ fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
         }
     }
     if let Some(child) = current {
-        only &= hosts.contains(child) || host_is_owned(child);
+        only &= hosts.contains(child) || owned_host(child) == Some(HostKind::Shared);
     }
     sys::close(file);
     only

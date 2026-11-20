@@ -66,6 +66,7 @@ pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_steering;
 mod agent_turns;
 pub(crate) use agent_turns::ceiling_grants;
+pub(crate) use agent_turns::inherited_workload_grants;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
     TurnExecutors, TurnLimits, agent_authority, agent_journal_authority, private_volume,
@@ -140,10 +141,12 @@ pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectS
 ) -> Result<()> {
     generation
         .retain_if_unpublished(
-            format!(
-                "harness-generation-{}",
-                hex::encode(generation.id().to_bytes().as_slice())
-            ),
+            |_| {
+                Ok(format!(
+                    "harness-generation-{}",
+                    hex::encode(generation.id().to_bytes().as_slice())
+                ))
+            },
             acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )

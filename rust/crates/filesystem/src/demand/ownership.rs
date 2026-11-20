@@ -1,7 +1,7 @@
-use super::NativeAllocationAccounting;
 #[cfg(not(target_arch = "wasm32"))]
 use super::*;
 use crate::NativeMaterializationWork;
+use crate::ledger::NativeAllocationAccounting;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -213,7 +213,7 @@ impl NativeMountAllocationCustody {
     #[cfg(not(target_arch = "wasm32"))]
     fn claimed_bytes() -> u64 {
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
         if backing_tests::PAYLOAD_ONLY.get() {
             return std::mem::size_of::<MountAllocationCustody>() as u64;
         }
@@ -302,7 +302,7 @@ impl NativeMountAllocationCustody {
         &self,
         bytes: u64,
         work: &mut DemandWork,
-        capture: Option<&super::CaptureTransientCustody>,
+        capture: Option<&crate::ledger::CaptureTransientCustody>,
     ) -> Result<(), crate::WorkError> {
         if !work.owns_native_allocation_accounting(&self.0.accounting) {
             return Err(crate::WorkError::Overflow);
@@ -381,7 +381,7 @@ mod properties {
             &crate::CancellationToken::new(),
         )
         .unwrap();
-        let capture = super::super::CaptureTransientCustody::new_native(&original).unwrap();
+        let capture = crate::ledger::CaptureTransientCustody::new_native(&original).unwrap();
         let mut birth = original.with_capture_custody(&capture).unwrap();
         let owner = SourcePayloadOwnership::new(&mut birth).unwrap();
         let mut caller = NativeMaterializationWork::new(

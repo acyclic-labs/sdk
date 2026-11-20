@@ -233,11 +233,7 @@ impl HostFixtureAuthority {
                 acyclic_harness_core::core::AuthorityOperations::check(&self.admitted, &scope)
                     .map_err(error)
             });
-        if current.is_ok() {
-            JsValue::from_str("current")
-        } else {
-            JsValue::from_str("closed")
-        }
+        JsValue::from_str(if current.is_ok() { "current" } else { "closed" })
     }
 
     /// The real host Auth publication event, registered before returning.

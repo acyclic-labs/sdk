@@ -17,9 +17,12 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
         }
     }
     let cancel = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::performance::BOUNDARY_BUDGET,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut node_bytes = 0;
     let minimum = std::cell::Cell::new(baseline);
@@ -91,9 +94,12 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
 fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dyn std::error::Error>>
 {
     let cancel = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::performance::BOUNDARY_BUDGET,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut index = RecentIndex::<_, 32, 2>::default();
     for number in 0_u8..4 {
         index.get_or_try_insert_with(
@@ -103,12 +109,13 @@ fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dy
         )?;
     }
     let baseline = original.live_allocation_bytes().unwrap();
-    let attempt = crate::NativeMaterializationWork::new(
+    let attempt = crate::NativeMaterializationWork::root(
         crate::WorkBudget {
             allocation_operations: 1,
             ..crate::performance::BOUNDARY_BUDGET
         },
         &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let attempt_baseline = attempt.live_allocation_bytes().unwrap();

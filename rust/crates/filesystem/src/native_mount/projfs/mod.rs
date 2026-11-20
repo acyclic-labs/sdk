@@ -14,10 +14,11 @@ use super::{
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::ledger::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::lock_order::{Mutex as RankedMutex, OPERATION, VIEW};
-use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::native_host::{HostRoot, NativeHostWork};
-use crate::sync::{Condvar, Mutex, MutexGuard, RwLock};
+use crate::sync::{Mutex, MutexGuard, RwLock};
+use acyclic_native_runtime::InlineCondvar as Condvar;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;

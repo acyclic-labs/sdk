@@ -1,15 +1,20 @@
-use super::selection;
+use super::{CheckResult, selection};
 
-fn check(bytes: &[u8]) {
+fn check(bytes: &[u8]) -> CheckResult {
     if let Ok(selected) = selection::parse(bytes) {
-        let text = std::str::from_utf8(bytes).unwrap();
-        let original: toml::Value = toml::from_str(text).unwrap();
-        let model = original.get("model").map(|value| value.as_str().unwrap());
+        let text = std::str::from_utf8(bytes)?;
+        let original: toml::Value = toml::from_str(text)?;
+        let model = original
+            .get("model")
+            .map(|value| value.as_str().ok_or("admitted model is not a string"))
+            .transpose()?;
         if let Some(selected) = selected {
-            let model = model.unwrap();
+            let model = model.ok_or("selection has no model")?;
             assert!(!model.trim().is_empty());
             if let Some(provider) = original.get("model_provider") {
-                let provider = provider.as_str().unwrap();
+                let provider = provider
+                    .as_str()
+                    .ok_or("admitted provider is not a string")?;
                 assert!(!provider.trim().is_empty() && !provider.contains('/'));
                 assert_eq!(
                     selected,
@@ -20,16 +25,13 @@ fn check(bytes: &[u8]) {
             let canonical = toml::to_string(&std::collections::BTreeMap::from([(
                 "model",
                 selected.as_str(),
-            )]))
-            .unwrap();
-            assert_eq!(
-                selection::parse(canonical.as_bytes()).unwrap(),
-                Some(selected)
-            );
+            )]))?;
+            assert_eq!(selection::parse(canonical.as_bytes())?, Some(selected));
         } else {
             assert!(model.is_none(), "a configured model must not disappear");
         }
     }
+    Ok(())
 }
 
 /// Exercises the production admission contract.
@@ -37,7 +39,12 @@ fn check(bytes: &[u8]) {
 /// # Panics
 /// Panics if an admission invariant fails.
 pub fn exercise(bytes: &[u8]) {
-    check(bytes);
+    let result = check_generated(bytes);
+    assert!(result.is_ok(), "model admission check failed: {result:?}");
+}
+
+fn check_generated(bytes: &[u8]) -> CheckResult {
+    check(bytes)?;
     // Original TOML writer exercises quoting without manufacturing host output.
     let name = String::from_utf8_lossy(bytes);
     let opaque = format!("vendor/{name}/model");
@@ -47,11 +54,11 @@ pub fn exercise(bytes: &[u8]) {
             if let Some(provider) = provider {
                 fields.insert("model_provider", provider);
             }
-            let encoded = toml::to_string(&fields).unwrap();
-            check(encoded.as_bytes());
+            let encoded = toml::to_string(&fields)?;
+            check(encoded.as_bytes())?;
             if provider.is_some() && !model.trim().is_empty() {
                 assert_eq!(
-                    selection::parse(encoded.as_bytes()).unwrap(),
+                    selection::parse(encoded.as_bytes())?,
                     Some(format!("oracle/{model}")),
                     "an explicit provider must retain the entire model name"
                 );
@@ -78,4 +85,5 @@ pub fn exercise(bytes: &[u8]) {
             );
         }
     });
+    Ok(())
 }

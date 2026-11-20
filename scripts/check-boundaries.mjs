@@ -36,7 +36,7 @@ function hasCredentialLiteral(content) {
 
 function inspect(path, content) {
   const relativePath = relative(root, path).replaceAll("\\", "/");
-  if (relativePath.startsWith("rust/crates/harness/src/wasm/") && relativePath.endsWith(".rs")) {
+  if (relativePath.startsWith("rust/crates/harness-browser/src/wasm/") && relativePath.endsWith(".rs")) {
     try { assertByteSnapshotBoundary(relativePath, content.replaceAll("\r\n", "\n")); }
     catch (error) { failures.push(error.message); }
   }

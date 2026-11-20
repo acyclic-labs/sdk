@@ -451,8 +451,12 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
     eprintln!("reverse selected pages/examined/read bytes at 1 and 100000 earlier names={costs:?}");
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let meter = std::sync::Arc::downgrade(&original.state);
         let baseline = original.live_allocation_bytes().unwrap();
         assert_eq!(

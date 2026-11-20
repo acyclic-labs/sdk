@@ -6,6 +6,7 @@ use acyclic_native_runtime::{PacketDevicePublication, PacketDeviceRetirement, Pr
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 #[cfg(test)]
@@ -90,6 +91,7 @@ pub(super) struct HostIo {
     reply_publication: Mutex<()>,
     notification_publication: Mutex<()>,
     pub(super) framed: bool,
+    stopping: AtomicBool,
     wake: ProcessWake,
     // Readiness is advisory. One owner keeps this queue's claim through the
     // physical read, then releases it before any source callback or reply.
@@ -162,6 +164,7 @@ impl HostIo {
             publication: Mutex::new(()),
             reply_publication: Mutex::new(()),
             notification_publication: Mutex::new(()),
+            stopping: AtomicBool::new(false),
             wake,
             receiver: Mutex::new(Some(receiver)),
             #[cfg(test)]
@@ -211,12 +214,19 @@ impl HostIo {
             .is_some()
     }
 
+    pub(super) fn begin_stop(&self) {
+        // Classify disconnects before unmount without waking the readers
+        // that still service requests until the device closes.
+        self.stopping.store(true, Ordering::Release);
+    }
+
     pub(super) fn stop(&self) {
         // Abort before the device closes: pending requests must be released
         // while the connection still exists, and the control must not outlive
         // it.
-        self.abort_connection();
+        self.begin_stop();
         let _ = self.wake.stop();
+        self.abort_connection();
         // Wake the physical borrower before closing the device and its queue.
         // Other receivers observe closure through the same receive lock.
         self.device
@@ -254,6 +264,14 @@ impl HostIo {
                 }
             }
         }
+    }
+
+    pub(super) fn shutdown_error(&self, errno: Option<i32>) -> bool {
+        self.stopping.load(Ordering::Acquire)
+            && matches!(
+                errno,
+                Some(libc::ENODEV | libc::ENOTCONN | libc::ECONNRESET | libc::EPIPE)
+            )
     }
 
     pub(super) fn with_device<T>(
@@ -366,7 +384,9 @@ impl HostIo {
                 return Ok(Received::Closed);
             };
             match (&*device).read(&mut bytes[filled..needed]) {
-                Ok(0) if filled == 0 => return Ok(Received::Closed),
+                Ok(0) if filled == 0 || self.stopping.load(Ordering::Acquire) => {
+                    return Ok(Received::Closed);
+                }
                 Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
                 Ok(length) => {
                     filled += length;
@@ -398,7 +418,10 @@ impl HostIo {
                         self.receive_counts[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-                Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ENODEV)
+                        || self.shutdown_error(error.raw_os_error()) =>
+                {
                     return Ok(Received::Closed);
                 }
                 Err(error) => return Err(error),

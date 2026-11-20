@@ -166,7 +166,7 @@ mod changes;
 mod generation_seek;
 mod head_payload;
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;

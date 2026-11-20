@@ -39,7 +39,7 @@ pub struct LocalCoreStateStore {
     /// Open while this handle's commits defer durability.
     deferral: Option<Arc<AtomicBool>>,
     inspection: bool,
-    journal_work: Option<crate::materializer::NativeMaterializationWork>,
+    journal_work: Option<crate::ledger::NativeMaterializationWork>,
     // Last: retained storage owners must outlive the namespace's open WAL and locks.
     ownership_anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
@@ -78,7 +78,7 @@ struct Owner {
     failed: AtomicBool,
     cache_limit: Option<usize>,
     /// Last: the WAL and cached records retire before native ownership releases.
-    _claim: acyclic_native_runtime::StoreClaim,
+    _claim: acyclic_native_claim::StoreClaim,
 }
 
 /// One held lock file, released when dropped.
@@ -88,12 +88,12 @@ struct OwnerLock(FileLock, OwnerLockRelease);
 #[derive(Debug)]
 enum OwnerLockRelease {
     Ordinary,
-    Native(crate::materializer::NativeCleanupWrite),
+    Native(crate::ledger::NativeCleanupWrite),
     Released,
 }
 
 impl OwnerLock {
-    fn new(file: FileLock, cleanup: Option<crate::materializer::NativeCleanupWrite>) -> Self {
+    fn new(file: FileLock, cleanup: Option<crate::ledger::NativeCleanupWrite>) -> Self {
         Self(
             file,
             match cleanup {
@@ -136,7 +136,7 @@ impl OwnerLock {
             }
             Err(error) => return Err(error.into()),
         };
-        if acyclic_native_runtime::StoreClaim::is_claimed(&lock.0)? {
+        if acyclic_native_claim::StoreClaim::is_claimed(&lock.0)? {
             return Err(LocalCoreStateStoreError::OwnershipConflict(
                 root.to_path_buf(),
             ));
@@ -153,7 +153,7 @@ impl OwnerLock {
                 error.into()
             }
         })?;
-        if acyclic_native_runtime::StoreClaim::is_claimed(&lock)? {
+        if acyclic_native_claim::StoreClaim::is_claimed(&lock)? {
             return Err(LocalCoreStateStoreError::OwnershipConflict(
                 root.to_path_buf(),
             ));
@@ -176,7 +176,7 @@ struct Namespace {
     admission: Admission,
     durability: Durability,
     barrier: Mutex<Option<crate::NativeWorkReservation>>,
-    _allocation: Option<crate::materializer::NativeAllocation>,
+    _allocation: Option<crate::ledger::NativeAllocation>,
 }
 
 /// When a transaction's log commits become durable.
@@ -314,7 +314,7 @@ impl LocalCoreStateStore {
                 let acquired = acquired.and_then(|lock| {
                     // A claim names its owner inside the lock file instead of
                     // holding the lock, so a free lock alone does not admit.
-                    let checked = acyclic_native_runtime::StoreClaim::check_metered(
+                    let checked = acyclic_native_claim::StoreClaim::check_metered(
                         &lock,
                         &work.runtime_meter(),
                     );

@@ -129,7 +129,19 @@ impl PromptInput {
         let keymap = view.keymap()?;
         let theme = ThemeStyles::from_config(view, profile)?;
         self.set_settings(settings);
-        self.set_keymap(keymap);
+        // Replace followed bindings. Deferred text remains committed input;
+        // actions from an obsolete map (including a pending cut) are cancelled.
+        if self.keymap != keymap {
+            let pending = self.pending_chord.take();
+            self.keymap = keymap;
+            self.last_interrupt = None;
+            if let Some((at, DecodedKey::Text(text))) =
+                pending.and_then(PendingChord::into_fallback)
+            {
+                // There is no pending chord left to flush into a host effect.
+                let _ = self.committed_text(text.encode_utf8(&mut [0; 4]), at);
+            }
+        }
         self.theme = theme;
         Ok(())
     }
@@ -138,21 +150,6 @@ impl PromptInput {
     pub fn reset_history_source(&mut self) {
         self.history_active = false;
         self.history_epoch = self.history_epoch.wrapping_add(1);
-    }
-
-    /// Replace followed bindings. Deferred text remains committed input; actions
-    /// from an obsolete map (including a pending cut) are cancelled.
-    pub fn set_keymap(&mut self, keymap: InputKeymap) {
-        if self.keymap == keymap {
-            return;
-        }
-        let pending = self.pending_chord.take();
-        self.keymap = keymap;
-        self.last_interrupt = None;
-        if let Some((at, DecodedKey::Text(text))) = pending.and_then(PendingChord::into_fallback) {
-            // There is no pending chord left to flush into a host effect.
-            let _ = self.committed_text(text.encode_utf8(&mut [0; 4]), at);
-        }
     }
 
     /// Apply preferences to active and suspended drafts so cancelling an edit or
@@ -687,14 +684,6 @@ impl PromptInput {
         }
     }
 
-    /// Pointer kinds whose hit testing can read the presented prompt viewport.
-    pub fn reads_presented_viewport(event: &MouseEvent) -> bool {
-        matches!(
-            event.kind,
-            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
-        )
-    }
-
     /// Mouse selection uses the same grapheme layout as movement and rendering.
     pub fn mouse(
         &mut self,
@@ -707,7 +696,12 @@ impl PromptInput {
             self.drag = None;
             return vec![];
         }
-        if !Self::reads_presented_viewport(&event) || area.width == 0 || area.height == 0 {
+        // Pointer kinds whose hit testing can read the presented prompt viewport.
+        let reads_viewport = matches!(
+            event.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+        );
+        if !reads_viewport || area.width == 0 || area.height == 0 {
             return vec![];
         }
         let inside = area.contains((event.column, event.row).into());

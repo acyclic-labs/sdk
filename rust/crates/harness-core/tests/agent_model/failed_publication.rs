@@ -500,9 +500,11 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
             open.open_children.page(None, children.len() + 1).await?,
             children.iter().map(AgentPath::id).collect::<Vec<_>>()
         );
+        let activation = host.runtime().store().activation(&host.actor(&root)?)?;
+        let request = archive(&root, &user(), &intent("archive"), activation)?;
         assert!(matches!(
-            host.archive(&root, &user(), &intent("archive")).await?,
-            Delivered::Committed { .. }
+            provider.commit(request).await?,
+            CommitOutcome::Committed(_)
         ));
         let serving = Box::pin(host.runtime().run(|actor, error| {
             panic!("unsettled delivery for {actor:?}: {error}");

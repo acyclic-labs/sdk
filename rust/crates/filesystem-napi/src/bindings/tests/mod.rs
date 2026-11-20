@@ -58,47 +58,6 @@ async fn open(root: &tempfile::TempDir) -> Result<NativeFs> {
 }
 
 #[test]
-fn native_work_json_preserves_full_u64_values() {
-    let work = acyclic_fs_work::performance::WorkCounters {
-        authority_records_read: 9_007_199_254_740_993,
-        bytes_copied: u64::MAX,
-        ..Default::default()
-    };
-    let value: serde_json::Value =
-        serde_json::from_str(&work_json(&work).expect("work counters serialize")).expect("JSON");
-    let canonical =
-        serde_json::to_value(acyclic_fs_work::performance::WorkCounters::default()).expect("JSON");
-    let keys = |value: &serde_json::Value| {
-        let mut keys = value
-            .as_object()
-            .expect("object")
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        keys.sort_unstable();
-        keys
-    };
-    assert_eq!(keys(&value), keys(&canonical));
-    assert!(
-        value
-            .as_object()
-            .expect("object")
-            .values()
-            .all(serde_json::Value::is_string)
-    );
-    assert_eq!(
-        value
-            .get("authorityRecordsRead")
-            .and_then(serde_json::Value::as_str),
-        Some("9007199254740993")
-    );
-    assert_eq!(
-        value.get("bytesCopied").and_then(serde_json::Value::as_str),
-        Some(u64::MAX.to_string().as_str())
-    );
-}
-
-#[test]
 fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
     let mut config = test_config();
     config.profile = FilesystemProfile::Windows;

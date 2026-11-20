@@ -2,7 +2,7 @@ use super::*;
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     name: *const c_char,
     value: *mut c_char,
@@ -32,7 +32,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     name: *const c_char,
     value: *const c_char,
@@ -69,7 +69,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     list: *mut c_char,
     length: usize,
@@ -142,7 +142,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     name: *const c_char,
 ) -> c_int {

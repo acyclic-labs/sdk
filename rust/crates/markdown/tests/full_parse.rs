@@ -261,25 +261,76 @@ fn html_spans_are_physical_display_lines() {
     assert_eq!(markdown.lines().len(), 4);
 }
 
-#[test]
-fn nested_paragraph_checkpoint_context() {
-    let source = "- parent\n  - child\n\n    pa";
-    let mut markdown = Markdown::default();
-    let mut end = 0;
-    for character in source.chars() {
-        let delta = character.to_string();
-        markdown.push(&delta);
-        end += delta.len();
-        assert_eq!(
-            markdown.lines(),
-            full_parse(source.get(..end).unwrap_or_default())
-        );
-    }
-    assert_eq!(markdown.lines(), full_parse(source));
-}
-
 const LAZY_LIST: &str =
     "> quote\n- item\n- item\ntext 🦀\n| a | b |\n| - | - |\n[r]: url\n\n[r]: u";
+
+// Every construct the streaming property must survive: block markers with
+// their indentation and padding, setext and fence delimiters, table shapes,
+// inline spans, escapes, entities, HTML blocks and reference definitions.
+const CHUNK_VOCABULARY: &[&str] = &[
+    "text 🦀",
+    "**bold**",
+    "*em*",
+    "_em_",
+    "~~gone~~",
+    "`code`",
+    "``a`b``",
+    "`a\nb`",
+    "` a `",
+    "***a***",
+    "&amp;",
+    "&#10;",
+    "&NewLine;",
+    "\\*",
+    "\\`\\b`0a",
+    "[x](url)",
+    "[a](u)",
+    "![a](u)",
+    "[a][]",
+    "[r]",
+    "[x][r]",
+    "[*x][y][z*][ref]",
+    "[outer [x][r]][s]",
+    "[a\u{a0}b]: /two\n",
+    "[r]: url\n",
+    "[r]: /one\n  \"title\"\n",
+    "\n",
+    "\n\n",
+    "  \n",
+    "word, ",
+    "word. yes! x: y - z + 2 = 4? ",
+    "- item\n",
+    "*\n",
+    " *  a\n",
+    "1.\n",
+    "123456789.\n",
+    "0)\n",
+    "\t* a\n",
+    "> quote\n",
+    "> *\n",
+    "> | a | b |\n",
+    "> | - | - |\n",
+    "title\n---\n",
+    "title\n===\n",
+    "title\n---x\n",
+    "```rust\n",
+    "```text\n",
+    "~~~\n",
+    "```\n",
+    "``` trailing\n",
+    "let x = 1;\n",
+    "| a | b |\n",
+    "| - | - |\n",
+    "| - | - x\n",
+    "| x | y |\n",
+    "<div>\nhello\n</div>\n",
+    "<script>\n\nhello\n</script>\n",
+    "</div>\n",
+    "<table>\n",
+    "    indented\n\n    more",
+    "- parent\n  - child\n\n    pa",
+    LAZY_LIST,
+];
 
 fn check_chunks(source: &str, cuts: &[usize]) {
     let mut streamed = Markdown::default();
@@ -305,24 +356,6 @@ fn check_chunks(source: &str, cuts: &[usize]) {
             source.get(..streamed.offset)
         );
         offset = end;
-    }
-}
-
-#[test]
-fn closing_html_tag_completed_by_a_later_chunk_interrupts_the_paragraph() {
-    // `</div` at a line start opens a kind-6 HTML block, which interrupts the
-    // paragraph even when its final name byte arrives in a later chunk.
-    check_chunks("[x](url)<div>\nhello\n</div>\n", &[8, 16, 1]);
-}
-
-#[test]
-fn review_regressions_match_every_chunk_boundary() {
-    check_chunks(LAZY_LIST, &[2, 2, 1, 1]);
-    for source in [
-        "    indented\n\n    more",
-        "text word, word. yes! x: y - z + 2 = 4? (ok)",
-    ] {
-        check_chunks(source, &[1]);
     }
 }
 
@@ -361,10 +394,10 @@ fn lazy_list_reference_updates_only_parse_dependent_paragraphs() {
         let mut markdown = Markdown::default();
         markdown.push(&source);
         let before = markdown.parsed_bytes;
-        let parsed = references::PARSED_BYTES.get();
+        let parsed = acyclic_markdown_work::work::parsed_bytes();
         markdown.push("[r]: u\n\n");
         assert!(markdown.parsed_bytes - before <= 16);
-        let work = references::PARSED_BYTES.get() - parsed;
+        let work = acyclic_markdown_work::work::parsed_bytes() - parsed;
         if let Some(previous) = previous {
             assert_eq!(work, previous);
         }
@@ -523,10 +556,10 @@ fn reference_blocks_parse_once_when_definitions_change() {
         let source = format!("{}\n\n", "[r][r]".repeat(count));
         let mut markdown = Markdown::default();
         markdown.push(&source);
-        let before = references::PARSED_BYTES.get();
+        let before = acyclic_markdown_work::work::parsed_bytes();
         let definition = "[r]: /url\n\n";
         markdown.push(definition);
-        let parsed = references::PARSED_BYTES.get() - before;
+        let parsed = acyclic_markdown_work::work::parsed_bytes() - before;
         assert!(
             parsed <= source.len() + 2 * definition.len(),
             "{parsed} parser bytes"
@@ -536,98 +569,6 @@ fn reference_blocks_parse_once_when_definitions_change() {
             full_parse(&format!("{source}{definition}"))
         );
     }
-}
-
-#[test]
-fn collapsed_reference_updates_match_every_chunk_boundary() {
-    let source = "[a][][c]\n\n";
-    let definition = "[a]: /a\n\n";
-    let mut markdown = Markdown::default();
-    markdown.push(source);
-    markdown.push(definition);
-    assert_eq!(
-        markdown.lines(),
-        full_parse(&format!("{source}{definition}"))
-    );
-    for cuts in [&[1][..], &[2, 3][..], &[11, 4, 1][..]] {
-        check_chunks(&format!("{source}{definition}"), cuts);
-    }
-}
-
-#[test]
-fn adversarial_reference_endings_have_linear_parser_work() {
-    for pattern in ["[text][ref]", "[text*][ref][text*][ref]"] {
-        let mut previous = 0;
-        for count in [64, 128] {
-            let source = format!("{}(url)\n\n", pattern.repeat(count));
-            let before = references::PARSED_BYTES.get();
-            let mut markdown = Markdown::default();
-            markdown.push(&source);
-            let parsed = references::PARSED_BYTES.get() - before;
-            assert!(
-                parsed <= source.len() * 16,
-                "{} bytes: {parsed} parser bytes",
-                source.len()
-            );
-            if previous > 0 {
-                assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}");
-            }
-            println!("{pattern:?}, {} bytes: {parsed} parser bytes", source.len());
-            previous = parsed;
-            assert_eq!(markdown.lines(), full_parse(&source));
-        }
-    }
-}
-
-#[test]
-fn adjacent_reference_parser_bytes_scale_linearly() {
-    let mut previous = 0;
-    for count in [16, 32, 64, 128] {
-        let source = format!("{}\n\n", "[text][ref]".repeat(count));
-        let before = references::PARSED_BYTES.get();
-        let mut markdown = Markdown::default();
-        markdown.push(&source);
-        let parsed = references::PARSED_BYTES.get() - before;
-        assert!(
-            parsed <= source.len() * 16,
-            "{} bytes parsed {parsed}",
-            source.len()
-        );
-        if previous > 0 {
-            assert!(parsed * 10 <= previous * 22, "{previous} -> {parsed}");
-        }
-        println!("{} input bytes: {parsed} parser bytes", source.len());
-        previous = parsed;
-        assert_eq!(markdown.lines(), full_parse(&source));
-    }
-}
-
-#[test]
-fn late_definitions_do_not_reinterpret_literal_indented_code() {
-    let source = "[x](url)    indented\n\n    more[r]: url\ntext\n\n[r]: /later\n\n";
-    check_chunks(source, &[2, 2]);
-}
-
-#[test]
-fn nested_reference_fuzz_regression() {
-    let data = b"[a][b][c\xec\xec\xec\xec\xec[]\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec[a][b]\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec\xec](url)[d*[e]\n\x08[b]: /one\n\n[e]: /two\n\n";
-    let source = String::from_utf8_lossy(data);
-    let cuts: Vec<_> = data
-        .iter()
-        .map(|byte| usize::from(*byte) % 31 + 1)
-        .collect();
-    check_chunks(&source, &cuts);
-}
-
-#[test]
-fn linear_work_preserves_quoted_tasks_when_references_resolve() {
-    let data = b"> 3. [x] t\0\0\0\x80ask [r]\n>\n>    more\n\n[r]: /url\n\n";
-    let source = String::from_utf8_lossy(data);
-    let cuts: Vec<_> = data
-        .iter()
-        .map(|byte| usize::from(*byte) % 31 + 1)
-        .collect();
-    check_chunks(&source, &cuts);
 }
 
 fn reference_work_is_linear(
@@ -661,10 +602,10 @@ fn reference_work_is_linear(
             pattern.repeat(copies),
             if ending { "(u)" } else { "" }
         );
-        let before = references::PARSED_BYTES.get();
+        let before = acyclic_markdown_work::work::parsed_bytes();
         let mut markdown = Markdown::default();
         markdown.push(&source);
-        let parsed = references::PARSED_BYTES.get() - before;
+        let parsed = acyclic_markdown_work::work::parsed_bytes() - before;
         prop_assert!(
             parsed <= source.len() * 16,
             "{} input bytes: {parsed} parser bytes",
@@ -682,9 +623,9 @@ fn reference_work_is_linear(
         {
             if present {
                 let definition = format!("[{label}]: /target\n\n");
-                let before = references::PARSED_BYTES.get();
+                let before = acyclic_markdown_work::work::parsed_bytes();
                 markdown.push(&definition);
-                let work = references::PARSED_BYTES.get() - before;
+                let work = acyclic_markdown_work::work::parsed_bytes() - before;
                 // Dependent templates are disjoint leaves of `source`; each is
                 // re-rendered once. The pushed block costs at most four linear
                 // passes: definition scan, frontier parse, template key scan and,
@@ -764,9 +705,8 @@ proptest! {
     }
 
     #[test]
-    fn random_chunks_match_the_full_parser(parts in prop::collection::vec(0usize..20, 1..20), cuts in prop::collection::vec(1usize..20, 1..12)) {
-        let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n", "[r]", "<div>\nhello\n</div>\n", "> quote\n", "[a\u{a0}b]: /two\n", LAZY_LIST, "    indented\n\n    more", "word, ", "word. yes! x: y - z + 2 = 4? "];
-        let source: String = parts.iter().filter_map(|index| vocabulary.get(*index)).copied().collect();
+    fn random_chunks_match_the_full_parser(parts in prop::collection::vec(0usize..CHUNK_VOCABULARY.len(), 1..20), cuts in prop::collection::vec(1usize..20, 1..12)) {
+        let source: String = parts.iter().filter_map(|index| CHUNK_VOCABULARY.get(*index)).copied().collect();
         let mut streamed = Markdown::default();
         let mut offset = 0;
         for size in cuts.iter().cycle() {
@@ -816,59 +756,6 @@ proptest! {
         prop_assert_eq!(replay.into_source(), serialized);
     }
 }
-
-#[test]
-fn list_reference_title_remains_provisional_under_every_cut() {
-    block_checkpoints::check_inline_cuts(&[
-        "paragraph #word! #word! #word! #word! #word! #word! #word! (url)[r]: /url\n* [r]: /url\n(word); ",
-        "* [r]: /url\n(word)",
-        "- [r]: /url\n  (word)",
-        "> * [r]: /url\n>   (word)",
-        "1. * [r]: /url\n     (word)",
-        QUOTED_LIST_TITLE,
-    ]);
-    check_chunks(QUOTED_LIST_TITLE, &[1, 2, 1]);
-}
-
-// A list item's paragraph range begins after a leading escape's backslash,
-// and after a stripped definition. Its reference template must keep the
-// escape, or `\* [r]` reparses as a nested list and `\[word][r]` as a link.
-#[test]
-fn escaped_item_paragraphs_keep_their_backslash_in_reference_templates() {
-    for source in [
-        "* [r]: /url\n\\* [r]",
-        "* \\[word][r]: /url\n* [r]: /",
-        "paragraph [r]: /url\n* [r]: /url\n\\*word*word[r]",
-        "> * [r]: /url\n>   \\# [r]",
-    ] {
-        check_chunks(source, &[1]);
-        block_checkpoints::check_inline_cuts(&[source]);
-    }
-}
-
-// An escaped character's text event starts after its backslash. An inline
-// checkpoint there would resume with `` ` `` unescaped and open a code span
-// with the next backtick.
-#[test]
-fn inline_checkpoints_never_split_an_escape() {
-    for (source, cuts) in [
-        ("\\`\\b`0a", &[1, 3][..]),
-        ("a \\`\\b`0a", &[1, 5]),
-        (
-            "\u{a1} \\`\\\u{a1}`0aA0A0 \u{a1}00 \0\u{a1}",
-            &[4, 7, 7, 2, 1],
-        ),
-    ] {
-        check_chunks(source, cuts);
-    }
-}
-
-// A definition cannot interrupt a paragraph, so the item's `[r]: /url`
-// defines `r`. Its lazy next line is a title while it ends at `'word'`, and
-// the item renders empty; the trailing ` : ` makes it paragraph text again.
-// The plain-paragraph fast path must not commit that line while the title is
-// pending.
-const QUOTED_LIST_TITLE: &str = "paragraph &copy[r]: /url\n[r]: /url\n* [r]: /url\n'word' : ";
 
 #[test]
 fn consuming_visible_lines_moves_the_existing_text_allocations() {
@@ -1029,3 +916,4 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
     );
     Ok(())
 }
+

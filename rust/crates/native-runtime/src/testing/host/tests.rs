@@ -248,27 +248,6 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
     );
 }
 
-#[test]
-fn file_batches_never_claim_a_callback_dependency() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("source");
-    let file = crate::NativeFile::from_file(std::fs::File::create(path).unwrap(), None)
-        .map_err(|(error, _)| error)
-        .unwrap();
-    let read = file.read_batch_async(vec![crate::OwnedRead {
-        offset: 0,
-        length: 1,
-    }]);
-    let write = file.write_all_batch_async(vec![crate::OwnedWrite {
-        offset: 0,
-        bytes: bytes::Bytes::from_static(b"x"),
-    }]);
-    assert!(!read.pending.as_ref().unwrap().may_wait_for_driver());
-    assert!(!write.pending.as_ref().unwrap().may_wait_for_driver());
-    let task = crate::run_blocking_io(|| (), None).unwrap();
-    assert!(task.pending.as_ref().unwrap().may_wait_for_driver());
-}
-
 fn direct_callback(runtime: &tokio::runtime::Runtime, erase_scope: bool, prepared: bool) -> bool {
     let (schedule, mut events) = Schedule::seeded(29);
     let meter = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));

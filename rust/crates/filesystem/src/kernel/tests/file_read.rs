@@ -143,8 +143,12 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let native = (read_file_range_with_accounting(
@@ -279,8 +283,12 @@ async fn assert_native_sparse_copy_budget(
     expected: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(request.budget, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        request.budget,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let read =
@@ -308,8 +316,12 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::codec::ReadAllocationStep;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mut observed = OriginalReadAccounting::new(&mut accounting)?;
@@ -356,8 +368,12 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
         }
     }
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let dropped = std::cell::Cell::new(false);
     let mut accounting = KernelAccounting::native(&original, &cancellation);

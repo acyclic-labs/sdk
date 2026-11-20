@@ -1,0 +1,123 @@
+use super::*;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub(super) const ADMISSION_WIRE_TYPES: &'static str = r#"
+export type PublicEvent<Event> =
+    Event extends Readonly<{kind: 'tool_call'}> ? Readonly<Omit<Event, 'call_id' | 'arguments'> & {callId: string; arguments: unknown}>
+    : Event extends Readonly<{kind: 'completed'}> ? Readonly<Omit<Event, 'metadata'> & {metadata: unknown}>
+    : Readonly<Event>;
+export type PublicModelEvent = PublicEvent<ModelEvent>;
+export type WasmLimitsInput = WasmNativeLimitsWire;
+export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export interface WasmNativeLimitsWire {
+    readonly file_bytes: bigint | null;
+    readonly path_bytes: bigint | null;
+    readonly attachments: bigint | null;
+    readonly render_bytes: bigint | null;
+    readonly model_events_per_step: bigint | null;
+    readonly tool_calls_per_step: bigint | null;
+    readonly context_messages: bigint | null;
+}
+export interface WasmProviderRefWire {
+    readonly namespace: string;
+    readonly family: string;
+    readonly version: string;
+}
+export interface WasmProjectVolumeOwnerWire {
+    readonly kind: "project";
+    readonly id: string;
+}
+declare const harnessIdentity: unique symbol;
+export type WasmId<Name extends string> = string & { readonly [harnessIdentity]: Name };
+export interface WasmAgentVolumeOwnerWire {
+    readonly kind: "agent";
+    readonly id: WasmId<"AgentId">;
+}
+export interface WasmSessionVolumeOwnerWire {
+    readonly kind: "session";
+    readonly id: string;
+}
+interface WasmVolumeBaseWire<Family extends string> {
+    readonly provider: WasmProviderRefWire & Readonly<{family: Family}>;
+    readonly id: string;
+}
+export type WasmVolumeRefWire<Class extends "project" | "agent_private" | "session_shared" = "project" | "agent_private" | "session_shared", Family extends string = string> =
+    Class extends "project" ? WasmVolumeBaseWire<Family> & Readonly<{class: Class; owner: WasmProjectVolumeOwnerWire}>
+    : Class extends "agent_private" ? WasmVolumeBaseWire<Family> & Readonly<{class: Class; owner: WasmAgentVolumeOwnerWire}>
+    : WasmVolumeBaseWire<Family> & Readonly<{class: Class; owner: WasmSessionVolumeOwnerWire}>;
+export interface WasmFileDescriptorWire {
+    readonly sha256: readonly number[];
+    readonly byte_length: number;
+    readonly media_type: string;
+}
+export interface WasmFileRefWire<Class extends "project" | "agent_private" | "session_shared" = "project" | "agent_private" | "session_shared", Family extends string = string> {
+    readonly volume: WasmVolumeRefWire<Class, Family>;
+    readonly path: string;
+    readonly version: string;
+    readonly descriptor: WasmFileDescriptorWire;
+    readonly display_name: string;
+}
+export interface WasmAuthorityWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmEventReferenceWire {
+    readonly authority: WasmAuthorityWire;
+    readonly revision: bigint;
+}
+export interface WasmExtensionDependencyWire {
+    readonly name: string;
+    readonly version: number;
+}
+export interface WasmExtensionConfigurationWire {
+    readonly extension: WasmExtensionDependencyWire;
+    readonly schema_digest: readonly number[];
+    readonly content: WasmFileRefWire;
+}
+export interface WasmResourceRefWire {
+    readonly kind: "workspace" | "generation" | "artifact" | "sandbox" | "checkpoint" | "stream" | "context" | "run";
+    readonly provider: WasmProviderRefWire;
+    readonly key: readonly number[];
+    readonly version: string | null;
+}
+export interface WasmExtensionAdmissionWire {
+    readonly source: WasmEventReferenceWire;
+    readonly selected: readonly WasmExtensionDependencyWire[];
+    readonly configurations: readonly WasmExtensionConfigurationWire[];
+}
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+pub(super) const MODEL_TYPES: &'static str = r#"
+export interface WasmModelLimitsInput {
+    readonly file_bytes: number | bigint | null;
+    readonly path_bytes: number | bigint | null;
+    readonly attachments: number | bigint | null;
+    readonly render_bytes: number | bigint | null;
+    readonly model_events_per_step: number | bigint | null;
+    readonly tool_calls_per_step: number | bigint | null;
+    readonly context_messages: number | bigint | null;
+}
+export type WasmModelToolResultContentInput =
+    | Readonly<{ kind: "json"; value: unknown }>
+    | (Omit<Extract<ToolResultContent, { kind: "parts" }>, "parts">
+        & Readonly<{ parts: readonly ModelDataPart[] }>)
+    | Readonly<Extract<ToolResultContent, { kind: "error" }>>;
+type WasmModelCamelContentPart<Part extends ModelContentPart> =
+    Part extends { readonly kind: "tool_call"; readonly call_id: string }
+        ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+        : Part extends { readonly kind: "tool_result"; readonly call_id: string }
+            ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
+            : Part;
+export type WasmModelContentPartInput = WasmModelCamelContentPart<ModelContentPart>;
+export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
+export type WasmModelMessageInput = Omit<ModelMessage, "content"> & { content: WasmModelContentInput };
+type WasmModelCamelEvent<Event extends ModelEvent> =
+    Event extends { readonly kind: "tool_call"; readonly call_id: string }
+        ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+        : Event extends { readonly kind: "completed" }
+            ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
+        : Event;
+export type WasmModelEventInput = WasmModelCamelEvent<ModelEvent>;
+"#;

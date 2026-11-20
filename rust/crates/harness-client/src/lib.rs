@@ -76,6 +76,8 @@ pub use session::{WireSession, WireSessionError};
 mod stream_view;
 pub use stream_view::{StreamView, StreamViewPolicy};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_support;
 #[cfg(test)]
 mod tests;
 

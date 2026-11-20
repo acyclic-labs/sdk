@@ -50,9 +50,8 @@ impl Projector {
                     .worker_close_credit
                     .as_mut()
                     .ok_or(NativeMountError::ControlPending)?;
-                credit.started_drop_io(
-                    crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-                );
+                credit
+                    .started_drop_io(crate::ledger::NativeResourceCredit::WriteOperations.delta(1));
                 drop(lock_recover(&self.worker).take());
                 Ok(())
             });

@@ -1,10 +1,10 @@
 use super::*;
+use crate::test_support::{number, text};
 use acyclic_actors::call::{Accepted, CallPath, Commit, Journal};
 use acyclic_stream::{
     CommitId, CommitOutcome, IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamProvider,
     StreamProviderExt as _,
 };
-use arrow_array::{Array, StringArray, UInt64Array};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
@@ -35,28 +35,6 @@ async fn at<P: StreamProvider + ?Sized>(
         .await
         .map_err(export_error)?
         .ok_or_else(|| export_error("original call control record is absent"))
-}
-
-fn text<'a>(batch: &'a Batch, name: &str) -> &'a str {
-    batch
-        .data
-        .column_by_name(name)
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap()
-        .value(0)
-}
-
-fn number(batch: &Batch, name: &str) -> u64 {
-    batch
-        .data
-        .column_by_name(name)
-        .unwrap()
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .unwrap()
-        .value(0)
 }
 
 #[tokio::test]

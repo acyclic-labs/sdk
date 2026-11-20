@@ -5,7 +5,8 @@ use acyclic_fs::{
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_rebase::fixtures::fork_workspace;
+use crate::workspace_rebase::transaction::commit;
 
 #[tokio::test]
 async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(), Box<dyn Error>> {

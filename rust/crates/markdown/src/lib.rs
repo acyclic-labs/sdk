@@ -3,7 +3,6 @@
 
 mod code;
 mod context;
-mod delimiters;
 mod events;
 mod inline;
 mod reference_render;
@@ -14,8 +13,6 @@ mod stream_table;
 mod style;
 mod table;
 mod visibility;
-#[cfg(test)]
-mod work;
 
 pub use code::{CodeCache, CodeLine};
 use context::{container, context_event, context_prefix};
@@ -34,7 +31,6 @@ pub use style::{Line, Span, Style, Tone};
 #[cfg_attr(test, derive(Clone))]
 pub struct Markdown {
     source: String,
-    append: Option<(usize, usize, usize)>,
     offset: usize,
     stable_lines: usize,
     visibility: visibility::Visibility,
@@ -127,7 +123,7 @@ impl Cached {
             return None;
         }
         Some(Self {
-            template: Template::new(raw, quotes, events),
+            template: Template::new(raw, quotes, events)?,
             state,
             lines,
             cost: 0,
@@ -196,7 +192,6 @@ impl Markdown {
     /// A consumer can truncate its presentation there and replace the suffix
     /// from [`Self::lines`]. Empty deltas leave the presentation unchanged.
     pub fn push(&mut self, delta: &str) -> usize {
-        self.append = None;
         let old_len = self.visible_lines;
         if delta.is_empty() {
             return old_len;
@@ -222,22 +217,14 @@ impl Markdown {
                 if visible.is_empty() {
                     self.plain_spaces += appended.len();
                 } else {
-                    let span_index = line.spans.len().saturating_sub(1);
                     if let Some(span) = line.spans.last_mut() {
                         acyclic_markdown_work::record!(span_copy(
                             self.plain_spaces + visible.len()
                         ));
-                        if budget_line >= self.visible_lines.saturating_sub(1) {
-                            self.append = Some((
-                                self.visible_lines.saturating_sub(1),
-                                span_index,
-                                span.text.len(),
-                            ));
-                        }
                         #[cfg(test)]
                         {
-                            work::copy(self.plain_spaces + visible.len());
-                            work::grow(self.plain_spaces + visible.len());
+                            acyclic_markdown_work::work::copy(self.plain_spaces + visible.len());
+                            acyclic_markdown_work::work::grow(self.plain_spaces + visible.len());
                         }
                         span.text
                             .extend(std::iter::repeat_n(' ', self.plain_spaces));
@@ -282,7 +269,7 @@ impl Markdown {
             let prefix = context_prefix(&self.context);
             let source = format!("{prefix}{tail}");
             #[cfg(test)]
-            work::copy(source.len());
+            acyclic_markdown_work::work::copy(source.len());
             let keys = self.references.update(&source, self.offset, prefix.len());
             changed = changed.min(self.resolve(&keys));
             if !self.parse_tail() {
@@ -291,12 +278,6 @@ impl Markdown {
         }
         self.finish_visible();
         changed.min(self.visible_lines)
-    }
-
-    /// The last push only appended bytes to this line and span, beginning at
-    /// the returned byte offset. Other edits require replacing the changed rows.
-    pub fn last_append(&self) -> Option<(usize, usize, usize)> {
-        self.append
     }
 
     /// Current unwrapped lines. A partial delimiter remains visible until it
@@ -375,11 +356,11 @@ impl Markdown {
 
     fn append(&mut self, delta: &str) {
         #[cfg(test)]
-        work::copy(delta.len());
+        acyclic_markdown_work::work::copy(delta.len());
         if !self.cr && !delta.contains('\r') {
             #[cfg(test)]
             if delta.len() > self.source.capacity() - self.source.len() {
-                work::grow_source(self.source.len());
+                acyclic_markdown_work::work::grow_source(self.source.len());
             }
             self.source.push_str(delta);
             return;
@@ -449,6 +430,7 @@ impl Markdown {
         let mut references =
             events::FrontierReferences::new(calls, self.reference_cost, self.source.len());
         let mut synthetic_leaf = false;
+        let mut last_item_end = None;
         for (index, (event, range)) in events.iter().enumerate() {
             let html_end = matches!(event, Event::End(TagEnd::HtmlBlock))
                 && stack
@@ -511,6 +493,9 @@ impl Markdown {
                     }
                     caches.push((range.end, cache));
                 }
+                if *end == TagEnd::Item {
+                    last_item_end = Some(range.end);
+                }
                 if stack.is_empty() {
                     out.lines.push(Line::default());
                 }
@@ -518,8 +503,15 @@ impl Markdown {
                     continue;
                 }
                 let next_block = following_blocks.get(index).copied().unwrap_or_default();
+                // A definition after the last item belongs to that item's
+                // paragraph, so the next line can still be its lazy
+                // continuation. Only a blank line closes it.
+                let trailing = matches!(*end, TagEnd::List(_))
+                    && last_item_end.is_some_and(|item_end| range.end > item_end);
                 let sealed = closed
-                    || sealed(source, range.end, *end, next_block)
+                    || (sealed(source, range.end, *end, next_block)
+                        && (!trailing
+                            || blank_line(source.get(range.end..).unwrap_or_default())))
                     || (*end == TagEnd::HtmlBlock && context::html_closed(source, range, &stack));
                 if range.end >= prefix && (leaf_end || (stack.is_empty() && next_block)) && sealed {
                     candidate = Some((
@@ -604,6 +596,18 @@ impl Markdown {
         }
     }
 
+    /// Classify the plain tail shared by frontier and inline checkpoints.
+    fn settle_plain_tail(&mut self, links: &str, tail: &str) {
+        self.plain_links = links.contains('[')
+            && links
+                .rsplit_once(']')
+                .is_none_or(|(_, rest)| rest.starts_with('('));
+        self.plain_entity = tail
+            .rsplit_once('&')
+            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
+        self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
+    }
+
     fn finish_definitions(
         &mut self,
         source: &str,
@@ -627,7 +631,7 @@ impl Markdown {
                 .take_while(|row| {
                     acyclic_markdown_work::record!(scan(row.len() * 2));
                     #[cfg(test)]
-                    work::scan(row.len() * 2);
+                    acyclic_markdown_work::work::scan(row.len() * 2);
                     row.ends_with('\n')
                         && row.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\n'))
                 })
@@ -635,7 +639,9 @@ impl Markdown {
                 .sum::<usize>();
         }
         self.references.commit(self.offset);
-        let tail = self.source.get(self.offset..).unwrap_or_default();
+        let tail = source
+            .get(prefix + self.offset.saturating_sub(base)..)
+            .unwrap_or_default();
         let frontier = self.offset.saturating_sub(base) + prefix;
         let mut leaves = events.iter().filter_map(|(event, range)| match event {
             Event::Start(tag) if is_leaf(tag) && range.start >= frontier => Some((tag, range)),
@@ -651,15 +657,7 @@ impl Markdown {
             .max()
             .unwrap_or(frontier);
         let inline_tail = source.get(link_end..).unwrap_or_default();
-        self.plain_links = inline_tail.contains('[')
-            && inline_tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
-        self.plain_entity = tail.rsplit_once('&').is_some_and(|(_, suffix)| {
-            suffix
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '#')
-        });
+        self.settle_plain_tail(inline_tail, tail);
         let only_inline_leaf = matches!(last_leaf, Some((Tag::Paragraph | Tag::Heading { .. }, range))
             if !definition_candidate(source.get(range.start..).unwrap_or_default()))
             && leaves.next().is_none();
@@ -679,7 +677,6 @@ impl Markdown {
                     matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
                         && range.end == source.trim_end_matches(' ').len()
                 });
-        self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
     }
 
     fn cache(&mut self, mut cache: Cached) {

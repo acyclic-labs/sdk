@@ -146,7 +146,7 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
             |bytes| {
                 let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
                 reply.u32()?;
-                assert_eq!(reply.u32()? as i32, -expected);
+                assert_eq!(i32::from_ne_bytes(reply.u32()?.to_ne_bytes()), -expected);
                 Ok(())
             },
         );
@@ -188,7 +188,11 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
     let work = fuse_fixture_work();
     let views = super::super::shared::SharedViews::new(0, 0);
     let mut entries = Vec::new();
-    for name in [b"parent".as_slice(), b"child".as_slice()] {
+    for name in [
+        b"parent".as_slice(),
+        b"child".as_slice(),
+        b"retiring".as_slice(),
+    ] {
         let (source, _) = shared_sources(posix_config())?;
         seed(&source)?;
         entries.push(views.insert(name, |inode_base| {
@@ -202,8 +206,10 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
     }
     let parent = entries[0].core();
     let child = entries[1].core();
+    let retiring = entries[2].core();
     let _parent_active = NativeMountWorkScope::new(parent, &work)?;
     let _child_active = NativeMountWorkScope::new(child, &work)?;
+    let _retiring_active = NativeMountWorkScope::new(retiring, &work)?;
     let protocol = PacketSession::new(
         PacketRouter::Shared(views),
         MAXIMUM_WRITE,
@@ -219,6 +225,63 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
             |_| Ok(()),
         )
         .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+    let mut lookup =
+        PacketRequest::parse(&packet(1)?.request).map_err(std::io::Error::from_raw_os_error)?;
+    lookup.inode = retiring.state_to_finish().root_inode;
+    let mut inode = None;
+    protocol
+        .publish(&lookup, &mut response, |bytes| {
+            let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
+            reply.u32()?;
+            assert_eq!(reply.u32()?, 0, "cached open's lookup must succeed");
+            reply.u64()?;
+            inode = Some(reply.u64()?);
+            Ok(())
+        })
+        .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+    let captured = &packet(14)?.request;
+    let mut open = PacketRequest::parse(captured).map_err(std::io::Error::from_raw_os_error)?;
+    open.inode = inode.ok_or("lookup inode missing")?;
+    {
+        let mut state = retiring.state_to_finish();
+        let entry = state
+            .by_inode
+            .get_mut(&open.inode)
+            .ok_or("cached inode missing")?;
+        let mut old = super::super::read::ContentVersion::of(&entry.lookup);
+        old.logical_bytes += 1;
+        entry.kernel_content = Some(old);
+    }
+    let mut refused = false;
+    protocol
+        .publish_or_defer_with_outcome(
+            &open,
+            &mut response,
+            |bytes| {
+                let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
+                reply.u32()?;
+                assert_eq!(
+                    i32::from_ne_bytes(reply.u32()?.to_ne_bytes()),
+                    -libc::ENODEV
+                );
+                refused = true;
+                Ok(Some(
+                    acyclic_native_runtime::PacketDevicePublication::Published,
+                ))
+            },
+            |reply, response| {
+                retiring.stop();
+                super::super::deferred_reply::DeferredReply::enqueue(
+                    reply,
+                    captured,
+                    response,
+                    || panic!("a retired view cannot take the packet's reply"),
+                    None,
+                )
+            },
+        )
+        .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+    assert!(refused, "retirement must resolve the cached open");
     let failure = child.request::<()>(|_| {
         Err(NativeMountError::Materialization(
             crate::NativeTreeMaterializationError::MissingCustody,
@@ -240,7 +303,7 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
                 .publish(&request, &mut response, |bytes| {
                     let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
                     reply.u32()?;
-                    assert_eq!(reply.u32()? as i32, -errno);
+                    assert_eq!(i32::from_ne_bytes(reply.u32()?.to_ne_bytes()), -errno);
                     Ok(())
                 })
                 .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?,
@@ -271,7 +334,10 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
                 .publish(&request, &mut response, |bytes| {
                     let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
                     reply.u32()?;
-                    assert_eq!(reply.u32()? as i32, -libc::ENODEV);
+                    assert_eq!(
+                        i32::from_ne_bytes(reply.u32()?.to_ne_bytes()),
+                        -libc::ENODEV
+                    );
                     Ok(())
                 })
                 .err()

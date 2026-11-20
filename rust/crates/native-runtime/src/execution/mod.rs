@@ -23,6 +23,21 @@ pub(crate) use macos::SealedExec;
 #[cfg(windows)]
 pub(crate) mod windows;
 
+/// Reports when the native probe confirms that Windows PSEC is unavailable.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn skip_if_windows_psec_unavailable() -> bool {
+    #[cfg(windows)]
+    if windows::Api::is_unavailable() {
+        eprintln!(
+            "skipped: required-host-capability={} unavailable on this host",
+            windows::REQUIRED_CAPABILITY
+        );
+        return true;
+    }
+    false
+}
+
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionAccess {

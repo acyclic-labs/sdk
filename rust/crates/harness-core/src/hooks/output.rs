@@ -3,6 +3,8 @@ use super::{HookEvent, HookFailure};
 use crate::{Error, Result};
 use serde_json::Value;
 
+pub(super) const OUTPUT_LIMIT_MESSAGE: &str = "hook output limit exceeded";
+
 /// Applied hook decisions and context for the harness loop.
 #[derive(
     Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
@@ -96,7 +98,7 @@ impl HookOutput {
             diagnostics: vec![HookDiagnostic {
                 cause: crate::ProcessError::OutputLimit {
                     exit_code: None,
-                    message: "aggregate hook output limit exceeded".into(),
+                    message: OUTPUT_LIMIT_MESSAGE.into(),
                 },
                 blocking,
             }],

@@ -153,7 +153,13 @@ where
             let unmeasured;
             let original_file;
             let publication = match publication {
-                crate::executor::ProgressPublication::NativeCapture(_) => unreachable!(),
+                crate::executor::ProgressPublication::NativeCapture(_) => {
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "native progress requires its original capture receipt",
+                    ));
+                }
                 crate::executor::ProgressPublication::Resource(publication) => publication,
                 crate::executor::ProgressPublication::Changes { volume, changes } => {
                     if !self
@@ -395,6 +401,10 @@ where
 
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
         Some(&self.verifier)
+    }
+
+    fn preceding_working_context(&self) -> Option<&crate::executor::WorkingContextPrefix> {
+        self.preceding_working_context.as_ref()
     }
 
     fn indexed_records<'a>(

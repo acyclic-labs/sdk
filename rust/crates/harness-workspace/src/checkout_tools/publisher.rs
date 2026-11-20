@@ -1,0 +1,685 @@
+//! File publication shares the selected checkout and its command lock.
+use super::*;
+use crate::conversation::{
+    BoundedContentFuture, ContentHold, ContentIo, ContentPublisher, FileRef,
+};
+
+mod batch;
+mod observed;
+#[cfg(all(any(test, feature = "test-support"), not(loom)))]
+#[doc(hidden)]
+pub mod test_support;
+
+type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
+
+pub fn publication_operation(
+    operation: OperationId,
+    path: &str,
+) -> acyclic_fs_format::identity::OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-publication/v2");
+    hash.update(&operation.into_bytes());
+    hash.update(path.as_bytes());
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    acyclic_fs_format::identity::OperationId::from_bytes(identity)
+}
+
+/// The operation that captures the physical write of `path` under
+/// `operation`. Its committed generation is durably keyed by this identity,
+/// so a replay finds it directly however far the head has moved since.
+pub fn write_capture(operation: OperationId, path: &str) -> OperationId {
+    OperationId::from_bytes(publication_operation(operation, path).into_bytes())
+}
+
+/// Publishes files into the selected checkout under its command lock.
+pub struct CheckoutPublisher {
+    pub tools: Arc<CheckoutTools>,
+    files: Arc<LocalFilesystem>,
+    volume: VolumeRef,
+    verifier: AuthorityVerifier,
+    maximum: Option<u64>,
+}
+
+enum Publication<'a> {
+    Once {
+        path: &'a str,
+        media: &'a str,
+        display: &'a str,
+    },
+    Path {
+        path: &'a str,
+        media: &'a str,
+        display: &'a str,
+    },
+    Replace(&'a FileRef),
+}
+
+impl CheckoutPublisher {
+    async fn inherited_directory(
+        &self,
+        view: &workspace::View,
+        path: &str,
+        io: Option<&ContentIo>,
+    ) -> Result<bool> {
+        use acyclic_fs::facade::FsWork as _;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
+        let mut accounting = match &io {
+            Some(io) => io.accounting(&cancellation),
+            None => budget.accounting(&cancellation),
+        };
+        // Inspect does not author or retain a new source observation. File
+        // destinations include inherited names, not just authored entries.
+        let result = async {
+            if self.tools.workspace.mounted.is_none() {
+                return view
+                    .current_source_node(&format!("/{path}"), &mut accounting)
+                    .await
+                    .map(|node| {
+                        node.is_some_and(|node| {
+                            node.kind == acyclic_fs::demand::SourceNodeKind::Directory
+                        })
+                    })
+                    .map_err(storage);
+            }
+            match view.inspect(&format!("/{path}"), &mut accounting).await {
+                Ok(lookup) => {
+                    let directory =
+                        lookup.0.stat().kind == acyclic_fs::demand::SourceNodeKind::Directory;
+                    view.retire_lookup(lookup, &mut accounting)
+                        .map_err(storage)?;
+                    Ok(directory)
+                }
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => Ok(false),
+                Err(error) => Err(storage(error)),
+            }
+        }
+        .await;
+        if let Some(io) = &io {
+            let (result, recorded) = io.finish(result, &accounting);
+            recorded?;
+            result
+        } else {
+            result
+        }
+    }
+
+    async fn original_publication(
+        &self,
+        writer: &Publisher,
+        operation: OperationId,
+        relative: &str,
+        publication: &Publication<'_>,
+        ceiling: Option<&crate::Capabilities>,
+    ) -> Result<Option<FileRef>> {
+        match publication {
+            Publication::Once { .. } => Ok(writer
+                .observe_staged_once(
+                    operation,
+                    None,
+                    self.maximum,
+                    crate::conversation::ContentAccess { ceiling, io: None },
+                )?
+                .await?
+                .0),
+            Publication::Path { .. } => {
+                writer
+                    .observe_staged_path(operation, relative, self.maximum, ceiling)
+                    .await
+            }
+            Publication::Replace(source) => {
+                writer
+                    .observe_staged_at(operation, source, self.maximum, ceiling)
+                    .await
+            }
+        }
+    }
+
+    fn selected_workspace(&self, state: &State) -> Result<Arc<LocalWorkspace>> {
+        #[cfg(all(test, not(loom)))]
+        if test_support::PUBLISH_TO_INITIAL_MOUNT.get() {
+            return Ok(Arc::clone(&self.tools.workspace));
+        }
+        self.tools
+            .workspace
+            .cached_selected_workspace(state)
+            .ok_or_else(|| {
+                Error::Conflict("selected checkout has no admitted physical binding".into())
+            })
+    }
+
+    pub(crate) fn new(
+        tools: Arc<CheckoutTools>,
+        files: Arc<LocalFilesystem>,
+        volume: &VolumeRef,
+        verifier: &AuthorityVerifier,
+        maximum: impl Into<Option<u64>>,
+    ) -> Self {
+        Self {
+            tools,
+            files,
+            volume: volume.clone(),
+            verifier: verifier.clone(),
+            maximum: maximum.into(),
+        }
+    }
+
+    fn writer_for(
+        &self,
+        volume: &VolumeRef,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<Arc<Publisher>> {
+        Publisher::new(
+            self.files.for_workspace(volume, workspace.clone())?,
+            volume,
+            &self.verifier,
+            &self.tools.signed,
+            self.maximum,
+            None,
+        )
+    }
+
+    async fn publish(
+        &self,
+        operation: OperationId,
+        bytes: &[u8],
+        publication: Publication<'_>,
+        ceiling: Option<&crate::Capabilities>,
+    ) -> Result<FileRef> {
+        let (volume, path) = match &publication {
+            Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
+            Publication::Replace(source) => (Some(source.volume()), source.path()),
+        };
+        // Refusals linearize at an authorized logical cut before waiting for
+        // native checkout publication. Successful writes still select and
+        // revalidate under the guard; an original receipt bypasses new-path
+        // admission so a replay never acquires a later destination's meaning.
+        if !matches!(&publication, Publication::Replace(_)) {
+            let (mount, relative) = self.tools.workspace.mounts.file_for(
+                acyclic_fs::access::Action::Write,
+                volume,
+                path,
+                self.tools.clock.now_unix_millis() / 1000,
+                None,
+            )?;
+            let (selected, _) = self.tools.workspace.selected_view().await?;
+            let selected = selected
+                .as_ref()
+                .unwrap_or_else(|| self.tools.workspace.view());
+            let workspace = mount.view.source.as_ref().map_or_else(
+                || selected.workspace(),
+                |source| source.workspace.workspace(),
+            );
+            let writer = self.writer_for(&mount.view.volume, workspace)?;
+            let admit = || {
+                let access = crate::conversation::ContentAccess { ceiling, io: None };
+                if mount.view.source.is_none() && self.tools.workspace.mounted.is_none() {
+                    writer.authorize_path(&relative, access)
+                } else {
+                    writer.admit_path(&relative, access)
+                }
+            };
+            let original = self
+                .original_publication(&writer, operation, &relative, &publication, ceiling)
+                .await?;
+            if original.is_none() {
+                admit()?.await?;
+            }
+            access::require_volume_access(
+                workspace,
+                &mount.view.volume,
+                &self.tools.signed,
+                ceiling.unwrap_or(self.tools.signed.capabilities()),
+                "local checkout publication",
+            )
+            .await?;
+            if original.is_none()
+                && mount.view.source.is_none()
+                && self.inherited_directory(selected, &relative, None).await?
+                && self
+                    .original_publication(&writer, operation, &relative, &publication, ceiling)
+                    .await?
+                    .is_none()
+            {
+                // Recheck authority before reporting a transient source fact.
+                admit()?.await?;
+                access::require_volume_access(
+                    workspace,
+                    &mount.view.volume,
+                    &self.tools.signed,
+                    ceiling.unwrap_or(self.tools.signed.capabilities()),
+                    "local checkout publication",
+                )
+                .await?;
+                return Err(Error::Invalid("path is a directory".into()));
+            }
+        }
+        serialized(&self.tools.state, async |mut state| {
+            let physical = self.selected_workspace(&state)?;
+            let (mount, relative) = physical.mounts.file_for(
+                acyclic_fs::access::Action::Write, volume, path,
+                self.tools.clock.now_unix_millis() / 1000,
+                None,
+            )?;
+            let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+            if reconciliation::recover(&physical, view, &|| async { Ok(()) }).await? {
+                state.watcher = None;
+            }
+            let State { active, watcher, .. } = &mut *state;
+            let view = active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+            // Settle an earlier write's durable capture before staging moves its head.
+            if mount.view.source.is_none() {
+                self.finish_pending_capture(&physical, view, watcher).await?;
+            }
+            let workspace = mount.view.source.as_ref()
+                .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+            let native = workspace::projection::PublicationGroup::acquire(
+                &physical.mounts,
+                &mount.view.volume,
+                workspace.id(),
+                None,
+            ).await?;
+            access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
+            let writer = self.writer_for(&mount.view.volume, workspace)?;
+            // Recover the original committed generation before capture: a
+            // missing physical publication must not become a deletion.
+            let original = self.original_publication(&writer, operation, &relative, &publication, ceiling).await?;
+            if original.is_none() {
+                native.sync().await?;
+                if mount.view.source.is_none() {
+                    if let Some(mounted) = &physical.mounted {
+                        mounted.sync().await.map_err(storage)?;
+                    } else {
+                        // Completed native edits to the destination enter the
+                        // transaction cut before the writer decides its type and
+                        // existence. Other hints stay queued for the command
+                        // that owns them.
+                        self.tools.capture_paths((&physical, view), watcher, &[&*relative], write_capture(operation, &relative), 0)?.await?;
+                    }
+                }
+            }
+            let file = match publication {
+                Publication::Once { media, display, .. } => {
+                    writer.stage_once(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
+                }
+                Publication::Path { media, display, .. } => {
+                    writer.stage(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
+                }
+                Publication::Replace(source) => writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0,
+            };
+            native.advance_to_head().await?;
+            if mount.view.source.is_none() {
+                return self.settle(&physical, view, watcher, operation, file).await;
+            }
+            Ok(file)
+        })
+        .await
+        .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
+    }
+
+    /// Settles a staged file in its selected physical checkout: owes the write its
+    /// physical publication and capture, finishes that debt, and returns the
+    /// reference to the generation that holds exactly the written bytes. A
+    /// first attempt and every replay, whether it enters through the write
+    /// or through recovery, settle the same way.
+    async fn settle(
+        &self,
+        physical: &LocalWorkspace,
+        view: &workspace::View,
+        watcher: &mut Option<capture::Cursor>,
+        operation: OperationId,
+        file: FileRef,
+    ) -> Result<FileRef> {
+        if physical.mounted.is_some() {
+            // A native view already projects the committed generation. Advancing
+            // that view replaces physical checkout publication and recapture.
+            reconciliation::advance_mount(physical, &|| async { Ok(()) }).await?;
+            return Ok(file);
+        }
+        // The physical write carries host metadata (mode, owner, times) that
+        // the staged generation cannot predict, so it is owed a capture of
+        // its own, under the write's operation, so the agent's own write is
+        // not observed later as a foreign change to its file. The debt names
+        // the write and its capture and is recorded durably before the write
+        // reaches disk. This write finishes it under the same lock; after an
+        // interruption, the next capture of this checkout finishes it first,
+        // publishing the write if it never reached disk, whichever command or
+        // replay that is, while the staged generation is still the head. One
+        // operation may publish several paths, so the capture's identity
+        // names the path too.
+        let selected = (physical, view);
+        let owed = (
+            publication_operation(operation, file.path()),
+            acyclic_fs::GitGenerationRef {
+                workspace_id: view.workspace().id(),
+                generation: self.staged_generation(&file)?,
+            },
+        );
+        self.tools
+            .owe_write_capture(selected, watcher, owed)
+            .await?;
+        #[cfg(all(test, not(loom)))]
+        if test_support::KILL_BEFORE_WRITE.get() {
+            return Err(Error::Storage("killed before the write".into()));
+        }
+        self.finish_written(physical, view, watcher, &[file.path()])
+            .await?;
+        self.observed(view, operation, file).await
+    }
+
+    // Every publication entry point settles the same durable debt.
+    async fn finish_pending_capture(
+        &self,
+        physical: &LocalWorkspace,
+        view: &workspace::View,
+        watcher: &mut Option<capture::Cursor>,
+    ) -> Result<()> {
+        #[cfg(all(test, not(loom)))]
+        if test_support::REPLAY_SKIPS_CAPTURE.get() {
+            return Ok(());
+        }
+        self.tools
+            .finish_owed_write((physical, view), watcher, PublicationPermit::Unrestricted)?
+            .await
+    }
+
+    // A live writer settles its own debt over exactly the paths it wrote.
+    async fn finish_written(
+        &self,
+        physical: &LocalWorkspace,
+        view: &workspace::View,
+        watcher: &mut Option<capture::Cursor>,
+        touched: &[&str],
+    ) -> Result<()> {
+        #[cfg(all(test, not(loom)))]
+        if test_support::REPLAY_SKIPS_CAPTURE.get() {
+            return Ok(());
+        }
+        self.tools
+            .finish_written((physical, view), watcher, touched)?
+            .await
+    }
+
+    fn staged_generation(
+        &self,
+        file: &FileRef,
+    ) -> Result<acyclic_fs_format::object_reference::GenerationId> {
+        self.files.file_generation_id(file, None)
+    }
+}
+
+impl ContentPublisher for CheckoutPublisher {
+    fn stage_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::ContentChanges,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    > {
+        let maximum_receipt_bytes = access
+            .io
+            .map(|io| io.remaining().map(|work| work.bytes_encoded))
+            .transpose()?;
+        self.publish_changes(
+            volume,
+            operation,
+            Some(changes),
+            maximum_receipt_bytes,
+            access,
+            |receipt| {
+                receipt.ok_or_else(|| {
+                    Error::Storage("conditional publication returned no receipt".into())
+                })
+            },
+        )
+    }
+
+    fn observe_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        maximum: Option<u64>,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                Option<crate::conversation::ContentChanges>,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    > {
+        self.publish_changes(volume, operation, None, maximum, access, Ok)
+    }
+
+    fn volume(&self) -> &VolumeRef {
+        &self.volume
+    }
+
+    fn destination<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.supports_stage(io)?;
+        let (mount, relative) = self.tools.workspace.mounts.file_for(
+            acyclic_fs::access::Action::Write,
+            volume,
+            path,
+            self.tools.clock.now_unix_millis() / 1000,
+            None,
+        )?;
+        Ok((&mount.view.volume, relative))
+    }
+
+    // A native tool call's IO bounds its own reads and encoding; the
+    // checkout write stays bounded by this publisher's file bound and its
+    // command lock, whichever execution path calls it.
+    fn supports_stage(&self, _: Option<&ContentIo>) -> Result<()> {
+        Ok(())
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media: &'a str,
+        display: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.supports_stage(io)?;
+        BoundedContentFuture::new(None, || async move {
+            Ok((
+                self.publish(
+                    operation,
+                    bytes,
+                    Publication::Once {
+                        path,
+                        media,
+                        display,
+                    },
+                    ceiling,
+                )
+                .await?,
+                None,
+            ))
+        })
+    }
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        bytes: &'a [u8],
+        media: &'a str,
+        display: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.supports_stage(io)?;
+        BoundedContentFuture::new(None, || async move {
+            Ok((
+                self.publish(
+                    operation,
+                    bytes,
+                    Publication::Path {
+                        path,
+                        media,
+                        display,
+                    },
+                    ceiling,
+                )
+                .await?,
+                None,
+            ))
+        })
+    }
+    fn stage_at<'a>(
+        &'a self,
+        operation: OperationId,
+        source: &'a FileRef,
+        bytes: &'a [u8],
+        ceiling: Option<&'a crate::Capabilities>,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        self.supports_stage(io)?;
+        BoundedContentFuture::new(None, || async move {
+            Ok((
+                self.publish(operation, bytes, Publication::Replace(source), ceiling)
+                    .await?,
+                None,
+            ))
+        })
+    }
+    fn observe_staged_once<'a>(
+        &'a self,
+        operation: OperationId,
+        replacement: Option<(&'a VolumeRef, &'a str)>,
+        maximum: Option<u64>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.supports_stage(io)?;
+        BoundedContentFuture::new(None, || async move {
+            serialized(&self.tools.state, async |mut state| {
+                let physical = self.selected_workspace(&state)?;
+                let State {
+                    active, watcher, ..
+                } = &mut *state;
+                let view = active
+                    .as_ref()
+                    .unwrap_or_else(|| self.tools.workspace.view());
+                // A publication is admitted only through a mount the caller
+                // may write, so a mount outside its authority holds none of
+                // its operations: observation skips it. A caller that may
+                // reach no mount is refused.
+                let mut refused = None;
+                let mut admitted = false;
+                let selected = replacement
+                    .map(|(volume, path)| {
+                        physical.mounts.file_for(
+                            acyclic_fs::access::Action::Write,
+                            Some(volume),
+                            path,
+                            self.tools.clock.now_unix_millis() / 1000,
+                            None,
+                        )
+                    })
+                    .transpose()?;
+                let mounts = replacement.is_none().then(|| physical.mounts.mounts());
+                for mount in selected
+                    .as_ref()
+                    .map(|(mount, _)| *mount)
+                    .into_iter()
+                    .chain(mounts.into_iter().flatten().map(|(_, mount)| mount))
+                {
+                    let workspace = mount
+                        .view
+                        .source
+                        .as_ref()
+                        .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+                    match access::require_volume_access(
+                        workspace,
+                        &mount.view.volume,
+                        &self.tools.signed,
+                        ceiling.unwrap_or(self.tools.signed.capabilities()),
+                        "local checkout publication",
+                    )
+                    .await
+                    {
+                        Ok(()) => admitted = true,
+                        Err(
+                            error @ (Error::FilesystemAccessConfiguration(_)
+                            | Error::Unauthorized(_)),
+                        ) => {
+                            #[cfg(all(test, not(loom)))]
+                            if test_support::OBSERVE_EVERY_MOUNT.get() {
+                                return Err(error);
+                            }
+                            refused.get_or_insert(error);
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                    let file = self
+                        .writer_for(&mount.view.volume, workspace)?
+                        .observe_staged_once(
+                            operation,
+                            replacement,
+                            maximum,
+                            crate::conversation::ContentAccess { ceiling, io: None },
+                        )?
+                        .await?
+                        .0;
+                    if let Some(mut file) = file {
+                        let mount = physical.mounts.by_volume_path(
+                            file.volume(),
+                            file.path(),
+                            acyclic_fs::access::Action::Write,
+                            self.tools.clock.now_unix_millis() / 1000,
+                            None,
+                        )?;
+                        let workspace = mount.view.source.as_ref().map_or_else(
+                            || view.workspace(),
+                            |source| source.workspace.workspace(),
+                        );
+                        let publication = workspace::projection::PublicationGroup::acquire(
+                            &physical.mounts,
+                            file.volume(),
+                            workspace.id(),
+                            None,
+                        )
+                        .await?;
+                        publication.advance_to_head().await?;
+                        if mount.view.source.is_none() {
+                            // A recovered publication names the same
+                            // generation the original write returned.
+                            file = self
+                                .settle(&physical, view, watcher, operation, file)
+                                .await?;
+                        }
+                        return Ok((Some(file), None));
+                    }
+                }
+                match refused {
+                    Some(error) if !admitted => Err(error),
+                    _ => Ok((None, None)),
+                }
+            })
+            .await
+        })
+    }
+}

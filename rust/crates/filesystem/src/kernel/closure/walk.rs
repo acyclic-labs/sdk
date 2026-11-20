@@ -147,7 +147,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             .map(|(proof, guard, _)| (proof, guard))
     }
 
-    /// Proves the closure, reusing its immediate parent's published proof.
+    /// Proves the closure using a published proof as the baseline when its
+    /// objects are still available.
     pub(crate) fn prove_cached(
         &mut self,
         generation_root: ObjectId,
@@ -159,8 +160,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     }
 
     /// A combiner prefix may instead use its authenticated current authority
-    /// root. Its successful CAS keeps that root live while collection marks;
-    /// arbitrary older published roots are not eligible for this shortcut.
+    /// root. Its successful CAS keeps that root live while collection marks.
+    /// A store without collection can also use the latest same-volume proof
+    /// for a candidate whose parent has already been superseded.
     pub(crate) fn prove_cached_from(
         &mut self,
         generation_root: ObjectId,
@@ -229,7 +231,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .as_ref()
                 .and_then(|published| published.current(epochs))
                 .filter(|cached| cached.root.volume_id == *volume)
-                .filter(|cached| reusable(&root.0, cached, self.limits, None))
+                .filter(|cached| reusable(&root.0, cached, self.limits, false, None))
         });
         // Keep the source's original root owner through every asynchronous proof read.
         let base = match source.as_ref() {
@@ -240,7 +242,15 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let previous = held.or_else(|| {
             base.as_ref()
                 .and_then(|base| base.current(epochs))
-                .filter(|cached| reusable(&root.0, cached, self.limits, authority_root))
+                .filter(|cached| {
+                    reusable(
+                        &root.0,
+                        cached,
+                        self.limits,
+                        epochs.is_none(),
+                        authority_root,
+                    )
+                })
         });
         if let Some(previous) = previous {
             let increment = self.prove_increment(&root.0, &previous).await?;
@@ -951,6 +961,7 @@ fn reusable(
     root: &GenerationRoot,
     cached: &CachedProof,
     limits: ClosureLimits,
+    preserves_all_objects: bool,
     authority_root: Option<ObjectId>,
 ) -> bool {
     // A named parent is content-addressed, so it may be another volume's: a
@@ -960,5 +971,7 @@ fn reusable(
         && root.continuation_features() == cached.root.continuation_features()
         && (root.parents.as_slice() == [cached.generation_id]
             || (root.volume_id == cached.root.volume_id
-                && authority_root.is_some_and(|root| root == cached.generation_id.object_id())))
+                && (preserves_all_objects
+                    || authority_root
+                        .is_some_and(|root| root == cached.generation_id.object_id()))))
 }

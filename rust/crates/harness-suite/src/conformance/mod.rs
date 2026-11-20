@@ -22,7 +22,7 @@ mod vectors;
 mod wire;
 
 use acyclic_actors::guest::Handler;
-use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
+use acyclic_stream::{BoxProviderFuture, ProviderOwner, ProviderPlatform};
 use std::sync::Arc;
 
 pub use performance::{Measurement, Scale, ScaleMeasurement, bench, scale};
@@ -121,7 +121,7 @@ pub trait Storage: ProviderPlatform {
     #[cfg(not(target_arch = "wasm32"))]
     fn staging_directory(&self) -> &std::path::Path;
     /// Open a new session on this vector's retained storage.
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<Stream>>>;
+    fn open(&self) -> BoxProviderFuture<'_, Result<ProviderOwner<Stream>>>;
     /// Provision an empty object domain for the filesystem-backed vectors.
     fn objects(&self) -> BoxProviderFuture<'_, Result<Objects>>;
 }

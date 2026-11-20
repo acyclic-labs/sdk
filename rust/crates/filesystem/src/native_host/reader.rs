@@ -28,12 +28,12 @@ impl HostStatReader {
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
         #[cfg(test)]
-        #[cfg(all(windows))]
+        #[cfg(windows)]
         if super::stat_probe::old() {
             return self.next(work);
         }
         #[cfg(test)]
-        #[cfg(all(any(target_os = "linux", windows)))]
+        #[cfg(any(target_os = "linux", windows))]
         if super::stat_probe::restore_walk() {
             return self.next(work);
         }

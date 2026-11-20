@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::Retained;
 
 pub(super) struct DemandBlobSource<'a, D> {
     pub(super) provider: &'a D,
@@ -13,6 +14,60 @@ pub(super) struct DemandBlobSource<'a, D> {
 }
 
 impl<D: DemandSource> DemandBlobSource<'_, D> {
+    /// Read a version-pinned payload for the existing inline file format.
+    pub(super) async fn read_inline(
+        self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<acyclic_stream::OwnedBytes, LazyWorkspaceError> {
+        let mut assembled = None;
+        let result = async {
+            let mut offset = 0;
+            while offset < self.length {
+                let remaining = self.length - offset;
+                let chunk = accounted!(ctx, |work, cancel| self.provider.read_range(
+                    self.source.clone(),
+                    self.path,
+                    self.version,
+                    offset,
+                    remaining,
+                    work,
+                    cancel,
+                ))?
+                .retain_received_bytes(ctx)?;
+                let read = chunk.len() as u64;
+                if read == 0 || read > remaining {
+                    return Err(DemandError::StaleVersion.into());
+                }
+                if read == self.length {
+                    return Ok(chunk);
+                }
+                let output = match &mut assembled {
+                    Some(output) => output,
+                    slot @ None => {
+                        let length =
+                            usize::try_from(self.length).map_err(|_| crate::WorkError::Overflow)?;
+                        slot.insert(Owned::<Vec<u8>>::allocate(length, ctx)?)
+                    }
+                };
+                ctx.charge(WorkCounters {
+                    bytes_copied: read,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                output.value.extend_from_slice(&chunk);
+                offset += read;
+            }
+            match assembled.take() {
+                Some(output) => Ok(Retained::from_owned(output, ctx)?.into_owned_bytes((), ctx)?),
+                None => Ok(acyclic_stream::OwnedBytes::from_static(b"")),
+            }
+        }
+        .await;
+        if let Some(output) = assembled {
+            output.retire(ctx)?;
+        }
+        result
+    }
+
     fn wanted(&self, destination: &[u8]) -> u64 {
         self.length
             .saturating_sub(self.offset)

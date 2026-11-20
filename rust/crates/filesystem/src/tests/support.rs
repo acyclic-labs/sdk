@@ -1,9 +1,9 @@
-use crate::async_storage::{
+use acyclic_fs::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
-use crate::memory::MemoryObjectStore;
-use crate::performance::WorkCounters;
-use crate::storage::{
+use acyclic_fs::memory::MemoryObjectStore;
+use acyclic_fs_work::performance::WorkCounters;
+use acyclic_fs::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
 };
 use acyclic_stream::OwnedBytes;
@@ -27,11 +27,11 @@ pub(crate) fn mount_test_compiler() -> std::io::Result<std::path::PathBuf> {
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
-    pub(crate) static JSON_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static JSON_OUTPUT_CUT: std::cell::RefCell<Option<(acyclic_fs::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
     pub(crate) static JSON_OUTPUT_FIRST_ALLOCATION: std::cell::Cell<Option<Option<usize>>> = const { std::cell::Cell::new(None) };
     pub(crate) static JSON_OUTPUT_ALLOCATIONS: std::cell::Cell<Option<acyclic_test_support::AllocationInfo>> = const { std::cell::Cell::new(None) };
     pub(crate) static JSON_ERROR_FIRST_ALLOCATION: std::cell::Cell<Option<Option<usize>>> = const { std::cell::Cell::new(None) };
-    pub(crate) static TEXT_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static TEXT_OUTPUT_CUT: std::cell::RefCell<Option<(acyclic_fs::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
     pub(crate) static TEXT_OUTPUT_ALLOCATIONS: std::cell::Cell<Option<acyclic_test_support::AllocationInfo>> = const { std::cell::Cell::new(None) };
 }
 
@@ -39,8 +39,8 @@ thread_local! {
 /// earlier transaction preparation and unrelated input backing cannot mask it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe_json_output<T>(
-    serialize: impl FnOnce() -> Result<T, crate::workspace::WorkspaceError>,
-) -> Result<T, crate::workspace::WorkspaceError> {
+    serialize: impl FnOnce() -> Result<T, acyclic_fs::workspace::WorkspaceError>,
+) -> Result<T, acyclic_fs::workspace::WorkspaceError> {
     let Some((original, pressure)) = JSON_OUTPUT_CUT.with_borrow_mut(Option::take) else {
         return serialize();
     };
@@ -52,8 +52,8 @@ pub(crate) fn observe_json_output<T>(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe_text_output<T>(
-    merge: impl FnOnce() -> Result<T, crate::workspace::WorkspaceError>,
-) -> Result<T, crate::workspace::WorkspaceError> {
+    merge: impl FnOnce() -> Result<T, acyclic_fs::workspace::WorkspaceError>,
+) -> Result<T, acyclic_fs::workspace::WorkspaceError> {
     let Some((original, pressure)) = TEXT_OUTPUT_CUT.with_borrow_mut(Option::take) else {
         return merge();
     };
@@ -64,7 +64,7 @@ pub(crate) fn observe_text_output<T>(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn observe_output<T>(
-    original: &crate::NativeMaterializationWork,
+    original: &acyclic_fs::NativeMaterializationWork,
     pressure: Option<u64>,
     produce: impl FnOnce() -> T,
 ) -> (T, Option<usize>, acyclic_test_support::AllocationInfo) {
@@ -109,9 +109,9 @@ impl AsyncObjectStore for OwnedReadObjectStore {
     fn decoded_cache_lookup(
         &self,
         key: DecodedCacheKey,
-    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
-        Ok(crate::async_storage::DecodedCacheLookup::Miss(
-            crate::async_storage::DecodedCacheMiss::new(key, 0, self),
+    ) -> Result<acyclic_fs::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        Ok(acyclic_fs::async_storage::DecodedCacheLookup::Miss(
+            acyclic_fs::async_storage::DecodedCacheMiss::new(key, 0, self),
         ))
     }
 
@@ -119,7 +119,7 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
+        context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         ordinary(context)?;
         self.inner.put(object_id, bytes, context).await
@@ -129,7 +129,7 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        context: &mut crate::AuthorityWork<'_>,
+        context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         ordinary(context)?;
         let read = self.inner.read(object_id, maximum_bytes, context).await?;
@@ -137,10 +137,10 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         let mut accounting = context.read_accounting()?;
         let mut scope = accounting
             .allocation_scope()
-            .map_err(crate::async_storage::object_error)?;
+            .map_err(acyclic_fs::async_storage::object_error)?;
         let allocation = scope
             .claim_owned(logical_bytes, u64::from(logical_bytes != 0))
-            .map_err(crate::async_storage::object_error)?;
+            .map_err(acyclic_fs::async_storage::object_error)?;
         let bytes = scope
             .perform(
                 WorkCounters {
@@ -149,10 +149,10 @@ impl AsyncObjectStore for OwnedReadObjectStore {
                 },
                 || OwnedBytes::copy_from_slice(&read.bytes),
             )
-            .map_err(crate::async_storage::object_error)?;
+            .map_err(acyclic_fs::async_storage::object_error)?;
         scope
             .keep_bytes(logical_bytes)
-            .map_err(crate::async_storage::object_error)?;
+            .map_err(acyclic_fs::async_storage::object_error)?;
         drop(allocation);
         Ok(ObjectRead {
             bytes,
@@ -163,23 +163,23 @@ impl AsyncObjectStore for OwnedReadObjectStore {
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), ObjectStoreError> {
         ordinary(context)?;
-        crate::async_storage::read_many_sequential(self, requests, context).await
+        acyclic_fs::async_storage::read_many_sequential(self, requests, context).await
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
+        context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
         ordinary(context)?;
         self.inner.contains(object_id, context).await
     }
 }
 
-fn ordinary(context: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+fn ordinary(context: &acyclic_fs::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     if context.is_native() {
         return Err(ObjectStoreError::NativeUnavailable);
@@ -203,7 +203,7 @@ pub(crate) use objects::{
     put_generation_root, put_object, put_tree_page,
 };
 
-impl crate::async_storage::DecodedCacheOrigin for OwnedReadObjectStore {
+impl acyclic_fs::async_storage::DecodedCacheOrigin for OwnedReadObjectStore {
     fn admit(
         &self,
         _key: DecodedCacheKey,

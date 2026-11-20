@@ -26,8 +26,13 @@ proptest! {
         prop_assert_eq!(document.providers["fixture"].models["model"], replay.providers["fixture"].models["model"]);
         value["fixture"]["models"]["model"]["capacity"]["context_tokens"] = serde_json::json!("invalid");
         let malformed = format!("{}{}", "\n".repeat(prefix_lines), serde_json::to_string(&value).unwrap());
-        crate::catalog_document::assert_diagnostic(malformed.as_bytes(),
-            "fixture.models.model.capacity.context_tokens", prefix_lines + 1);
+        let error = crate::catalog_document::parse(malformed.as_bytes())
+            .err()
+            .expect("malformed capacity must be refused")
+            .to_string();
+        let expected = format!("line {}", prefix_lines + 1);
+        prop_assert!(error.contains("fixture.models.model.capacity.context_tokens"));
+        prop_assert!(error.contains(&expected));
     }
 }
 

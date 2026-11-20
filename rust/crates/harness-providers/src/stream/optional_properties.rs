@@ -1,6 +1,6 @@
 use crate::Adapter;
-use acyclic_harness_core::model::ModelEvent;
-use acyclic_harness_provider_response::stream::{State, parse};
+use acyclic_harness_core::model::{ModelDispatch, ModelEvent};
+use acyclic_harness_provider_response::stream::{State, finish, parse};
 use proptest::prelude::*;
 use serde_json::Value;
 use serde_json::json;

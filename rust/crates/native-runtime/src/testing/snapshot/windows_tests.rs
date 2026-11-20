@@ -127,13 +127,10 @@ fn snapshot_enumeration_preserves_the_image_with_fewer_physical_queries() -> io:
         // background I/O cannot make either side of the differential pass.
         let current = std::thread::current();
         let name = current.name().expect("libtest names its test threads");
-        let output = crate::process_output(
-            crate::ProcessCommand::new(std::env::current_exe()?)
-                .args(["--exact", name, "--test-threads=1", "--nocapture"])
-                .env(CHILD, "1"),
-            std::time::Duration::from_secs(5),
-            64 * 1024,
-        )?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", name, "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1")
+            .output()?;
         assert!(output.status.success(), "snapshot I/O child: {output:?}");
         return Ok(());
     }

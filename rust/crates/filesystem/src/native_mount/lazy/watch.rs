@@ -88,7 +88,7 @@ where
                 .cancellation()
                 .check()
                 .map_err(|_| MountSourceError::Cancelled)?;
-            work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            work.charge(crate::ledger::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
             match change {
                 SourceChange::Departed(path)
@@ -161,7 +161,7 @@ fn change_counts(
         .iter()
         .try_fold((0usize, 0usize, 0usize, 0usize), |(n, s, e, l), change| {
             crate::native_host::NativeHostWork::check(work).map_err(MountSourceError::from)?;
-            work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            work.charge(crate::ledger::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
             let extra = match change {
                 SourceChange::Entry(path) => usize::from(!path.is_root()),

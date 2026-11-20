@@ -23,8 +23,9 @@ const READERS: [&str; 3] = [
 
 /// Exact remaining run-time spellings: (file, count).
 const ALLOWED: [(&str, usize); 3] = [
-    // The fallback root for ordinary Cargo runs, and `crate_path!` itself.
-    ("rust/crates/test-support/src/fixtures.rs", 2),
+    // The fixtures resolve the source root at run time; no compile-time manifest
+    // directory remains, so the allowance is zero.
+    ("rust/crates/test-support/src/fixtures.rs", 0),
     // A compiler-policy fixture for admitted compile-time metadata; it is never run.
     (
         "rust/crates/harness/tests/ui/native-environment/src/lib.rs",
@@ -218,12 +219,11 @@ fn violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<St
         }
     }
     for (path, count) in ALLOWED {
-        match found.remove(path) {
-            Some(actual) if actual == count => (),
-            actual => violations.push(format!(
-                "{path}: manifest directory expected {count}, found {}",
-                actual.unwrap_or(0)
-            )),
+        let actual = found.remove(path).unwrap_or(0);
+        if actual != count {
+            violations.push(format!(
+                "{path}: manifest directory expected {count}, found {actual}"
+            ));
         }
     }
     violations.extend(
@@ -334,8 +334,11 @@ tempfile::tempdir_in(executable.parent().unwrap())",
     ] {
         assert!(scan(target, plant).is_empty(), "{plant}");
     }
-    // A removed allowance is stale rather than silently passing.
-    assert!(scan(fixtures, "").contains(&format!(
-        "{fixtures}: manifest directory expected 2, found 0"
-    )));
+    // A use in a file whose allowance is zero is a violation, not a silent pass.
+    assert_eq!(
+        scan(fixtures, &format!("let root = Path::new({manifest});")),
+        [format!(
+            "{fixtures}: manifest directory expected 0, found 1"
+        )]
+    );
 }

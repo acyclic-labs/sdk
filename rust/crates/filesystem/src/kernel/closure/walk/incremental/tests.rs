@@ -8,8 +8,12 @@ type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 #[test]
 fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement() -> TestResult<()> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let meter = ProofMeter::Native {
         original: &original,
@@ -102,12 +106,13 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
 
     // Root cloning succeeds; the following two-Arc admission is refused.
     // Its original parent-buffer guard must retire outside the meter borrow.
-    let limited = crate::NativeMaterializationWork::new(
+    let limited = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 5,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let limited_baseline = limited.live_allocation_bytes().unwrap();
@@ -296,6 +301,36 @@ fn incremental_namespace_rejects_duplicate_orphan_and_cyclic_bindings() -> TestR
         .ok_or("missing binding")?
         .directory_id = FileId::from_bytes(1_u128.to_be_bytes());
     assert!(!validate(&diff, budget)?.0);
+    Ok(())
+}
+
+#[test]
+fn incremental_namespace_requires_each_removed_file_to_lose_its_only_binding() -> TestResult<()> {
+    let budget = crate::performance::work_budget(10_000, 1_000_000);
+    let mut diff = namespace_diff(2, false)?;
+    // Invert one addition to get a removal alongside the other new file.
+    let removed = diff.files.get_mut(1).ok_or("missing removed file")?;
+    removed.before = removed.after.take();
+    let binding = diff.bindings.first_mut().ok_or("missing removed binding")?;
+    binding.before = binding.after.take();
+    assert!(validate(&diff, budget)?.0);
+
+    let mut stale = diff.clone();
+    stale.bindings.remove(0);
+    assert!(!validate(&stale, budget)?.0);
+
+    let mut hard_link = diff.clone();
+    hard_link
+        .files
+        .get_mut(1)
+        .and_then(|change| change.before.as_mut())
+        .ok_or("missing old record")?
+        .link_count = 2;
+    assert!(!validate(&hard_link, budget)?.0);
+
+    let mut retained = diff;
+    retained.files.remove(1);
+    assert!(!validate(&retained, budget)?.0);
     Ok(())
 }
 

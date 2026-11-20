@@ -18,7 +18,7 @@ pub struct Cancelled<'a> {
 struct PreparedWaiter {
     allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
     #[cfg(not(target_arch = "wasm32"))]
-    cleanup: Option<crate::materializer::NativeWorkReservation>,
+    cleanup: Option<crate::ledger::NativeWorkReservation>,
 }
 
 #[derive(Debug, Error)]

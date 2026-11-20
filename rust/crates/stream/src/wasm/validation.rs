@@ -144,7 +144,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
             "read" => wire::ReadRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::read_from_wire)
-                .and_then(|request| memory::validate_limit(request.limit)),
+                .and_then(|request| crate::validate_limit(request.limit)),
             "follow" => wire::FollowRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::follow_from_wire)
@@ -152,7 +152,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
             "children_page" => wire::ChildrenPageRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::children_page_from_wire)
-                .and_then(|request| memory::validate_limit(request.limit)),
+                .and_then(|request| crate::validate_limit(request.limit)),
             _ => Err(StreamError::InvalidArgument),
         });
     result.map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
@@ -746,10 +746,6 @@ mod http {
             Some("token") => token_js(value),
             _ => Err("unknown HTTP route"),
         }
-    }
-
-    pub(super) fn validate(route: &str, value: &Value) -> Result {
-        acyclic_stream_wire::http_validation::validate(route, value)
     }
 }
 

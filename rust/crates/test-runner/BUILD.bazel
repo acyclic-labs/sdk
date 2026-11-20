@@ -4,13 +4,17 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-test-runner","CARGO_PKG_DESCRIPTION":"Runs each libtest case in its own process under a time limit, for Bazel test actions","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-test-runner","CARGO_PKG_DESCRIPTION":"Runs each libtest case in its own process under a time limit, for Bazel test actions","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 rust_binary(
     name = "acyclic-test-runner",
     crate_root = "src/main.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/darwin_scratch_mounts.rs",
+        "src/linux_scratch_mounts.rs",
+        "src/main.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -22,19 +26,34 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/darwin-mount-retire:acyclic_darwin_mount_retire",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
+    }),
     visibility = ["//visibility:public"],
 )
 
 rust_test(
     name = "acyclic_test_runner_test_cases",
     crate_root = "src/main.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/darwin_scratch_mounts.rs",
+        "src/linux_scratch_mounts.rs",
+        "src/main.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -46,13 +65,29 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/darwin-mount-retire:acyclic_darwin_mount_retire",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
+    }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -92,13 +127,32 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/darwin-mount-retire:acyclic_darwin_mount_retire",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/process-resources:acyclic_process_resources",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    }),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        ":acyclic-test-runner",
+    ],
+    env = {"CARGO_BIN_EXE_acyclic-test-runner":"$(rootpath :acyclic-test-runner)"},
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

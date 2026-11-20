@@ -153,7 +153,7 @@ pub(crate) fn send<'a>(
                     .sum::<usize>()
                 + key.map_or(0, str::len)
                 + account.map_or(0, str::len);
-            crate::native::reserve(
+            crate::allocation::reserve(
                 work,
                 bytes as u64,
                 provider.config.headers.len() as u64 + 16,
@@ -164,7 +164,7 @@ pub(crate) fn send<'a>(
     let url = projection::endpoint(provider);
     #[cfg(not(target_arch = "wasm32"))]
     let url = match allocation.as_mut() {
-        Some(allocation) => crate::native::diagnostic(url, allocation),
+        Some(allocation) => crate::allocation::diagnostic(url, allocation),
         None => url,
     };
     let request = HttpRequest {
@@ -183,7 +183,7 @@ pub(crate) fn send<'a>(
                 .iter()
                 .map(|(name, value)| name.capacity() + value.capacity())
                 .sum::<usize>();
-        crate::native::retain(allocation, retained as u64)?;
+        crate::allocation::retain(allocation, retained as u64)?;
     }
     let events = crate::admission::send(provider, request, work, held);
     let mut events = core::pin::pin!(events);
@@ -203,7 +203,7 @@ pub(crate) async fn encode(
     projection::cache::encode(&body, provider, origin)
 }
 
-pub(crate) fn request_headers(
+fn request_headers(
     provider: &ResolvedModel,
     dispatch: ModelDispatch,
     key: Option<&str>,

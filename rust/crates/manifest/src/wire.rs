@@ -147,14 +147,13 @@ pub fn typescript<T: ContractType>() -> Result<String, String> {
                 _ => "number".into(),
             };
             out.push_str(&format!(
-                "  {}?: {}{};\n",
+                "  {}?: {};\n",
                 field.json_name(),
                 if field.is_list() {
                     format!("({ty})[]")
                 } else {
                     ty
-                },
-                ""
+                }
             ));
         }
         out.push_str("};\n");

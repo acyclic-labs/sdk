@@ -110,8 +110,8 @@ async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn 
             let body = crate::Sealed::new(
                 OwnedBytes::from_vec_with_guard(payload, payload_credit, Arc::clone(&meter))
                     .map_err(|failure| match failure.into_error() {
-                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
-                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                        acyclic_stream_contract::PreparedOwnedBytesError::Admission(error) => error,
+                        acyclic_stream_contract::PreparedOwnedBytesError::NotFullyInitialized => {
                             std::io::Error::from(std::io::ErrorKind::InvalidData)
                         }
                     })?,
@@ -701,7 +701,7 @@ async fn native_manifest_growth_releases_replaced_backing() -> Result<(), Box<dy
 #[tokio::test]
 async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn std::error::Error>>
 {
-    use acyclic_stream::RevisionCut;
+    use acyclic_stream_contract::RevisionCut;
 
     let directory = tempfile::tempdir()?;
     let store =

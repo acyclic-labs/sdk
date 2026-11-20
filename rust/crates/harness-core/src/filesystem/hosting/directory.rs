@@ -187,7 +187,7 @@ where
                 &cancellation,
             )
             .map_err(|(error, _)| turn(crate::Error::from(error)))?;
-            let io = super::super::PreparationIo::from_native_work(&work).map_err(turn)?;
+            let io = super::super::PreparationIo::for_unmeasured(&cancellation).map_err(turn)?;
             let Some(mut current) = binding
                 .host
                 .private_current_generation(&binding.volume, after, &io)

@@ -32,9 +32,8 @@ fn scripted(path: &'static str, steps: Vec<Step>) -> Arc<Scripted> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Budgets {
-    Automatic,
-
-    AutomaticUnknown,
+    ReservedOutput,
+    SharedContext,
 }
 
 async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestResult<bool> {
@@ -95,9 +94,10 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     // still admits the full real tool prefix.
     model.capacity.context_tokens = 16_384;
     model.capacity.output_tokens = match budgets {
-        Budgets::AutomaticUnknown => None,
-        _ => Some(1024),
+        Budgets::ReservedOutput => Some(1024),
+        Budgets::SharedContext => None,
     };
+    model.capacity.output_shares_context = budgets == Budgets::SharedContext;
     spec.models.insert("luna".into(), model);
     catalog.register("workers".into(), spec)?;
     let routes = Arc::new(Routes {
@@ -404,10 +404,13 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         )
         .await?;
     resumed.agents().drain(&kid).await?;
-    assert!(matches!(
-        resumed.agents().state(&kid).await?.phase,
-        acyclic_harness_core::agent::Phase::Idle
-    ));
+    let phase = resumed.agents().state(&kid).await?.phase;
+    if phase != acyclic_harness_core::agent::Phase::Idle {
+        return Err(format!(
+            "resumed child did not settle ({adapter:?}, {budgets:?}, misroute={misroute}): {phase:?}"
+        )
+        .into());
+    }
     let sent = child.state.lock().unwrap_or_else(|p| p.into_inner());
     // The negative control binds every child to the root provider. It completes
     // the same lifecycle but cannot satisfy this HTTP-boundary routing oracle.
@@ -483,13 +486,11 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
 
 #[tokio::test]
 async fn role_models_route_across_providers_and_resume_with_stable_prefixes() -> TestResult {
-    assert!(run_roles(Adapter::Responses, false, Budgets::Automatic).await?);
-    assert!(run_roles(Adapter::Gemini, false, Budgets::Automatic).await?);
-    for budgets in [Budgets::AutomaticUnknown] {
-        assert!(run_roles(Adapter::Responses, false, budgets).await?);
-    }
+    assert!(run_roles(Adapter::Responses, false, Budgets::ReservedOutput).await?);
+    assert!(run_roles(Adapter::Gemini, false, Budgets::ReservedOutput).await?);
+    assert!(run_roles(Adapter::Responses, false, Budgets::SharedContext).await?);
     assert!(
-        run_roles(Adapter::Responses, true, Budgets::Automatic).await?,
+        run_roles(Adapter::Responses, true, Budgets::ReservedOutput).await?,
         "negative control did not expose forced parent routing"
     );
     Ok(())

@@ -73,14 +73,17 @@ impl Conversation {
                     ),
                 ]
                 .into_iter()
-                .map(|(path, text)| ClientFileChange {
-                    expected: files.files[&path]
-                        .as_ref()
-                        .and_then(|file| file.original().cloned()),
-                    path,
-                    text: Some(text),
+                .map(|(path, text)| {
+                    let file = files.files.get(&path).ok_or_else(|| {
+                        Error::Conflict(format!("run admission read omitted {path}"))
+                    })?;
+                    Ok(ClientFileChange {
+                        expected: file.as_ref().and_then(|file| file.original().cloned()),
+                        path,
+                        text: Some(text),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>>>()?,
             )
             .await?;
             original = self
@@ -88,8 +91,10 @@ impl Conversation {
                 .await?;
         }
         let select = |path: &str| {
-            original.files[path]
-                .as_ref()
+            original
+                .files
+                .get(path)
+                .and_then(Option::as_ref)
                 .ok_or_else(|| Error::Conflict("original run admission omits an input".into()))
         };
         let declaration: RunAdmission =
@@ -147,8 +152,10 @@ impl Conversation {
                     let files = self
                         .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
                         .await?;
-                    let file = files.files["GOAL.md"]
-                        .as_ref()
+                    let file = files
+                        .files
+                        .get("GOAL.md")
+                        .and_then(Option::as_ref)
                         .ok_or_else(|| Error::Conflict("run ended without GOAL.md".into()))?;
                     let goal = GoalState::from_bytes(file.text.as_bytes(), u64::MAX)?;
                     if goal.status == GoalStatus::Active {

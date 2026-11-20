@@ -52,12 +52,12 @@ impl NativeAccounting {
         let (allocations, counters, budget, stop) = accounting
             .standalone_parts()
             .ok_or(crate::FsError::AccountingHandoffActive)?;
-        let mut state = crate::demand::DemandWork::new(budget, stop);
+        let mut state = crate::ledger::DemandWork::new(budget, stop);
         let (owned, owned_counters, _, _) = state.allocation_parts();
         *owned = allocations.handoff(counters, budget)?;
         *owned_counters = *counters;
         let baseline = *counters;
-        let meter = crate::demand::NativeDemandReadMeter::with_backing(state, backing);
+        let meter = crate::ledger::NativeDemandReadMeter::with_backing(state, backing);
         let meter = Arc::new(meter);
         let super::super::LedgerState::Suspended(_, observer) = &mut allocations.state else {
             unreachable!("the original branch was suspended by handoff")

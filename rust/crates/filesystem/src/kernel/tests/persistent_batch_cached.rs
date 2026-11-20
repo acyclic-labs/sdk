@@ -14,9 +14,10 @@ fn select_cached(
         .map(name)
         .collect::<Result<Vec<_>, _>>()?;
     let cancellation = CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(
+    let work = crate::NativeMaterializationWork::root(
         crate::performance::work_budget(65_536, 16 * 1024 * 1024),
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes().unwrap();

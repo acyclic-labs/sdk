@@ -1,12 +1,8 @@
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, FsError, Workspace,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, Workspace,
     WorkspaceError,
 };
 use acyclic_fs_work::performance::WorkBudget;
-
-#[path = "transaction.rs"]
-mod transaction;
-pub(crate) use transaction::{allow, commit};
 
 pub(crate) async fn fork_workspace<
     A: AsyncAuthorityStore + 'static,
@@ -23,7 +19,7 @@ pub(crate) async fn fork_workspace<
             acyclic_fs::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-            &mut allow::<FsError>,
+            (),
         )
         .await
         .map(|receipt| receipt.value)

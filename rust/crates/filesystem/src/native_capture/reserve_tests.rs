@@ -77,9 +77,9 @@ fn expected(
     cancelled: bool,
 ) -> (WorkCounters, u64, u64, usize) {
     let header = NativeMaterializationWork::accounting_state_bytes()
-        + crate::demand::NativeAllocationAccounting::ALLOCATION_BYTES
+        + crate::ledger::NativeAllocationAccounting::ALLOCATION_BYTES
         + crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
-            crate::demand::CaptureTransientCustody,
+            crate::ledger::CaptureTransientCustody,
         >())
         .unwrap() as u64;
     let growing = !cancelled && length + additional > capacity;

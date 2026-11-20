@@ -45,6 +45,16 @@ pub(super) fn prepare_key(bytes: &[u8; 32]) -> SigningKey {
     SigningKey::from_bytes(bytes)
 }
 
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+struct CapturedAuthorityClock(acyclic_native_runtime::testing::CapturedClock);
+
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+impl acyclic_stream::UnixMillisClock for CapturedAuthorityClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.unix_millis()
+    }
+}
+
 impl RuntimeSigner {
     pub(super) fn new(
         id: &str,
@@ -52,6 +62,17 @@ impl RuntimeSigner {
         clock: Option<Arc<dyn acyclic_stream::UnixMillisClock>>,
         owner: TrustOwner,
     ) -> Self {
+        // Callback threads recheck the issuing owner's authority. They must
+        // observe the same timeline even after leaving its execution context.
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        let clock = if clock.as_ref().is_none_or(|clock| clock.is_system_clock())
+            && let Some(captured) = acyclic_native_runtime::testing::CapturedClock::capture()
+        {
+            Some(Arc::new(CapturedAuthorityClock(captured))
+                as Arc<dyn acyclic_stream::UnixMillisClock>)
+        } else {
+            clock
+        };
         let seed = zeroize::Zeroizing::new(seed);
         let metadata = prepare_key(&blake3::derive_key(
             "acyclic.harness.metadata.v1",
@@ -111,9 +132,15 @@ pub(super) struct PublicAuthority {
 
 impl PublicAuthority {
     pub(super) fn now(&self) -> u64 {
-        self.clock
-            .as_ref()
-            .map_or_else(workload::now, |clock| clock.now_unix_millis() / 1000)
+        self.now_unix_millis() / 1000
+    }
+
+    pub(super) fn now_unix_millis(&self) -> u64 {
+        use acyclic_stream::UnixMillisClock as _;
+        self.clock.as_ref().map_or_else(
+            || acyclic_stream::SystemUnixMillisClock.now_unix_millis(),
+            |clock| clock.now_unix_millis(),
+        )
     }
 }
 
@@ -164,10 +191,6 @@ impl AdmissionPort {
         Ok(self.runtime()?.metadata.sign(digest).to_bytes())
     }
 }
-
-#[cfg(test)]
-#[path = "runtime_key_tests.rs"]
-mod key_tests;
 
 #[cfg(test)]
 mod tests {

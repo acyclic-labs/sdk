@@ -29,11 +29,10 @@ pub fn executable_file(path: &Path) {
 
 /// Locates the original named Cargo executable after runtime relocation.
 ///
-/// Runtime Cargo metadata wins over the compiled path. Nextest's portable
-/// executable variable is used when Cargo metadata is absent. An optional
-/// explicitly selected executable takes precedence over both. Checking a consumer
-/// does not require Cargo to have built its executable: the compiled path is
-/// consulted only when no explicit or runtime executable was selected.
+/// Runtime Cargo metadata wins over nextest's portable executable variable. An
+/// optional explicitly selected executable takes precedence over both. A test
+/// binary is supplied by Cargo or nextest at run time; a consumer that does not
+/// build it fails the assertion rather than reading a path compiled into it.
 ///
 /// # Panics
 ///
@@ -47,13 +46,7 @@ macro_rules! cargo_binary {
         let selected = ($selected)
             .or_else(|| ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name)))
             .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")));
-        let path = selected.map_or_else(
-            || {
-                option_env!(concat!("CARGO_BIN_EXE_", $name))
-                    .map_or_else(::std::path::PathBuf::new, ::std::path::PathBuf::from)
-            },
-            ::std::path::PathBuf::from,
-        );
+        let path = selected.map_or_else(::std::path::PathBuf::new, ::std::path::PathBuf::from);
         // An executable missing from Cargo and nextest leaves an empty path.
         assert!(
             path.is_absolute(),
@@ -94,71 +87,122 @@ macro_rules! host_tool {
 /// snapshot: set `ACYCLIC_TEST_SOURCE_ROOT` to its absolute repository root.
 /// A Bazel `isolated_test` sets it to the SDK's repository in the runfiles, in
 /// the SDK's own workspace and in any workspace that depends on the SDK, so a
-/// consumer reads the SDK files it declares as test data. Ordinary Cargo tests
-/// use the source tree they were compiled from.
+/// consumer reads the SDK files it declares as test data. A Bazel test that runs
+/// the binary directly reads the SDK's repository from the runfiles. Ordinary
+/// Cargo tests use the workspace they run in.
 ///
 /// # Panics
 ///
 /// If the explicit source root is relative, or the fixture path is absolute.
 pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
-    let root = std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
     let relative = relative.as_ref();
+    assert!(
+        relative.is_relative(),
+        "fixture path must be repository-relative"
+    );
+    let root = source_root(relative);
     assert!(
         root.is_absolute(),
         "test source root must be absolute: {}",
         root.display()
     );
-    assert!(
-        relative.is_relative(),
-        "fixture path must be repository-relative"
-    );
     root.join(relative)
 }
 
-/// Locates `relative` inside the crate whose compile-time manifest directory is
-/// `manifest` within the compile-time repository root `repository`, under the
-/// same source root as [`source_path`]. Both paths come from the one compile of
-/// the calling crate, so they share a root wherever that compile ran. Use
-/// [`crate_path!`](crate::crate_path) rather than calling this directly.
-///
-/// # Panics
-///
-/// If `manifest` lies outside `repository`.
-pub fn crate_source_path(repository: &str, manifest: &str, relative: impl AsRef<Path>) -> PathBuf {
-    let package = Path::new(manifest)
-        .strip_prefix(repository)
-        .expect("crate manifest lies inside the repository it was compiled in");
-    source_path(package.join(relative))
+/// The repository root a test reads checked-in files from, resolved at run time.
+fn source_root(relative: &Path) -> PathBuf {
+    std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| runfiles_source_root(relative))
+        .or_else(bazel_exec_root)
+        .unwrap_or_else(|| {
+            workspace_root(&std::env::current_dir().expect("test working directory"))
+        })
 }
 
-/// Locates an artifact whose runtime path variable is `variable`.
+/// The exec root of a Bazel test, whose source tree the test binary's runfiles
+/// path names. A test that runs directly rather than through `isolated_test`
+/// reads checked-in files from the exec root, which holds the source tree.
+fn bazel_exec_root() -> Option<PathBuf> {
+    let runfiles = std::env::var_os("TEST_SRCDIR")?;
+    let components: Vec<_> = Path::new(&runfiles).components().collect();
+    let bazel_out = components
+        .iter()
+        .position(|component| component.as_os_str() == "bazel-out")?;
+    Some(components.get(..bazel_out)?.iter().collect())
+}
+
+/// The workspace root above `package`, the directory whose manifest declares the workspace.
+fn workspace_root(package: &Path) -> PathBuf {
+    package
+        .ancestors()
+        .find(|directory| {
+            std::fs::read_to_string(directory.join("Cargo.toml"))
+                .is_ok_and(|manifest| manifest.contains("[workspace]"))
+        })
+        .expect("crate directory lies inside a Cargo workspace")
+        .to_owned()
+}
+
+/// The SDK repository in a Bazel test's runfiles when the test runs directly
+/// rather than through `isolated_test`, which supplies `ACYCLIC_TEST_SOURCE_ROOT`.
+/// A consumer sees the SDK as an external repository, so only a path that exists
+/// in the main workspace's runfiles selects it.
+fn runfiles_source_root(relative: &Path) -> Option<PathBuf> {
+    let runfiles = std::env::var_os("TEST_SRCDIR")?;
+    let workspace = std::env::var_os("TEST_WORKSPACE")?;
+    let root = Path::new(&runfiles).join(workspace);
+    root.join(relative).exists().then_some(root)
+}
+
+/// The repository-relative directory of the calling crate, resolved at run time.
 ///
-/// Relocated tests supply paths to executables and their include directories
-/// at run time. Ordinary Cargo runs use the original compiled path. Cargo
-/// binary targets use [`cargo_binary!`](crate::cargo_binary).
-/// The compiled path is requested only when no runtime input is present.
-///
-/// # Errors
-///
-/// Returns the compiled path provider's error when no runtime input is present.
-pub fn runtime_path<E>(
-    variable: &str,
-    compiled: impl FnOnce() -> Result<PathBuf, E>,
-) -> Result<PathBuf, E> {
-    std::env::var_os(variable).map_or_else(compiled, |path| Ok(PathBuf::from(path)))
+/// A Bazel `isolated_test` runs each case in its package directory under the
+/// source root it supplies. A Bazel test that runs its binary directly carries
+/// the package in the binary's path under `bazel-out/<config>/bin`. An ordinary
+/// Cargo test runs in its package directory, which is the workspace root's
+/// descendant.
+fn crate_package() -> PathBuf {
+    let package = std::env::current_dir().expect("test working directory");
+    if let Some(root) = std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").map(PathBuf::from) {
+        return package
+            .strip_prefix(&root)
+            .expect("crate directory lies inside the test source root")
+            .to_owned();
+    }
+    if let Some(package) = bazel_package() {
+        return package;
+    }
+    let root = workspace_root(&package);
+    package
+        .strip_prefix(&root)
+        .expect("crate directory lies inside the Cargo workspace")
+        .to_owned()
+}
+
+/// The package of a Bazel test binary, from its path under `bazel-out/<config>/bin`.
+fn bazel_package() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let components: Vec<_> = executable.components().collect();
+    let bazel_out = components
+        .iter()
+        .position(|component| component.as_os_str() == "bazel-out")?;
+    let package = components.get(bazel_out + 3..components.len().checked_sub(1)?)?;
+    Some(package.iter().collect())
+}
+
+/// Locates `relative` inside the calling crate's source directory, under the
+/// same source root as [`source_path`]. Use [`crate_path!`](crate::crate_path)
+/// rather than calling this directly.
+pub fn crate_source_path(relative: impl AsRef<Path>) -> PathBuf {
+    source_path(crate_package().join(relative))
 }
 
 /// The path of a file inside the calling crate's source directory.
 #[macro_export]
 macro_rules! crate_path {
     ($relative:expr) => {
-        $crate::crate_source_path(
-            env!("ACYCLIC_BUILD_SOURCE_ROOT"),
-            env!("CARGO_MANIFEST_DIR"),
-            $relative,
-        )
+        $crate::crate_source_path($relative)
     };
 }
 

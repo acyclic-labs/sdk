@@ -1,8 +1,8 @@
 #[path = "../../../harness-core/src/sync/owned.rs"]
 mod owned;
 
-mod refresh {
-    include!("../../src/refresh.rs");
+mod production {
+    include!("../../../harness-provider-core/src/refresh.rs");
 }
 use crate::sync::{
     Arc,
@@ -17,7 +17,7 @@ fn complete<T>(operation: impl Future<Output = T>) -> T {
 
 fn sharing_model(fail: bool) {
     loom::model(move || {
-        let state = Arc::new(refresh::Refresh::<u16>::new());
+        let state = Arc::new(production::Refresh::<u16>::new());
         let owner = complete(state.acquire()).ok().unwrap();
         let requests = Arc::new(AtomicUsize::new(1));
         let active = Arc::new(AtomicUsize::new(1));
@@ -77,7 +77,7 @@ fn successful_refresh_permits_later_work() {
 #[test]
 fn cancelling_the_holder_releases_the_guard_and_wakes_the_waiter() {
     loom::model(|| {
-        let state = Arc::new(refresh::Refresh::<u16>::new());
+        let state = Arc::new(production::Refresh::<u16>::new());
         let holder = complete(state.acquire()).ok().unwrap();
         let (registered, waiting) = mpsc::channel();
         let waiter_state = state.clone();

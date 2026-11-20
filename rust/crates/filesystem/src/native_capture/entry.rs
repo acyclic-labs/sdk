@@ -489,7 +489,7 @@ fn descendant_path(base: &Path, relative: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 #[test]
 fn ascent_cancels_only_named_steps() {
     for (base, relative, expected) in [

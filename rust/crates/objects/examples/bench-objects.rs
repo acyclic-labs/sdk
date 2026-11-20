@@ -1,7 +1,7 @@
 //! Measure blob publication and bounded `list(after)` pagination.
 
 use acyclic_objects::{Blobs, MemoryObjects};
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 use std::collections::BTreeSet;
 use std::time::Instant;
 

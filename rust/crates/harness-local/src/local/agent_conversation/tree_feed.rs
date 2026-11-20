@@ -212,15 +212,16 @@ impl Connection {
     /// repeated selection, tasks or a second service. Root identities are retained
     /// only to avoid registering duplicate follows on ordinary attach events.
     pub async fn follow_sessions(&self, relative: StreamPath) -> Result<TreeFeed> {
+        let path = "status/session-directory.json";
         let files = Conversation::open(self.clone())
             .files(
                 crate::client_files::FileRoot::Private {},
-                vec!["status/session-directory.json".into()],
+                vec![path.into()],
                 None,
             )
             .await?;
         let feed = self.follow_tree(relative).await?;
-        if let Some(file) = &files.files["status/session-directory.json"] {
+        if let Some(file) = files.files.get(path).and_then(Option::as_ref) {
             let selected: crate::client_files::SessionDirectory =
                 serde_json::from_str(&file.text).map_err(failed)?;
             if selected.version != 1 {
@@ -229,38 +230,20 @@ impl Connection {
                 ));
             }
             // A placement can publish this descriptor to a tree-scoped client.
-            // Check its original source using this observer's credential before
-            // opening the optional directory follow. Tree observation remains
-            // available without placement-wide authority.
-            match feed
+            // The original follow admits its own operation. Tree observation
+            // remains available when that directory follow is refused.
+            let records = match feed
                 .connection
                 .session
-                .heads(
-                    acyclic_stream::HeadsRequest {
-                        at: None,
-                        retained: Default::default(),
-                        durable_through: None,
-                        projection: acyclic_stream::HeadProjection::Tail,
-                        paths: std::iter::once(selected.source.clone()).collect(),
-                        children: None,
-                        limit: 1,
-                        at_least: Default::default(),
-                    },
-                    feed.connection.session.credential(),
-                )
+                .follow_records(FollowRequest::new(selected.source, 0))
                 .await
             {
-                Ok(_) => {}
-                Err(acyclic_stream::StreamError::AccessDenied) => return Ok(feed),
+                Ok(records) => records,
+                Err(error) if error.category() == acyclic_stream::StreamCategory::AccessDenied => {
+                    return Ok(feed);
+                }
                 Err(error) => return Err(feed.connection.stream_failure(error)),
-            }
-            let records = records_only(
-                feed.connection
-                    .session
-                    .follow(FollowRequest::new(selected.source, 0))
-                    .await
-                    .map_err(|error| feed.connection.stream_failure(error))?,
-            );
+            };
             feed.jobs.push(directory(DirectoryFollow {
                 records,
                 connection: feed.connection.clone(),

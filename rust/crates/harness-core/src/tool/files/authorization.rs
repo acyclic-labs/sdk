@@ -274,6 +274,12 @@ impl FileTool {
                 "file path exceeds original task bound",
             ));
         }
+        if context.is_none() && version.is_none() {
+            return Err(super::executor::rejection(
+                work,
+                "file path requires an admitted workspace or an original version",
+            ));
+        }
         if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
             // An alias has no volume authority. The async read resolves it once;
             // The resolved read validates its version and original directory

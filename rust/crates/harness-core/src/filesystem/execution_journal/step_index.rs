@@ -458,18 +458,16 @@ where
         let pool = custody::QueryIo::new(io)?;
         let result = self.indexed_step_inner(query, pool.io()).await?;
         pool.finish()?;
-        Ok(result)
+        Ok(Some(result))
     }
 
     async fn indexed_step_inner(
         &self,
         query: ExecutionRecordQuery<'_>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<(u64, Vec<ExecutionRecord>)>> {
+    ) -> Result<(u64, Vec<ExecutionRecord>)> {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let Some(Entries { tail, entries }) = self.step_entries(&query, io).await? else {
-            return Ok(None);
-        };
+        let Entries { tail, entries } = self.step_entries(&query, io).await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Vec<ExecutionRecord>>() as u64)?;
@@ -483,14 +481,14 @@ where
         crate::model::charge_items(io, selected.len() as u64 * u64::from(usize::BITS))?;
         selected.sort_unstable_by_key(|record| record.sequence);
         retain_output(&selected, selected.capacity(), before, io)?;
-        Ok(Some((tail, selected)))
+        Ok((tail, selected))
     }
 
     async fn step_entries(
         &self,
         query: &ExecutionRecordQuery<'_>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<Entries>> {
+    ) -> Result<Entries> {
         self.require_operation(query.operation, io)?;
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
@@ -507,24 +505,26 @@ where
         let summary = cache.summary();
         // The authenticated empty tail already proves every selection empty.
         if summary.tail == 0 {
-            return Ok(Some(Entries {
+            return Ok(Entries {
                 tail: 0,
                 entries: Funded::new(io)?,
-            }));
+            });
         }
-        let Some(recovery) = summary.recovery.filter(|recovery| recovery.indexed) else {
-            return Ok(None);
-        };
-        let state = recovery.state;
-        let path = self.index_path(query.operation, "pages", io)?;
-        let reader = Reader {
+        let state = summary
+            .recovery
+            .filter(|recovery| recovery.indexed)
+            .map(|recovery| recovery.state);
+        let path = state
+            .map(|_| self.index_path(query.operation, "pages", io))
+            .transpose()?;
+        let reader = path.as_ref().zip(state).map(|(path, state)| Reader {
             provider: &self.stream,
-            path: &path,
+            path,
             base: state.nodes_tail,
             staged: &[],
             io,
             cache: Some(&summary.pages),
-        };
+        });
         let mut entries = Funded::new(io)?;
         let call = query
             .call_id
@@ -540,16 +540,20 @@ where
                 query.maximum_step_records
             };
             let before = entries.values.len();
-            collect_step(
-                &reader,
-                state.roots[4],
-                state.tail,
-                step,
-                if step.is_some() { call } else { None },
-                maximum,
-                &mut entries,
-            )
-            .await?;
+            if let Some((reader, state)) = reader.as_ref().zip(state) {
+                collect_step(
+                    reader,
+                    state.roots[4],
+                    state.tail,
+                    step,
+                    if step.is_some() { call } else { None },
+                    maximum,
+                    &mut entries,
+                )
+                .await?;
+            }
+            // Before the first checkpoint, the verified pending index covers
+            // the whole prefix. There is no need to replay it a second time.
             // Both chains share this step's allowance. Subtract records already
             // selected for this step instead of adding unrelated prior steps
             // to a possibly saturated usize allowance (notably on wasm32).
@@ -568,10 +572,10 @@ where
                 io,
             )?;
         }
-        Ok(Some(Entries {
+        Ok(Entries {
             tail: summary.tail,
             entries,
-        }))
+        })
     }
 
     async fn select_step_record(

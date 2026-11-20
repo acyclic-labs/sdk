@@ -4,6 +4,7 @@ use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
 };
 use crate::native_mount::ViewOrigin;
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
@@ -14,6 +15,9 @@ unsafe extern "C" {
     fn nfs4_test_readdir_cookie_verifier() -> std::ffi::c_int;
     fn nfs4_test_sync_acknowledgement() -> std::ffi::c_int;
 }
+
+type MemorySource =
+    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
 fn sources(
     profile: FilesystemProfile,
@@ -107,10 +111,32 @@ include!("runtime.rs");
 mod leases;
 pub(in crate::native_mount) mod policy_refresh;
 pub(in crate::native_mount) mod return_fence;
+pub(in crate::native_mount) mod return_fence_control;
 include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");
 include!("source_limits.rs");
+
+pub(in crate::native_mount) fn native_source_io_control(
+    borrowed: &MemorySource,
+    original: &crate::NativeMaterializationWork,
+) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
+    Ok(CheckoutMountSource::new_at_meter(
+        Arc::clone(&borrowed.checkout),
+        VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
+        NamespacePath::new(Vec::new(), borrowed.config.limits)?,
+        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+        original,
+        Some(original),
+    )?
+    .with_access_view(Arc::clone(
+        borrowed
+            .access_view
+            .as_ref()
+            .ok_or("missing fixture access")?,
+    ))?
+    .into_arc_meter(original)?)
+}
 
 pub(in crate::native_mount) mod access;
 use access::bind_test_access;

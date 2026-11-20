@@ -167,12 +167,11 @@ pub(crate) fn full(
             .map(apple::device)
     };
     let resolved;
-    let device = match held {
-        Some(held) => held.device.get_or_init(resolve).as_ref(),
-        None => {
-            resolved = resolve();
-            resolved.as_ref()
-        }
+    let device = if let Some(held) = held {
+        held.device.get_or_init(resolve).as_ref()
+    } else {
+        resolved = resolve();
+        resolved.as_ref()
     };
     match device {
         Some(device) => device

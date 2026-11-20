@@ -96,7 +96,7 @@ async fn absent_approval_facts_cannot_silently_disable_a_deny_rule()
     let cancel = CancellationToken::new();
     let principal = caller();
     let capability = Capability::whole_volume(None, &Action::ALL);
-    let mut policy = fixtures::denied(Action::MergeInto, "**");
+    let mut policy = fixtures::denied(Action::MergeInto, "**")?;
     policy.layers[0][1].conditions.approvals = Some(1);
     fixtures::publish_policy(&workspace, &policy).await?;
     let mut checkout = workspace

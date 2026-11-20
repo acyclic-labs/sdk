@@ -41,17 +41,32 @@ class EvidencePolicy(unittest.TestCase):
                 checked.add(logical)
         self.assertEqual(checked, {name for name in CAPTURE_ALIASES if name.endswith('.rs')})
 
-        # Cached original objects cannot hide a same-length distributed change.
-        index = json.loads((ROOT / "scripts/tests/fixtures/proof-policy/redactions.json").read_text(encoding="utf-8"))
+        # Cached original objects cannot hide a same-length distributed change,
+        # and each redaction field is checked independently.
+        index_path = ROOT / "scripts/tests/fixtures/proof-policy/redactions.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
         relative = next(name for name, item in index["files"].items()
                         if item.get("distribution") != "git-only-source-inventory")
         path = ROOT / relative
+        entry = index["files"][relative]
         actual = Path.read_bytes
         original = actual(path)
         corrupted = bytes([original[0] ^ 1]) + original[1:]
         with patch.object(Path, "read_bytes", lambda source: corrupted if source == path else actual(source)):
             with self.assertRaisesRegex(ValueError, "capture-integrity"):
                 captured_bytes(path)
+        for field, value, reason in (
+                ("redacted_sha256", "0" * 64, "capture-integrity"),
+                ("redacted_bytes", entry["redacted_bytes"] + 1, "capture-integrity"),
+                ("original_sha256", "0" * 64, "original-capture"),
+                ("original_bytes", entry["original_bytes"] + 1, "original-capture")):
+            with self.subTest(field=field):
+                mutated = copy.deepcopy(index)
+                mutated["files"][relative][field] = value
+                with patch.object(Path, "read_bytes",
+                                  lambda source: json.dumps(mutated).encode() if source == index_path else actual(source)):
+                    with self.assertRaisesRegex(ValueError, reason):
+                        captured_bytes(path)
 
     def test_shared_entrypoint_mutants_retain_both_executed_hashes(self):
         aliases = {name: shared for name, shared in CAPTURE_ALIASES.items() if name.endswith('.py')}
@@ -259,6 +274,19 @@ class EvidencePolicy(unittest.TestCase):
 
         with patch.object(POLICY, "sha256", captured_sha256):
             POLICY.check_hst_reporting(MANIFEST["hst_reporting"])
+
+    def test_synthetic_source_registration_refuses_wrong_hash_and_line(self):
+        fixture = ROOT / "scripts/tests/fixtures/proof-policy/source-review-synthetic-v1"
+        registered = (fixture / "registered.rs").relative_to(ROOT).as_posix()
+        digest = hashlib.sha256((ROOT / registered).read_bytes()).hexdigest()
+        POLICY.check_reference({"file": registered, "line": 1, "sha256": digest})
+        wrong_hash = (fixture / "wrong-hash.rs").relative_to(ROOT).as_posix()
+        with self.assertRaisesRegex(ValueError, "source hash changed"):
+            POLICY.check_reference({"file": wrong_hash, "line": 1, "sha256": digest})
+        wrong_line = (fixture / "wrong-line.rs").relative_to(ROOT).as_posix()
+        wrong_line_digest = hashlib.sha256((ROOT / wrong_line).read_bytes()).hexdigest()
+        with self.assertRaisesRegex(ValueError, "source line invalid"):
+            POLICY.check_reference({"file": wrong_line, "line": 99, "sha256": wrong_line_digest})
 
     def test_current_reference_cannot_borrow_historical_dependency_hash(self):
         receipt = repository_path(ROOT, MANIFEST["hst_reporting"]["repo_receipt"])

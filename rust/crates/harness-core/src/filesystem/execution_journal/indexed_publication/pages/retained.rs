@@ -29,7 +29,7 @@ impl<'cut> Cut<'cut> {
         P: crate::store::JournalProvider + ?Sized,
     >(
         &'a self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         (request, mut quota): (
             acyclic_stream::CommitRequest,
             crate::wire_codec::CodecQuota<'_, '_>,
@@ -39,12 +39,8 @@ impl<'cut> Cut<'cut> {
         NativeCut<'a, 'cut, P>,
         acyclic_stream::NativeProviderFuture<'static, ()>,
     )> {
-        let (commit, producer) = crate::distributed::NativeCommit::prepare(
-            request,
-            &mut quota,
-            Arc::clone(provider),
-            None,
-        )?;
+        let (commit, producer) =
+            crate::distributed::NativeCommit::prepare(request, &mut quota, provider.clone(), None)?;
         Ok((
             NativeCut {
                 cut: self,
@@ -75,30 +71,13 @@ impl<P: crate::store::JournalProvider + ?Sized> NativeCut<'_, '_, P> {
             .finish(Some(self.cut.operation), None, &mut quota)
             .await?;
         quota.adopt(retained)?;
-        let result = self
-            .cut
-            .confirm(
-                &outcome,
-                self.publication.pages_tail,
-                self.publication.records,
-                self.publication.observation,
-                self.publication.checkpoint,
-            )
-            .map(|commit| {
-                commit.map(|commit| {
-                    (
-                        commit,
-                        match &outcome {
-                            acyclic_stream::CommitOutcome::Committed(receipt) => {
-                                receipt.committed_at_micros
-                            }
-                            acyclic_stream::CommitOutcome::Conflict(_) => {
-                                unreachable!("confirmed commit")
-                            }
-                        },
-                    )
-                })
-            });
+        let result = self.cut.confirm_publication(
+            &outcome,
+            self.publication.pages_tail,
+            self.publication.records,
+            self.publication.observation,
+            self.publication.checkpoint,
+        );
         drop(outcome);
         drop(quota);
         result

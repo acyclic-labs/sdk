@@ -56,7 +56,11 @@ where
 /// retain physical operation ordering independently of executor scheduling.
 /// An open stdin, whose read may never return, is read on its own thread
 /// through the `acyclic-native-stdin` crate.
+/// Creates the coordination executor after admitting the process's descriptor
+/// allowance. Native worker startup uses the same process-wide allowance
+/// initialization.
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    crate::descriptor::raise_descriptor_limit();
     let workers = crate::workers::parallelism();
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
@@ -483,15 +487,21 @@ mod tests {
             .start_paused(true)
             .build()
             .unwrap();
+        let (started, running) = std::sync::mpsc::channel::<()>();
         let (release, wait) = std::sync::mpsc::channel::<()>();
         let releaser = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
+            // Wait for the closure to be running, not for wall time: the
+            // paused clock must not advance while it is outstanding.
+            running.recv().unwrap();
             release.send(()).unwrap();
         });
         let finished = runtime.block_on(async {
             tokio::time::timeout(
                 Duration::from_secs(3600),
-                super::spawn_blocking(move || wait.recv().unwrap()),
+                super::spawn_blocking(move || {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap()
+                }),
             )
             .await
         });

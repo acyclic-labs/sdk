@@ -24,9 +24,9 @@ fn retirement_keeps_callback_storage_until_terminal_completion() {
             }
         }
     }
-    // SAFETY: the synchronous control retains no callback and performs no host
-    // operations. Its Rust callback cannot unwind across the C boundary.
     assert_eq!(
+        // SAFETY: the synchronous control retains no callback and performs no host
+        // operations. Its Rust callback cannot unwind across the C boundary.
         unsafe { acyclic_fs_darwin_test_retirement_custody(check_result) },
         0
     );
@@ -279,17 +279,22 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
             .position(|pointer| *pointer == 0)
             .unwrap_or(pointers.len()),
     )?;
-    // SAFETY: all SDK inputs and the callback owner remain live through the loop.
+    let owner_image = acyclic_fs_darwin_bridge::MOUNT_OWNER_IMAGE;
+    // SAFETY: all SDK inputs, the static image and the callback owner remain live through
+    // the loop. No fence is needed for this earlier-than-namespace cancellation.
     let status = unsafe {
         acyclic_fs_darwin_mount_run(
             resources.pointer() as *mut c_void,
             argc,
             pointers.as_ptr().cast(),
             destination.as_ptr(),
-            &context as *const super::super::requests::CallbackTarget as usize,
+            context.address(),
             report_mounted,
             Arc::as_ptr(&resources).cast_mut().cast(),
             &mut interrupted,
+            owner_image.as_ptr(),
+            owner_image.len(),
+            -1,
         )
     };
     assert_eq!(status, 0);

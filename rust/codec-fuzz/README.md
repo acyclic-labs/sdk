@@ -424,7 +424,7 @@ names; previous variants and unrelated provenance and goldens remain unchanged.
 Repeating this command must leave both indexes byte-identical.
 
 Capture exercises each emitted input and compares it with the single
-`compatibility/frames/golden.hex` baseline. Protobuf messages and their JSON
+`rust/crates/compatibility-golden/frames/golden.hex` baseline. Protobuf messages and their JSON
 projections compare values through the original descriptor codecs, since map
 and object member order is unspecified. Every other format compares exact bytes.
 Ordinary comparison retains the original captured packet and its provenance;

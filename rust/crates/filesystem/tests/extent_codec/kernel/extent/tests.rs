@@ -1,7 +1,8 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
-    decode_extent_page, encode_extent_page, extent_page_id,
+    CanonicalDecodeError, DecodeLimits, EncodeWorkStep, Extent, ExtentChild, ExtentKind,
+    ExtentPage, ReadAllocationStep, decode_extent_page, encode_extent_page, extent_page_id,
 };
+use acyclic_fs::object_digest;
 use acyclic_fs_format::{
     identity::Digest,
     object_reference::{ObjectId, ObjectKind},
@@ -90,6 +91,22 @@ fn overlapping_and_overflowing_extents_fail_closed() {
 
 #[test]
 fn leaf_internal_shape_length_and_identity_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+    let encode = |page: &ExtentPage| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut admitted_bytes = 0;
+        let bytes = encode_extent_page(
+            page,
+            1,
+            |step| {
+                if let EncodeWorkStep::Admit(work) = step {
+                    admitted_bytes += work.bytes_encoded;
+                }
+                Ok::<_, CanonicalDecodeError>(())
+            },
+            |_| CanonicalDecodeError::AllocationFailed,
+        )?;
+        assert_eq!(u64::try_from(bytes.len())?, admitted_bytes);
+        Ok(bytes)
+    };
     let leaf = ExtentPage::Leaf(vec![Extent {
         offset: 0,
         length: 4,
@@ -103,13 +120,7 @@ fn leaf_internal_shape_length_and_identity_are_exact() -> Result<(), Box<dyn std
         },
     }]);
     let leaf_id = extent_page_id(&leaf, 1)?;
-    let leaf_bytes = encode_extent_page(
-        &leaf,
-        1,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?;
-    assert_eq!(leaf_bytes.len(), extent_page_encoded_length(&leaf, 1)?);
+    let leaf_bytes = encode(&leaf)?;
     assert_eq!(leaf_id.kind, ObjectKind::ExtentPage);
     assert_eq!(leaf_id.digest, object_digest(&leaf_bytes));
 
@@ -117,16 +128,7 @@ fn leaf_internal_shape_length_and_identity_are_exact() -> Result<(), Box<dyn std
         first: 0,
         page: leaf_id,
     }]);
-    let internal_bytes = encode_extent_page(
-        &internal,
-        1,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?;
-    assert_eq!(
-        internal_bytes.len(),
-        extent_page_encoded_length(&internal, 1)?
-    );
+    let internal_bytes = encode(&internal)?;
 
     assert_eq!(
         decode_extent_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<
@@ -309,8 +311,10 @@ fn unknown_extent_versions_refuse_before_page_allocation() -> Result<(), Box<dyn
             .ok_or("missing extent page version")?
             .copy_from_slice(&2_u16.to_le_bytes());
         let mut allocations = 0;
-        let result = decode_extent_page(&stored, DecodeLimits::default(), &mut |_| {
-            allocations += 1;
+        let result = decode_extent_page(&stored, DecodeLimits::default(), &mut |step| {
+            if let ReadAllocationStep::Allocate { operations, .. } = step {
+                allocations += operations;
+            }
             Ok::<_, CanonicalDecodeError>(())
         });
         assert_eq!(

@@ -135,10 +135,6 @@ impl<'a> BoundTools<'a> {
         crate::model::PreparedModelRequest::prepare(request, limits, io)
     }
 
-    /// Immutable profile identity for the existing epoch/checkpoint owner.
-    pub fn profile_digest(&self) -> [u8; 32] {
-        self.profile
-    }
     /// Frozen prefix identity, independent of role availability.
     pub fn prefix_digest(&self) -> [u8; 32] {
         self.prefix

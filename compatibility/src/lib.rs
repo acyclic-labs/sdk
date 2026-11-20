@@ -1,15 +1,13 @@
 //! Build protobuf bindings from each published crate's own protocol sources.
 
-// This workspace-provided input is tracked across every schema build script.
-// Cargo-provided manifest variables alone do not invalidate reused outputs.
-const _: Option<&str> = option_env!("ACYCLIC_BUILD_SOURCE_ROOT");
-
 use std::path::PathBuf;
 
 /// Crate directory that packages the schema for a protocol family.
 pub fn protocol_crate(family: &str) -> &str {
     match family {
         "actors" => "actors-contract",
+        "harness-core" => "harness-wire",
+        "objects" => "objects-core",
         _ => family,
     }
 }
@@ -171,6 +169,3 @@ impl Compiler {
 
 #[cfg(test)]
 mod tests;
-
-/// Shared golden-frame lookup for persisted and wire codec tests.
-pub mod golden;

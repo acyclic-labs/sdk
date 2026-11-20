@@ -216,7 +216,7 @@ impl Layout {
 }
 
 fn ledger_record(kind: LedgerKind) -> AppendRecord {
-    #[cfg(all(test, not(loom)))]
+    #[cfg(all(test, not(loom), not(runtime_tests)))]
     tests::LEDGER_ENCODINGS.with(|count| count.set(count.get() + 1));
     LedgerWire { kind: Some(kind) }.encode_to_vec().into()
 }
@@ -518,21 +518,6 @@ struct Entry {
 }
 
 type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>;
-
-struct LocalCloseTerminal(CloseCompletion);
-
-impl crate::guest::SocketTerminal for LocalCloseTerminal {
-    fn completion(
-        self: Arc<Self>,
-    ) -> BoxProviderFuture<'static, Result<(), Arc<crate::guest::SocketTerminalError>>> {
-        Box::pin(async move {
-            self.0
-                .clone()
-                .await
-                .map_err(|error| error as Arc<crate::guest::SocketTerminalError>)
-        })
-    }
-}
 
 impl Entry {
     fn close_completion(&mut self) -> CloseCompletion {
@@ -1695,9 +1680,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         socket: &WebSocketId,
     ) -> Result<Arc<dyn crate::guest::SocketTerminal>, GuestError> {
         self.shared.with_entry(actor, socket, |entry| {
-            let terminal: Arc<dyn crate::guest::SocketTerminal> =
-                Arc::new(LocalCloseTerminal(entry.close_completion()));
-            Ok(terminal)
+            Ok(Arc::new(entry.close_completion()) as Arc<dyn crate::guest::SocketTerminal>)
         })
     }
 
@@ -1906,5 +1889,5 @@ pub mod codec_fuzz {
 
 #[cfg(all(test, loom))]
 mod loom_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(all(test, not(loom), not(runtime_tests)))]
 mod tests;

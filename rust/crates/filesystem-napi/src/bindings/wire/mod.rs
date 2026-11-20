@@ -11,7 +11,7 @@ impl NapiU32 {
     }
 }
 
-pub(in crate::bindings) fn validate_napi_u32(number: f64) -> Result<u32> {
+fn validate_napi_u32(number: f64) -> Result<u32> {
     acyclic_fs_base::numeric::exact_u32_from_f64(number)
         .map_err(|message| Error::new(Status::InvalidArg, message))
 }
@@ -91,6 +91,15 @@ pub struct NativeCheckpointResult {
     pub work_json: String,
 }
 
+/// Terminal result of advancing a generation with bounded conflicts.
+#[napi(object)]
+pub struct NativeRebaseOutcome {
+    pub status: String,
+    pub generation_id: Option<Buffer>,
+    pub conflicts: Vec<NativeMergeConflict>,
+    pub truncated: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::bindings) struct PendingReconcile {
     pub(in crate::bindings) operation_id: OperationId,
@@ -115,7 +124,7 @@ pub struct NativeTransactionConflict {
     pub offset: Option<BigInt>,
     pub length: Option<BigInt>,
     pub sparse_target: Option<String>,
-    pub name: Option<NativeWorkspaceName>,
+    pub name: Option<NativePathComponent>,
     pub maximum_entries: Option<u32>,
     pub usage: String,
     pub expected: Option<Buffer>,
@@ -165,7 +174,7 @@ pub(in crate::bindings) fn napi_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }
 
-pub(in crate::bindings) fn napi_wire_error(error: impl std::fmt::Display) -> Error {
+fn napi_wire_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::InvalidArg, error.to_string())
 }
 
@@ -217,6 +226,14 @@ pub(in crate::bindings) fn encode_name_component(name: &LogicalName) -> NativePa
         encoding: name.encoding().as_str().to_owned(),
         bytes: Buffer::from(name.as_bytes().to_vec()),
     }
+}
+
+pub(in crate::bindings) fn decode_name_component(
+    value: &NativePathComponent,
+) -> Result<LogicalName> {
+    let encoding = NameEncoding::from_public_str(&value.encoding)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
+    LogicalName::new(encoding, value.bytes.to_vec()).map_err(napi_error)
 }
 
 pub(in crate::bindings) fn decode_object_id(bytes: &[u8]) -> Result<ObjectId> {

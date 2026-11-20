@@ -171,7 +171,7 @@ async fn restart_work(
     .await?;
     assert_eq!(records(&*provider, "out/dormant-0").await?.len(), 2);
     assert!(
-        crate::local::tests::orphans(&store, &residents)
+        crate::local::oracle::orphans(&store, &residents)
             .await?
             .is_empty()
     );

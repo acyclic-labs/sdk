@@ -8,7 +8,7 @@ type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>)>, OPERATION>
 /// handle. Retire the handle before the owner's Arc and physical teardown.
 #[derive(Debug)]
 pub(super) struct OwnerRef {
-    _handle: acyclic_native_runtime::StoreHandle,
+    _handle: acyclic_native_claim::StoreHandle,
     owner: Arc<Owner>,
 }
 
@@ -34,7 +34,7 @@ pub(super) fn create(
     cache_limit: Option<usize>,
 ) -> Result<Arc<Owner>, LocalCoreStateStoreError> {
     let claim =
-        acyclic_native_runtime::StoreClaim::acquire(&root.join(OWNER_LOCK)).map_err(|error| {
+        acyclic_native_claim::StoreClaim::acquire(&root.join(OWNER_LOCK)).map_err(|error| {
             if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
                 LocalCoreStateStoreError::OwnershipConflict(root.to_owned())
             } else {

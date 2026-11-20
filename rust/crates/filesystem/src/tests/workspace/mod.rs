@@ -18,49 +18,35 @@ macro_rules! value {
     };
 }
 
-#[macro_use]
-#[path = "../../../tests/support/unbounded.rs"]
-mod unbounded;
-
 use crate as acyclic_fs;
 
 #[path = "../../../tests/support/workspace.rs"]
 mod fixtures;
-use fixtures::{allow, commit, fork_workspace};
+use crate::transaction_fixture;
+use fixtures::fork_workspace;
+use transaction_fixture::allow;
+use transaction_fixture::commit;
 
 mod access_policy;
 mod append_segments;
 mod change_sets;
-mod content_equality;
-mod projection_policy;
-
-mod discovery;
-
-mod fork_selection;
-
-mod generation;
-
-mod identity;
-
-mod joins;
-
-mod merge_drivers;
-
 mod composition;
-
+mod content_equality;
+mod discovery;
+mod fork_selection;
+mod generation;
+mod identity;
+mod joins;
+mod merge_drivers;
 mod populated_creation;
-
+mod projection_policy;
 mod proof_cache;
+mod reads;
+mod rebase;
+mod restore;
+mod transactions;
 
 mod publication;
-
-mod reads;
-
-mod rebase;
-
-mod restore;
-
-mod transactions;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../../../tests/support/simulation_image.rs"]

@@ -2,7 +2,7 @@ use crate::{
     Blobs, ByteRange, Delete, Digest, Medium, MediumError, MediumKey, MemoryMedium, Observation,
     ObservationSource, Observed, ObservedVersion, Put, RootId, Store, conformance, wire::ErrorCode,
 };
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -75,6 +75,9 @@ mod simulation;
 pub(crate) mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 use budget::Budget;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod manifest_builder;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod read_admission;
@@ -238,7 +241,7 @@ async fn releases_and_sweeps_commit_revisions() -> Result<(), Box<dyn std::error
 #[tokio::test]
 async fn stores_sharing_a_medium_serve_each_others_revisions()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_stream::{RevisionCut, StreamError};
+    use acyclic_stream_contract::{RevisionCut, StreamError};
     let medium = MemoryMedium::default();
     let first = Store::new(medium.clone()).account(b"shared")?;
     let second = Store::new(medium).account(b"shared")?;
@@ -261,8 +264,8 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
             .is_empty()
     );
     // A run no store claimed is never admitted.
-    let unclaimed = acyclic_stream::Revision {
-        scope: acyclic_stream::RevisionScope::new(
+    let unclaimed = acyclic_stream_contract::Revision {
+        scope: acyclic_stream_contract::RevisionScope::new(
             [&written.scope.as_bytes()[..32], &9_u64.to_be_bytes()].concat(),
         ),
         ..written.clone()
@@ -279,7 +282,7 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
 #[tokio::test]
 async fn a_reopened_store_serves_tokens_from_before_the_restart()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_stream::RevisionCut;
+    use acyclic_stream_contract::RevisionCut;
     let root = tempfile::tempdir()?;
     let open = async |root: &std::path::Path| -> Result<_, Box<dyn std::error::Error>> {
         let store = Store::new(crate::LocalMedium::open(root, Default::default(), None).await?);
@@ -2287,8 +2290,8 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
 
 /// Counts original-medium calls, returned bytes and keys in each flush.
 /// Returned byte lengths do not measure decoded or allocated backing.
-pub(crate) struct Counting<M = MemoryMedium> {
-    inner: M,
+pub(crate) struct Counting {
+    inner: std::sync::Arc<dyn Medium>,
     volatile_fixture: bool,
     counts: std::sync::Mutex<std::collections::BTreeMap<&'static str, usize>>,
     flushes: std::sync::Mutex<Vec<usize>>,
@@ -2304,11 +2307,11 @@ impl Default for Counting {
     }
 }
 
-impl<M: Medium> Counting<M> {
-    fn new(inner: M) -> Self {
+impl Counting {
+    fn new(inner: impl Medium + 'static) -> Self {
         Self {
             volatile_fixture: false,
-            inner,
+            inner: std::sync::Arc::new(inner),
             counts: Default::default(),
             flushes: Default::default(),
         }
@@ -2333,7 +2336,7 @@ impl<M: Medium> Counting<M> {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl<M: Medium> Medium for Counting<M> {
+impl Medium for Counting {
     fn read_allocation_bytes(&self, bytes: &OwnedBytes) -> usize {
         self.inner.read_allocation_bytes(bytes)
     }
@@ -2423,9 +2426,9 @@ impl<M: Medium> Medium for Counting<M> {
 
 /// The operations of one fresh put, and of one usage scan, in an account
 /// already holding `existing` blobs.
-async fn operations<M: Medium>(
+async fn operations(
     existing: u32,
-    medium: Counting<M>,
+    medium: Counting,
 ) -> Result<[std::collections::BTreeMap<&'static str, usize>; 2], Box<dyn std::error::Error>> {
     let store = Store::new(medium);
     let blobs = store.account(b"account")?;
@@ -2449,9 +2452,10 @@ async fn operations<M: Medium>(
 #[tokio::test]
 async fn a_fresh_put_writes_twice_reads_nothing_and_flushes_nothing_at_any_size()
 -> Result<(), Box<dyn std::error::Error>> {
-    async fn verify<M: Medium>(
-        small: Counting<M>,
-        large: Counting<M>,
+    async fn verify(
+        label: &str,
+        small: Counting,
+        large: Counting,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let [small, small_scan] = operations(1, small).await?;
         let [large, large_scan] = operations(2_000, large).await?;
@@ -2482,19 +2486,17 @@ async fn a_fresh_put_writes_twice_reads_nothing_and_flushes_nothing_at_any_size(
         assert!(large_scan["list"] > small_scan["list"]);
         assert_eq!(small_scan["listed_keys"], 2);
         assert_eq!(large_scan["listed_keys"], 2_001);
-        println!(
-            "{} fresh={small:?} usage_small={small_scan:?} usage_large={large_scan:?}",
-            std::any::type_name::<M>()
-        );
+        println!("{label} fresh={small:?} usage_small={small_scan:?} usage_large={large_scan:?}");
         Ok(())
     }
 
-    verify(Counting::default(), Counting::default()).await?;
+    verify("memory", Counting::default(), Counting::default()).await?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let small = tempfile::tempdir()?;
         let large = tempfile::tempdir()?;
         verify(
+            "local",
             Counting::new(crate::LocalMedium::open(small.path(), Default::default(), None).await?),
             Counting::new(crate::LocalMedium::open(large.path(), Default::default(), None).await?),
         )
@@ -4143,9 +4145,12 @@ async fn a_retain_refused_its_memory_writes_no_index_key() -> Result<(), Box<dyn
 /// Bytes this thread hashed while `work` ran.
 #[cfg(feature = "test-support")]
 async fn hashed<T>(work: impl Future<Output = T>) -> (T, u64) {
-    let before = acyclic_stream::hashed_on_this_thread();
+    let before = acyclic_stream_contract::hashed_on_this_thread();
     let value = work.await;
-    (value, acyclic_stream::hashed_on_this_thread() - before)
+    (
+        value,
+        acyclic_stream_contract::hashed_on_this_thread() - before,
+    )
 }
 
 #[cfg(feature = "test-support")]

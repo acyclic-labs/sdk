@@ -84,7 +84,9 @@ fn pipeline(context: DiscoveredContext, mode: u8) -> (Vec<ModelMessage>, u64, u6
 fn discovery_and_projection_preserve_source_work_and_original_custody() {
     for n in [64, 128] {
         for mode in 0..3 {
-            let expected = 2 * (n + 1) as u64 + 2 * n as u64 + 2;
+            // Validation and projection visit the same sources. Only projection
+            // emits one message for each of the n distinct sources.
+            let expected = 2 * (n + 1) as u64 + n as u64 + 2;
             let [old, candidate] = differential::pair::<_, _, Trace>(
                 || fixture(n),
                 |context, old| {
@@ -122,7 +124,7 @@ fn discovery_and_projection_preserve_source_work_and_original_custody() {
             assert_eq!(total(&candidate.1, "instruction-source-compare"), 2);
             assert_eq!(
                 total(&candidate.1, "instruction-source-projection"),
-                2 * n as u64
+                n as u64
             );
             assert_eq!(
                 candidate.0.2,

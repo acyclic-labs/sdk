@@ -767,17 +767,17 @@ mod tests {
     #[test]
     fn original_service_writers_satisfy_the_semantic_oracle() {
         let captured =
-            acyclic_proto_build::golden::frame("corpus/protobuf/acyclic.objects.v1.ErrorDetail")
+            acyclic_compatibility_golden::frame("corpus/protobuf/acyclic.objects.v1.ErrorDetail")
                 .expect("retained original service detail writer");
         super::check("acyclic.objects.v1.ErrorDetail", &captured[8..]);
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobRequest-created",
         )
         .expect("retained original service request");
         super::check("acyclic.objects.v1.PutBlobRequest", &captured[8..]);
         use prost::Message;
         for variant in ["created", "existing", "manifest"] {
-            let captured = acyclic_proto_build::golden::frame(&format!(
+            let captured = acyclic_compatibility_golden::frame(&format!(
                 "corpus/protobuf/acyclic.objects.v1.PutResponse-{variant}",
             ))
             .expect("retained original service publication writer");
@@ -798,7 +798,7 @@ mod tests {
                 super::check("acyclic.objects.v1.PutResponse", &wrong.encode_to_vec());
             }
         }
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutResponse-created",
         )
         .expect("retained original service publication writer");
@@ -815,12 +815,12 @@ mod tests {
             reply.outcome = outcome;
             super::check("acyclic.objects.v1.PutResponse", &reply.encode_to_vec());
         }
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse",
         )
         .expect("retained original protobuf batch writer");
         super::check("acyclic.objects.v1.PutBlobsResponse", &captured[8..]);
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse-batch",
         )
         .expect("retained original service batch writer");
@@ -832,7 +832,7 @@ mod tests {
             "acyclic.objects.v1.PutBlobsResponse",
             &extra.encode_to_vec(),
         );
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobsResponse-batch-refusal",
         )
         .expect("retained original service batch refusal writer");
@@ -856,14 +856,14 @@ mod tests {
                 &reply.encode_to_vec(),
             );
         }
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.BlobInfo-selected",
         )
         .expect("retained original service head writer");
         super::check("acyclic.objects.v1.BlobInfo", &captured[8..]);
         let original =
             super::wire::BlobInfo::decode(&captured[8..]).expect("original service head wire");
-        let listed = acyclic_proto_build::golden::frame(
+        let listed = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.ListBlobsResponse-ordered",
         )
         .expect("retained original service list writer");
@@ -887,7 +887,7 @@ mod tests {
             super::wire::BlobInfo::decode(&captured[8..]).expect("original service head wire");
         wrong.digest.as_mut().expect("original head digest").blake3[0] ^= 1;
         super::check("acyclic.objects.v1.BlobInfo", &wrong.encode_to_vec());
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.GetBlobResponse-selected",
         )
         .expect("retained original service read writer");
@@ -926,7 +926,7 @@ mod tests {
             "acyclic.objects.v1.GetBlobResponse",
             &selected.encode_to_vec(),
         );
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.ListBlobsResponse-ordered",
         )
         .expect("retained original service listing writer");
@@ -957,14 +957,14 @@ mod tests {
             "acyclic.objects.v1.ListBlobsResponse",
             &page.encode_to_vec(),
         );
-        let captured = acyclic_proto_build::golden::frame(
+        let captured = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.DeleteBlobResponse-referenced",
         )
         .expect("retained original service deletion writer");
         super::check("acyclic.objects.v1.DeleteBlobResponse", &captured[8..]);
         let original = super::wire::DeleteBlobResponse::decode(&captured[8..])
             .expect("original service deletion wire");
-        let head = acyclic_proto_build::golden::frame(
+        let head = acyclic_compatibility_golden::frame(
             "corpus/protobuf/acyclic.objects.v1.BlobInfo-selected",
         )
         .expect("retained original service head writer");

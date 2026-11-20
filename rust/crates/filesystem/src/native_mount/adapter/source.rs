@@ -364,7 +364,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .check(cancellation, Some(&self.cancellation))?;
         if value.is_some() {
             inputs.charge(
-                crate::materializer::NativeResourceCredit::Copy
+                crate::ledger::NativeResourceCredit::Copy
                     .delta(std::mem::size_of::<MountLookup>() as u64),
             )?;
         }

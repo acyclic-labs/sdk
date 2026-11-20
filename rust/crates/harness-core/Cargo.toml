@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "build.rs", "src/**", "proto/**", "docs/**", "tests/**", "examples/**"]
+include = ["clippy.toml", "Cargo.toml", "build.rs", "src/**", "docs/**", "tests/**", "examples/**"]
 autotests = false
 autobins = false
 autoexamples = false
@@ -35,16 +35,16 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "agent_model"
+path = "tests/agent_model.rs"
+
+[[test]]
 name = "computed_ui_records"
 path = "tests/computed_ui_records.rs"
 
 [[test]]
-name = "contract_error_cases"
+name = "contract_errors"
 path = "tests/contract_error_cases.rs"
-
-[[test]]
-name = "projection_selection"
-path = "tests/projection_selection.rs"
 
 [[test]]
 name = "conversation_contract"
@@ -54,24 +54,39 @@ path = "tests/conversation_contract.rs"
 name = "model_usage_cost"
 path = "tests/model_usage_cost.rs"
 
-[package.metadata.bazel]
-test-narrow-runfiles = ["conversation_contract", "model_usage_cost"]
+[[test]]
+name = "projection_selection"
+path = "tests/projection_selection.rs"
 
-[package.metadata.bazel.test-dependencies]
-contract_error_cases = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "acyclic_stream", "acyclic_test_support", "proptest", "prost", "serde_json", "tempfile", "tracing", "tracing_subscriber"]
-conversation_contract = ["acyclic_harness_core", "serde_json", "uuid"]
-model_usage_cost = ["acyclic_harness_core", "acyclic_test_support", "proptest", "serde_json"]
-projection_selection = ["acyclic_harness_core", "tokio", "uuid"]
+[package.metadata.bazel]
+# Each group is its own test binary so one group's generic instantiation never
+# pays for another's; the library's own unit tests stay the suite's internal case.
+linked-unit-tests = [
+    "agent_model",
+    "computed_ui_records",
+    "contract_errors",
+    "conversation_contract",
+    "model_usage_cost",
+    "projection_selection"]
+build-script-inputs = []
+# These sources are reached only by cfg(test) module declarations.
+unit-test-only-sources = [
+    "src/executor/tests/**",
+    "src/filesystem/memory/tests.rs",
+    "src/filesystem/memory/tests/**",
+]
+
 
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance"]
-test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-fs-format/test-support"]
 model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-harness-model-cache/wasm", "acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
+acyclic-harness-wire = { version = "=0.2.0", path = "../harness-wire" }
 acyclic-decimal-u64 = { version = "=0.2.0", path = "../decimal-u64" }
 acyclic-fs-merge = { version = "=0.2.0", path = "../filesystem-merge" }
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
@@ -139,13 +154,6 @@ tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 
-[build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
-acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
-dirs.workspace = true
-blake3.workspace = true
-prost-build.workspace = true
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 acyclic-harness-modules = { version = "=0.2.0", path = "../harness-modules" }
@@ -171,6 +179,8 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 acyclic-machines-conformance = { version = "=0.2.0", path = "../machines-conformance" }
 acyclic-harness-control = { version = "=0.2.0", path = "../harness-control", features = ["test-support"] }
 acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout", features = ["test-support"] }
+# The engine's unit and integration tests act through a hosted tree, which sits above it.
+acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting", features = ["test-support"] }
 acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }

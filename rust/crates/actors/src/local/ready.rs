@@ -911,5 +911,5 @@ impl<K: Ord + Clone> Drop for Work<K> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(runtime_tests)))]
 mod tests;

@@ -15,6 +15,8 @@ pub(crate) fn source_file_id(
     identity: &[u8; 32],
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<crate::FileId, crate::FsError> {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let identity = &acyclic_native_runtime::testing::source_identity(*identity);
     let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
     accounting.charge(WorkCounters {
         bytes_hashed: domain.len() as u64 + 48,
@@ -57,44 +59,12 @@ pub mod native;
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod accounting;
-
-#[cfg(test)]
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod scope_tests;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod write_probe;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use write_probe::WriteProbe;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod admissions;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod reservations;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod context;
-
-#[cfg(not(target_arch = "wasm32"))]
 mod ownership;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod source_work;
 #[cfg(not(target_arch = "wasm32"))]
-pub use accounting::DemandWork;
-#[cfg(not(target_arch = "wasm32"))]
-use admissions::Admissions;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use admissions::NativeAllocationAccounting;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use admissions::ViewReadCompletion;
-#[cfg(target_os = "macos")]
-pub(crate) use context::native_demand_read_error;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use context::{CaptureTransientCustody, NativeDemandReadMeter, native_demand_error};
+pub use crate::ledger::DemandWork;
 #[cfg(not(target_arch = "wasm32"))]
 pub use ownership::NativeMountAllocationCustody;
 #[cfg(not(target_arch = "wasm32"))]

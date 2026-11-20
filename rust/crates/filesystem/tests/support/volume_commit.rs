@@ -6,7 +6,8 @@ use acyclic_fs_format::identity::OperationId;
 use super::fixtures::TestResult;
 use super::{B, allow};
 
-pub(super) async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+/// Publishes a fixture checkout under a fresh operation and the unbounded case budget.
+pub async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     checkout: &mut Checkout<A, O>,
     cancel: &CancellationToken,
 ) -> TestResult {

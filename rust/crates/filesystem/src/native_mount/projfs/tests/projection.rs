@@ -736,44 +736,57 @@ async fn rustc_links_object_files_created_inside_projection()
     let mount = workspace
         .mount(&path, manual_mount_options(&workspace).await?)
         .await?;
-    let compiler_path = path.clone();
-    let output = tokio::task::spawn_blocking(move || {
-        acyclic_native_runtime::process_output(
-            acyclic_native_runtime::ProcessCommand::new(
+    let checked: Result<(), Box<dyn std::error::Error>> = async {
+        let compiler_path = path.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            let mut rustc = acyclic_native_runtime::ProcessCommand::new(
                 crate::test_support::mount_test_compiler()?,
-            )
-                .current_dir(compiler_path)
-                .args([
+            );
+            if let Some((arguments, libraries)) =
+                acyclic_test_support::fixture_compiler::rustc_linking()
+            {
+                rustc.env("LIB", libraries).args(arguments);
+            }
+            acyclic_native_runtime::process_output(
+                rustc.current_dir(compiler_path).args([
                     "--edition",
                     "2021",
                     "acyclic-workflow.rs",
                     "-o",
                     "acyclic-workflow-bin.exe",
                 ]),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )
-    })
-    .await??;
-    assert!(
-        output.status.success(),
-        "rustc failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    mount.sync().await?;
-    let executable = path.join("acyclic-workflow-bin.exe");
-    let execution = tokio::task::spawn_blocking(move || {
-        acyclic_native_runtime::process_output(
-            &mut acyclic_native_runtime::ProcessCommand::new(executable),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )
-    })
-    .await??;
-    assert!(execution.status.success());
-    assert_eq!(execution.stdout, b"ok\n");
-    mount.unmount().await?;
-    Ok(())
+                std::time::Duration::from_secs(120),
+                8 * 1024 * 1024,
+            )
+        })
+        .await??;
+        if !output.status.success() {
+            return Err(format!(
+                "rustc exited with {}; stderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        mount.sync().await?;
+        let executable = path.join("acyclic-workflow-bin.exe");
+        let execution = tokio::task::spawn_blocking(move || {
+            acyclic_native_runtime::process_output(
+                &mut acyclic_native_runtime::ProcessCommand::new(executable),
+                std::time::Duration::from_secs(120),
+                8 * 1024 * 1024,
+            )
+        })
+        .await??;
+        if !execution.status.success() || execution.stdout != b"ok\n" {
+            return Err(format!("compiled program returned {execution:?}").into());
+        }
+        Ok(())
+    }
+    .await;
+    let retired = mount.unmount().await;
+    checked?;
+    retired.map_err(Into::into)
 }
 
 #[test]

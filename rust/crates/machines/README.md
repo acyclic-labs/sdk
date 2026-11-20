@@ -114,14 +114,14 @@ format has no migration path from the retired private operation envelopes.
 `results::ResultCursor` binds the original operation, terminal owner, immutable
 extent and child index. Its `Settlement` distinguishes a Streams `CommitId` from
 a native controller partition's nonzero revision; neither is interchangeable
-with the other or with a watch watermark. `SettledResults` verifies the original
-Streams fork cut once. `NativeResults` borrows the original controller's retained
-observation slice, including canonical protobuf observations, and selects each
-credited page without allocation, copying or IO. Both validate the same cursor
-before reading payload. These helpers grant no authority: the server must retain
-the original authenticated partition and verify terminal settlement. Native outcome
-decoding and transport serialization remain the producer's work; the borrowed
-view alone does not make a complete-array storage format lazy.
+with the other or with a watch watermark. `NativeResults` borrows the original
+controller's retained observation slice, including canonical protobuf
+observations, and selects each credited page without allocation, copying or IO.
+It validates the same cursor before reading payload. These helpers grant no
+authority: the server must retain the original authenticated partition and
+verify terminal settlement. Native outcome decoding and transport serialization
+remain the producer's work; the borrowed view alone does not make a
+complete-array storage format lazy.
 
 `Machine::fork` (`MachinesProvider::fork_machine`) forks a *running* machine into fresh children at any moment, with no checkpoint step. Its fidelity is declared, not inferred: `Capability::LiveFork` means children resume from the source's memory, processes, and disk (`ForkFidelity::MemoryAndDisk`); `Capability::DiskFork` means they boot fresh over a copy of its disk (`ForkFidelity::DiskOnly`) and the caller restarts its workload. A machine with neither returns `ProviderError::Unsupported`; fall back to `checkpoint` plus `fork`, or a restart. Children inherit the source's contract, credentials, and environment, get fresh identities and endpoints, and never inherit open network connections. Destroy children before their source: a provider may refuse the reverse order with `ProviderError::Conflict`. Both `fork` and `fork_machine` settle to `MutationOutcome::Forked { provenance, results }`: `results` is the original `ResultCut`; `read_results(ResultCursor { cut: results, from: 0 }, credit)` reads only the credited original observations. Each child is the same `MachineObservation` a create yields, and `provenance` names the source and fidelity. A checkpoint fork child's `contract.image` is `Image::Checkpoint` on every read. The trait method documents the full semantics.
 
@@ -155,7 +155,7 @@ A DiskOnly result cannot satisfy a MemoryAndDisk contract.
 Every child is recorded in the original result owner at creation, before the
 next child is admitted. Terminal failure and cancellation retain a cut over
 exactly that prefix, even when empty. Streams owners include `results::record`
-in the child's creation transaction and `results::publication` in their existing
+in the child's creation transaction and publish that prefix in their existing
 terminal commit, including recovery after a producer crash. Native controllers
 retain the birth observations under their original partition revision.
 `ProviderError::ForkFailed` carries the failed cut. `results::cleanup` consumes

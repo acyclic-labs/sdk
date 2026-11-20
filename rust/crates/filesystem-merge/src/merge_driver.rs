@@ -641,7 +641,7 @@ impl DefaultTextMergeDriver {
                 Ok((MergeResolution::Select(ConflictSide::Theirs), false))
             }
             ByteMerge::Merged(bytes) => Ok((MergeResolution::Text(bytes.into()), false)),
-            ByteMerge::Conflicted { bytes, .. } => Ok((MergeResolution::Text(bytes.into()), true)),
+            ByteMerge::Conflicted { bytes } => Ok((MergeResolution::Text(bytes.into()), true)),
         }
     }
 }

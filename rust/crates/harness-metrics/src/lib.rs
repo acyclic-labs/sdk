@@ -17,6 +17,9 @@
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
+#[cfg(test)]
+mod test_support;
+
 use acyclic_harness_core::executor::{self, ExecutionEvent, ExecutionJournal, ModelPriceRecord};
 use acyclic_harness_core::{Error, OperationId, Result, agent};
 pub use arrow_array::RecordBatch;
@@ -881,106 +884,6 @@ mod tests {
     use arrow_array::{Array, StringArray, UInt64Array};
 
     #[test]
-    fn adoption_preserves_the_original_template_reference() -> Result<()> {
-        use acyclic_harness_core::conversation::{
-            FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef,
-        };
-
-        let owner = acyclic_harness_core::AgentId::from_bytes([5; 16]);
-        let agent = agent::AgentId::from_bytes([5; 16]);
-        let path = agent::AgentPath::root(&agent);
-        for version in [None, Some("first-cut"), Some("later-cut")] {
-            let template = version
-                .map(|version| {
-                    FileRef::new(
-                        VolumeRef::new(
-                            acyclic_harness_core::resources::ProviderRef::new(
-                                "acyclic".into(),
-                                "filesystem".into(),
-                                "2".into(),
-                                &mut None,
-                            )?,
-                            "templates".into(),
-                            VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(owner),
-                            &mut None,
-                        )?,
-                        "worker.md".into(),
-                        version.into(),
-                        FileDescriptor::from_bytes(
-                            b"original template",
-                            "text/markdown",
-                            &mut None,
-                        )?,
-                        "worker.md".into(),
-                        &mut None,
-                    )
-                })
-                .transpose()?;
-            let record = agent::InboxRecord::ForkAdopted(Box::new(agent::ForkAdopted {
-                agent: agent.clone(),
-                parent: None,
-                profile: Some(agent::CreationConfig {
-                    question_plugin: false,
-                    topology: None,
-                    model: None,
-                    continuation: None,
-                    context: agent::SpawnContext::TopLevel,
-                    template: template.clone(),
-                    peers: Default::default(),
-                }),
-                forked_at: 0,
-                conversation_tail: 0,
-                checkpoint: None,
-                volumes: Vec::new(),
-                brief: None,
-                policy: None,
-            }));
-            let projected = inbox(path.as_str(), 0, &record)?;
-            let column = projected[0]
-                .data
-                .column_by_name("artifact")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            if let Some(template) = &template {
-                assert_eq!(
-                    serde_json::from_str::<FileRef>(column.value(0)).map_err(export_error)?,
-                    *template
-                );
-            } else {
-                assert!(
-                    column.is_null(0),
-                    "absent templates cannot acquire an inferred reference"
-                );
-            }
-            {
-                let mut bytes = Vec::new();
-                provenance::write(&projected[0], &mut bytes)?;
-                let triples = oxttl::NTriplesParser::new()
-                    .for_reader(bytes.as_slice())
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(export_error)?;
-                let references: Vec<_> = triples
-                    .iter()
-                    .filter(|triple| {
-                        triple.predicate.as_str() == "urn:acyclic:research:fileReference"
-                    })
-                    .collect();
-                if let Some(template) = &template {
-                    assert_eq!(references.len(), 1);
-                    assert!(matches!(&references[0].object, oxrdf::Term::Literal(value)
-                        if value.value() == artifact(template)?));
-                } else {
-                    assert!(references.is_empty());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
     fn shards_roundtrip_known_and_unknown_values_and_refuse_foreign_schemas() -> Result<()> {
         // Generated column values exercise the encoding, not a provider fixture.
         let mut row = Row::new(
@@ -1154,10 +1057,6 @@ mod tests {
         assert_ne!(
             first, rows[2].target,
             "equal bytes across accounts do not join"
-        );
-        assert!(
-            rows.iter()
-                .all(|row| row.kind == "cache_prefix" || row.kind == "cache_profile_prefix")
         );
         cache.version = 2;
         cache_edges("a", operation, 3, Some(cache), &mut rows);

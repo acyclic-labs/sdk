@@ -40,7 +40,7 @@ pub(super) fn clone_directory<W: NativeHostWork>(
 ) -> Result<Dir, W::Error> {
     work.attempt_io(READ, || {
         #[cfg(test)]
-        #[cfg(all(target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         stat_probe::directory_clone();
         directory.try_clone()
     })
@@ -60,10 +60,10 @@ pub(super) fn open_unix<W: NativeHostWork>(
     };
     let result = work.attempt_io(delta, || {
         #[cfg(test)]
-        #[cfg(all(target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         stat_probe::event("openat");
         #[cfg(test)]
-        #[cfg(all(target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         if let Some(error) = stat_probe::fault("openat") {
             return Err(error);
         }
@@ -316,10 +316,10 @@ pub(super) fn fstat<W: NativeHostWork>(
 ) -> Result<libc::stat, W::Error> {
     work.attempt_io(READ, || {
         #[cfg(test)]
-        #[cfg(all(target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         stat_probe::fstat_query();
         #[cfg(test)]
-        #[cfg(all(target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         if let Some(error) = stat_probe::fault("fstat") {
             return Err(error);
         }

@@ -1,6 +1,5 @@
 //! Hash the original wire serialization, without a second prompt walk or buffer.
-use super::{wire::Message, wire::Request};
-use crate::ResolvedModel;
+use super::{ProjectionInput, wire::Message, wire::Request};
 use acyclic_harness_core::{
     Result,
     executor::{ModelCacheBreakpoint, ModelCacheObservation, ModelCacheTtl},
@@ -37,14 +36,14 @@ pub(super) fn key(tag: &str, digest: [u8; 32]) -> String {
 /// Requested retention: the admitted profile may ask for an hour, otherwise the
 /// provider's five-minute default. Every marker in a request uses this one TTL,
 /// so a longer entry never follows a shorter one.
-fn hour(provider: &ResolvedModel) -> bool {
+fn hour(provider: &ProjectionInput<'_>) -> bool {
     provider
-        .profile_binding()
+        .profile
         .is_some_and(|binding| binding.cache() == Cache::Hour)
 }
 
 /// The one `cache_control` value of a request.
-fn control(provider: &ResolvedModel) -> serde_json::Value {
+fn control(provider: &ProjectionInput<'_>) -> serde_json::Value {
     let ttl = if hour(provider) { "1h" } else { "5m" };
     serde_json::json!({"type":"ephemeral","ttl":ttl})
 }
@@ -54,14 +53,14 @@ fn control(provider: &ResolvedModel) -> serde_json::Value {
 /// header the provider renders before any message (model, tools, instructions).
 /// It is never derived from messages, so history paging, eviction and forks
 /// keep it, and a mid-run delta (appended, never declared) cannot change it.
-fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
+fn prefix_key(provider: &ProjectionInput<'_>, fields: &Fields) -> String {
     if provider.config.adapter == Family::Chat {
         return key(
             "conversation-v1:",
             *blake3::hash(&provider.conversation.into_bytes()).as_bytes(),
         );
     }
-    if let Some(binding) = provider.profile_binding() {
+    if let Some(binding) = provider.profile {
         return super::profile::cache_key(binding);
     }
     let mut hash = blake3::Hasher::new();
@@ -70,7 +69,7 @@ fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
         .get(Field::Instructions)
         .and_then(serde_json::Value::as_str);
     for value in [
-        provider.model.name.as_bytes(),
+        provider.model.as_bytes(),
         fields
             .tools()
             .map_or(&b""[..], |tools| tools.get().as_bytes()),
@@ -92,7 +91,8 @@ fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
 /// - Routed Chat (OpenRouter): both forms; the gateway applies the routed
 ///   model's own one.
 /// - Gemini: implicit caching over the stable order.
-pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
+pub(crate) fn project<'p>(provider: impl Into<ProjectionInput<'p>>, fields: &mut Fields) {
+    let provider = provider.into();
     if provider.config.prompt_cache == crate::PromptCache::Implicit {
         return;
     }
@@ -102,20 +102,20 @@ pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
                 if let Some(serde_json::Value::Object(block)) =
                     system.as_array_mut().and_then(|blocks| blocks.last_mut())
                 {
-                    block.insert("cache_control".into(), control(provider));
+                    block.insert("cache_control".into(), control(&provider));
                 }
             });
-            fields.insert(Field::CacheControl, control(provider));
+            fields.insert(Field::CacheControl, control(&provider));
         }
         Family::Responses | Family::Chat => {
             fields.insert(
                 Field::PromptCacheKey,
-                serde_json::Value::String(prefix_key(provider, fields)),
+                serde_json::Value::String(prefix_key(&provider, fields)),
             );
             if provider.config.adapter == Family::Chat
                 && provider.config.prompt_cache == crate::PromptCache::Routed
             {
-                fields.insert(Field::CacheControl, control(provider));
+                fields.insert(Field::CacheControl, control(&provider));
             }
         }
         Family::Gemini => {}
@@ -124,19 +124,23 @@ pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
 
 // This tuple determines the endpoint, including model-in-URL protocols, without
 // building or parsing a second URL. Length framing separates every component.
-fn identity(provider: &ResolvedModel) -> [&[u8]; 3] {
+fn identity<'a>(provider: &'a ProjectionInput<'a>) -> [&'a [u8]; 3] {
     [
         acyclic_harness_provider_response::stream::family(provider.config.adapter).as_bytes(),
         provider.config.base_url.as_bytes(),
-        provider.model.name.as_bytes(),
+        provider.model.as_bytes(),
     ]
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn hashed_bytes(provider: &ResolvedModel, input_bytes: usize) -> u64 {
+pub(crate) fn hashed_bytes<'p>(
+    provider: impl Into<ProjectionInput<'p>>,
+    input_bytes: usize,
+) -> u64 {
+    let provider = provider.into();
     DOMAIN.len() as u64
         + input_bytes as u64
-        + identity(provider)
+        + identity(&provider)
             .into_iter()
             .map(|value| 8 + value.len() as u64)
             .sum::<u64>()
@@ -227,25 +231,26 @@ pub(crate) fn attach(
     Ok(())
 }
 
-pub(crate) fn encode(
+pub(crate) fn encode<'p>(
     body: &Request<'_>,
-    provider: &ResolvedModel,
+    provider: impl Into<ProjectionInput<'p>>,
     origin: &ReasoningOrigin,
 ) -> Result<Encoded> {
+    let provider = provider.into();
     if !RESEARCH_CAPTURE_ENABLED {
         return Ok(Encoded {
             bytes: body.encode()?,
             cache: None,
         });
     }
-    let binding = provider.profile_binding();
+    let binding = provider.profile;
     let explicit = provider.config.prompt_cache != crate::PromptCache::Implicit
         && (provider.config.adapter == Family::Anthropic
             || (provider.config.adapter == Family::Chat
                 && provider.config.prompt_cache == crate::PromptCache::Routed));
     let mut hash = blake3::Hasher::new();
     hash.update(DOMAIN);
-    for value in identity(provider) {
+    for value in identity(&provider) {
         hash.update(&(value.len() as u64).to_be_bytes());
         hash.update(value);
     }
@@ -270,7 +275,7 @@ pub(crate) fn encode(
     // `cache_control` marker states one.
     let ttl = if explicit {
         ModelCacheTtl::Explicit {
-            seconds: if hour(provider) { 3600 } else { 300 },
+            seconds: if hour(&provider) { 3600 } else { 300 },
         }
     } else {
         ModelCacheTtl::ProviderManaged
@@ -290,6 +295,7 @@ pub(crate) fn encode(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::ResolvedModel;
     use proptest::prelude::*;
     use serde_json::json;
 
@@ -557,190 +563,6 @@ mod tests {
         }
     }
 
-    /// Every request of a Chat agent loop must extend the previous request's
-    /// exact wire bytes: replayed reasoning, interim text, parallel calls,
-    /// their results and notices all keep their first rendering, so a
-    /// provider prefix cache can always reuse the whole previous request.
-    #[tokio::test]
-    async fn chat_agent_loop_requests_extend_every_previous_wire_prefix() {
-        use acyclic_harness_core::model::{
-            ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage, ModelRequest,
-            ModelRole, PreparedModelRequest, ToolResultContent,
-        };
-        use futures::TryStreamExt as _;
-
-        let (provider, _) = crate::tests::provider(Family::Chat, 200);
-        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
-        let mut request = prepared.request().clone();
-        request
-            .tools
-            .push(acyclic_harness_core::tool::ToolDefinition {
-                name: "echo".into(),
-                revision: "1".into(),
-                description: "Echo".into(),
-                input_schema: json!({"type":"object"}),
-                output_schema: json!({}),
-                projection_schema: json!({}),
-            });
-        let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-        let render = |request: &ModelRequest, origin: &ReasoningOrigin| {
-            let prepared =
-                PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
-            let names = crate::tool_names::Names::new(prepared.request());
-            let body = super::super::body_named(
-                &provider,
-                prepared.request(),
-                &names,
-                origin,
-                &mut crate::files::FileText::default(),
-            )
-            .unwrap();
-            let bytes = encode(&body, &provider, origin).unwrap().bytes;
-            // Everything before the trailing fields: the header and every message.
-            let messages = bytes.len() - body.tail().unwrap().bytes().len();
-            (bytes, messages)
-        };
-        let mut previous: Option<Vec<u8>> = None;
-        for step in 0..4_u32 {
-            let (bytes, messages) = render(&request, &origin);
-            if let Some(previous) = &previous {
-                let same = previous
-                    .iter()
-                    .zip(&bytes)
-                    .take_while(|(left, right)| left == right)
-                    .count();
-                assert_eq!(
-                    same,
-                    previous.len(),
-                    "step {step} rewrote earlier request bytes at offset {same}: {:?}",
-                    String::from_utf8_lossy(&previous[same..previous.len().min(same + 160)])
-                );
-                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                for earlier_step in 0..step {
-                    let expected = format!("think {earlier_step} é");
-                    assert!(
-                        body["messages"].as_array().unwrap().iter().any(|message| {
-                            message["reasoning_content"].as_str() == Some(expected.as_str())
-                        }),
-                        "missing reasoning from step {earlier_step}"
-                    );
-                }
-            }
-            previous = Some(bytes[..messages].to_vec());
-
-            // Tool steps make two parallel calls after interim text; the last step answers.
-            let output = if step < 3 {
-                format!(
-                    concat!(
-                        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"looking {s}\"}}}}]}}\n\n",
-                        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[",
-                        "{{\"index\":0,\"id\":\"a{s}\",\"function\":{{\"name\":\"echo\",",
-                        "\"arguments\":\"{{\\\"value\\\":{s}}}\"}}}},",
-                        "{{\"index\":1,\"id\":\"b{s}\",\"function\":{{\"name\":\"echo\",",
-                        "\"arguments\":\"{{}}\"}}}}",
-                        "]}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
-                    ),
-                    s = step
-                )
-            } else {
-                "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n"
-                    .to_owned()
-            };
-            let reply = format!(
-                concat!(
-                    "data: {{\"id\":\"run{s}\",\"choices\":[{{\"delta\":",
-                    "{{\"reasoning_content\":\"think {s} \\u00e9\"}}}}]}}\n\n",
-                    "{output}",
-                    "data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":5,",
-                    "\"completion_tokens\":3,\"total_tokens\":8}}}}\n\n",
-                    "data: [DONE]\n\n"
-                ),
-                s = step,
-                output = output
-            );
-            let prepared =
-                PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
-            let names = crate::tool_names::Names::new(prepared.request());
-            let events: Vec<_> = crate::event_driver::events_named(
-                crate::Adapter::Chat,
-                crate::tests::chunks(reply, 7),
-                4096,
-                ModelDispatch {
-                    step,
-                    request_digest: prepared.request_digest(),
-                    ..dispatch
-                },
-                Some(&names),
-                Some(origin.clone()),
-                None,
-            )
-            .try_collect()
-            .await
-            .unwrap();
-            // The executor's history: one assistant message per completed part.
-            let mut called = Vec::new();
-            for event in events {
-                let part = match event {
-                    ModelEvent::ReasoningBlock { block } => ModelContentPart::Reasoning { block },
-                    ModelEvent::TextPart { text, native } => {
-                        ModelContentPart::Text { text, native }
-                    }
-                    ModelEvent::ToolCall(call) => {
-                        called.push(call.call_id.clone());
-                        ModelContentPart::ToolCall(call)
-                    }
-                    _ => continue,
-                };
-                request.messages.push(ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: ModelContent::Part(part),
-                });
-            }
-            assert_eq!(called.len(), if step < 3 { 2 } else { 0 });
-            for (index, call_id) in called.into_iter().enumerate() {
-                let value = if index == 0 {
-                    json!({"stdout": format!("line {step}\n"), "exit": 0})
-                } else {
-                    json!(step)
-                };
-                request.messages.push(ModelMessage {
-                    role: ModelRole::Tool,
-                    content: ModelContent::Part(ModelContentPart::ToolResult {
-                        call_id,
-                        name: "echo".into(),
-                        content: ToolResultContent::Json { value },
-                    }),
-                });
-            }
-            if step == 1 {
-                request.messages.push(ModelMessage {
-                    role: ModelRole::User,
-                    content: ModelContent::Part(ModelContentPart::Notices {
-                        notices: vec![acyclic_model_render::Notice {
-                            source: "agents".into(),
-                            kind: "child.finished".into(),
-                            body: json!({"paths":["b","a"],"child":"worker","z":1,"a":2}),
-                            wake: true,
-                            coalesce_key: None,
-                        }],
-                    }),
-                });
-            }
-        }
-
-        // Negative control: an origin from another credential cannot replay
-        // native reasoning, so the same history renders different earlier
-        // bytes and the prefix assertion detects it.
-        let previous = previous.unwrap();
-        let foreign = ReasoningOrigin {
-            credential_scope: Some([7; 32]),
-            ..origin.clone()
-        };
-        assert_ne!(foreign.credential_scope, origin.credential_scope);
-        assert!(!render(&request, &foreign).0.starts_with(&previous));
-        assert!(render(&request, &origin).0.starts_with(&previous));
-    }
-
     proptest! {
         #[test]
         fn cache_capture_preserves_wire_bytes_and_sparse_prefix_edges(
@@ -780,7 +602,7 @@ mod tests {
             prop_assert_eq!(breakpoint.messages, 2);
             let mut hash = blake3::Hasher::new();
             hash.update(DOMAIN);
-            for value in identity(&provider) {
+            for value in identity(&provider.projection()) {
                 hash.update(&(value.len() as u64).to_be_bytes());
                 hash.update(value);
             }

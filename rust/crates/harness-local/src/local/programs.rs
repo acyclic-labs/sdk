@@ -84,6 +84,7 @@ impl Programs {
             home: &self.home,
             seed: (&local.seed.0, &local.seed.1),
             configuration: local.harness.issuer_configuration(),
+            issuer_access: Some((&local.verifier, &local.signed)),
             maximum_bytes: local.limits.file_bytes,
         };
         let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;

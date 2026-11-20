@@ -5,7 +5,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         work: &crate::NativeMaterializationWork,
         query: impl FnOnce(
             &NamespacePath,
-            &mut crate::demand::DemandWork,
+            &mut crate::ledger::DemandWork,
         ) -> Result<bool, MountSourceError>,
     ) -> Result<bool, MountSourceError> {
         let mut carrier = NativeDemandCarrier::Native(work);

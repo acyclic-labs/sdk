@@ -158,7 +158,11 @@ fn validate_name(name: &str) -> Result<(), String> {
 fn command_output(command: &mut Command) -> Result<Vec<u8>, String> {
     let output = command.run_output().map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        return Err(format!(
+            "{}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
     Ok(output.stdout)
 }

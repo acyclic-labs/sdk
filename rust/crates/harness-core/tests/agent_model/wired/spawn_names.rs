@@ -45,6 +45,22 @@ async fn fixture(
     Ok((agents, stream, root, model))
 }
 
+/// The same fixture without the seed feedback plugin: a case that counts
+/// dispatches or stream reads binds only the plugins it means to exercise.
+async fn fixture_quiet(
+    turns: Vec<ScriptedTurn>,
+    setup_failures: usize,
+) -> Result<(
+    AgentHost<MemoryStream>,
+    Arc<MemoryStream>,
+    AgentPath,
+    Arc<ScriptedModelProvider>,
+)> {
+    let (agents, stream, root, model, _) =
+        fixture_with_workspace(turns, setup_failures, false, false).await?;
+    Ok((agents, stream, root, model))
+}
+
 async fn fixture_with_files(
     turns: Vec<ScriptedTurn>,
     setup_failures: usize,
@@ -55,7 +71,7 @@ async fn fixture_with_files(
     Arc<ScriptedModelProvider>,
     Host,
 )> {
-    fixture_with_workspace(turns, setup_failures, false).await
+    fixture_with_workspace(turns, setup_failures, false, true).await
 }
 
 struct ProjectTasks {
@@ -155,6 +171,7 @@ async fn fixture_with_workspace(
     turns: Vec<ScriptedTurn>,
     setup_failures: usize,
     project: bool,
+    plugins: bool,
 ) -> Result<(
     AgentHost<MemoryStream>,
     Arc<MemoryStream>,
@@ -162,7 +179,7 @@ async fn fixture_with_workspace(
     Arc<ScriptedModelProvider>,
     Host,
 )> {
-    fixture_with_pause(turns, setup_failures, project, None).await
+    fixture_with_pause(turns, setup_failures, project, None, plugins).await
 }
 
 async fn fixture_with_pause(
@@ -170,6 +187,7 @@ async fn fixture_with_pause(
     setup_failures: usize,
     project: bool,
     pause: Option<Arc<send_files::PublicationPause>>,
+    plugins: bool,
 ) -> Result<(
     AgentHost<MemoryStream>,
     Arc<MemoryStream>,
@@ -238,6 +256,11 @@ async fn fixture_with_pause(
         "archive".into(),
     ])
     .with_templates();
+    let executors = if plugins {
+        executors
+    } else {
+        executors.with_plugins(Arc::new(acyclic_harness_core::plugins::Enabled::default()))
+    };
     let remaining = AtomicUsize::new(setup_failures);
     let turns = FilesystemTurnHost::new(
         stream.clone(),
@@ -253,8 +276,10 @@ async fn fixture_with_pause(
         ),
         TurnAdmission::LocalRoot,
         Arc::new(executors),
-        LIMITS,
-        acyclic_harness_core::approvals::ApprovalPolicy::accept_all("test"),
+        (
+            LIMITS,
+            acyclic_harness_core::approvals::ApprovalPolicy::accept_all("test"),
+        ),
     )
     .with_binding_fault(move |agent| {
         if agent.parent.is_some()
@@ -413,10 +438,10 @@ async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
 async fn send_pins_files_written_after_the_child_fork_without_granting_the_sender_volume() -> Result
 {
     use acyclic_harness_core::conversation::{
-        ContentAccess, ContentGrant, ContentPublisher, ContentResidencyVerifier,
+        ContentAccess, ContentGrant, ContentPublisher, ContentResidencyVerifier, FileDescriptor,
     };
     use acyclic_harness_core::filesystem::{
-        FilesystemContentPublisher, FilesystemContentVerifier, agent_authority,
+        FilesystemContentPublisher, FilesystemContentVerifier, WorkspaceMutation, agent_authority,
         agent_journal_authority,
     };
 
@@ -438,6 +463,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             0,
             true,
             pause.clone(),
+            true,
         )
         .await?;
         deliver(&agents, &root, requested("spawn", &root)).await?;
@@ -494,25 +520,46 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             LIMITS.maximum_bytes,
             None,
         )?;
-        let mut unselected = Vec::new();
-        for path in [
-            "inputs/messages/unselected/files/0",
-            ".system/execution/private-control.json",
-        ] {
-            unselected.push(
-                journal_writer
-                    .stage_once(
-                        OperationId::new(),
-                        path,
-                        b"unselected host content",
-                        "text/plain",
-                        "unselected",
-                        ContentAccess::default(),
-                    )?
-                    .await?
-                    .0,
-            );
-        }
+        let unselected_body = b"unselected host content";
+        let (unselected_input, _) = journal_writer
+            .stage_once(
+                OperationId::new(),
+                "inputs/messages/unselected/files/0",
+                unselected_body,
+                "text/plain",
+                "unselected",
+                ContentAccess::default(),
+            )?
+            .await?;
+        let control_path = ".system/execution/private-control.json";
+        let journal_workspace = acyclic_harness_core::filesystem::workspace_ref(
+            journal.provider().clone(),
+            &journal.storage_name(&mut None)?,
+        )?;
+        let control_version = files
+            .apply(
+                &journal_workspace,
+                None,
+                &[
+                    WorkspaceMutation::CreateDirectory {
+                        path: "/.system/execution".into(),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: format!("/{control_path}"),
+                        bytes: unselected_body.as_slice().into(),
+                    },
+                ],
+                &acyclic_harness_core::IdempotencyKey::new("private-control")?,
+            )
+            .await?;
+        let unselected_control = FileRef::new(
+            journal.clone(),
+            control_path.into(),
+            hex::encode(control_version.as_resource().key()),
+            FileDescriptor::from_bytes(unselected_body, "text/plain", &mut None)?,
+            "private-control.json".into(),
+            &mut None,
+        )?;
         let authority = agent_authority(
             &issuer,
             &TurnAdmission::LocalRoot,
@@ -646,7 +693,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 .as_ref(),
             b"Work on the assigned brief"
         );
-        for file in &unselected {
+        for file in [&unselected_input, &unselected_control] {
             let denied = async {
                 reader
                     .read(file, file.descriptor().byte_length(), None, None)?
@@ -772,9 +819,23 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
 
         // Replaying the original accepted input neither rereads the changed
         // source nor appends a second delivery to the child's inbox.
-        let requests = model.request_count();
+        let operation = turn_id(
+            &agents.state(&root).await?,
+            &TurnInput::Approval {
+                id: intent("send-late-file"),
+            },
+        )?;
+        let dispatches = || {
+            model
+                .dispatches()
+                .into_iter()
+                .filter(|dispatch| dispatch.operation_id == operation)
+                .collect::<Vec<_>>()
+        };
+        let original = dispatches();
+        assert!(!original.is_empty());
         deliver(&agents, &root, requested("send-late-file", &root)).await?;
-        assert_eq!(model.request_count(), requests);
+        assert_eq!(dispatches(), original);
         assert_eq!(super::super::values(&*stream, child.inbox()?).await?, inbox);
     }
     Ok(())
@@ -1199,27 +1260,12 @@ async fn waits_report_setup_failure_before_and_after_it_settles() -> Result {
 async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants() -> Result {
     let text = || ScriptedTurn::Text("ready".into());
     let (agents, stream, root, model) = fixture(
-        vec![
-            spawn_call("w", &[]),
-            spawn_call("s", &["w"]),
-            text(),
-            spawn_call("w", &[]),
-            text(),
-            text(),
-            call("wait", json!({"agents": ["w"]})),
-            call("send", json!({"agent": "w", "message": "parent message"})),
-            text(),
-            text(),
-            call("send", json!({"agent": "w", "message": "sibling message"})),
-            text(),
-            text(),
-            call("archive", json!({"agent": "w"})),
-            text(),
-        ],
+        vec![spawn_call("w", &[]), spawn_call("s", &["w"]), text()],
         1,
     )
     .await?;
     deliver(&agents, &root, requested("first", &root)).await?;
+    assert_eq!(model.remaining(), 0);
     let failed = named(&agents, &root, "w").await?;
     let sibling = named(&agents, &root, "s").await?;
     // This grant predates the failure and survives the sibling's new identity.
@@ -1260,17 +1306,27 @@ async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants(
         matches!(old_admission, Err(acyclic_harness_core::Error::Conflict(ref reason)) if reason == "an agent with this name exists")
     );
     // ChildDone wakes the parent, whose scripted next turn retries the same name.
+    model.extend([spawn_call("w", &[]), text()]);
     agents.drain(&root).await?;
+    assert_eq!(model.remaining(), 0);
     let retry = named(&agents, &root, "w").await?;
     assert_ne!(retry, failed);
     assert_eq!(
         agents.resolve_spawn_name(&root, "w").await?,
         SpawnResolution::Live(1, retry.clone())
     );
+    model.extend([text()]);
     agents.drain(&retry).await?;
+    assert_eq!(model.remaining(), 0);
     assert_eq!(agents.state(&retry).await?.phase, Phase::Idle);
     assert!(!agents.state(&retry).await?.released());
+    model.extend([
+        call("wait", json!({"agents": ["w"]})),
+        call("send", json!({"agent": "w", "message": "parent message"})),
+        text(),
+    ]);
     deliver(&agents, &root, requested("references", &root)).await?;
+    assert_eq!(model.remaining(), 0);
     assert!(
         model
             .requests()
@@ -1281,15 +1337,26 @@ async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants(
             ModelContentPart::ToolResult { name, content: ToolResultContent::Json { value }, .. }
             if name == "wait" && value["settled"][0]["agent"] == retry.as_str()))
     );
+    model.extend([text()]);
     agents.drain(&retry).await?;
+    assert_eq!(model.remaining(), 0);
+    // Admit the sibling's turn only after the parent's message has settled.
+    // Its script is owned by this delivery, independently of native timing.
+    model.extend([
+        call("send", json!({"agent": "w", "message": "sibling message"})),
+        text(),
+    ]);
     agents.drain(&sibling).await?;
-    agents.drain(&retry).await?;
+    assert_eq!(model.remaining(), 0);
     let messages = super::super::values(&*stream, retry.inbox()?)
         .await?
         .into_iter()
         .map(|bytes| InboxRecord::decode(&bytes))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     assert!(messages.iter().any(|record| matches!(record, InboxRecord::Message(message) if message.from == Sender::Agent { path: sibling.clone() })));
+    model.extend([text()]);
+    agents.drain(&retry).await?;
+    assert_eq!(model.remaining(), 0);
     let before = counted.requests();
     assert_eq!(
         resolve_spawn_name(&counted, &within(), &root, "s")
@@ -1301,7 +1368,9 @@ async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants(
     assert_eq!(reads.class(RequestClass::Head), 1);
     assert_eq!(reads.control(), 1);
     assert_eq!(reads.data(), 0);
+    model.extend([call("archive", json!({"agent": "w"})), text()]);
     deliver(&agents, &root, requested("archive", &root)).await?;
+    assert_eq!(model.remaining(), 0);
     agents.drain(&retry).await?;
     assert_eq!(
         agents.state(&retry).await?.phase,
@@ -1347,7 +1416,7 @@ proptest::proptest! {
             }
             turns.push(ScriptedTurn::Text("committed turn".into()));
             turns.push(ScriptedTurn::Events(vec![ScriptedEvent::Interrupted { error: "failure after work".into() }]));
-            let (agents, stream, root, _) = fixture(turns, failures).await?;
+            let (agents, stream, root, _) = fixture_quiet(turns, failures).await?;
             deliver(&agents, &root, requested("start", &root)).await?;
             for _ in 0..failures {
                 let failed = named(&agents, &root, "w").await?;
@@ -1376,11 +1445,11 @@ proptest::proptest! {
 #[tokio::test]
 async fn explanation_template_restricts_definitions_and_executable_authority() -> Result {
     let root = AgentPath::root(&id(81));
-    let (agents, stream, _, model) = fixture(
+    let (agents, stream, _, model, files) = fixture_with_files(
         vec![
             call(
                 "spawn",
-                json!({"name":"why", "task":"Explain the current trace", "role":"explanation"}),
+                json!({"name":"why", "task":"Explain the current trace", "role":"advisor"}),
             ),
             ScriptedTurn::Text("explanation spawned".into()),
             // A provider can emit a call absent from its definitions. Execution
@@ -1391,8 +1460,34 @@ async fn explanation_template_restricts_definitions_and_executable_authority() -
         0,
     )
     .await?;
+    let state = agents.state(&root).await?;
+    let home = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == WorkspaceRole::Home)
+        .ok_or("root home volume missing")?
+        .volume()?;
+    let workspace = acyclic_harness_core::filesystem::workspace_ref(
+        home.provider().clone(),
+        &home.storage_name(&mut None)?,
+    )?;
+    files
+        .seed_once(
+            &workspace,
+            &acyclic_harness_core::IdempotencyKey::new("explanation-template")?,
+            || {
+                Ok(vec![(
+                    "/templates/advisor/AGENT.md".into(),
+                    acyclic_stream::OwnedBytes::from_static(
+                        b"---\nversion: 1\ncontext: fresh\nmay_spawn: []\nallowed_tools: [send, wait]\n---\nExplain the current trace.\n",
+                    ),
+                )])
+            },
+        )
+        .await?;
     deliver(&agents, &root, requested("explain", &root)).await?;
     let explanation = named(&agents, &root, "why").await?;
+    let root_requests = model.request_count();
     agents.drain(&explanation).await?;
     assert!(
         !agents.state(&root).await?.released(),
@@ -1400,21 +1495,36 @@ async fn explanation_template_restricts_definitions_and_executable_authority() -
     );
     let requests = model.requests();
     assert!(requests[0].tools.iter().any(|tool| tool.name == "archive"));
-    for request in requests.iter().skip(2) {
+    let child_requests = requests
+        .get(root_requests..)
+        .ok_or("requests were lost")?
+        .iter()
+        .filter(|request| !acyclic_harness_core::test_support::is_retrospective(request))
+        .collect::<Vec<_>>();
+    assert!(
+        !child_requests.is_empty(),
+        "the explanation did not dispatch"
+    );
+    for request in &child_requests {
         assert!(
             request
                 .tools
                 .iter()
-                .all(|tool| matches!(tool.name.as_str(), "send" | "wait"))
+                .all(|tool| matches!(tool.name.as_str(), "send" | "wait")),
+            "explanation tools: {:?}",
+            request
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>()
         );
         assert!(request.tools.iter().any(|tool| tool.name == "send"));
     }
     let entries = super::super::values(&*stream, explanation.conversation()?).await?;
     assert!(!entries.is_empty());
     assert!(
-        requests
+        child_requests
             .iter()
-            .skip(3)
             .flat_map(|request| &request.messages)
             .flat_map(|message| message.content.parts())
             .any(|part| matches!(part,

@@ -901,14 +901,14 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     // The producer transfers an existing allocation, including spare capacity.
     // Constructing it outside the callback is intentional: this is an input
     // ownership/retention control, not a claim of newly allocated source work.
-    let make_source = || {
+    let make_source = || -> Result<_, std::num::TryFromIntError> {
         let mut bytes = Vec::with_capacity(65_536);
         bytes.extend_from_slice(b"abc");
-        let capacity = usize_to_u64(bytes.capacity());
-        (
+        let capacity = u64::try_from(bytes.capacity())?;
+        Ok((
             RetainedSource(Some(OwnedSourceChunk::claimed(bytes.into(), capacity))),
             capacity,
-        )
+        ))
     };
     let options = BlobBuildOptions {
         chunk_bytes: 3,
@@ -916,7 +916,7 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
         page_bytes: 129,
         maximum_blob_bytes: Some(3),
     };
-    let (mut source, capacity) = make_source();
+    let (mut source, capacity) = make_source()?;
     let built = (build_blob(
         &MemoryObjectStore::default(),
         &mut source,
@@ -929,7 +929,7 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     assert_eq!(built.work.source_bytes_read, 3);
     assert!(built.work.peak_allocation_bytes >= capacity);
 
-    let (mut source, capacity) = make_source();
+    let (mut source, capacity) = make_source()?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = capacity - 1;
     let failed = (build_blob(

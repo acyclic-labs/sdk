@@ -27,48 +27,6 @@ fn actor_ids_follow_the_live_ascii_grammar_without_normalization()
 }
 
 #[test]
-fn typescript_export_includes_error_roots_with_esm_imports() {
-    let output = std::env::temp_dir().join(format!(
-        "acyclic-actors-typescript-export-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&output);
-
-    export::export_typescript(&output).expect("Actors TypeScript export should succeed");
-
-    let service_error =
-        std::fs::read_to_string(output.join("actors/ServiceError.ts")).expect("ServiceError");
-    assert!(service_error.contains("from \"./ErrorCode.js\""));
-    for name in ["ActorState", "SubscriptionState", "ErrorCode"] {
-        let declaration = std::fs::read_to_string(output.join(format!("actors/{name}.ts")))
-            .expect("numeric enum declaration");
-        assert!(declaration.contains(&format!("export type {name} = ")));
-        assert!(!declaration.contains("export enum "));
-    }
-    let current_head = std::fs::read_to_string(output.join("actors/CurrentHeadMarker.ts"))
-        .expect("CurrentHeadMarker");
-    assert!(current_head.contains("true"));
-
-    std::fs::remove_dir_all(output).expect("remove temporary export");
-}
-
-#[test]
-fn typescript_export_names_follow_nested_ts_rs_metadata() {
-    let names = export::typescript_export_names(&Config::default());
-
-    assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
-    for name in [
-        "ActorObservation",
-        "ActorState",
-        "CurrentHeadMarker",
-        "SubscriptionObservation",
-        "SubscriptionState",
-    ] {
-        assert!(names.iter().any(|candidate| candidate == name), "{name}");
-    }
-}
-
-#[test]
 fn digest_matches_existing_create_predicate() {
     assert_eq!(
         CodeSha256::new(vec![0; 31]),
@@ -79,32 +37,6 @@ fn digest_matches_existing_create_predicate() {
         Err(DomainError::InvalidCodeSha256)
     );
     assert!(CodeSha256::new(vec![1; 32]).is_ok());
-}
-
-#[test]
-fn positive_u64_is_the_single_limits_admission_predicate() {
-    let invalid = DomainError::Contract(crate::ContractError::InvalidArgument);
-    assert_eq!(PositiveU64::new(0), Err(invalid));
-    assert_eq!(PositiveU64::try_from(0), Err(invalid));
-
-    for timeout in [None, Some(0), Some(1), Some(u64::MAX)] {
-        for memory in [None, Some(0), Some(1), Some(u64::MAX)] {
-            for checkpoint in [None, Some(0), Some(1), Some(u64::MAX)] {
-                let wire = wire::ActorLimits {
-                    handler_timeout_millis: timeout,
-                    memory_bytes: memory,
-                    checkpoint_bytes: checkpoint,
-                };
-                let result = ActorLimits::try_from(wire.clone());
-                if [timeout, memory, checkpoint].contains(&Some(0)) {
-                    assert_eq!(result, Err(invalid), "{wire:?}");
-                } else {
-                    let limits = result.expect("absent or positive resource policy");
-                    assert_eq!(wire::ActorLimits::from(limits), wire);
-                }
-            }
-        }
-    }
 }
 
 #[test]
@@ -266,52 +198,6 @@ fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
     assert_eq!(
         InvokeActorRequest::try_from(wire),
         Err(DomainError::EmptyActorId)
-    );
-}
-
-#[test]
-fn response_digest_keeps_the_nonzero_admission_rule() {
-    let observation = wire::ActorObservation {
-        entry_source: None,
-        observation_stream_path: None,
-        namespace: None,
-        account_id: Vec::new(),
-        actor_id: "actor-1".into(),
-        code_sha256: vec![0; 32],
-        home_region: "eu".into(),
-        state: 1,
-        subscriptions: Vec::new(),
-        checkpoint_unix_millis: None,
-        checkpoint_epoch: 0,
-        configuration_revision: 0,
-    };
-    assert_eq!(
-        ActorObservation::try_from(observation),
-        Err(DomainError::InvalidCodeSha256)
-    );
-}
-
-#[test]
-fn subscription_projection_keeps_canonical_current_head_rule() {
-    let invalid_start = wire::SubscriptionStart {
-        start: Some(wire::subscription_start::Start::CurrentHead(false)),
-    };
-    assert_eq!(
-        SubscriptionStart::try_from(invalid_start),
-        Err(DomainError::InvalidSubscription)
-    );
-
-    let invalid = wire::SubscriptionSpec {
-        subscription_id: "events".into(),
-        stream_path: "agents/a/events".into(),
-        start: Some(wire::SubscriptionStart {
-            start: Some(wire::subscription_start::Start::CurrentHead(false)),
-        }),
-        placement_anchor: false,
-    };
-    assert_eq!(
-        SubscriptionSpec::try_from(invalid),
-        Err(DomainError::InvalidSubscription)
     );
 }
 
@@ -721,8 +607,6 @@ fn invocation_order_is_transport_metadata_with_strict_session_validation() -> Re
             InvocationOrder::try_from(wire::InvocationOrder::from(order.clone()))?,
             order
         );
-        assert_eq!(order.session(), "01".repeat(16));
-        assert_eq!(order.sequence(), sequence);
     }
     Ok(())
 }

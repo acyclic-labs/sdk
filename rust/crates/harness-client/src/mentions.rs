@@ -10,30 +10,12 @@ use std::collections::BTreeMap;
 
 pub use crate::command_request::FileMention;
 
-/// Resolves whitespace-delimited `@path` and `@"path with spaces"` at one revision.
+/// Resolves whitespace-delimited `@path` and `@"path with spaces"` at one revision,
+/// reading each mentioned path where `locate` places it below `root`.
 /// Email addresses, escaped `\@` and embedded `@` are ordinary text. Paths are
 /// relative to the declared root; absolute and parent paths are rejected
 /// by the existing context validator. Repeated paths read once. The caller's byte
 /// limit bounds the input and the combined unique file bodies independently.
-pub async fn resolve_file_mentions(
-    input: &str,
-    root: &ContextRoot,
-    generation: &GenerationRef,
-    reader: &dyn ContentResidencyVerifier,
-    maximum_bytes: impl Into<Option<u64>>,
-) -> Result<Vec<FileMention>> {
-    let locate = |path: &str| {
-        if root.directory.is_empty() {
-            path.into()
-        } else {
-            format!("{}/{path}", root.directory)
-        }
-    };
-    resolve_file_mentions_at(input, root, generation, reader, maximum_bytes, locate).await
-}
-
-/// [`resolve_file_mentions`], reading each mentioned path where `locate`
-/// places it below `root`.
 #[doc(hidden)]
 pub async fn resolve_file_mentions_at(
     input: &str,

@@ -1,0 +1,161 @@
+{
+  "options": {
+    "filesystem_database": "harness-actor-fs",
+    "stream_database": "harness-actor-stream",
+    "maximum_object_bytes": 1048576,
+    "filesystem_provider": {
+      "namespace": "harness-actor",
+      "family": "filesystem",
+      "version": "2"
+    },
+    "stream_limits": {
+      "commands": 10000,
+      "journal_bytes": 16777216,
+      "paths": 1000,
+      "path_bytes": 262144,
+      "records": 10000,
+      "payload_bytes": 16777216,
+      "commits": 10000,
+      "idempotency_results": 10000
+    },
+    "limits": {
+      "file_bytes": 1048576,
+      "path_bytes": 4096,
+      "attachments": 32,
+      "render_bytes": 1048576,
+      "model_events_per_step": 64,
+      "tool_calls_per_step": 16,
+      "context_messages": 128
+    },
+    "principal": "owner",
+    "preset": {
+      "approval_policy": {
+        "approvers": [
+          {
+            "kind": "rules",
+            "principal": "owner",
+            "rules": [],
+            "fallback": "allow"
+          }
+        ]
+      }
+    },
+    "children": true
+  },
+  "model": {
+    "provider": "scripted",
+    "selection": "scripted/default",
+    "spec": {
+      "adapter": "scripted",
+      "script": {
+        "path": "swarm.json",
+        "sha256": "e4a1024fb2a6c1a2bb6bcedda20d961398b5b1ef083e034eb445bdd08b271509"
+      }
+    },
+    "limits": {
+      "file_bytes": 1048576,
+      "path_bytes": 4096,
+      "attachments": 32,
+      "render_bytes": 1048576,
+      "model_events_per_step": 64,
+      "tool_calls_per_step": 16,
+      "context_messages": 128
+    },
+    "compaction": {
+      "kind": "disabled"
+    }
+  },
+  "deployment": {
+    "environment": "production",
+    "entry": "harness",
+    "jurisdiction": "",
+    "limits": {
+      "handlerTimeoutMillis": "600000",
+      "memoryBytes": "268435456",
+      "checkpointBytes": "1024"
+    },
+    "subscriptions": [
+      {
+        "subscriptionId": "inbox",
+        "streamPath": "harness/inbox",
+        "start": {
+          "cursor": "0"
+        },
+        "placementAnchor": true
+      }
+    ],
+    "bindings": [
+      {
+        "name": "sharedStreams",
+        "capability": "harnessStreams",
+        "resource": "streams:/"
+      },
+      {
+        "name": "objects",
+        "capability": "harnessObjects",
+        "resource": "objects:/harness"
+      },
+      {
+        "name": "platformAuthority",
+        "capability": "",
+        "resource": "",
+        "guestAdmission": "platformAuthority"
+      },
+      {
+        "name": "machinesWorkspace",
+        "capability": "harnessMachines",
+        "resource": "machines:/harness"
+      }
+    ],
+    "machines": {
+      "origin": "https://machines.example.com"
+    },
+    "grants": [
+      {
+        "name": "harnessStreams",
+        "grant": {
+          "resource": {
+            "name": "streams:/",
+            "prefix": true
+          },
+          "actions": [
+            "streams/append",
+            "streams/follow",
+            "streams/fork",
+            "streams/list"
+          ]
+        },
+        "limits": null
+      },
+      {
+        "name": "harnessObjects",
+        "grant": {
+          "resource": {
+            "name": "objects:/harness",
+            "prefix": true
+          },
+          "actions": [
+            "objects/head",
+            "objects/get",
+            "objects/put",
+            "objects/retain"
+          ]
+        },
+        "limits": null
+      },
+      {
+        "name": "harnessMachines",
+        "grant": {
+          "resource": {
+            "name": "machines:/harness",
+            "prefix": true
+          },
+          "actions": [
+            "machines/exec"
+          ]
+        },
+        "limits": null
+      }
+    ]
+  }
+}

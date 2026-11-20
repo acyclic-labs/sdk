@@ -1,6 +1,6 @@
 //! Portable identities and authority contracts.
 
-pub(crate) use acyclic_fs_format::identity::{
+pub use acyclic_fs_format::identity::{
     AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
 };
 use bytes::Bytes;

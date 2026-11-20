@@ -71,7 +71,7 @@ export const compatibilityArtifacts = {
     conformanceDigest: "rust/crates/auth/conformance/secrets-v1.json",
   },
   harness: {
-    schemaDigest: "rust/crates/harness-core/proto/harness/v2/harness.proto",
+    schemaDigest: "rust/crates/harness-wire/proto/harness/v2/harness.proto",
     descriptorDigest: "compatibility/descriptors/harness-v2.bin",
     conformanceDigest: "rust/crates/harness-suite/conformance/legacy-harness.json",
   },
@@ -86,7 +86,7 @@ export const compatibilityArtifacts = {
     conformanceDigest: "rust/crates/stream/conformance/stream.json",
   },
   objects: {
-    schemaDigest: "rust/crates/objects/proto/objects/v1/objects.proto",
+    schemaDigest: "rust/crates/objects-core/proto/objects/v1/objects.proto",
     descriptorDigest: "compatibility/descriptors/objects-v1.bin",
     conformanceDigest: "rust/crates/objects/conformance/objects-v1.json",
   },
@@ -115,7 +115,7 @@ export const packagedSourceCopies = [
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant",
     "interaction-resolution", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
-  ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
+  ["rust/crates/harness-wire/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
 ];
 
 // Evaluate source-owned policy even in exported trees. Parent repositories,

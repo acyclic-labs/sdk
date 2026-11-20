@@ -865,14 +865,15 @@ fn discover(directory: &Path, cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpo
     let directory = acyclic_fs::hold_root(directory).map_err(native_file_error)?;
     let bytes = held_bytes(&directory, Path::new("owner.json"), MAXIMUM_REQUEST_BYTES)?;
     let endpoint = Endpoint::decode(&bytes)?;
-    let state = directory
-        .path()
+    let canonical = std::fs::canonicalize(directory.path()).map_err(storage)?;
+    let state = canonical
         .parent()
         .ok_or_else(|| Error::Invalid("native endpoint has no owner state".into()))?;
-    if directory.path().starts_with(&endpoint.workspace)
+    if canonical.starts_with(&endpoint.workspace)
         || !endpoint.workspace.is_absolute()
         || std::fs::canonicalize(&endpoint.workspace).map_err(storage)? != endpoint.workspace
-        || std::fs::canonicalize(directory.path()).map_err(storage)? != directory.path()
+        || !acyclic_native_runtime::paths::strip_native_prefix(&canonical, directory.path())
+            .is_some_and(|suffix| suffix.as_os_str().is_empty())
         || !(cwd.starts_with(&endpoint.workspace)
             || cwd.starts_with(state.join(workspace::HOST_VIEW_ROOT)))
     {
@@ -900,11 +901,11 @@ pub async fn serve_until(
     ready: impl FnOnce() -> Result<()>,
     shutdown: impl std::future::Future<Output = Result<()>>,
 ) -> Result<()> {
-    let workspace = local
-        .workspace_path()
-        .ok_or_else(|| Error::Invalid("native hosts require a checkout".into()))?
-        .to_path_buf();
-    let held = acyclic_fs::hold_root(&local.workspace().unwrap().host_state).map_err(storage)?;
+    let checkout = local
+        .workspace()
+        .ok_or_else(|| Error::Invalid("native hosts require a checkout".into()))?;
+    let workspace = checkout.path.clone();
+    let held = acyclic_fs::hold_root(&checkout.host_state).map_err(storage)?;
     held.create_directories(
         Path::new("host-processes"),
         acyclic_fs::NativeDurability::Durable,
@@ -953,7 +954,7 @@ pub async fn serve_until(
         .map_err(native_file_error)?;
     let _endpoint = LocalEndpoint::register(
         endpoint.workspace.clone(),
-        local.workspace().unwrap().mount_directory.clone(),
+        checkout.mount_directory.clone(),
         directory.path().to_path_buf(),
     );
     let owner =

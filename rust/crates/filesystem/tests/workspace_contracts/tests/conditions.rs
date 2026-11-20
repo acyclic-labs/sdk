@@ -7,7 +7,7 @@ use acyclic_fs_format::identity::FileId;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::commit;
+use crate::workspace_contracts::transaction::commit;
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     sha2::Digest::finalize(sha2::Digest::chain_update(

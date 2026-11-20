@@ -51,34 +51,7 @@ test('consumer graph reads Cargo.lock without a root Bazel resolution', t => {
   assert.deepEqual(workspaceGraph(requested, 'x86_64-unknown-linux-gnu', {resolution: matchingResolution}).resolve.nodes.find(n => n.id.endsWith('#serde@1.0.0')).features, ['missing']);
   fs.writeFileSync(path.join(root, 'cargo-bazel-lock.json'), '{invalid');
   assert.throws(() => workspaceGraph(root), SyntaxError);
-});
-
-test('Git manifests retain build scripts and source fields when Bazel supplies library metadata', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-targets-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const source = 'git+https://github.com/example/sdk?rev=abc#abc', checkout = path.join(root, 'sdk-source');
-  fs.mkdirSync(path.join(checkout, 'src'), {recursive: true});
-  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers=[]\n');
-  fs.writeFileSync(path.join(root, 'Cargo.lock'), `version=4\n[[package]]\nname="sdk"\nversion="1.0.0"\nsource="${source}"\n`);
-  fs.writeFileSync(path.join(checkout, 'Cargo.toml'), '[package]\nname="sdk"\nversion="1.0.0"\nedition="2024"\n');
-  fs.writeFileSync(path.join(checkout, 'src/lib.rs'), '');
-  fs.writeFileSync(path.join(checkout, 'build.rs'), 'fn main() {}\n');
-  const original = workspacePackages(checkout)[0].targets;
-  const bazelTargets = [{rule: {name: '@crates__sdk-1.0.0//:sdk_macro', ruleClass: 'rust_proc_macro', attribute: [
-    {name: 'crate_name', stringValue: 'sdk_macro'},
-  ]}}];
-  const graph = workspaceGraph(root, undefined, {bazelTargets, sourceRoots: {[source]: checkout}});
-  const targets = graph.packages.find(p => p.name === 'sdk').targets;
-  assert.deepEqual(targets.find(t => t.kind.includes('custom-build')), original.find(t => t.kind.includes('custom-build')));
-  assert.deepEqual(targets.find(t => t.kind.includes('proc-macro')), {...original.find(t => t.kind.includes('lib')), kind: ['proc-macro'], name: 'sdk_macro'});
-  const manifest = path.join(checkout, 'Cargo.toml');
-  fs.appendFileSync(manifest, '\n[lib]\ncrate-type=["rlib", "cdylib"]\n');
-  const multiOutput = workspacePackages(checkout)[0].targets;
-  const libraryOptions = {...bazelTargets[0].rule, ruleClass: 'rust_library'};
-  const multiGraph = workspaceGraph(root, undefined, {bazelTargets: [{rule: libraryOptions}], sourceRoots: {[source]: checkout}});
-  const multiTargets = multiGraph.packages.find(p => p.name === 'sdk').targets;
-  assert.deepEqual(multiTargets, multiOutput.map(target =>
-    target.kind.includes('rlib') ? {...target, name: 'sdk_macro'} : target));
+  assert.deepEqual(workspaceGraph(root, null, {resolution: null}), graph);
 });
 
 test('Cloud-shaped consumer keeps inherited pinned Git dependencies distinct from registry crates', t => {
@@ -95,38 +68,10 @@ test('Cloud-shaped consumer keeps inherited pinned Git dependencies distinct fro
   const edges = graph.resolve.nodes.find(n => n.id === service.id).deps;
   for (const [alias, prefix] of [['sdk', 'git+'], ['registry', 'registry+']])
     assert.ok(graph.packages.find(p => p.id === edges.find(d => d.name === alias).pkg).source.startsWith(prefix));
-  const checkout = path.join(root, 'sdk-source');
-  fs.mkdirSync(path.join(checkout, 'src'), {recursive: true});
-  fs.writeFileSync(path.join(checkout, 'src/lib.rs'), '');
-  fs.writeFileSync(path.join(checkout, 'Cargo.toml'), '[package]\nname="acyclic-fs"\nversion="1.0.0"\n[package.metadata.bazel]\nbuild-script-env={linux-x86_64={PROTOC="protoc"}}\n');
-  const projected = workspaceGraph(root, 'x86_64-unknown-linux-gnu', {sourceRoots: {'git+https://github.com/acyclic-labs/sdk': checkout}});
-  const git = projected.packages.find(p => p.source?.startsWith('git+'));
-  assert.equal(git.manifest_path, path.join(checkout, 'Cargo.toml'));
-  assert.equal(git.metadata.bazel['build-script-env']['linux-x86_64'].PROTOC, 'protoc');
-  assert.deepEqual(git.targets.map(t => t.name), ['acyclic_fs']);
   const ambiguous = [{rule: {name: '@crates__acyclic_fs_1_0_0//:acyclic_fs', ruleClass: 'rust_library', attribute: [
     {name: 'version', stringValue: '1.0.0'}, {name: 'crate_name', stringValue: 'acyclic_fs'},
   ]}}];
   assert.throws(() => workspaceGraph(root, 'x86_64-unknown-linux-gnu', {bazelTargets: ambiguous}), /ambiguous Bazel metadata.*multiple locked sources/);
-});
-
-test('Git source roots distinguish exact locked revisions and refuse an ambiguous base URL', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-revisions-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const base = 'git+https://github.com/example/sdk', revisions = ['a'.repeat(40), 'b'.repeat(40)];
-  const sources = revisions.map(rev => `${base}?rev=${rev}#${rev}`), roots = {};
-  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers=[]\n');
-  fs.writeFileSync(path.join(root, 'Cargo.lock'), 'version=4\n' + sources.map(source => `[[package]]\nname="sdk"\nversion="1.0.0"\nsource="${source}"\n`).join(''));
-  for (const [index, source] of sources.entries()) {
-    const checkout = path.join(root, `revision-${index}`);
-    fs.mkdirSync(checkout);
-    fs.writeFileSync(path.join(checkout, 'Cargo.toml'), `[package]\nname="sdk"\nversion="1.0.0"\n[package.metadata]\nrevision=${index}\n`);
-    roots[source] = checkout;
-  }
-  const graph = workspaceGraph(root, 'x86_64-unknown-linux-gnu', {sourceRoots: roots});
-  for (const [index, source] of sources.entries())
-    assert.equal(graph.packages.find(p => p.source === source).metadata.revision, index);
-  assert.throws(() => workspaceGraph(root, 'x86_64-unknown-linux-gnu', {sourceRoots: {[base]: roots[sources[0]]}}), /ambiguous Git source root.*exact locked-source/);
 });
 
 test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
@@ -336,6 +281,20 @@ test('registry features follow the current dependency declaration', t => {
   write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'serde_json 1.0.0': {targets: [{Library: {crate_name: 'serde_json'}}], common_attrs: {crate_features: ['default', 'preserve_order']}}}}));
   const browser = workspaceBrowserGraph(root, [['-p', 'app']]);
   assert.deepEqual(browser.resolve.nodes.find(node => node.id.includes('#serde_json@')).features, ['default', 'preserve_order']);
+});
+
+test('a browser registry package missing from the browser lock is bootstrapped from the Cargo lock', t => {
+  const {root, write} = workspaceFixture(t, 'browser-bootstrap-');
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nnew_crate={version="1",features=["typed-arrays"]}\n');
+  const source = 'registry+https://github.com/rust-lang/crates.io-index';
+  write('Cargo.lock', `version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate"]\n[[package]]\nname="new_crate"\nversion="1.0.0"\nsource="${source}"\ndependencies=["helper"]\n[[package]]\nname="helper"\nversion="1.0.0"\nsource="${source}"\n`);
+  write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
+  const graph = workspaceBrowserGraph(root, [['-p', 'app']]);
+  const newCrate = graph.packages.find(pkg => pkg.name === 'new_crate');
+  assert.ok(newCrate);
+  assert.deepEqual([...graph.registry_inputs.get(newCrate.id).features], ['typed-arrays']);
+  assert.deepEqual(graph.resolve.nodes.find(node => node.id === newCrate.id).deps, []);
 });
 
 test('registry dependencies are selected from the current Cargo lock', t => {

@@ -3,7 +3,7 @@ load("//toolchains/kani:defs.bzl", "kani_test")
 kani_test(
     name = "offset",
     src = "proof.rs",
-    srcs = ["//rust/crates/observability:src/interval/unix.rs"],
+    srcs = ["//rust/crates/observability-core:src/interval/unix.rs"],
     harness = "unix_offsets_admit_exactly_the_representable_affine_coordinates",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     size = "small",

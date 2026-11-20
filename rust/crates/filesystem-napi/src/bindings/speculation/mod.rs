@@ -310,9 +310,7 @@ pub(in crate::bindings) fn native_speculation_options(
     })
 }
 
-pub(in crate::bindings) fn native_object_residency(
-    value: &NativeObjectResidency,
-) -> Result<ObjectResidency> {
+fn native_object_residency(value: &NativeObjectResidency) -> Result<ObjectResidency> {
     Ok(ObjectResidency {
         object_id: decode_object_id(&value.object_id)?,
         location_id: StorageLocationId::from_bytes(fixed_16(&value.location_id)?),
@@ -321,7 +319,7 @@ pub(in crate::bindings) fn native_object_residency(
     })
 }
 
-pub(in crate::bindings) fn native_promotion_destination(
+fn native_promotion_destination(
     value: &NativePromotionDestination,
 ) -> Result<PromotionDestination> {
     Ok(PromotionDestination {
@@ -334,9 +332,7 @@ pub(in crate::bindings) fn native_promotion_destination(
     })
 }
 
-pub(in crate::bindings) fn native_promotion_admission(
-    value: PromotionAdmission,
-) -> NativePromotionAdmission {
+fn native_promotion_admission(value: PromotionAdmission) -> NativePromotionAdmission {
     match value {
         PromotionAdmission::Satisfied(residency) => NativePromotionAdmission {
             status: NativePromotionStatus::Satisfied,
@@ -372,7 +368,7 @@ pub(in crate::bindings) fn native_promotion_admission(
     }
 }
 
-pub(in crate::bindings) fn native_speculation_preemption(
+fn native_speculation_preemption(
     value: acyclic_fs::SpeculationPreemption,
 ) -> NativeSpeculationPreemption {
     NativeSpeculationPreemption {
@@ -389,9 +385,7 @@ pub(in crate::bindings) fn native_speculation_preemption(
     }
 }
 
-pub(in crate::bindings) fn native_residency_metrics_json(
-    value: acyclic_fs::ResidencyMetrics,
-) -> serde_json::Value {
+fn native_residency_metrics_json(value: acyclic_fs::ResidencyMetrics) -> serde_json::Value {
     serde_json::json!({
         "candidates": value.candidates.to_string(),
         "admitted": value.admitted.to_string(),
@@ -407,9 +401,7 @@ pub(in crate::bindings) fn native_residency_metrics_json(
     })
 }
 
-pub(in crate::bindings) fn native_promotion_metrics_json(
-    value: acyclic_fs::PromotionMetrics,
-) -> serde_json::Value {
+fn native_promotion_metrics_json(value: acyclic_fs::PromotionMetrics) -> serde_json::Value {
     serde_json::json!({
         "candidates": value.candidates.to_string(),
         "satisfied": value.satisfied.to_string(),
@@ -426,10 +418,8 @@ pub(in crate::bindings) fn native_promotion_metrics_json(
 pub(in crate::bindings) fn native_object_cache_options(
     options: NativeObjectCacheOptions,
 ) -> Result<ObjectCacheOptions> {
-    let converted = ObjectCacheOptions {
+    Ok(ObjectCacheOptions {
         maximum_entries: options.maximum_entries.into_inner(),
         maximum_bytes: bigint_u64(&options.maximum_bytes, "maximumBytes")?,
-    };
-    drop(options);
-    Ok(converted)
+    })
 }

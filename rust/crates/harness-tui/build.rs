@@ -1,3 +1,5 @@
+//! Declare the Loom configuration and enable it on explicit opt-in.
+
 fn main() {
     // ACYCLIC_LOOM=1 (CONTRIBUTING.md) opts Loom models in; the feature alone never does.
     println!("cargo:rerun-if-env-changed=ACYCLIC_LOOM");

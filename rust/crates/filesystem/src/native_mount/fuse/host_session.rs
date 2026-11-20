@@ -4,6 +4,7 @@ use super::host_io::{Connection, HostIo, Received};
 use super::notification::CacheNotifier;
 use super::packet::PacketRequest;
 use super::packet_buffers::{PacketBufferPool, PacketBuffers, maximum_write};
+use super::packet_dispatch::PacketFailure;
 use super::packet_response::PacketResponse;
 use super::packet_router::PacketRouter;
 use super::packet_session::PacketSession;
@@ -100,7 +101,7 @@ impl HostSession {
     }
 
     /// The physical owner stops this transport after closing view admission
-    /// and attempting namespace detach, then joins every packet worker.
+    /// and joins every packet worker before releasing mount ownership.
     pub(super) fn transport(&self) -> Arc<HostIo> {
         Arc::clone(&self.io)
     }
@@ -174,7 +175,17 @@ impl HostSession {
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
         let publish = |reply: PacketResponse<'_>| {
             let outcome = match reply.slices() {
-                Some(slices) => pending.publish(&slices)?,
+                Some(slices) => match pending.publish(&slices) {
+                    Ok(acyclic_native_runtime::PacketDevicePublication::Rejected(errno))
+                        if self.io.shutdown_error(Some(errno)) =>
+                    {
+                        return Ok(None);
+                    }
+                    Err(error) if self.io.shutdown_error(error.raw_os_error()) => {
+                        return Ok(None);
+                    }
+                    result => result.map_err(NativeMountError::from)?,
+                },
                 None => acyclic_native_runtime::PacketDevicePublication::Published,
             };
             #[cfg(test)]
@@ -183,7 +194,7 @@ impl HostSession {
             {
                 capture.completed(sequence, packet, reply.contiguous());
             }
-            Ok(outcome)
+            Ok(Some(outcome))
         };
         #[cfg(test)]
         if !self.io.framed && !owner_allowed(self.owner_uid, &request) {
@@ -207,7 +218,7 @@ impl HostSession {
                     reply,
                     packet,
                     response,
-                    pending.transfer(),
+                    || pending.transfer(),
                     #[cfg(test)]
                     self.capture.as_ref().cloned().zip(sequence),
                 )
@@ -217,8 +228,9 @@ impl HostSession {
             // remains in the original core. Continue serving refusals while
             // the existing retirement owner unmounts this kernel connection;
             // otherwise retained device ownership can strand pending calls.
-            Err(super::packet_dispatch::PacketFailure::Source { .. }) => Ok(true),
-            other => other.map_err(super::packet_dispatch::PacketFailure::into_native_error),
+            Err(PacketFailure::Source { .. }) => Ok(true),
+            Err(PacketFailure::TransportClosed) => Ok(false),
+            other => other.map_err(PacketFailure::into_native_error),
         }
     }
 }

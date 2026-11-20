@@ -719,7 +719,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                 * 2
                 >= wire.bytes.len() as u64
         );
-        let body = json(&wire.bytes)?;
+        let body = acyclic_harness_provider_response::json(&wire.bytes)?;
         let marker = format!("[file: {}]", serde_json::to_string(&file).unwrap());
         let texts = |parts: &Value| {
             parts
@@ -982,8 +982,12 @@ fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> 
             let cancel = acyclic_fs::CancellationToken::new();
             let work = super::native_tests::work(&cancel)?;
             let baseline = work.live_allocation_bytes();
-            let admitted =
-                crate::native::reserve_request(&provider, &request, (None, None), &work)?;
+            let admitted = crate::allocation::reserve_request(
+                provider.files.maximum_bytes,
+                &request,
+                (None, None),
+                &work,
+            )?;
             let resolved = futures::executor::block_on(crate::files::resolve(
                 &crate::files::Files {
                     reader: Some(reader.clone()),

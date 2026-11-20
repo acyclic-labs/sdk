@@ -3,8 +3,6 @@
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
 };
-#[cfg(test)]
-use crate::Digest;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{CancellationToken, WorkCounters};
 use {

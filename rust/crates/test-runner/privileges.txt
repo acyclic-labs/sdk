@@ -1,0 +1,11 @@
+# The host privileges a privileged isolated_test can name, one per line. privileged.sh grants them and
+# scripts/bazel-build-files.mjs accepts only them in [package.metadata.bazel.privileged] groups.
+cgroup
+fs-verity
+kvm
+local-cell
+net-admin
+nft
+root
+seccomp
+user-namespace

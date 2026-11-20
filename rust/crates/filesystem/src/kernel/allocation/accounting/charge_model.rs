@@ -23,13 +23,14 @@ fn model<const BROKEN: bool, const CHECK_LIMIT: bool, const SCALAR: bool>(
             items_examined: u64::from(!recheck) * limit,
             ..WorkBudget::UNBOUNDED
         };
-        let root = crate::NativeMaterializationWork::new(
+        let root = crate::NativeMaterializationWork::root(
             if depth == 0 {
                 budget
             } else {
                 WorkBudget::UNBOUNDED
             },
             &root_cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let mut work = root.clone();

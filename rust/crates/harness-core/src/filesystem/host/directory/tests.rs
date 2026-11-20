@@ -546,8 +546,9 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     )
     .await;
     assert!(
-        matches!(refused, Err(Error::Conflict(_))),
-        "stale root cut published a restore"
+        refused.as_ref().err().map(Error::code) == Some(crate::wire::ErrorCode::Conflict),
+        "stale root cut must refuse the restore with a conflict: {:?}",
+        refused.as_ref().err()
     );
     assert_eq!(
         child

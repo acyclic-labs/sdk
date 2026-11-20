@@ -261,9 +261,10 @@ mod tests {
                             continue;
                         }
                         let cancel = crate::CancellationToken::new();
-                        let original = crate::NativeMaterializationWork::new(
+                        let original = crate::NativeMaterializationWork::root(
                             crate::performance::BOUNDARY_BUDGET,
                             &cancel,
+                            &crate::services::ServicesInitialized::for_kernel_tests(),
                         )
                         .map_err(|(error, _)| error)?;
                         let baseline = original.live_allocation_bytes().unwrap();

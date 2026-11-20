@@ -1,5 +1,5 @@
-mod cancellation {
-    include!("../../src/cancellation.rs");
+mod production {
+    include!("../../../harness-provider-core/src/cancellation.rs");
 
     pub fn poll_racy(value: &Cancellation, cx: &Context<'_>) -> Poll<()> {
         let cancelled = value.0.lock().unwrap().cancelled;
@@ -31,7 +31,7 @@ use crate::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use cancellation::Cancellation;
+use production::Cancellation;
 use std::task::{Context, Wake, Waker};
 
 struct Waiter {
@@ -70,7 +70,7 @@ fn registration_model(broken: bool) {
         let waker = Waker::from(waiter.clone());
         let cx = Context::from_waker(&waker);
         let ready = if broken {
-            cancellation::poll_racy(&cancellation, &cx)
+            production::poll_racy(&cancellation, &cx)
         } else {
             cancellation.poll(&cx)
         }
@@ -106,7 +106,7 @@ impl Drop for DropProbe {
     fn drop(&mut self) {
         // This model has one caller, so contention identifies reentrant lock order.
         // Record the violation instead of panicking/poisoning while holding a guard.
-        if cancellation::unlocked(&self.cancellation) {
+        if production::unlocked(&self.cancellation) {
             self.cancellation.cancel();
         } else {
             self.violation.store(true, Ordering::Release);
@@ -125,7 +125,7 @@ fn drop_order_model(broken: bool) {
             }));
             let cx = Context::from_waker(&waker);
             let result = if broken {
-                cancellation::poll_drop_locked(&cancellation, &cx)
+                production::poll_drop_locked(&cancellation, &cx)
             } else {
                 cancellation.poll(&cx)
             };

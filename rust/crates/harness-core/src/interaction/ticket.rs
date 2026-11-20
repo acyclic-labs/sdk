@@ -17,16 +17,6 @@ pub struct InteractionTicket {
 }
 
 impl InteractionTicket {
-    /// Capability for viewing this ticket without reading its private bytes.
-    #[must_use]
-    pub fn viewer_grant(&self) -> String {
-        format!("interaction:view:{}", self.id)
-    }
-    /// Capability for resolving this exact request.
-    #[must_use]
-    pub fn responder_grant(&self) -> String {
-        capability::interaction_respond(self.id)
-    }
     /// Checks the ref-only envelope before byte admission.
     #[doc(hidden)]
     pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {

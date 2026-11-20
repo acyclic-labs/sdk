@@ -3,7 +3,8 @@ use acyclic_model_render::{Field, Fields};
 use serde::Serialize;
 use serde_json::{Value, value::RawValue};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "trailer_tests.rs"]
 mod tests;
 
@@ -246,7 +247,10 @@ impl<'a> Request<'a> {
 /// fold, as request projection pushes them. `None` when a message has a role
 /// or content shape projection never emits.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn replay_turns(adapter: crate::Adapter, messages: &[Value]) -> Option<Vec<Value>> {
+pub(crate) fn replay_turns(
+    adapter: crate::Adapter,
+    messages: &[Value],
+) -> crate::fuzzing::CheckResult<Option<Vec<Value>>> {
     replay_turns_with(adapter, messages, super::sequence::RULES)
 }
 
@@ -255,17 +259,22 @@ pub(super) fn replay_turns_with(
     adapter: crate::Adapter,
     messages: &[Value],
     rules: super::sequence::Rules,
-) -> Option<Vec<Value>> {
+) -> crate::fuzzing::CheckResult<Option<Vec<Value>>> {
     use crate::Adapter;
     let (field, roles) = match adapter {
         Adapter::Anthropic => ("content", ["user", "assistant"]),
         Adapter::Gemini => ("parts", ["user", "model"]),
-        Adapter::Responses | Adapter::Chat => return None,
+        Adapter::Responses | Adapter::Chat => return Ok(None),
     };
     let mut projected = Vec::new();
     for message in messages {
-        let role = roles.into_iter().find(|role| message["role"] == *role)?;
-        let parts = message[field].as_array()?.iter().cloned().map(Item::Json);
+        let (Some(role), Some(parts)) = (
+            roles.into_iter().find(|role| message["role"] == *role),
+            message[field].as_array(),
+        ) else {
+            return Ok(None);
+        };
+        let parts = parts.iter().cloned().map(Item::Json);
         let next = if adapter == Adapter::Anthropic {
             Message::Anthropic {
                 role,
@@ -277,12 +286,13 @@ pub(super) fn replay_turns_with(
                 parts: parts.collect(),
             }
         };
-        super::sequence::push(adapter, &mut projected, next).unwrap();
+        super::sequence::push(adapter, &mut projected, next)?;
     }
-    super::sequence::finish_with(adapter, &mut projected, rules, false).ok()?;
-    match acyclic_harness_provider_response::json(&serde_json::to_vec(&projected).unwrap()).unwrap()
-    {
-        Value::Array(output) => Some(output),
-        _ => unreachable!("a message list encodes as an array"),
+    if super::sequence::finish_with(adapter, &mut projected, rules, false).is_err() {
+        return Ok(None);
+    }
+    match acyclic_harness_provider_response::json(&serde_json::to_vec(&projected)?)? {
+        Value::Array(output) => Ok(Some(output)),
+        _ => Err("a message list must encode as an array".into()),
     }
 }

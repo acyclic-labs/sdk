@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -535,7 +535,7 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
     for fixture in [&first, &second] {
         let result = run_generate(
             &fixture.root,
-            Some(&fixture.rustdoc),
+            &fixture.rustdoc,
             &fixture.output,
             "relocation-invariant",
             "preview",
@@ -776,7 +776,7 @@ fn run_historical_generation(
     support: &Path,
     mode: Option<&str>,
     authority: Option<HistoricalAuthority<'_>>,
-    expected_owners: &[&str],
+    expected_profiles: &[(&str, usize)],
 ) -> (std::process::Output, Vec<Value>) {
     let mut command = generate_command(
         &fixture.root,
@@ -819,16 +819,24 @@ fn run_historical_generation(
             .iter()
             .map(|release| (release["crate"].as_str().unwrap(), 4))
             .collect::<Vec<_>>();
-        if !expected_owners.is_empty() {
+        if !expected_profiles.is_empty() {
             assert_eq!(
                 expected
                     .iter()
                     .map(|&(owner, _)| owner)
                     .collect::<BTreeSet<_>>(),
-                expected_owners.iter().copied().collect::<BTreeSet<_>>(),
+                expected_profiles
+                    .iter()
+                    .map(|&(owner, _)| owner)
+                    .collect::<BTreeSet<_>>(),
             );
         }
-        assert_executed_profiles(&version, &version.join(".rustdoc"), &expected)
+        let counts = if expected_profiles.is_empty() {
+            &expected
+        } else {
+            expected_profiles
+        };
+        assert_executed_profiles(&version, &version.join(".rustdoc"), counts)
     } else {
         Vec::new()
     };

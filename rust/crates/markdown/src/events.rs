@@ -4,10 +4,41 @@ use std::ops::Range;
 type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
 
+/// Bytes an event carries, for work accounting.
+#[cfg(test)]
+pub(crate) fn event_bytes(event: &Event<'_>) -> usize {
+    use pulldown_cmark::CodeBlockKind;
+    match event {
+        Event::Text(text)
+        | Event::Code(text)
+        | Event::Html(text)
+        | Event::InlineHtml(text)
+        | Event::InlineMath(text)
+        | Event::DisplayMath(text)
+        | Event::FootnoteReference(text) => text.len(),
+        Event::Start(
+            Tag::Link {
+                dest_url,
+                title,
+                id,
+                ..
+            }
+            | Tag::Image {
+                dest_url,
+                title,
+                id,
+                ..
+            },
+        ) => dest_url.len() + title.len() + id.len(),
+        Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => info.len(),
+        _ => 0,
+    }
+}
+
 fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Option<Charges>) {
     acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
-    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+    acyclic_markdown_work::work::parsed(source.len());
     let mut calls = Vec::new();
     let mut callback = |link: BrokenLink<'_>| {
         references
@@ -45,7 +76,7 @@ fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Optio
             }
             acyclic_markdown_work::record!(node());
             #[cfg(test)]
-            crate::work::event(&event);
+            acyclic_markdown_work::work::copy(event_bytes(&event));
             (event.into_static(), range)
         })
         .collect();
@@ -67,7 +98,7 @@ pub(crate) fn scoped(
 ) -> (OwnedEvents, Charges) {
     acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
-    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+    acyclic_markdown_work::work::parsed(source.len());
     let mut calls = Vec::new();
     let mut exhausted = false;
     let mut callback = |link: BrokenLink<'_>| {
@@ -93,12 +124,12 @@ pub(crate) fn scoped(
         .map(|(event, range)| {
             acyclic_markdown_work::record!(node());
             #[cfg(test)]
-            crate::work::event(&event);
+            acyclic_markdown_work::work::copy(event_bytes(&event));
             (event.into_static(), range)
         })
         .collect();
     #[cfg(test)]
-    crate::work::copy(calls.len() * std::mem::size_of::<(usize, usize)>() * 2);
+    acyclic_markdown_work::work::copy(calls.len() * std::mem::size_of::<(usize, usize)>() * 2);
     (events, calls)
 }
 
@@ -181,7 +212,7 @@ impl crate::Markdown {
     pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Option<Charges>) {
         #[cfg(test)]
         {
-            crate::work::copy(source.len());
+            acyclic_markdown_work::work::copy(source.len());
             self.parsed_bytes += source.len();
         }
         frontier(source, &self.references)

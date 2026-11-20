@@ -55,7 +55,7 @@ impl<'a, F> ObservedSource<'a, F> {
         let destination = inline
             .get_mut(self.filled..end)
             .ok_or(crate::FsError::SourceSnapshotStale)?;
-        let delta = crate::materializer::NativeResourceCredit::Copy.delta(bytes.len() as u64);
+        let delta = crate::ledger::NativeResourceCredit::Copy.delta(bytes.len() as u64);
         let copy = original.reserve_work(delta)?;
         destination.copy_from_slice(bytes);
         copy.record_completed(delta)?;

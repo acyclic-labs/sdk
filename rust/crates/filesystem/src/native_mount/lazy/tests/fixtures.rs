@@ -212,7 +212,7 @@ pub(super) async fn mounted_view_of_with_authored_work<
     };
     let cancellation = CancellationToken::new();
     CallbackRuntime::create()?;
-    let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
     // A physical retirement fixture needs an actual birth-paid watch. Keep its
     // startup ledger separate from the authored source's finite allowance;
     // accepted watch cleanup must retain its own original credit.
@@ -306,7 +306,7 @@ pub(super) async fn live_lazy_mount_of(
     )
     .await?
     .0;
-    let options = crate::native_mount::tests::fixture_access::options(
+    let options = crate::native_mount::fixture_access::options(
         lazy.workspace(),
         MountOptions::read_write().publication(MountPublication::Manual),
     )

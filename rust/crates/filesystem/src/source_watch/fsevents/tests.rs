@@ -1,6 +1,6 @@
 use super::super::HostChangeSink;
 use super::*;
-use crate::demand::DemandWork;
+use crate::ledger::DemandWork;
 use crate::native_host::{HostRoot, ordinary_error, ordinary_work};
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 use std::mem::size_of;
@@ -261,7 +261,7 @@ pub(crate) fn terminal_cancellation_watch(
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> TestResult {
-    use crate::demand::{DemandWork, NativeDemandReadMeter};
+    use crate::ledger::{DemandWork, NativeDemandReadMeter};
     use crate::{CancellationToken, DemandError};
     use std::sync::Arc;
 
@@ -410,7 +410,7 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
         observed: Sender<Observed>,
         watch: OnceLock<Weak<NativeSourceWatch>>,
         #[cfg(not(target_arch = "wasm32"))]
-        original: OnceLock<Arc<crate::demand::NativeDemandReadMeter>>,
+        original: OnceLock<Arc<crate::ledger::NativeDemandReadMeter>>,
     }
     impl HostChangeSink for Gate {
         fn logical_owned_bytes(&self) -> u64 {
@@ -483,7 +483,7 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
         .set(Arc::downgrade(&watch))
         .map_err(|_| "watch already installed")?;
     #[cfg(not(target_arch = "wasm32"))]
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         stop_budget(),
         &CancellationToken::new(),
     )));
@@ -641,7 +641,7 @@ fn a_fence_reports_everything() -> TestResult {
 
 #[test]
 fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> TestResult {
-    use crate::demand::NativeDemandReadMeter;
+    use crate::ledger::NativeDemandReadMeter;
     use crate::{CancellationToken, DemandError};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};

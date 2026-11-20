@@ -38,8 +38,8 @@ impl PreparedInput {
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let mut files = crate::files::resolve(&provider.files, &request, None).await?;
         let body =
-            projection::body_named(&provider, request.request(), &names, &origin, &mut files)?;
-        let encoded = projection::cache::encode(&body, &provider, &origin)?;
+            projection::body_named(&*provider, request.request(), &names, &origin, &mut files)?;
+        let encoded = projection::cache::encode(&body, &*provider, &origin)?;
         let count = counter
             .map(|spec| counting::wire::body(body, &provider.model.name, spec).map(Bytes::from))
             .transpose()?;
@@ -71,7 +71,7 @@ impl PreparedInput {
                 body: input.count.clone().ok_or_else(|| crate::invalid("prepared input has no token counter body"))?,
             };
             let events = counting::send_count(provider, exchange,
-                projection::plan(provider, &input.request, 0)?, None, None);
+                projection::plan(&**provider, &input.request, 0)?, None, None);
             let mut events = core::pin::pin!(events);
             while let Some(event) = events.next().await {
                 match event? {

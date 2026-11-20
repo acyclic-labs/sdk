@@ -103,7 +103,9 @@ pub fn call<'a>(
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::ModelEvent]) {
+pub(crate) fn check_visible_replay(
+    events: &[acyclic_harness_core::model::ModelEvent],
+) -> acyclic_harness_core::Result<()> {
     use acyclic_harness_core::model::ModelEvent;
     let mut parts = String::new();
     let mut streamed = String::new();
@@ -115,18 +117,18 @@ pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::Model
                 native,
             } => {
                 if let Some(native) = native {
-                    text(&native.continuity, visible).unwrap();
+                    text(&native.continuity, visible)?;
                 }
                 parts.push_str(visible);
             }
             ModelEvent::ToolCall(tool) => {
                 if let Some(native) = &tool.native {
                     let id = tool.metadata["provider_call"]["id"].as_str();
-                    call(&native.continuity, id, &tool.name, &tool.arguments).unwrap();
+                    call(&native.continuity, id, &tool.name, &tool.arguments)?;
                 }
             }
             ModelEvent::ReasoningBlock { block } => {
-                thought(&block.continuity).unwrap();
+                thought(&block.continuity)?;
             }
             _ => {}
         }
@@ -135,4 +137,5 @@ pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::Model
         parts, streamed,
         "text parts must carry each streamed byte once"
     );
+    Ok(())
 }

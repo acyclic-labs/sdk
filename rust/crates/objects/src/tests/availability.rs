@@ -19,7 +19,7 @@ struct Repair {
     digest: Digest,
     observation: crate::Availability,
     unauthorized: crate::Availability,
-    revision: Option<acyclic_stream::Revision>,
+    revision: Option<acyclic_stream_contract::Revision>,
 }
 
 async fn verify_repair(

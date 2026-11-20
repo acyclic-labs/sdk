@@ -9,7 +9,11 @@ use serde_json::json;
 
 fn parse_delta(state: &mut State<'_>, delta: Value) -> Result<Vec<ModelEvent>> {
     // Generated parser inputs, not captured external response fixtures.
-    parse(state, &json!({"choices":[{"delta":delta}]}))
+    parse_frame(state, &json!({"choices":[{"delta":delta}]}))
+}
+
+fn parse_frame(state: &mut State<'_>, frame: &Value) -> Result<Vec<ModelEvent>> {
+    parse(state, Adapter::Chat, &frame.to_string())
 }
 
 proptest! {
@@ -100,15 +104,15 @@ proptest! {
         }
 
         let mut state = State::new(16384);
-        prop_assert!(parse(&mut state, &initial).unwrap().is_empty());
+        prop_assert!(parse_frame(&mut state, &initial).unwrap().is_empty());
         // Loss of the original terminal never exposes its accumulated tool call.
         prop_assert!(acyclic_harness_provider_response::stream::finish(state, crate::Adapter::Chat, dispatch).is_err());
 
         let mut state = State::new(16384);
-        prop_assert!(parse(&mut state, &initial).unwrap().is_empty());
-        prop_assert!(parse(&mut state, &complete).unwrap().is_empty());
+        prop_assert!(parse_frame(&mut state, &initial).unwrap().is_empty());
+        prop_assert!(parse_frame(&mut state, &complete).unwrap().is_empty());
         // Usage-only frames still belong to the original completed response.
-        prop_assert!(parse(&mut state, &json!({"choices":[],"usage":{"prompt_tokens":7}})).unwrap().is_empty(), "usage trailer emitted a candidate");
+        prop_assert!(parse_frame(&mut state, &json!({"choices":[],"usage":{"prompt_tokens":7}})).unwrap().is_empty(), "usage trailer emitted a candidate");
         let events = acyclic_harness_provider_response::stream::finish(state, crate::Adapter::Chat, dispatch).unwrap();
         prop_assert_eq!(events.iter().filter(|event| matches!(event, ModelEvent::ToolCall(_))).count(),1);
 
@@ -122,9 +126,9 @@ proptest! {
         // and therefore makes the otherwise rejected response executable.
         let competing = json!({"choices":[complete["choices"][0].clone(),{"index":foreign,"delta":{}}]});
         let mut discarded = State::new(16384);
-        parse(&mut discarded, &initial).unwrap();
+        parse_frame(&mut discarded, &initial).unwrap();
         let first_only = json!({"choices":[competing["choices"].as_array().unwrap().first().unwrap()]});
-        parse(&mut discarded, &first_only).unwrap();
+        parse_frame(&mut discarded, &first_only).unwrap();
         prop_assert!(acyclic_harness_provider_response::stream::finish(discarded, crate::Adapter::Chat, dispatch).unwrap().iter().any(|event| matches!(event, ModelEvent::ToolCall(_))));
     }
 }

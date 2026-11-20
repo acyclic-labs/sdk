@@ -7,7 +7,9 @@ use acyclic_actors::{
     addressing::ActorReference, domain::ActorLimits, guest::Handler, local::SystemClock,
 };
 use acyclic_harness_core::agent::*;
-use acyclic_stream::{ReadRequest, StreamCategory, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    ProviderOwner, ReadRequest, StreamCategory, StreamError, StreamPath, StreamProvider,
+};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -19,7 +21,10 @@ pub(crate) fn limits() -> Result<ActorLimits> {
     Ok(ActorLimits::new(1_000, 1 << 20, 1 << 16)?)
 }
 
-pub(crate) fn handler(provider: &Arc<Observed>) -> Result<Arc<dyn Handler>> {
+pub(crate) fn handler<P>(provider: &ProviderOwner<P>) -> Result<Arc<dyn Handler>>
+where
+    P: acyclic_harness_core::store::JournalProvider + ?Sized + 'static,
+{
     Ok(Arc::new(AgentHandler::new(
         actor_store(provider)?,
         Driver,
@@ -27,13 +32,16 @@ pub(crate) fn handler(provider: &Arc<Observed>) -> Result<Arc<dyn Handler>> {
     )?))
 }
 
-pub(crate) fn host(backend: &dyn Backend, provider: Arc<Observed>) -> Result<AgentHost<Observed>> {
+pub(crate) fn host(
+    backend: &dyn Backend,
+    provider: ProviderOwner<Observed>,
+) -> Result<AgentHost<Observed>> {
     let handler = backend.handler(handler(&provider)?)?;
     hosting(provider, handler, None)
 }
 
 pub(crate) fn hosting(
-    provider: Arc<Observed>,
+    provider: ProviderOwner<Observed>,
     handler: Arc<dyn Handler>,
     composer: Option<Arc<dyn acyclic_actors::guest::Composer>>,
 ) -> Result<AgentHost<Observed>> {
@@ -103,7 +111,7 @@ pub(crate) async fn outputs(
 
 pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let host = host(backend, provider.clone())?;
     let root = host.create(&intent("create")?, adopted()).await?;
     if host.create(&intent("create")?, adopted()).await? != root {
@@ -176,7 +184,7 @@ pub(crate) fn prompt() -> acyclic_harness_core::Result<acyclic_harness_core::con
 
 pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let host = host(backend, provider.clone())?;
     let root = host.create(&intent("create")?, adopted()).await?;
     drain(&host).await?;
@@ -210,9 +218,29 @@ pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {
     {
         return Err("child ran eagerly before being hosted".into());
     }
-    host.send(&root, &sender(), &request("respawn")?).await?;
-    if host.runtime().drain().await.is_empty() {
-        return Err("respawn with a changed prompt was not a conflict".into());
+    let conversation = host.state(&root).await?.conversation_tail;
+    let Delivered::Committed { inbox } = host.send(&root, &sender(), &request("respawn")?).await?
+    else {
+        return Err("conflicting respawn did not reach its parent".into());
+    };
+    // The dispatcher may own the attempt before an explicit drain starts.
+    // Observe the original input's settlement or its actor's delivery failure.
+    if host.drain(&root).await.is_ok() && host.wait_for_input(&root, inbox).await.is_ok() {
+        let parent = host.state(&root).await?;
+        if parent.conversation_tail != conversation
+            || !matches!(
+                parent.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. }
+                }
+            )
+        {
+            return Err(format!(
+                "conflicting respawn did not publish a terminal refusal: {:?}",
+                parent.phase,
+            )
+            .into());
+        }
     }
     if host.state(&child).await? != state
         || values(&*provider, child.inbox()?).await? != child_inbox
@@ -222,7 +250,7 @@ pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-async fn program(backend: &dyn Backend, provider: Arc<Observed>) -> Result<AgentState> {
+async fn program(backend: &dyn Backend, provider: ProviderOwner<Observed>) -> Result<AgentState> {
     let host = host(backend, provider)?;
     let root = host.create(&intent("create")?, adopted()).await?;
     host.send(&root, &sender(), &request("once")?).await?;
@@ -232,20 +260,20 @@ async fn program(backend: &dyn Backend, provider: Arc<Observed>) -> Result<Agent
 
 pub(crate) async fn restart(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let expected = program(backend, provider.clone()).await?;
     let steps = provider.calls();
     drop(provider);
     for at in 0..steps {
         for fault in [Fault::Before, Fault::After] {
             let storage = backend.fresh().await?;
-            let provider = Arc::new(Observed::new(storage.open().await?));
+            let provider = ProviderOwner::new(Observed::new(storage.open().await?));
             provider.crash_at(at, fault);
             if program(backend, provider.clone()).await.is_ok() {
                 return Err(format!("crash boundary {at}/{fault:?} was not exercised").into());
             }
             drop(provider);
-            let reopened = Arc::new(Observed::new(storage.open().await?));
+            let reopened = ProviderOwner::new(Observed::new(storage.open().await?));
             let actual = program(backend, reopened.clone()).await?;
             if actual != expected {
                 return Err(format!("reopen diverged at {at}/{fault:?}").into());

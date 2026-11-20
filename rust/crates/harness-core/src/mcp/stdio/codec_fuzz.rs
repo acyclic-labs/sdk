@@ -47,11 +47,19 @@ pub fn check(input: &[u8]) {
         );
     }
     if let Ok(decoded) = codec::decode_value(input, None) {
-        let encoded = codec::encode_line(&decoded.0, usize::MAX, None).expect("JSON line encodes");
-        let body = encoded.0.strip_suffix(b"\n").expect("line terminator");
-        let replay = codec::decode_value(body, None).expect("JSON line decodes");
-        assert_eq!(decoded.0, replay.0);
+        let result = check_replay(&decoded.0);
+        assert!(result.is_ok(), "JSON line replay failed: {result:?}");
     }
+}
+
+fn check_replay(value: &Value) -> crate::Result<()> {
+    let encoded = codec::encode_line(value, usize::MAX, None)?;
+    let body = encoded.0.strip_suffix(b"\n").ok_or_else(|| {
+        crate::Error::Invalid("encoded MCP JSON line lacks its terminator".into())
+    })?;
+    let replay = codec::decode_value(body, None)?;
+    assert_eq!(value, &replay.0);
+    Ok(())
 }
 
 /// Require the real discovery exchange to succeed for captured server stdout.

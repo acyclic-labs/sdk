@@ -32,7 +32,7 @@ impl DeferredReply {
         reply: &mut PacketReply<'_>,
         request: &[u8],
         response: &[u8],
-        pending: PendingReply<Arc<HostIo>>,
+        pending: impl FnOnce() -> PendingReply<Arc<HostIo>>,
         #[cfg(test)] capture: Option<(Arc<super::tests::packets::Capture>, u64)>,
     ) -> Result<bool, NativeMountError> {
         let core = Arc::clone(reply.core().ok_or(libc::EPROTO)?);
@@ -59,7 +59,7 @@ impl DeferredReply {
             .invalidation
             .deferred
             .push(KernelCacheItem::Reply(Box::new(Self {
-                pending: Some(pending),
+                pending: Some(pending()),
                 completion: Some(completion),
                 request,
                 response,
@@ -69,7 +69,7 @@ impl DeferredReply {
                 _allocation: allocation,
             })));
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
         if let Some(queued) = core
             .publication_test
             .lock()

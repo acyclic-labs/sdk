@@ -5,7 +5,7 @@ use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::FileMetadata;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::kernel::MetadataField;
-use crate::{FileId, MountId, VolumeId};
+use crate::{FileId, MountId};
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -91,8 +91,7 @@ pub(crate) use materialize::{
 mod publication;
 pub use publication::{seal_checkout, seal_checkout_with_permit};
 
-mod storage_accelerations;
-pub use storage_accelerations::{
+pub use acyclic_fs_storage_probe::native_mount::storage_accelerations::{
     NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence,
     probe_native_storage_accelerations,
@@ -158,7 +157,6 @@ async fn admit_mount_startup()
 /// Named attributes a driver requests from the source per page.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 
 /// Metadata for a node created through a POSIX mount by `uid`/`gid` now.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

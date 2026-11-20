@@ -82,14 +82,6 @@ pub fn encode_http_request(route: &str, input: &[u8]) -> Result<String, JsValue>
     http::encode(route, input).map_err(JsValue::from_str)
 }
 
-/// Validate one hosted HTTP JSON success response using the same path, width,
-#[wasm_bindgen(js_name = validateHttpResponse)]
-pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), JsValue> {
-    let value: Value = serde_json::from_str(response_json)
-        .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
-    http::validate(route, &value).map_err(JsValue::from_str)
-}
-
 /// Validate and project one hosted HTTP JSON success response into the public
 /// representation. Reads supply the original followed path for origin elision;
 /// context-free projections require explicitly spelled origins.

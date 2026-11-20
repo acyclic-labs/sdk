@@ -7,9 +7,6 @@ use crate::{OperationId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// MAC domain for project-source reads.
-pub const PROJECT_SOURCE_READ_PURPOSE: &str = "harness.project-source.read.v1";
-
 /// Exact caller lease retained in persisted project-source authorizations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct LeaseFence {

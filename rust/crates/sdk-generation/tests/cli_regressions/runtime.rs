@@ -15,8 +15,6 @@ thread_local! {
         .unwrap()
     });
     #[cfg(windows)]
-    static LINKER: (String, PathBuf) = resolve_linker();
-    #[cfg(windows)]
     static SCRATCH: PathBuf = {
         let executable = std::env::current_exe().unwrap();
         let directory = executable.ancestors().last().unwrap().join("tmp");
@@ -97,41 +95,7 @@ pub(super) fn configure(command: &mut Command) {
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
-        LINKER.with(|(key, linker)| {
-            command.env(key, linker);
-        });
     }
-}
-
-#[cfg(windows)]
-fn resolve_linker() -> (String, PathBuf) {
-    let cargo = cargo();
-    let sysroot = cargo.parent().unwrap().parent().unwrap();
-    let linkers = fs::read_dir(sysroot.join("lib/rustlib"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("bin/rust-lld.exe"))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    let [linker] = linkers.as_slice() else {
-        panic!("the pinned compiler must provide exactly one host linker");
-    };
-    let host = linker
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .file_name()
-        .unwrap();
-    (
-        format!(
-            "CARGO_TARGET_{}_LINKER",
-            host.to_str()
-                .unwrap()
-                .replace('-', "_")
-                .to_ascii_uppercase()
-        ),
-        linker.clone(),
-    )
 }
 
 struct Timing(std::time::Instant, String);

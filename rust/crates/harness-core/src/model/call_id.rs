@@ -9,12 +9,11 @@ impl ModelDispatch {
     /// The executor binds each operation/step to one admitted request digest.
     pub fn tool_call_id(&self, ordinal: u64) -> String {
         let mut id = String::with_capacity(Self::TOOL_CALL_ID_BYTES);
-        write!(
+        let _ = write!(
             &mut id,
             "{}:{:08x}:{ordinal:016x}",
             self.operation_id, self.step
-        )
-        .expect("formatting an identifier into String cannot fail");
+        );
         id
     }
 }

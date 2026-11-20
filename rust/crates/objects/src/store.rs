@@ -64,7 +64,7 @@ use crate::{
 };
 use crate::{Observation, Observed};
 use acyclic_auth::refusal::Cause;
-use acyclic_stream::{AppliedRevisions, OwnedBytes, ProviderPlatform, Revision};
+use acyclic_stream_contract::{AppliedRevisions, OwnedBytes, ProviderPlatform, Revision};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -190,7 +190,7 @@ mod format_recovery_tests {
         }
         // Reopen the actual local log with each formerly valid v1 layout.
         // Repair runs before incarnation admission and must not delete it.
-        let old = acyclic_proto_build::golden::frame("objects.envelope")?;
+        let old = acyclic_compatibility_golden::frame("objects.envelope")?;
         let unstamped = old[..old.len() - 8].to_vec();
         let mut pending = old[..old.len() - 24].to_vec();
         *pending.last_mut().ok_or("missing original pending flag")? = 2;
@@ -340,16 +340,16 @@ struct Written {
 struct Issued {
     applied: AppliedRevisions,
     issued: AtomicU64,
-    account: acyclic_stream::RevisionScope,
+    account: acyclic_stream_contract::RevisionScope,
     run: u64,
 }
 
 impl Issued {
-    fn new(account: acyclic_stream::RevisionScope, incarnation: u128, run: u64) -> Self {
+    fn new(account: acyclic_stream_contract::RevisionScope, incarnation: u128, run: u64) -> Self {
         let scope = [account.as_bytes(), &run.to_be_bytes()].concat();
         Self {
             applied: AppliedRevisions::new(
-                acyclic_stream::RevisionScope::new(scope),
+                acyclic_stream_contract::RevisionScope::new(scope),
                 incarnation,
                 0,
             ),
@@ -360,7 +360,7 @@ impl Issued {
     }
 
     /// The run of this account that `scope` names, if any.
-    fn run_of(&self, scope: &acyclic_stream::RevisionScope) -> Option<u64> {
+    fn run_of(&self, scope: &acyclic_stream_contract::RevisionScope) -> Option<u64> {
         let run = scope.as_bytes().strip_prefix(self.account.as_bytes())?;
         Some(u64::from_be_bytes(run.try_into().ok()?))
     }
@@ -886,7 +886,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn sharded_key(&self, kind: char, digest: &Digest, suffix: impl std::fmt::Display) -> String {
         let hex = digest.encoded_hex();
         let hex = hex.as_ref();
-        format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
+        format!("{}{kind}/{hex:.2}/{hex}{suffix}", self.state.prefix)
     }
 
     fn retention_key(&self, namespace: char, root_hash: &str, name: &str) -> String {
@@ -2096,8 +2096,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
     /// here. This run's own minimum still waits on its exact applied index.
     async fn admitted(
         &self,
-        mut minimum: acyclic_stream::RevisionCut,
-    ) -> Result<acyclic_stream::RevisionCut, Error> {
+        mut minimum: acyclic_stream_contract::RevisionCut,
+    ) -> Result<acyclic_stream_contract::RevisionCut, Error> {
         acyclic_observability::async_operation!(
             "acyclic.objects.admitted",
             |error: &Error| error.code.as_str_name(),

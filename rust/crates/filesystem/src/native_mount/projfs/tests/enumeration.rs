@@ -12,7 +12,7 @@ async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dy
             .create_file(
                 &format!("/entry{index:03}"),
                 Bytes::from_static(b"initial"),
-                crate::kernel::FileMetadata::default(),
+                acyclic_fs_format::metadata::FileMetadata::default(),
                 &work,
                 work.cancellation(),
             )
@@ -23,7 +23,7 @@ async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dy
             .create_file(
                 &format!("/{name}"),
                 Bytes::from_static(b"initial"),
-                crate::kernel::FileMetadata::default(),
+                acyclic_fs_format::metadata::FileMetadata::default(),
                 &work,
                 work.cancellation(),
             )

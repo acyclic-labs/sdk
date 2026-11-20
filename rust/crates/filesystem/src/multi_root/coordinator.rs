@@ -11,14 +11,6 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         self.resume_with_finalization(operation_id, true).await
     }
 
-    /// Resumes publication while retaining an Applied journal until an external, idempotent compatibility projection has been recorded.
-    pub async fn resume_retained(
-        &self,
-        operation_id: OperationId,
-    ) -> Result<Option<Publication>, MultiRootPublicationError<S::Error, P::Error, A::Error>> {
-        self.resume_with_finalization(operation_id, false).await
-    }
-
     async fn resume_with_finalization(
         &self,
         operation_id: OperationId,
@@ -130,20 +122,6 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
     + '_ {
         Box::pin(async move {
             self.continue_conflicted_with_finalization(operation_id, caller_context_id, true)
-                .await
-        })
-    }
-
-    /// Continues a conflict while retaining the terminal journal until the caller acknowledges its compatibility projection.
-    pub fn continue_conflicted_retained(
-        &self,
-        operation_id: OperationId,
-        caller_context_id: WorkspaceContextId,
-    ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + ProviderTask
-    + '_ {
-        Box::pin(async move {
-            self.continue_conflicted_with_finalization(operation_id, caller_context_id, false)
                 .await
         })
     }

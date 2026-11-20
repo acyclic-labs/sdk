@@ -1,6 +1,6 @@
 //! A constant-size authenticated cut into immutable execution-index pages.
 use super::*;
-use persistent_index::NodeRef;
+use persistent_index::{NodeCache, NodeRef};
 
 pub(super) struct IndexPath<'a> {
     path: acyclic_stream::StreamPath,
@@ -40,6 +40,39 @@ pub(super) struct IndexState {
     pub(super) latest_response_output: bool,
     pub(super) latest_response_completed: bool,
     pub(super) model_dispatched: bool,
+}
+
+/// Reuse immutable index records within one bounded replay page.
+#[derive(Default)]
+pub(super) struct ReplayAuthentication<'a> {
+    root: Option<Option<IndexState>>,
+    pages: Option<(
+        Box<NodeCache>,
+        Option<crate::filesystem::bounded_io::DecodeReservation<'a>>,
+    )>,
+}
+
+impl<'a> ReplayAuthentication<'a> {
+    fn pages(&mut self, io: Option<&'a PreparationIo>) -> Result<&mut NodeCache> {
+        let (pages, _) = match &mut self.pages {
+            Some(pages) => pages,
+            slot @ None => {
+                // Appends and hot replays need no cache frame or allocation.
+                let hold = if let Some(io) = io {
+                    let bytes = std::mem::size_of::<NodeCache>() as u64;
+                    let hold = io.reserve_decode(bytes)?;
+                    io.allocation_attempt(bytes)?;
+                    Some(hold)
+                } else {
+                    None
+                };
+                let mut pages = Box::new(NodeCache::default());
+                pages.bind(io)?;
+                slot.insert((pages, hold))
+            }
+        };
+        Ok(pages)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -147,14 +180,14 @@ where
         })
     }
 
-    pub(super) async fn authenticated_metadata(
+    pub(super) async fn authenticated_metadata<'a>(
         &self,
         operation: OperationId,
         sequence: u64,
         retry: &str,
         event: &ExecutionEvent,
-        io: Option<&PreparationIo>,
-        page_root: &mut Option<Option<IndexState>>,
+        io: Option<&'a PreparationIo>,
+        page: &mut ReplayAuthentication<'a>,
     ) -> Result<bool> {
         let cache = self.verified.lock().await;
         if cache.authenticates(operation, sequence, retry, event, io)? {
@@ -173,19 +206,20 @@ where
         let state = if let Some(state) = cached {
             state
         } else {
-            if page_root.is_none() {
-                *page_root = Some(
+            if page.root.is_none() {
+                page.root = Some(
                     self.load_index_checkpoint(operation, io)
                         .await?
                         .map(|value| value.0),
                 );
             }
-            let Some(Some(state)) = *page_root else {
+            let Some(Some(state)) = page.root else {
                 return Ok(false);
             };
             state
         };
-        self.index_authenticates(state, sequence, retry, event, io)
+        let pages = page.pages(io)?;
+        self.index_authenticates(state, sequence, retry, event, io, Some(pages))
             .await
     }
 

@@ -409,7 +409,8 @@ fn modelled_write(
             if count == 0 {
                 return (Err((io::ErrorKind::WriteZero, None)), bytes, consumed);
             }
-            let at = first.offset as usize + moved;
+            let at =
+                usize::try_from(first.offset).expect("modeled write offset fits usize") + moved;
             if bytes.len() < at + count {
                 bytes.resize(at + count, 0);
             }

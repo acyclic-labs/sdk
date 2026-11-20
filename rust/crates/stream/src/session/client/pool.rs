@@ -878,18 +878,23 @@ impl Pool {
         }
     }
 
+    fn fail_route(&mut self, mut route: Route, error: &StreamError) {
+        if let Some(input) = &route.input {
+            input.0.close(error.clone());
+        }
+        if let Some(ready) = route.ready.take() {
+            let _ = ready.send(Err(error.clone()));
+        }
+        let error = error.clone();
+        let records = route.records;
+        self.executor.spawn(Box::pin(async move {
+            let _ = records.send(Err(error)).await;
+        }));
+    }
+
     pub(super) fn reject(&mut self, id: u64, error: StreamError) {
-        if let Some(mut route) = self.routes.remove(&id) {
-            if let Some(input) = &route.input {
-                input.0.close(error.clone());
-            }
-            if let Some(ready) = route.ready.take() {
-                let _ = ready.send(Err(error.clone()));
-            }
-            let records = route.records;
-            self.executor.spawn(Box::pin(async move {
-                let _ = records.send(Err(error)).await;
-            }));
+        if let Some(route) = self.routes.remove(&id) {
+            self.fail_route(route, &error);
         }
     }
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
@@ -907,35 +912,15 @@ impl Pool {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in ids {
-            if let Some(mut route) = self.routes.remove(&id) {
-                if let Some(input) = &route.input {
-                    input.0.close(error.clone());
-                }
-                if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Err(error.clone()));
-                }
-                let error = error.clone();
-                let records = route.records;
-                self.executor.spawn(Box::pin(async move {
-                    let _ = records.send(Err(error)).await;
-                }));
+            if let Some(route) = self.routes.remove(&id) {
+                self.fail_route(route, error);
             }
         }
     }
     pub(super) fn fail(&mut self, error: &StreamError) {
         self.connections.close(error.clone());
-        for (_, mut route) in std::mem::take(&mut self.routes) {
-            if let Some(input) = &route.input {
-                input.0.close(error.clone());
-            }
-            if let Some(ready) = route.ready.take() {
-                let _ = ready.send(Err(error.clone()));
-            }
-            let error = error.clone();
-            let records = route.records;
-            self.executor.spawn(Box::pin(async move {
-                let _ = records.send(Err(error)).await;
-            }));
+        for (_, route) in std::mem::take(&mut self.routes) {
+            self.fail_route(route, error);
         }
     }
 }

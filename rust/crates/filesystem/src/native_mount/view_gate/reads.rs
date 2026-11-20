@@ -54,7 +54,7 @@ impl ViewState {
         key: [u8; 8],
         generation: u64,
         owner: Owner,
-        completion: &mut Option<crate::demand::ViewReadCompletion>,
+        completion: &mut Option<crate::ledger::ViewReadCompletion>,
     ) -> Result<leases::ViewReadLease, MountSourceError> {
         let readers = self
             .readers
@@ -96,7 +96,7 @@ impl ViewGate {
     ) -> Result<Option<leases::ViewReadLease>, MountSourceError> {
         let mut completion = Some(
             carrier
-                .with_work(crate::demand::DemandWork::reserve_view_read)
+                .with_work(crate::ledger::DemandWork::reserve_view_read)
                 .map_err(MountSourceError::from)?,
         );
         let key = reader.key();

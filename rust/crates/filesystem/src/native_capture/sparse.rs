@@ -80,7 +80,7 @@ pub(super) async fn settled_sparse_ranges(
         while position < end {
             meter.cancellation().check()?;
             let wanted = (CHUNK - position % CHUNK).min(end - position);
-            meter.admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(wanted))?;
+            meter.admit(crate::ledger::NativeResourceCredit::ReadBytes.delta(wanted))?;
             let chunk = reader
                 .read(
                     usize::try_from(wanted).map_err(|_| WorkError::Overflow)?,

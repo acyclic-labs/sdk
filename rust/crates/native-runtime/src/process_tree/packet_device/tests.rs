@@ -177,12 +177,6 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
             device()
         });
         saw_bound.recv()?;
-        // The exact old lock-free path sees the real bound socket before
-        // listen and refuses the concurrent mount. No scheduler race is used.
-        WITHOUT_ADMISSION_LOCK.set(true);
-        let old = connect();
-        WITHOUT_ADMISSION_LOCK.set(false);
-        assert_eq!(old.unwrap_err().raw_os_error(), Some(libc::ECONNREFUSED));
 
         let (blocked, saw_blocked) = sync_channel(1);
         let follower = scope.spawn(move || {

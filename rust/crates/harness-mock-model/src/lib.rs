@@ -386,13 +386,13 @@ impl Engine {
 
 /// Generate provider-native SSE chunks; no sleeps, clocks or randomized IDs.
 pub fn events(path: &str, step: &Step) -> Option<Vec<String>> {
-    wire::events(path, step, 64, Cached::default(), None)
+    wire::events(path, step, 64, Cached::default())
 }
 
 /// Generate the same events with the request's deterministic counted usage.
 /// The HTTP host uses this for both fixed and byte-counted namespaces.
 pub fn events_with_usage(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
-    wire::events(path, step, input_tokens, Cached::default(), None)
+    wire::events(path, step, input_tokens, Cached::default())
 }
 
 /// Generate the same events, reporting `cached` prompt tokens in the
@@ -403,29 +403,8 @@ pub fn events_with_cache(
     input_tokens: u64,
     cached: Cached,
 ) -> Option<Vec<String>> {
-    wire::events(path, step, input_tokens, cached, None)
-}
-
-/// Generate a Responses stream whose authoritative message differs from its
-/// provisional text. This adversarial input uses the same encoder as ordinary
-/// model responses, so consumers cannot accidentally test a private wire format.
-/// An empty final message is retained; held streams never publish completion.
-pub fn responses_with_completed_text(
-    step: &Step,
-    input_tokens: u64,
-    completed_text: &str,
-) -> Option<Vec<String>> {
-    wire::events(
-        "responses",
-        step,
-        input_tokens,
-        Cached::default(),
-        Some(completed_text),
-    )
+    wire::events(path, step, input_tokens, cached)
 }
 
 #[cfg(test)]
 mod gemini_tests;
-
-#[cfg(test)]
-mod responses_tests;

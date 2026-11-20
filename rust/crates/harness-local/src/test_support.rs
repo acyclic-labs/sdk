@@ -7,6 +7,105 @@ pub use crate::local::host_process::children::answer::validation as native_answe
 
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
+/// Runs a test world seeded, so every run draws the same identities and a
+/// failure prints the same text each time.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn seeded<F: std::future::Future<Output = crate::Result<()>>>(
+    world: impl FnOnce() -> F,
+) -> crate::Result<()> {
+    acyclic_native_runtime::testing::seeded_test(0x4841_524e, world)
+        .map_err(|error| crate::Error::Storage(error.to_string()))?
+}
+
+/// The scripted model every local fixture opens with.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn model() -> crate::Result<crate::model::Model> {
+    crate::model::Model::new("scripted".into(), "test".into(), "1".into())
+}
+
+/// A project volume backed by a real local filesystem below `directory`.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn volume(directory: &std::path::Path) -> crate::Result<crate::conversation::VolumeRef> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(|error| crate::Error::Storage(error.to_string()))?;
+    let provider = crate::resources::ProviderRef::new(
+        "local-test".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let volume = crate::conversation::VolumeRef::new(
+        provider.clone(),
+        "project".into(),
+        crate::conversation::VolumeClass::Project,
+        crate::conversation::VolumeOwner::Project("test".into()),
+        &mut None,
+    )?;
+    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
+        .await
+        .map_err(|error| crate::Error::Storage(error.to_string()))?;
+    crate::filesystem::FilesystemHost::new(fs, &provider, None)?
+        .create_volume(&volume)
+        .await?;
+    Ok(volume)
+}
+
+/// A harness config over `volume`, with private file signing and its own state.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn volume_config(
+    directory: &std::path::Path,
+    volume: crate::conversation::VolumeRef,
+    provider: std::sync::Arc<dyn crate::model::ModelProvider>,
+) -> crate::Result<crate::LocalHarnessConfig> {
+    let state = directory
+        .join("state")
+        .join(volume.storage_name(&mut None)?);
+    Ok(
+        local_harness_config(directory.join("filesystem"), (model()?, provider))?
+            .volume(volume)
+            .private_file_signing()
+            .state_directory(state),
+    )
+}
+
+/// The tree's one execution target: this host's checkout, run by `tools`
+/// and guarded by its one human.
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::local::home;
+
+/// Writes fixture bytes through the native host rather than the provider
+/// process, so a projection's own callbacks observe the change.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn native_write(path: &std::path::Path, bytes: &[u8]) -> crate::Result<()> {
+    #[cfg(not(windows))]
+    {
+        std::fs::write(path, bytes).map_err(crate::local::storage)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // ProjFS deliberately excludes provider-process writes from callbacks.
+        // Exercise an actual native host process instead of that bypass.
+        let staging = tempfile::tempdir().map_err(crate::local::storage)?;
+        let input = staging.path().join("authored.bin");
+        std::fs::write(&input, bytes).map_err(crate::local::storage)?;
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/v:off", "/c"])
+            .raw_arg(r#"copy /b /y "%ACYCLIC_COPY_SOURCE%" "%ACYCLIC_COPY_DESTINATION%""#)
+            .env("ACYCLIC_COPY_SOURCE", input)
+            .env("ACYCLIC_COPY_DESTINATION", path)
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(crate::local::storage)?;
+        if !output.status.success() {
+            return Err(crate::Error::Conflict(
+                "native fixture write was denied".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Replaces the next checkout capture's root identity with a fixture. The
 /// world owns this thread-local input and sets it before opening its harness.
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
@@ -45,10 +144,16 @@ pub fn check_native_readiness(input: &[u8]) {
 /// admission, so rejecting every input cannot satisfy the safety oracle.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn check_native_child_reference(input: &[u8]) {
+    let result = check_child_reference(input);
+    assert!(
+        result.is_ok(),
+        "native child reference check failed: {result:?}"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_child_reference(input: &[u8]) -> crate::Result<()> {
     use crate::agent::{AgentId, AgentPath};
-    use crate::local::host_owner::child;
-    use crate::local::host_workspace::child_reference;
-    use std::path::{Component, Path};
 
     crate::agent::codec_fuzz::check(input);
 
@@ -58,52 +163,87 @@ pub fn check_native_child_reference(input: &[u8]) {
     }
     let parent = AgentPath::root(&AgentId::from_bytes(identity));
     if let Ok(reference) = std::str::from_utf8(input) {
-        for operation in ["diff", "merge", "discard"] {
-            let mut arguments = [operation.into(), reference.into()];
-            match crate::tools::resolve_child_branch(&parent, &mut arguments, child) {
-                Ok(Some(admitted)) => {
-                    assert!(admitted.is_child_of(&parent));
-                    assert_eq!(arguments[1], admitted.as_str());
-                }
-                Ok(None) | Err(crate::Error::Invalid(_)) => {}
-                Err(error) => panic!("child branch lost its invalid-input type: {error}"),
+        check_arbitrary_child_reference(&parent, reference)?;
+    }
+    check_generated_child_reference(&parent, input)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_arbitrary_child_reference(
+    parent: &crate::agent::AgentPath,
+    reference: &str,
+) -> crate::Result<()> {
+    use crate::local::host_owner::child;
+    use crate::local::host_workspace::child_reference;
+    use std::path::{Component, Path};
+
+    for operation in ["diff", "merge", "discard"] {
+        let mut arguments = [operation.into(), reference.into()];
+        match crate::tools::resolve_child_branch(parent, &mut arguments, child) {
+            Ok(Some(admitted)) => {
+                assert!(admitted.is_child_of(parent));
+                assert_eq!(arguments[1], admitted.as_str());
             }
-        }
-        if reference.contains('/') {
-            match child(&parent, reference) {
-                Ok(admitted) => {
-                    assert_eq!(admitted.as_str(), reference);
-                    assert!(admitted.is_child_of(&parent));
-                }
-                Err(crate::Error::Invalid(_)) => {}
-                Err(error) => panic!("child path lost its invalid-input type: {error}"),
+            Ok(None) | Err(crate::Error::Invalid(_)) => {}
+            Err(error) => {
+                return Err(crate::Error::Invalid(format!(
+                    "child branch lost its invalid-input type: {error}"
+                )));
             }
-        }
-        match child_reference(reference) {
-            Ok(()) => {
-                let mut components = Path::new(reference).components();
-                assert!(
-                    matches!(components.next(), Some(Component::Normal(name)) if name == reference)
-                        && components.next().is_none(),
-                    "admitted reference escaped its single child component"
-                );
-                assert!(
-                    reference.len() <= 255
-                        && reference
-                            .chars()
-                            .all(|character| character.is_ascii_alphanumeric()
-                                || matches!(character, '-' | '_' | '.')),
-                    "admitted reference cannot be represented by the portable mount alphabet"
-                );
-            }
-            Err(crate::Error::Invalid(message)) => assert!(
-                message.len() <= 64,
-                "child-reference refusal retained unbounded input: {} bytes",
-                message.len()
-            ),
-            Err(error) => panic!("child-reference refusal lost its invalid-input type: {error}"),
         }
     }
+    if reference.contains('/') {
+        match child(parent, reference) {
+            Ok(admitted) => {
+                assert_eq!(admitted.as_str(), reference);
+                assert!(admitted.is_child_of(parent));
+            }
+            Err(crate::Error::Invalid(_)) => {}
+            Err(error) => {
+                return Err(crate::Error::Invalid(format!(
+                    "child path lost its invalid-input type: {error}"
+                )));
+            }
+        }
+    }
+    match child_reference(reference) {
+        Ok(()) => {
+            let mut components = Path::new(reference).components();
+            assert!(
+                matches!(components.next(), Some(Component::Normal(name)) if name == reference)
+                    && components.next().is_none(),
+                "admitted reference escaped its single child component"
+            );
+            assert!(
+                reference.len() <= 255
+                    && reference
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric()
+                            || matches!(character, '-' | '_' | '.')),
+                "admitted reference cannot be represented by the portable mount alphabet"
+            );
+        }
+        Err(crate::Error::Invalid(message)) => assert!(
+            message.len() <= 64,
+            "child-reference refusal retained unbounded input: {} bytes",
+            message.len()
+        ),
+        Err(error) => {
+            return Err(crate::Error::Invalid(format!(
+                "child-reference refusal lost its invalid-input type: {error}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_generated_child_reference(
+    parent: &crate::agent::AgentPath,
+    input: &[u8],
+) -> crate::Result<()> {
+    use crate::local::host_owner::child;
+    use crate::local::host_workspace::child_reference;
 
     // This is an input generator, not a second parser. Its bounded output is
     // one filesystem component; the original arbitrary input is never cut.
@@ -119,29 +259,28 @@ pub fn check_native_child_reference(input: &[u8]) {
         child_reference(&portable).is_ok(),
         "generated portable child component was refused"
     );
-    let admitted = child(&parent, &portable).expect("portable child must resolve");
-    assert!(admitted.is_child_of(&parent));
+    let admitted = child(parent, &portable)?;
+    assert!(admitted.is_child_of(parent));
     assert_eq!(
-        child(&parent, admitted.as_str()).expect("canonical child alias must resolve"),
+        child(parent, admitted.as_str())?,
         admitted,
         "local and canonical references must name the same child"
     );
-    let grandchild = child(&admitted, &portable).expect("nested child must resolve");
+    let grandchild = child(&admitted, &portable)?;
     for operation in ["diff", "merge", "discard"] {
         for reference in [format!("agents/{portable}"), admitted.to_string()] {
             let mut arguments = [operation.into(), reference];
             assert_eq!(
-                crate::tools::resolve_child_branch(&parent, &mut arguments, child)
-                    .expect("child branch alias must resolve"),
+                crate::tools::resolve_child_branch(parent, &mut arguments, child)?,
                 Some(admitted.clone()),
             );
             assert_eq!(arguments[1], admitted.as_str());
         }
-        for unrelated in [&parent, &grandchild] {
+        for unrelated in [parent, &grandchild] {
             let mut arguments = [operation.into(), unrelated.to_string()];
             assert!(
                 matches!(
-                    crate::tools::resolve_child_branch(&parent, &mut arguments, child),
+                    crate::tools::resolve_child_branch(parent, &mut arguments, child),
                     Err(crate::Error::Invalid(_))
                 ),
                 "a canonical branch bypassed direct-child ownership"
@@ -154,9 +293,9 @@ pub fn check_native_child_reference(input: &[u8]) {
     let spawn_name = &portable[..portable
         .len()
         .min(crate::agent::MAX_INTENT_BYTES - "spawn:".len() - "/worker".len())];
-    for owner in [&parent, &admitted] {
+    for owner in [parent, &admitted] {
         for name in [spawn_name.to_owned(), format!("{spawn_name}/worker")] {
-            let expected = crate::tools::spawned_child(owner, &name).expect("valid spawn name");
+            let expected = crate::tools::spawned_child(owner, &name)?;
             for reference in [name.clone(), format!("agents/{name}"), expected.to_string()] {
                 for suffix in [vec![], vec!["--offset".into(), "65536".into()]] {
                     let mut arguments =
@@ -167,8 +306,7 @@ pub fn check_native_child_reference(input: &[u8]) {
                             owner,
                             &mut arguments,
                             crate::tools::spawned_child
-                        )
-                        .expect("show alias must resolve"),
+                        )?,
                         Some(expected.clone()),
                     );
                     assert_eq!(arguments[1], format!("{expected}:reports/result.md"));
@@ -179,18 +317,19 @@ pub fn check_native_child_reference(input: &[u8]) {
     }
     let mut head = ["show".into(), "HEAD:reports/result.md".into()];
     assert_eq!(
-        crate::tools::resolve_child_branch(&parent, &mut head, child).unwrap(),
+        crate::tools::resolve_child_branch(parent, &mut head, child)?,
         None
     );
-    for unrelated in [&parent, &grandchild] {
+    for unrelated in [parent, &grandchild] {
         assert!(
             matches!(
-                child(&parent, unrelated.as_str()),
+                child(parent, unrelated.as_str()),
                 Err(crate::Error::Invalid(_))
             ),
             "a canonical non-child must be rejected before any storage access"
         );
     }
+    Ok(())
 }
 
 /// The one fixture catalog: `binding` serves its own selection and every
@@ -314,18 +453,23 @@ pub async fn prompt_settled(
 }
 
 /// Drives the accepted native boundaries while running a scoped regression.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) async fn run_native_schedule<F: std::future::Future>(
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn run_native_schedule<F: std::future::Future>(
     schedule: &acyclic_native_runtime::testing::Schedule,
     mut boundaries: tokio::sync::mpsc::UnboundedReceiver<acyclic_native_runtime::testing::Boundary>,
     work: F,
-) -> F::Output {
+) -> crate::Result<F::Output> {
     let work = schedule.scope(work);
     tokio::pin!(work);
     loop {
         tokio::select! {
-            result = &mut work => return result,
-            boundary = boundaries.recv() => boundary.expect("native boundary driver closed").release(),
+            result = &mut work => return Ok(result),
+            boundary = boundaries.recv() => {
+                let boundary = boundary.ok_or_else(|| {
+                    crate::Error::Storage("native boundary driver closed".into())
+                })?;
+                boundary.release();
+            }
         }
     }
 }

@@ -79,8 +79,13 @@ pub(crate) mod receipt_model;
 pub(crate) mod replay_model;
 
 #[cfg(all(test, not(loom)))]
-static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
-    Mutex::new(None);
+type JournalOpenGate = (
+    PathBuf,
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+#[cfg(all(test, not(loom)))]
+static JOURNAL_OPEN_SUBMITTED: Mutex<Option<JournalOpenGate>> = Mutex::new(None);
 #[cfg(all(test, not(loom)))]
 type JournalPersistBlocker = (
     usize,

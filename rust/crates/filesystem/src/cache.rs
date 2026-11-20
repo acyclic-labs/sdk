@@ -25,7 +25,6 @@ use std::sync::Arc;
 use std::task::Poll;
 #[cfg(test)]
 use std::task::{Context, Waker};
-use thiserror::Error;
 
 /// Hard process-local bounds for one disposable immutable-object cache.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,13 +44,7 @@ impl Default for ObjectCacheOptions {
     }
 }
 
-/// Invalid cache configuration.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum ObjectCacheConfigError {
-    /// Every capacity must admit forward progress.
-    #[error("every immutable-object cache bound must be positive")]
-    ZeroBound,
-}
+pub use crate::error::ObjectCacheConfigError;
 
 impl ObjectCacheOptions {
     fn validate(self) -> Result<Self, ObjectCacheConfigError> {
@@ -95,7 +88,7 @@ mod pool;
 use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
 mod flights;
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use flights::verify_original_flight_admission_and_retirement;
 
 enum FlightState {

@@ -192,16 +192,6 @@ pub struct BrowserCheckpointResult {
     pub(in crate::bindings) work: BrowserWorkCounters,
 }
 
-#[derive(Serialize, Tsify)]
-#[serde(rename_all = "camelCase")]
-pub struct NameComponentResult {
-    #[tsify(type = "\"utf8\" | \"posix-bytes\" | \"windows-utf16le\"")]
-    pub(in crate::bindings) encoding: &'static str,
-    #[serde(with = "serde_bytes")]
-    #[tsify(type = "Uint8Array")]
-    pub(in crate::bindings) bytes: Vec<u8>,
-}
-
 pub(in crate::bindings) fn js_error(error: impl std::fmt::Display) -> JsValue {
     browser_error("AcyclicFilesystemError", &error.to_string())
 }
@@ -280,16 +270,9 @@ pub(in crate::bindings) fn encode_checkpoint_result(
 
 pub(in crate::bindings) fn encode_tree_entry(entry: &TreeEntry) -> BrowserTreeEntryResult {
     BrowserTreeEntryResult {
-        name: encode_name_component(&entry.name),
+        name: browser_workspace_name_value(&entry.name),
         file_id: entry.file_id.into_bytes().to_vec(),
         file_kind: entry.kind,
-    }
-}
-
-pub(in crate::bindings) fn encode_name_component(name: &LogicalName) -> NameComponentResult {
-    NameComponentResult {
-        encoding: name.encoding().as_str(),
-        bytes: name.as_bytes().to_vec(),
     }
 }
 

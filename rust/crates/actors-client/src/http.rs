@@ -1,0 +1,321 @@
+//! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
+use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
+pub use acyclic_auth::credential::CredentialProvider;
+use prost::Message;
+use prost_reflect::DescriptorPool;
+use reqwest::{
+    Client as Transport, Url,
+    header::{AUTHORIZATION, HeaderValue},
+};
+
+/// HTTP configuration, encoding, or remote service failure.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Invalid endpoint, credential, bound, or request path.
+    #[error("invalid HTTP client configuration or request")]
+    InvalidArgument,
+    /// The current callback failed; a fixed credential is never substituted.
+    #[error("Actors credential renewal failed")]
+    Credential(#[from] acyclic_auth::credential::CredentialError),
+    /// The caller stopped waiting; a submitted mutation may still have committed.
+    #[error(transparent)]
+    Stopped(#[from] acyclic_auth::operation::Stopped),
+    /// Network failure.
+    #[error(transparent)]
+    Transport(#[from] reqwest::Error),
+    /// Response exceeded the configured bound.
+    #[error("HTTP response exceeds configured bound")]
+    ResponseTooLarge,
+    /// Malformed canonical response.
+    #[error("malformed Protobuf JSON response")]
+    MalformedResponse,
+    /// Service rejected the request, with canonical detail when available.
+    #[error("HTTP service returned status {status}")]
+    Service {
+        /// HTTP response status.
+        status: u16,
+        /// Decoded wire error, including service codes unknown to this SDK.
+        detail: Option<wire::Error>,
+        /// Exact response body, including empty or malformed error payloads.
+        raw_details: Vec<u8>,
+    },
+}
+
+impl Error {
+    /// Stable classification for tracing's `error.kind`.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::Credential(_) => "unauthenticated",
+            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_elapsed",
+            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
+            Self::Transport(_) => "transport",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::MalformedResponse => "malformed_response",
+            Self::Service { .. } => "service",
+        }
+    }
+}
+
+fn credential_header(token: &str) -> Result<HeaderValue, Error> {
+    acyclic_auth::credential::bearer_header(token).map_err(|_| Error::InvalidArgument)
+}
+
+/// Configures bounded authenticated HTTP without redirects.
+fn configure(
+    endpoint: &str,
+    token: Option<&str>,
+    maximum: usize,
+) -> Result<(Transport, Url, Option<HeaderValue>), Error> {
+    let endpoint =
+        acyclic_auth::credential::base_endpoint(endpoint).map_err(|_| Error::InvalidArgument)?;
+    if maximum == 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let authorization = token.map(credential_header).transpose()?;
+    let transport = Transport::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    Ok((transport, endpoint, authorization))
+}
+
+/// Encodes a request through its canonical JSON descriptor.
+fn encode(
+    descriptors: &DescriptorPool,
+    name: &str,
+    request: &impl Message,
+) -> Result<Vec<u8>, Error> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
+    acyclic_protobuf_json::encode(descriptor, request.encode_to_vec().as_slice())
+        .map_err(|_| Error::InvalidArgument)
+}
+
+/// Decodes a complete response through its canonical JSON descriptor.
+fn decode<O: Message + Default>(
+    descriptors: &DescriptorPool,
+    name: &str,
+    bytes: &[u8],
+) -> Result<O, Error> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
+    // The original response_body boundary has already enforced self.maximum.
+    acyclic_protobuf_json::decode(descriptor, bytes, bytes.len())
+        .map_err(|_| Error::MalformedResponse)?
+        .transcode_to()
+        .map_err(|_| Error::MalformedResponse)
+}
+
+/// Collects a response within `maximum`, returning `None` when it exceeds the bound.
+async fn response_body(
+    response: &mut reqwest::Response,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > maximum.saturating_sub(bytes.len()) {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
+}
+
+/// Typed HTTP operations with bearer authentication and bounded responses.
+#[derive(Clone)]
+pub struct Client {
+    transport: Transport,
+    endpoint: Url,
+    authorization: Option<HeaderValue>,
+    credential: Option<CredentialProvider>,
+    maximum: usize,
+    descriptors: DescriptorPool,
+    context: Option<acyclic_auth::operation::Context>,
+}
+
+#[cfg(all(test, not(runtime_tests)))]
+mod credential_tests;
+
+macro_rules! http_operations {
+    ($(($name:literal, $method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
+        /// Methods emitted with this client's canonical operation table.
+        pub const RPC_METHODS: &[&str] = &[$(stringify!($method)),+];
+        $(/// Executes the canonical HTTP operation.
+        pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
+            let (method, route) = *HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?;
+            crate::domain::$input::try_from(request.clone()).map_err(|_| Error::InvalidArgument)?;
+            crate::client::validate_operation_request!($input, method, request)
+                .map_err(|_| Error::InvalidArgument)?;
+            self.call(
+                route,
+                concat!("acyclic.actors.v1.", stringify!($input)),
+                concat!("acyclic.actors.v1.", stringify!($output)),
+                request,
+            ).await
+        })+
+    };
+}
+
+impl Client {
+    /// Bind credential resolution, connection and complete response reading to
+    /// one caller budget. Clones retain the same deadline and cancellation.
+    /// This adds no automatic retry or claim about remote mutation settlement.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    /// Create a client. HTTPS or loopback HTTP is required.
+    pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
+        Self::build(endpoint, Some(token), None, maximum_response_bytes)
+    }
+
+    /// Resolve the current callback before each operation without caching its result.
+    pub fn with_credential_provider(
+        endpoint: &str,
+        credential: CredentialProvider,
+        maximum: usize,
+    ) -> Result<Self, Error> {
+        Self::build(endpoint, None, Some(credential), maximum)
+    }
+
+    fn build(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
+        maximum_response_bytes: usize,
+    ) -> Result<Self, Error> {
+        let (transport, endpoint, authorization) =
+            configure(endpoint, token, maximum_response_bytes)?;
+        Ok(Self {
+            transport,
+            endpoint,
+            authorization,
+            credential,
+            context: None,
+            maximum: maximum_response_bytes,
+            descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
+                .map_err(|_| Error::MalformedResponse)?,
+        })
+    }
+
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
+        if let Some(provider) = &self.credential {
+            let token = provider.resolve().await?;
+            token.check().await?;
+            Ok((credential_header(&token)?, Some(token)))
+        } else {
+            self.authorization
+                .clone()
+                .map(|header| (header, None))
+                .ok_or(Error::InvalidArgument)
+        }
+    }
+
+    async fn stage<T>(
+        &self,
+        operation: impl std::future::Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        if let Some(context) = &self.context {
+            context.run(operation).await?
+        } else {
+            operation.await
+        }
+    }
+
+    async fn call<I: Message, O: Message + Default>(
+        &self,
+        route: &'static str,
+        input: &str,
+        output: &str,
+        request: &I,
+    ) -> Result<O, Error> {
+        let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.actors.http.call",
+            route,
+            http.status = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ));
+        let operation = async {
+            let body = encode(&self.descriptors, input, request)?;
+            let request = self.transport.post(
+                self.endpoint
+                    .join(route)
+                    .map_err(|_| Error::InvalidArgument)?,
+            );
+            let (authorization, lease) = self.stage(self.authorization()).await?;
+            let mut response = self
+                .stage(async {
+                    Ok(request
+                        .header(AUTHORIZATION, authorization)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .send()
+                        .await?)
+                })
+                .await?;
+            let status = response.status();
+            if status.as_u16() == 401 {
+                if let Some(lease) = &lease {
+                    lease.reject().await?;
+                }
+            }
+            span.record("http.status", status.as_u16());
+            let bytes = self
+                .stage(async {
+                    response_body(&mut response, self.maximum)
+                        .await?
+                        .ok_or(Error::ResponseTooLarge)
+                })
+                .await?;
+            if !status.is_success() {
+                let detail =
+                    decode::<wire::Error>(&self.descriptors, "acyclic.actors.v1.Error", &bytes)
+                        .ok()
+                        .filter(|detail| {
+                            wire::ErrorCode::try_from(detail.code)
+                                .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
+                        });
+                return Err(Error::Service {
+                    status: status.as_u16(),
+                    detail,
+                    raw_details: bytes,
+                });
+            }
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            let decoded = decode(&self.descriptors, output, &bytes)?;
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            Ok(decoded)
+        };
+        span.scope(acyclic_observability::observe(
+            &span,
+            self.stage(operation),
+            Error::kind,
+        ))
+        .await
+    }
+
+    acyclic_actors_inventory::native_operations!(http_operations);
+}

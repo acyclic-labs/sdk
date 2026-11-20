@@ -821,10 +821,22 @@ mod tests {
             .await?;
             assert!(empty.items.is_empty());
             assert!(empty.next.is_some());
+            let resume = |cursor| AgentPageRequest::new(1, 64 * 1024, cursor).map_err(storage);
+            let filtered_next =
+                crate::local::sessions::page(&connection, resume(empty.next)?).await?;
+            let unfiltered_next =
+                crate::local::sessions::page(&connection, resume(unfiltered.next)?).await?;
             assert_eq!(
-                empty.next, unfiltered.next,
+                filtered_next.items.first().map(|session| &session.agent),
+                unfiltered_next.items.first().map(|session| &session.agent),
                 "an empty filtered page must preserve the source continuation"
             );
+            assert!(!filtered_next.items.is_empty());
+            assert_ne!(
+                filtered_next.items.first().map(|session| &session.agent),
+                unfiltered.items.first().map(|session| &session.agent),
+            );
+            assert_eq!(filtered_next.next.is_some(), unfiltered_next.next.is_some());
             let name = AgentCommand::NameSession {
                 agent: agent.clone(),
                 name: "fix parser/branch".into(),
@@ -1275,6 +1287,11 @@ mod tests {
 
     #[tokio::test]
     async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
+        if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
+            return Ok(());
+        }
+        use crate::agent::AgentRecord as _;
+        use crate::local::tests::ObservedConversation;
         use crate::local::{WorkspaceMounting, sessions};
         use acyclic_fs::facade::FsWork as _;
         let checkout = tempfile::tempdir().map_err(storage)?;
@@ -1286,44 +1303,31 @@ mod tests {
             b"native untouched\n",
         )
         .map_err(storage)?;
-        let (child_settled, child_settlement) = tokio::sync::oneshot::channel();
-        let (grandchild_settled, grandchild_settlement) = tokio::sync::oneshot::channel();
-        let dispatches = Arc::new(Mutex::new((
-            0,
-            Some(child_settled),
-            Some(grandchild_settled),
-        )));
         let provider = Arc::new(
-            ScriptedModelProvider::new([
-                super::super::tests::checked_commands::call(
-                    0,
-                    crate::tools::shell::PLATFORM.name,
-                    "echo parent > parent.txt",
-                ),
-                ScriptedTurn::Text("child ready".into()),
-                ScriptedTurn::Text("child settlement received".into()),
-                ScriptedTurn::Text("grandchild ready".into()),
-                ScriptedTurn::Text("grandchild settlement received".into()),
-                ScriptedTurn::Text("descendant settlement received".into()),
-                super::super::tests::checked_commands::call(
-                    1,
-                    crate::tools::shell::PLATFORM.name,
-                    "cp nested.txt observed.txt",
-                ),
-                ScriptedTurn::Text("parent read merged checkout".into()),
-            ])
-            .with_dispatch_observer(move |_| {
-                let mut dispatches = dispatches.lock().unwrap();
-                dispatches.0 += 1;
-                // Each completed child turn wakes its parent. Drain the root
-                // response before admitting the next scripted conversation.
-                if dispatches.0 == 3 {
-                    let _ = dispatches.1.take().unwrap().send(());
-                } else if dispatches.0 == 6 {
-                    let _ = dispatches.2.take().unwrap().send(());
-                }
-                Box::pin(async { Ok(()) })
-            })
+            ScriptedModelProvider::routed(
+                [
+                    super::super::tests::checked_commands::call(
+                        0,
+                        crate::tools::shell::PLATFORM.name,
+                        "echo parent > parent.txt",
+                    ),
+                    ScriptedTurn::Text("child ready".into()),
+                    ScriptedTurn::Text("grandchild ready".into()),
+                    super::super::tests::checked_commands::call(
+                        1,
+                        crate::tools::shell::PLATFORM.name,
+                        "cp nested.txt observed.txt",
+                    ),
+                    ScriptedTurn::Text("parent read merged checkout".into()),
+                ],
+                [
+                    "child settlement received",
+                    "grandchild settlement received",
+                    "descendant settlement received",
+                    "merge observation received",
+                ]
+                .map(|text| ScriptedTurn::Text(text.into())),
+            )
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
@@ -1465,10 +1469,16 @@ mod tests {
         let tree = local.connect().await?;
         let mut selected = tree.clone();
         let mut descendants = Vec::new();
-        for (name, settlement) in [
-            ("child", child_settlement),
-            ("grandchild", grandchild_settlement),
-        ] {
+        let (agents, _) = local.agents().await?;
+        for name in ["child", "grandchild"] {
+            let mut observers = Vec::new();
+            for ancestor in std::iter::once(&tree).chain(&descendants).rev() {
+                let conversation = Conversation::open(ancestor.clone());
+                observers.push((
+                    ancestor.root().clone(),
+                    ObservedConversation::observe(conversation, None).await?,
+                ));
+            }
             let crate::client::AgentReply::Spawned { agent, .. } = selected
                 .execute(&crate::client::AgentCommand::Spawn {
                     parent: selected.root().clone(),
@@ -1481,44 +1491,28 @@ mod tests {
                 return Err(Error::Invalid("missing descendant".into()));
             };
             selected = tree.select(agent).await?;
-            let phase = Conversation::open(selected.clone())
-                .wait_current_input()
-                .await?
-                .phase;
-            assert!(
-                matches!(phase, crate::agent::Phase::Idle),
-                "{name} did not become idle: {phase:?}"
-            );
-            let state = local
-                .agents()
-                .await?
-                .0
-                .state(selected.root())
-                .await
-                .map_err(storage)?;
-            let entries = Conversation::open(selected.clone())
-                .entries(state.conversation_base, state.conversation_tail)
-                .await?;
-            assert!(
-                matches!(entries.as_slice(), [entry] if entry.outcome.is_completed()),
-                "{name} brief did not complete: {entries:?}"
-            );
-            settlement.await.map_err(storage)?;
-            Conversation::open(tree.clone())
-                .wait_current_input()
-                .await?;
+            let history = super::super::tests::settled(&local, selected.root()).await?;
+            let state = agents.state(selected.root()).await.map_err(storage)?;
+            let base = usize::try_from(state.conversation_base).map_err(storage)?;
+            let entry = history
+                .get(base)
+                .ok_or_else(|| Error::Conflict(format!("{name} has no own conversation entry")))?;
+            let entry = crate::agent::ConversationEntry::decode(entry).map_err(storage)?;
+            assert!(matches!(entry.input, crate::agent::TurnInput::Brief { .. }));
+            assert!(entry.outcome.is_completed(), "{name}: {:?}", entry.outcome);
+            eprintln!("session merge: {name} brief settled");
+            let mut turn = crate::agent::turn_id(&state, &entry.input).map_err(storage)?;
+            for (ancestor, mut observer) in observers {
+                let entry = observer.settled_child_notice(turn).await?;
+                let state = agents.state(&ancestor).await.map_err(storage)?;
+                turn = crate::agent::turn_id(&state, &entry.input).map_err(storage)?;
+            }
             descendants.push(selected.clone());
         }
         Conversation::open(descendants[0].clone())
             .wait_current_input()
             .await?;
-        // All descendants are admitted. Keep later shell settlement notices
-        // queued on the unused root without consuming another scripted turn.
-        tree.execute(&crate::client::AgentCommand::Pause {
-            agent: tree.root().clone(),
-            paused: true,
-        })
-        .await?;
+        eprintln!("session merge: parent idle after both briefs");
         let parent_state = local
             .agents()
             .await?
@@ -1633,6 +1627,7 @@ mod tests {
         .await
         .map_err(storage)?;
         let commit = sessions::merge(&descendants[1], "merge-grandchild").await?;
+        eprintln!("session merge: grandchild merged");
         assert!(commit.is_some());
         assert_eq!(
             sessions::merge(&descendants[1], "merge-grandchild").await?,
@@ -1657,10 +1652,17 @@ mod tests {
             }
         }
         assert!(merged, "the direct parent must own the merged edit");
-        parent
+        let mut root_observer =
+            ObservedConversation::observe(Conversation::open(tree.clone()), None).await?;
+        let mut parent_observer = ObservedConversation::observe(parent.clone(), None).await?;
+        let entry = parent_observer
             .send("read-merged-checkout", "read the merged file using shell")
             .await?;
-        parent.wait_current_input().await?;
+        assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+        let turn = crate::agent::turn_id(&parent_state, &entry.input).map_err(storage)?;
+        root_observer.settled_child_notice(turn).await?;
+        drop((parent_observer, root_observer));
+        eprintln!("session merge: parent read settled");
         assert_eq!(
             std::fs::read(parent_workspace.path.join("observed.txt")).map_err(|error| {
                 Error::Storage(format!(
@@ -1678,6 +1680,7 @@ mod tests {
         );
         let discarded = Conversation::open(descendants[1].clone());
         sessions::archive(parent.connection(), "discard-child-subtree").await?;
+        eprintln!("session merge: subtree archived");
         assert!(matches!(
             parent.wait_current_input().await?.phase,
             crate::agent::Phase::Done { .. }
@@ -1692,7 +1695,7 @@ mod tests {
         ));
         assert_eq!(
             provider.request_count(),
-            8,
+            9,
             "human filesystem actions must not dispatch a model"
         );
         Ok(())

@@ -99,6 +99,7 @@ pub(super) async fn prepare_at<P: PublicationOwner>(
 impl Ticket {
     pub(super) fn certificate(
         &self,
+        prior: Option<Anchor>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<Anchor>, crate::FsError> {
         let state = self
@@ -106,10 +107,17 @@ impl Ticket {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A deferred proposal already owns independence through the prior
+        // completed batch. Extend that evidence only across the next batch's
+        // exact starting head and root.
+        let own = self.proposal.original_anchor();
+        let from = prior
+            .filter(|anchor| anchor.head.sequence > own.head.sequence)
+            .unwrap_or(own);
         if state.phase != Phase::Complete
             || state.selected().next().is_none_or(|first| {
-                first.original_anchor().head != self.proposal.original_anchor().head
-                    || first.original_anchor().base != self.proposal.original_anchor().base
+                let admitted = first.original_anchor();
+                admitted.head != from.head || admitted.base != from.base
             })
         {
             return Ok(None);

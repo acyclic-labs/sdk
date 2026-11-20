@@ -271,7 +271,6 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,
-        _invocation: &ToolInvocation,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         let _records_hold;
@@ -302,6 +301,9 @@ impl StockExecution<'_> {
         }
         if !records.is_empty() {
             return Ok(());
+        }
+        if self.stock.reconciliation_only {
+            return Err(Error::Indeterminate(operation));
         }
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.host-invocation-start.v1");
         hasher.update(&operation.into_bytes());

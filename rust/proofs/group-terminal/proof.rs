@@ -5,7 +5,7 @@ pub struct Child<K, P> {
     pub page: P,
 }
 
-#[path = "../../crates/collections/src/page/selection.rs"]
+#[path = "../../crates/collections-page/src/selection.rs"]
 mod production;
 
 #[derive(Debug, PartialEq, Eq)]

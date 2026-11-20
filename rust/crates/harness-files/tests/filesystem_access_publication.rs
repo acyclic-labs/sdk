@@ -1,0 +1,296 @@
+use super::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<(), Box<dyn Error>> {
+    use acyclic_harness::conversation::{ContentAccess, ContentPublisher};
+    use acyclic_harness::filesystem::FilesystemContentPublisher;
+    let fixture = Fixture::new().await?;
+    let capability = Capability {
+        layers: vec![vec![Grant {
+            actions: [Action::Create, Action::Write, Action::ReadHistory]
+                .into_iter()
+                .collect(),
+            resource: ResourcePattern {
+                lineage_root: None,
+                volume: None,
+                generations: Generations::All,
+                path: "secrets/**".into(),
+            },
+        }]],
+        expires_at: None,
+    };
+    let scope = fixture.issuer.bootstrap_scope(
+        "write-receipts",
+        &Capabilities::new([
+            fixture
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+            capability.to_scope_label()?,
+        ]),
+        fixture.scope.agent(),
+        &mut None,
+    )?;
+    let writer = FilesystemContentPublisher::new(
+        fixture.host.clone(),
+        &fixture.volume,
+        &fixture.issuer.verifier(&mut None)?,
+        &scope,
+        4096,
+        None,
+    )?;
+    let operation = acyclic_harness::OperationId::from_bytes([52; 16]);
+    let path = "secrets/receipt";
+    let (first, _) = writer
+        .stage(
+            operation,
+            path,
+            b"first",
+            "text/plain",
+            "receipt",
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        writer
+            .observe_staged_path(operation, path, 4096, None)
+            .await?,
+        Some(first.clone())
+    );
+    let replacement = acyclic_harness::OperationId::from_bytes([53; 16]);
+    let (next, _) = writer
+        .stage_at(replacement, &first, b"next", None, None)?
+        .await?;
+    assert_eq!(
+        writer
+            .observe_staged_at(replacement, &first, 4096, None)
+            .await?,
+        Some(next)
+    );
+    let unknown = acyclic_harness::OperationId::from_bytes([54; 16]);
+    let (original, _) = writer
+        .stage_once(
+            unknown,
+            "secrets/unknown",
+            b"hidden",
+            "text/plain",
+            "unknown",
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(
+        writer
+            .observe_staged_once(unknown, None, Some(4096), ContentAccess::default())?
+            .await?
+            .0,
+        Some(original),
+    );
+    let grant = ContentGrant::verify(
+        &fixture.issuer.verifier(&mut None)?,
+        &scope,
+        &fixture.volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    assert_eq!(
+        fixture
+            .host
+            .content_for_operation(
+                &fixture.volume,
+                &grant,
+                &IdempotencyKey::new("file")?,
+                "secrets/key",
+                Some(4096),
+                ContentAccess::default(),
+            )
+            .await
+            .err()
+            .ok_or("metadata discovery unexpectedly succeeded")?
+            .code(),
+        acyclic_harness::wire::ErrorCode::Unauthorized,
+    );
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn cached_metadata_requires_list_independently_of_read(
+        list in any::<bool>(), read in any::<bool>(),
+        path in any::<bool>(), expired in any::<bool>(), denied in any::<bool>(),
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+            let fixture = Fixture::new().await?;
+            let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+            policy.version = 2;
+            if denied {
+                let mut deny = policy.layers.first_mut().and_then(|layer| layer.first_mut()).ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?.clone();
+                deny.id = "hide-cached-metadata".into();
+                deny.effect = Effect::Deny;
+                deny.actions = [Action::List].into_iter().collect();
+                deny.resource.path = "secrets/**".into();
+                policy.layers.first_mut().ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?.push(deny);
+            }
+            fixture.publish_policy(policy).await?;
+            let capability = Capability {
+                layers: vec![vec![Grant {
+                    actions: std::iter::once(Action::ReadHistory)
+                        .chain(list.then_some(Action::List)).chain(read.then_some(Action::Read)).collect(),
+                    resource: ResourcePattern {
+                        lineage_root: None, volume: None, generations: Generations::All,
+                        path: if path { "secrets/**" } else { "public/**" }.into(),
+                    },
+                }]], expires_at: expired.then_some(1),
+            };
+            let scope = fixture.issuer.bootstrap_scope("observe", &Capabilities::new([
+                fixture.volume.capability(VolumeOperation::Write, &mut None)?,
+                capability.to_scope_label()?,
+            ]), fixture.scope.agent(), &mut None)?;
+            let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &scope,
+                &fixture.volume, VolumeOperation::Write, &mut None)?;
+            let result = fixture.host.content_for_operation(&fixture.volume, &grant,
+                &IdempotencyKey::new("file")?, "secrets/key", Some(4096), acyclic_harness::conversation::ContentAccess::default()).await;
+            let allowed = list && path && !expired && !denied;
+            assert_eq!(result.is_ok(), allowed, "{result:?}");
+            if allowed {
+                assert_eq!(result?, Some(fixture.file));
+            } else {
+                let Err(error) = result else {
+                    return Err("a denied metadata read must fail".into());
+                };
+                assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unauthorized);
+            }
+            Ok::<_, Box<dyn Error>>(())
+        }).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    }
+}
+
+#[tokio::test]
+async fn legacy_write_grant_does_not_disclose_cached_metadata() -> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new().await?;
+    for read in [false, true] {
+        let grants = std::iter::once(
+            fixture
+                .volume
+                .capability(VolumeOperation::Write, &mut None)?,
+        )
+        .chain(
+            read.then(|| fixture.volume.capability(VolumeOperation::Read, &mut None))
+                .transpose()?,
+        );
+        let scope = fixture.issuer.bootstrap_scope(
+            "legacy-observe",
+            &Capabilities::new(grants),
+            fixture.scope.agent(),
+            &mut None,
+        )?;
+        let grant = ContentGrant::verify(
+            &fixture.issuer.verifier(&mut None)?,
+            &scope,
+            &fixture.volume,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let result = fixture
+            .host
+            .content_for_operation(
+                &fixture.volume,
+                &grant,
+                &IdempotencyKey::new("file")?,
+                "secrets/key",
+                Some(4096),
+                acyclic_harness::conversation::ContentAccess::default(),
+            )
+            .await;
+        assert_eq!(result.is_ok(), read);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn write_receipts_release_original_ledger_custody_on_allow_and_deny()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_harness::conversation::ContentPublisher;
+    let fixture = Fixture::new().await?;
+    let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+        fixture.host.clone(),
+        &fixture.volume,
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope,
+        4096,
+        None,
+    )?;
+    let operation = acyclic_harness::OperationId::new();
+    let _ = writer
+        .stage_once(
+            operation,
+            "secrets/cached",
+            b"cached",
+            "text/plain",
+            "cached",
+            acyclic_harness::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let cancel = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancel,
+    )
+    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let _ = work.receipt();
+    let baseline = work.live_allocation_bytes();
+    for denied in [false, true] {
+        let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+        policy.version = if denied { 3 } else { 2 };
+        if denied {
+            let mut deny = policy
+                .layers
+                .first_mut()
+                .and_then(|layer| layer.first_mut())
+                .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?
+                .clone();
+            deny.id = "hide-cache".into();
+            deny.effect = Effect::Deny;
+            deny.actions = [Action::Create, Action::Write].into_iter().collect();
+            deny.resource.path = "secrets/**".into();
+            policy
+                .layers
+                .first_mut()
+                .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
+                .push(deny);
+        }
+        fixture.publish_policy(policy).await?;
+        let mut retained = None;
+        for _ in 0..2 {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+            let result = writer
+                .observe_staged_once(
+                    operation,
+                    None,
+                    Some(4096),
+                    acyclic_harness::conversation::ContentAccess {
+                        ceiling: None,
+                        io: Some(&io),
+                    },
+                )?
+                .await;
+            assert_eq!(result.is_ok(), !denied);
+            drop(result);
+            drop(io);
+            let _ = work.receipt();
+            if let Some(previous) = retained.replace(work.live_allocation_bytes()) {
+                assert_eq!(
+                    work.live_allocation_bytes(),
+                    previous,
+                    "warm receipt recovery retains no request storage"
+                );
+            }
+        }
+    }
+    drop(writer);
+    drop(fixture);
+    let _ = work.receipt();
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}

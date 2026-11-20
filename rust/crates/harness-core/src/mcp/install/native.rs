@@ -29,7 +29,7 @@ pub(super) async fn connect(
                 crate::native_environment::variable,
                 &credentials,
             )?;
-            let binding = command_binding(&child, server);
+            let binding = command_binding(&child, server)?;
             (
                 Connection::Stdio(
                     super::super::stdio::StdioMcpTransport::spawn(
@@ -150,9 +150,11 @@ fn hash_part(hasher: &mut blake3::Hasher, value: &[u8]) {
 pub(super) fn command_binding(
     command: &acyclic_native_runtime::ProcessCommand,
     server: &McpServer,
-) -> [u8; 32] {
+) -> Result<[u8; 32]> {
     let McpTransport::Stdio { env, env_vars, .. } = &server.transport else {
-        unreachable!("stdio binding")
+        return Err(Error::Invalid(
+            "MCP command requires a stdio binding".into(),
+        ));
     };
     let explicit: BTreeSet<_> = env.keys().chain(env_vars).map(String::as_str).collect();
     let mut hasher = binding_hasher(b"stdio");
@@ -192,7 +194,7 @@ pub(super) fn command_binding(
     if let Some(cwd) = command.get_current_dir() {
         hash_part(&mut hasher, cwd.as_os_str().as_encoded_bytes());
     }
-    *hasher.finalize().as_bytes()
+    Ok(*hasher.finalize().as_bytes())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

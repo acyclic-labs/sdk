@@ -22,12 +22,13 @@ const WRITERS: &[(&str, &[u8])] = &descriptors![
     "harness-v2.bin",
 ];
 
-fn decode(bytes: &[u8]) -> DynamicMessage {
+type Proof = Result<(), Box<dyn std::error::Error>>;
+
+fn decode(bytes: &[u8]) -> Result<DynamicMessage, Box<dyn std::error::Error>> {
     let descriptor = DescriptorPool::global()
         .get_message_by_name("google.protobuf.FileDescriptorSet")
-        .unwrap_or_else(|| unreachable!("descriptor schema missing"));
-    DynamicMessage::decode(descriptor, bytes)
-        .unwrap_or_else(|error| panic!("admitted descriptor cannot be reflected: {error}"))
+        .ok_or("descriptor schema missing")?;
+    Ok(DynamicMessage::decode(descriptor, bytes)?)
 }
 
 fn unknowns(file: &DynamicMessage) -> Vec<Vec<u8>> {
@@ -44,23 +45,25 @@ fn unknowns(file: &DynamicMessage) -> Vec<Vec<u8>> {
     fields
 }
 
-fn check_unknowns(input: &DynamicMessage, canonical: &[u8]) {
-    let output = decode(canonical);
+fn check_unknowns(input: &DynamicMessage, canonical: &[u8]) -> Proof {
+    let output = decode(canonical)?;
     let input_files = input
         .get_field_by_name("file")
-        .unwrap_or_else(|| unreachable!("descriptor files missing"));
+        .ok_or("input descriptor files missing")?;
     let output_files = output
         .get_field_by_name("file")
-        .unwrap_or_else(|| unreachable!("descriptor files missing"));
-    let input_files = input_files.as_list().unwrap_or_else(|| unreachable!());
-    let output_files = output_files.as_list().unwrap_or_else(|| unreachable!());
+        .ok_or("output descriptor files missing")?;
+    let input_files = input_files.as_list().ok_or("input files are not a list")?;
+    let output_files = output_files
+        .as_list()
+        .ok_or("output files are not a list")?;
     assert_eq!(input_files.len(), output_files.len());
     for (input, output) in input_files.iter().zip(output_files) {
-        let input = input.as_message().unwrap_or_else(|| unreachable!());
-        let output = output.as_message().unwrap_or_else(|| unreachable!());
+        let input = input.as_message().ok_or("input file is not a message")?;
+        let output = output.as_message().ok_or("output file is not a message")?;
         let name = input
             .get_field_by_name("name")
-            .unwrap_or_else(|| unreachable!("descriptor name missing"));
+            .ok_or("descriptor name missing")?;
         assert_eq!(Some(&name), output.get_field_by_name("name").as_ref());
         if !name
             .as_str()
@@ -74,16 +77,17 @@ fn check_unknowns(input: &DynamicMessage, canonical: &[u8]) {
             );
         }
     }
+    Ok(())
 }
 
-fuzz_target!(|bytes: &[u8]| {
+fn check(bytes: &[u8]) -> Proof {
     assert_eq!(WRITERS.len(), acyclic_proto_build::FAMILIES.len());
     let index = usize::from(bytes.first().copied().unwrap_or_default()) % WRITERS.len();
     let ((file, writer), (_, expected_file, roots)) = WRITERS
         .iter()
         .zip(acyclic_proto_build::FAMILIES)
         .nth(index)
-        .unwrap_or_else(|| unreachable!("descriptor family missing"));
+        .ok_or("descriptor family missing")?;
     assert_eq!(file, expected_file);
     let service = match *file {
         "actors-v1.bin" => Some("acyclic.actors.v1.ActorsService"),
@@ -94,8 +98,7 @@ fuzz_target!(|bytes: &[u8]| {
         _ => None,
     };
     if let Some(service) = service {
-        acyclic_proto_build::authorization(writer, service, "Method")
-            .expect("captured production method admission must compile");
+        acyclic_proto_build::authorization(writer, service, "Method")?;
         // The same public metadata decoder receives arbitrary inputs. A
         // successful Rust/TypeScript projection must be deterministic.
         if let Ok(first) = acyclic_proto_build::authorization(bytes, service, "Method") {
@@ -132,11 +135,11 @@ fuzz_target!(|bytes: &[u8]| {
             );
         }
     }
-    let mut challenge = decode(writer);
+    let mut challenge = decode(writer)?;
     let files = challenge
         .get_field_by_name_mut("file")
         .and_then(Value::as_list_mut)
-        .unwrap_or_else(|| unreachable!());
+        .ok_or("compiler descriptor files missing")?;
     let file = files
         .iter_mut()
         .filter_map(Value::as_message_mut)
@@ -148,7 +151,7 @@ fuzz_target!(|bytes: &[u8]| {
                     .starts_with("google/protobuf/")
             })
         })
-        .unwrap_or_else(|| unreachable!("compiler descriptor has no original file"));
+        .ok_or("compiler descriptor has no original file")?;
     // Extend the original compiler message through the protobuf wire writer.
     // Repetition also checks multiplicity, independently of field ordering.
     let number = 10_000 + u32::from(bytes.get(1).copied().unwrap_or_default());
@@ -157,14 +160,12 @@ fuzz_target!(|bytes: &[u8]| {
     encode_varint(bytes.len() as u64, &mut extension);
     extension.extend_from_slice(bytes);
     for _ in 0..2 {
-        file.merge(extension.as_slice())
-            .unwrap_or_else(|error| panic!("writer extension refused: {error}"));
+        file.merge(extension.as_slice())?;
     }
-    let canonical = acyclic_proto_build::canonicalize(&challenge.encode_to_vec(), roots)
-        .unwrap_or_else(|error| panic!("extended production writer descriptor refused: {error}"));
-    check_unknowns(&challenge, &canonical);
+    let canonical = acyclic_proto_build::canonicalize(&challenge.encode_to_vec(), roots)?;
+    check_unknowns(&challenge, &canonical)?;
     if let Ok(canonical) = acyclic_proto_build::canonicalize(bytes, roots) {
-        check_unknowns(&decode(bytes), &canonical);
+        check_unknowns(&decode(bytes)?, &canonical)?;
         assert_eq!(
             acyclic_proto_build::canonicalize(&canonical, roots)
                 .ok()
@@ -172,4 +173,10 @@ fuzz_target!(|bytes: &[u8]| {
             Some(canonical.as_slice())
         );
     }
+    Ok(())
+}
+
+fuzz_target!(|bytes: &[u8]| {
+    let result = check(bytes);
+    assert!(result.is_ok(), "descriptor round-trip failed: {result:?}");
 });

@@ -22,7 +22,7 @@ fn delivery_completion_wakes_after_original_ledger_scope() -> TestResult {
         fn host_changed(
             &self,
             _: &[HostChange],
-            work: &mut crate::demand::DemandWork,
+            work: &mut crate::ledger::DemandWork,
         ) -> Result<(), DemandError> {
             work.check()
         }
@@ -44,7 +44,7 @@ fn delivery_completion_wakes_after_original_ledger_scope() -> TestResult {
         fn host_changed_wide(
             &self,
             _: &[HostChangeWide<'_>],
-            work: &mut crate::demand::DemandWork,
+            work: &mut crate::ledger::DemandWork,
         ) -> Result<(), DemandError> {
             work.check()
         }
@@ -89,7 +89,7 @@ pub(crate) fn terminal_failure_watch(
         fn host_changed(
             &self,
             _: &[HostChange],
-            _: &mut crate::demand::DemandWork,
+            _: &mut crate::ledger::DemandWork,
         ) -> Result<(), DemandError> {
             Err(DemandError::NativeWorkUnavailable)
         }
@@ -156,7 +156,7 @@ impl HostChangeSink for Recording {
     fn host_changed(
         &self,
         changes: &[HostChange],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), DemandError> {
         work.check()?;
         self.0.record(changes);
@@ -177,7 +177,7 @@ impl HostChangeSink for Recording {
     fn host_changed_wide(
         &self,
         changes: &[super::HostChangeWide<'_>],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), DemandError> {
         work.check()?;
         self.0.record_wide(changes);
@@ -231,6 +231,11 @@ impl Recorded {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
                     "native change producer closed before delivering the expected changes",
+                ));
+            }
+            if Self::everything(&state.changes) {
+                return Err(std::io::Error::other(
+                    "native change stream required a rescan before reporting the expected names",
                 ));
             }
             state = self
@@ -430,8 +435,7 @@ fn lost_changes_are_reported_as_everything() -> TestResult {
     watch.fence()?;
     assert!(Recorded::everything(&recorded.take()));
     std::fs::write(root.path().join("after"), b"x")?;
-    watch.fence()?;
-    assert!(Recorded::reported(&recorded.take(), Path::new("after")));
+    recorded.wait_until(|changes| Recorded::reported(changes, Path::new("after")))?;
     assert!(watch.is_exact());
     Ok(())
 }
@@ -609,7 +613,7 @@ fn cleanup_wait_ordinary_wrapper_rejects_before_stop_and_still_delivers() -> Tes
         Recorded::reported(&changes, Path::new("after-denial")),
         "{changes:?}"
     );
-    let mut cleanup = crate::demand::DemandWork::new(
+    let mut cleanup = crate::ledger::DemandWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     );
@@ -709,14 +713,14 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     );
     let terminal = birth
         .state
-        .with_original_leaf(crate::demand::DemandWork::receipt);
+        .with_original_leaf(crate::ledger::DemandWork::receipt);
     terminal.unwrap().verify(budget)?;
     let callbacks = recorded.take();
     watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
     assert_eq!(
         birth
             .state
-            .with_original_leaf(crate::demand::DemandWork::receipt),
+            .with_original_leaf(crate::ledger::DemandWork::receipt),
         terminal
     );
     std::fs::write(directory.path().join("after-terminal"), b"not watched")?;
@@ -859,7 +863,7 @@ fn measured_admission_on_recursive_hosts_does_not_spend_work()
         fn host_changed(
             &self,
             _: &[HostChange],
-            work: &mut crate::demand::DemandWork,
+            work: &mut crate::ledger::DemandWork,
         ) -> Result<(), crate::demand::DemandError> {
             work.check()
         }
@@ -867,7 +871,7 @@ fn measured_admission_on_recursive_hosts_does_not_spend_work()
         fn host_changed_wide(
             &self,
             _: &[HostChangeWide<'_>],
-            work: &mut crate::demand::DemandWork,
+            work: &mut crate::ledger::DemandWork,
         ) -> Result<(), crate::demand::DemandError> {
             work.check()
         }
@@ -881,11 +885,11 @@ fn measured_admission_on_recursive_hosts_does_not_spend_work()
     )?;
     let cancellation = crate::cancellation::CancellationToken::new();
     let mut uncancelled =
-        crate::demand::DemandWork::new(crate::WorkBudget::default(), &cancellation);
+        crate::ledger::DemandWork::new(crate::WorkBudget::default(), &cancellation);
     assert!(!watch.admit_with_work(std::path::Path::new("not/read"), &mut uncancelled)?);
     assert_eq!(uncancelled.work, crate::WorkCounters::default());
     cancellation.cancel();
-    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::default(), &cancellation);
+    let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::default(), &cancellation);
     assert!(matches!(
         watch.admit_with_work(std::path::Path::new("not/read"), &mut work),
         Err(crate::demand::DemandError::Cancelled)

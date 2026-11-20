@@ -1,0 +1,33 @@
+[package]
+name = "acyclic-stream-contract-bytes"
+version = "0.2.0"
+edition.workspace = true
+rust-version = "1.92"
+license.workspace = true
+repository.workspace = true
+description = "Byte-level helpers for the stream contract: JavaScript snapshots and the native test meter"
+include = ["Cargo.toml", "src/**"]
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Admitted JavaScript byte ownership without a provider or transport.
+js-bytes = ["dep:wasm-bindgen"]
+test-support = []
+
+[dependencies]
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+wasm-bindgen = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+
+[lints]
+workspace = true

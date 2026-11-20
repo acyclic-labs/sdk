@@ -23,11 +23,14 @@ impl StockExecution<'_> {
     /// retire only after every invocation in that step has settled.
     pub(in crate::executor) async fn retire_working_history(
         &self,
+        operation: OperationId,
         messages: &mut Vec<ModelMessage>,
         steering: Option<&mut retirement::SteeringHistory>,
     ) -> Result<()> {
         let mut cache = self.working_tail.lock().await;
-        if let Some(retained) = &cache.retained {
+        if let Some(retained) = &cache.retained
+            && retained.cut.operation == operation
+        {
             let through = retained.cut.prior_messages;
             retirement::retire_prefix(
                 messages,

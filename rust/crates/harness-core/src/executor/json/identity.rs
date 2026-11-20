@@ -202,20 +202,19 @@ pub fn canonical_json_digest<T: Serialize + ?Sized>(
     maximum_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    if work.is_none() {
+    let Some(observer) = work.as_deref_mut() else {
         let mut value =
             serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
         value.sort_all_objects();
         return serialized_json_digest_bounded(&value, maximum_bytes);
-    }
+    };
     if maximum_bytes == Some(0) {
         return Err(crate::store::guarded_boundary(
-            work,
+            &Some(observer),
             crate::wire::ErrorCode::Invalid,
             "canonical encoder byte allowance must be positive",
         ));
     }
-    let observer = work.as_deref_mut().expect("observed canonical digest");
     let code = crate::store::operations::original_native_decode_mode(observer)
         .then_some(crate::wire::ErrorCode::Invalid);
     serialization::canonical_digest_with_work(
@@ -236,17 +235,16 @@ pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
     maximum_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    if work.is_none() {
+    let Some(observer) = work.as_deref_mut() else {
         return serialized_json_digest_bounded(value, maximum_bytes);
-    }
+    };
     if maximum_bytes == Some(0) {
         return Err(crate::store::guarded_boundary(
-            work,
+            &Some(observer),
             crate::wire::ErrorCode::Invalid,
             "canonical encoder byte allowance must be positive",
         ));
     }
-    let observer = work.as_deref_mut().expect("observed borrowed digest");
     let code = crate::store::operations::original_native_decode_mode(observer)
         .then_some(crate::wire::ErrorCode::Invalid);
     serialization::borrowed_digest_with_work(

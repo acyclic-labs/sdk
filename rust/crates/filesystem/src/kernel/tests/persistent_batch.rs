@@ -128,12 +128,13 @@ fn native_batch_denial_keeps_its_actual_constructor_prefix()
         digest: Digest::from_bytes([1; 32]),
     };
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 2,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();

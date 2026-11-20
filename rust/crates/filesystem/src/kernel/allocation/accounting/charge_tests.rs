@@ -51,7 +51,7 @@ proptest! {
         // Discover only the deterministic setup cost in independent state;
         // construct the tested roots with real finite budgets. Never overwrite
         // a budget after setup: invocation cleanup already owns reserved credit.
-        let setup_root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).unwrap();
+        let setup_root = crate::NativeMaterializationWork::root(WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &crate::services::ServicesInitialized::for_kernel_tests()).unwrap();
         let setup = scope(&setup_root, &allowances[..usize::from(depth)], invocation);
         let cost = setup.state(|state| {
             let mut reserved = state.budget.remaining(state.original_budget()).unwrap();
@@ -66,7 +66,7 @@ proptest! {
             *value = serde_json::json!(value.as_u64().unwrap().saturating_add(extra[key].as_u64().unwrap()));
         }
         let budget = if bounded { serde_json::from_value(total).unwrap() } else { WorkBudget::UNBOUNDED };
-        let roots = [0,1].map(|i| crate::NativeMaterializationWork::new(budget, &root_cancel[i]).unwrap());
+        let roots = [0,1].map(|i| crate::NativeMaterializationWork::root(budget, &root_cancel[i], &crate::services::ServicesInitialized::for_kernel_tests()).unwrap());
         let work = roots.each_ref().map(|root| {
             let work = scope(root, &allowances[..usize::from(depth)], invocation);
             if recheck { work.recheck_admitted() } else { work }
@@ -111,7 +111,12 @@ fn exactly_one(locks: usize) -> Result<(), usize> {
 fn kernel_admission_visits_the_original_leaf_once() {
     let root_cancel = crate::CancellationToken::new();
     let caller_cancel = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &root_cancel).unwrap();
+    let root = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &root_cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .unwrap();
     for depth in 0..3 {
         for invocation in [false, true] {
             for recheck in [false, true] {

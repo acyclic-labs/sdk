@@ -31,7 +31,7 @@ function selection(bytes) {
   entry.module = "worker";
   entry.artifactSha256 = sha256(code);
   entry.assets = [{path: "selected.wasm", sha256: sha256(bytes), size: bytes.length,
-    mediaType: "application/wasm", role: "module"}];
+    mediaType: "application/wasm"}];
   entry.bindings = [];
   entry.secrets = [];
   entry.runtime = {kind: "worker", limits: {cpuMillis: 100, memoryBytes: 268435456, timeoutMillis: 30000}};

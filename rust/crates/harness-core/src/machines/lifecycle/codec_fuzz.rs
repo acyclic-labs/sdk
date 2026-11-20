@@ -6,23 +6,28 @@ use super::*;
 /// association refusals. Generated envelope metadata is not a captured receipt;
 /// positive corpus values must come from the original stream producer.
 pub fn check(bytes: &[u8]) {
+    let result = check_generated(bytes);
+    assert!(result.is_ok(), "Machine codec check failed: {result:?}");
+}
+
+fn check_generated(bytes: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let record = acyclic_stream::Record {
         sequence: 0,
         value: bytes.to_vec().into(),
         commit_id: Default::default(),
         committed_at_micros: 0,
         headers: Default::default(),
-        origin: acyclic_stream::StreamPath::new("machine-codec-input".to_owned())
-            .expect("fixed generated-input path"),
+        origin: acyclic_stream::StreamPath::new("machine-codec-input")?,
     };
-    if admitted(&record, |record| ProvisionPlan::decode("machine", record)) {
+    if admitted(&record, |record| ProvisionPlan::decode("machine", record))? {
         assert!(ProvisionPlan::decode("foreign", &record).is_err());
     }
     let mut binding = record;
     binding.sequence = 1;
-    if admitted(&binding, |record| MachineBinding::decode("machine", record)) {
+    if admitted(&binding, |record| MachineBinding::decode("machine", record))? {
         assert!(MachineBinding::decode("foreign", &binding).is_err());
     }
+    Ok(())
 }
 
 /// Require a positive check with the original producer envelope. Unlike an
@@ -38,34 +43,31 @@ pub fn check_record(target: &str, record: &acyclic_stream::Record) {
             assert!(MachineBinding::decode(foreign, record).is_err());
             admitted(record, |record| MachineBinding::decode(target, record))
         }
-        _ => false,
+        _ => Ok(false),
     };
     assert!(
-        accepted,
-        "original Machine producer record was not admitted"
+        matches!(accepted, Ok(true)),
+        "original Machine producer record was not admitted: {accepted:?}"
     );
 }
 
 fn admitted<T: Serialize>(
     record: &acyclic_stream::Record,
     decode: impl Fn(&acyclic_stream::Record) -> Result<T>,
-) -> bool {
+) -> std::result::Result<bool, Box<dyn std::error::Error>> {
     let Ok(value) = decode(record) else {
-        return false;
+        return Ok(false);
     };
-    let encoded = serde_json::to_vec(&value).expect("admitted Machine record encodes");
+    let encoded = serde_json::to_vec(&value)?;
     let mut restored = record.clone();
     restored.value = encoded.clone().into();
-    let value = decode(&restored).expect("canonical Machine record retains admission");
-    assert_eq!(
-        serde_json::to_vec(&value).expect("canonical Machine record encodes"),
-        encoded
-    );
+    let value = decode(&restored)?;
+    assert_eq!(serde_json::to_vec(&value)?, encoded);
     for sequence in [0, 1, u64::MAX] {
         if sequence != record.sequence {
             restored.sequence = sequence;
             assert!(decode(&restored).is_err());
         }
     }
-    true
+    Ok(true)
 }

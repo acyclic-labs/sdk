@@ -51,7 +51,7 @@ pub(super) fn ensure_current_host_node(
 #[cfg(test)]
 pub(super) fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter =
-        crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     let result =
         crate::native_host::host_path(path, &mut meter, |path, work| root.stat(path, work));
     result.map_err(capture_demand_error)
@@ -63,7 +63,7 @@ pub(super) fn test_held_stat(
     file: &cap_std::fs::File,
 ) -> Result<HostStat, CaptureError> {
     let mut meter =
-        crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     root.stat_file(&file.try_clone()?.into_std(), &mut meter)
         .map_err(capture_demand_error)
 }
@@ -138,7 +138,7 @@ pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
 pub(crate) fn physical_metadata(metadata: &HostStat) -> FileMetadata {
     let created = metadata.birth_time();
     #[cfg(test)]
-    #[cfg(all(any(target_os = "linux", windows)))]
+    #[cfg(any(target_os = "linux", windows))]
     let created = if crate::native_host::stat_probe::legacy_birth_time() {
         metadata.created().ok()
     } else {

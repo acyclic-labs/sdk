@@ -117,9 +117,9 @@ fn check(
             source_bytes_read: leaf_bytes,
             bytes_copied: leaf_bytes,
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
-                + crate::demand::NativeAllocationAccounting::ALLOCATION_BYTES
+                + crate::ledger::NativeAllocationAccounting::ALLOCATION_BYTES
                 + crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
-                    crate::demand::CaptureTransientCustody,
+                    crate::ledger::CaptureTransientCustody,
                 >())
                 .unwrap() as u64
                 + leaf_bytes,

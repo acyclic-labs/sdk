@@ -196,7 +196,6 @@ impl EntryRequest {
 
 /// Node/browser artifact admission: the entry bytes and every supplied file are
 /// checked against the parsed manifest's declared entry and assets.
-#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = verifyArtifact)]
 pub fn verify_artifact_json(
     input: &str,
@@ -236,7 +235,6 @@ pub fn verify_artifact_json(
 }
 
 /// Node/browser admission export; executes the same parser and validator as Rust.
-#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = validate)]
 pub fn validate_json(input: &str) -> Result<(), wasm_bindgen::JsValue> {
     parse(input.as_bytes())

@@ -229,9 +229,9 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
                 .checked_add(usize::try_from(size).map_err(|_| libc::EOVERFLOW)?)
                 .ok_or(libc::EOVERFLOW)?;
             let bytes = self.config.get(start..end).ok_or(libc::EINVAL)?;
-            device.work.charge(
-                crate::materializer::NativeResourceCredit::Copy.delta(bytes.len() as u64),
-            )?;
+            device
+                .work
+                .charge(crate::ledger::NativeResourceCredit::Copy.delta(bytes.len() as u64))?;
             Ok(bytes.to_vec())
         })
     }

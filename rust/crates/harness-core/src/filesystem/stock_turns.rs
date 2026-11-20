@@ -455,6 +455,18 @@ impl TurnExecutors for StockExecutors {
                     (&agent_tools, authority.templates.clone()),
                 )?;
             }
+            let binding = if let Some(provider) =
+                binding
+                    .1
+                    .bind_workspace(agent, input, &authority.content, self.limits.file_bytes)
+            {
+                Arc::new(crate::model::ResolvedModel::new((
+                    binding.0.clone(),
+                    provider.await?,
+                )))
+            } else {
+                Arc::clone(&binding)
+            };
             let executor = StockExecutor::from_binding(binding, ContextPipeline::default(), tools)
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
                 .with_limits(self.limits);

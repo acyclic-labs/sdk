@@ -4,6 +4,7 @@ use crate::Result;
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
+use std::cell::OnceCell;
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -19,7 +20,7 @@ pub fn monotonic_now() -> Option<std::time::Duration> {
 }
 
 /// Browser HTTP with an explicitly owned fetch function.
-pub struct BrowserTransport(Function);
+pub struct BrowserTransport(OnceCell<Function>);
 
 struct Abort(AbortController);
 impl Drop for Abort {
@@ -36,22 +37,41 @@ struct Body {
 impl BrowserTransport {
     /// Injects platform I/O without replacing any protocol implementation.
     pub fn new(fetch: Function) -> Self {
-        Self(fetch)
+        Self(OnceCell::from(fetch))
     }
 
     /// Selects fetch from the current browser or worker realm.
     pub fn global() -> Result<Self> {
-        let fetch = Reflect::get(&js_sys::global(), &JsValue::from_str("fetch"))
+        Self::global_fetch().map(Self::new)
+    }
+
+    /// Resolves ambient HTTP on the first exchange, allowing provider
+    /// catalogs to serve workspace models in realms without a fetch API.
+    #[must_use]
+    pub const fn lazy_global() -> Self {
+        Self(OnceCell::new())
+    }
+
+    fn global_fetch() -> Result<Function> {
+        Reflect::get(&js_sys::global(), &JsValue::from_str("fetch"))
             .map_err(|_| invalid("browser fetch is unavailable"))?
             .dyn_into::<Function>()
-            .map_err(|_| invalid("browser fetch must be a function"))?;
-        Ok(Self::new(fetch))
+            .map_err(|_| invalid("browser fetch must be a function"))
+    }
+
+    fn fetch(&self) -> Result<&Function> {
+        if let Some(fetch) = self.0.get() {
+            return Ok(fetch);
+        }
+        let fetch = Self::global_fetch()?;
+        Ok(self.0.get_or_init(|| fetch))
     }
 }
 
 impl HttpTransport for BrowserTransport {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
+            let fetch = self.fetch()?;
             let abort = Abort(
                 AbortController::new()
                     .map_err(|_| invalid("browser cancellation is unavailable"))?,
@@ -75,8 +95,7 @@ impl HttpTransport for BrowserTransport {
                     .map_err(|_| invalid("invalid model HTTP header"))?;
             }
             init.set_headers(headers.as_ref());
-            let response = self
-                .0
+            let response = fetch
                 .call2(
                     &js_sys::global(),
                     &JsValue::from_str(&request.url),

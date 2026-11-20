@@ -1,4 +1,5 @@
 use crate::options::{self, Options};
+use crate::schema::{self, Segment};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ItemStruct, Type};
@@ -189,25 +190,24 @@ impl Field {
         (from, into)
     }
 
-    fn schema(&self) -> syn::Result<TokenStream> {
+    fn schema(&self) -> syn::Result<Vec<Segment>> {
         let ident = options::identifier(&self.ident);
         if self.kind == "oneof" {
             let ty = options::shadow(&self.ty)?;
-            return Ok(quote!(schema.push_str(&<#ty>::schema(#ident));));
+            return Ok(vec![Segment::tokens(quote!(&<#ty>::schema(#ident)))]);
         }
         let name = if self.kind == "enumeration" {
             let enumeration = &self.ty;
-            quote!(#enumeration::PROTO_NAME)
+            Segment::tokens(quote!(#enumeration::PROTO_NAME))
         } else if self.kind == "message" && self.options.import.is_some() {
             // A shared identity keeps its own package, resolved from the root.
             let ty = options::shadow(&self.ty)?;
-            quote!(format!(".{}", <#ty as ::prost::Name>::full_name()))
+            Segment::tokens(quote!(&<#ty as ::prost::Name>::full_name()))
         } else if self.kind == "message" {
             let ty = options::shadow(&self.ty)?;
-            quote!(<#ty as ::prost::Name>::NAME)
+            Segment::tokens(quote!(<#ty as ::prost::Name>::NAME))
         } else {
-            let kind = &self.kind;
-            quote!(#kind)
+            Segment::text(self.kind.clone())
         };
         let prefix = match self.shape {
             Shape::Repeated => "repeated ",
@@ -218,7 +218,13 @@ impl Field {
             .options
             .tag
             .ok_or_else(|| syn::Error::new_spanned(&self.ident, "wire tag is required"))?;
-        Ok(quote!(schema.push_str(&format!("  {}{} {} = {};\n", #prefix, #name, #ident, #tag));))
+        let mut segments = vec![Segment::text(format!("  {prefix}"))];
+        if self.kind == "message" && self.options.import.is_some() {
+            segments.push(Segment::text("."));
+        }
+        segments.push(name);
+        segments.push(Segment::text(format!(" {ident} = {tag};\n")));
+        Ok(segments)
     }
 
     fn oneof_check(&self) -> syn::Result<TokenStream> {
@@ -287,10 +293,12 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
             (quote!(#ident: #from), quote!(#ident: #into))
         })
         .unzip();
-    let schema = fields
-        .iter()
-        .map(Field::schema)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut segments = vec![Segment::text(format!("message {wire_name} {{\n"))];
+    for field in &fields {
+        segments.extend(field.schema()?);
+    }
+    segments.push(Segment::text("}\n"));
+    let schema = schema::build(segments);
     let oneof_checks = fields
         .iter()
         .map(Field::oneof_check)
@@ -336,7 +344,7 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
             #[doc = "Shared protocol files this declaration imports."]
             pub const IMPORTS: &'static [&'static str] = &[#(#imports),*];
             #[doc = "Protobuf declaration derived from the semantic fields."]
-            pub fn schema() -> String { let mut schema = format!("message {} {{\n", #wire_name); #(#schema)* schema.push_str("}\n"); schema }
+            pub fn schema() -> String { #schema }
         }
         impl ::prost::Name for #wire { const NAME: &'static str = #wire_name; const PACKAGE: &'static str = #file::PACKAGE; }
         impl ::core::convert::TryFrom<#wire> for #name {
@@ -360,7 +368,11 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
     let mut declarations = Vec::new();
     let mut ingress = Vec::new();
     let mut egress = Vec::new();
-    let mut schema = Vec::new();
+    let mut segments = vec![
+        Segment::text("  oneof "),
+        Segment::tokens(quote!(name)),
+        Segment::text(" {\n"),
+    ];
     let mut tags = std::collections::BTreeSet::new();
     let file = options
         .file
@@ -405,15 +417,16 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
         egress.push(quote!(#name::#ident(value) => Self::#ident(#into)));
         let field_name = options::identifier(ident).to_snake_case();
         let kind = if field.kind == "message" {
-            quote!(<#ty as ::prost::Name>::NAME)
+            Segment::tokens(quote!(<#ty as ::prost::Name>::NAME))
         } else {
-            let kind = field.kind;
-            quote!(#kind)
+            Segment::text(field.kind.clone())
         };
-        schema.push(
-            quote!(schema.push_str(&format!("    {} {} = {};\n", #kind, #field_name, #tag));),
-        );
+        segments.push(Segment::text("    "));
+        segments.push(kind);
+        segments.push(Segment::text(format!(" {field_name} = {tag};\n")));
     }
+    segments.push(Segment::text("  }\n"));
+    let schema = schema::build(segments);
     let tags: Vec<u32> = tags.into_iter().collect();
 
     Ok(quote! {
@@ -428,7 +441,7 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
             #[doc = "The sole authoritative oneof tag inventory."]
             pub const TAGS: &'static [u32] = &[#(#tags),*];
             #[doc = "Protobuf oneof declaration derived from its semantic cases."]
-            pub fn schema(name: &str) -> String { let mut schema = format!("  oneof {} {{\n", name); #(#schema)* schema.push_str("  }\n"); schema }
+            pub fn schema(name: &str) -> String { #schema }
         }
         impl ::core::convert::TryFrom<#wire> for #name {
             type Error = #error;

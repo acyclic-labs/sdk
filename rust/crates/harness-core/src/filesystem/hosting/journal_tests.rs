@@ -519,12 +519,10 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
     let boundary = FilesystemBoundary::new(
         Arc::clone(bound.agents().provider()),
         Arc::clone(bound.volumes()),
-        bound.issuer().clone(),
-        bound.admission().clone(),
+        (bound.issuer().clone(), bound.admission().clone()),
         state.clone(),
         (operation, inbox, initial_through),
-        files,
-        writer,
+        (files, writer),
         None,
     );
     assert!(boundary.messages(operation, 0, None).await?.is_empty());

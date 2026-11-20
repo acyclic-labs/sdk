@@ -2,15 +2,11 @@
 
 #![cfg(windows)]
 
-#[path = "support/native_access.rs"]
-mod native_access;
-
 #[macro_use]
 #[path = "support/unbounded.rs"]
 mod unbounded;
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::facade::FsWork;
@@ -19,14 +15,12 @@ use acyclic_fs::model::{
 };
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_stream::OwnedBytes;
-use serde_json::json;
 use {
     acyclic_fs::{
         CancellationToken, CaptureOptions, Fs, IdempotencyKey, LazyWorkspace, LocalOptions,
         MaterializeOptions, MemoryLazyWorkspaceStore, PublicationPermit, TransactionCommit,
         capture_paths, capture_root_identity, host_path_to_namespace,
     },
-    acyclic_fs_native_contract::MountPath,
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -34,22 +28,6 @@ fn component(value: &str) -> Vec<u8> {
     value.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
-fn percentile(samples: &mut [u128], numerator: usize, denominator: usize) -> u128 {
-    samples.sort_unstable();
-    let rank = samples
-        .len()
-        .saturating_mul(numerator)
-        .div_ceil(denominator)
-        .saturating_sub(1);
-    samples
-        .get(rank.min(samples.len().saturating_sub(1)))
-        .copied()
-        .unwrap_or(0)
-}
-
-/// Every Windows source stat reads the file record, which counts every name
-/// exactly, so each name of one file reports the same link count, and the
-/// names are identified exactly by the file identity they share.
 #[tokio::test]
 async fn ntfs_demand_identifies_hard_links_by_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -374,244 +352,6 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
     assert_eq!(
         captured.modified_ns,
         MetadataField::Value(-86_400_000_000_000)
-    );
-    Ok(())
-}
-
-type NtfsCostResult<T> = Result<T, Box<dyn std::error::Error>>;
-type NtfsLazy = LazyWorkspace<
-    acyclic_fs::facade::LocalAuthorityBackend,
-    acyclic_fs::facade::LocalObjectBackend,
-    NativeDemandSource,
-    MemoryLazyWorkspaceStore,
->;
-
-const DIRECTORIES: usize = 100;
-const FILES_PER_DIRECTORY: usize = 10;
-const CHANGES: usize = 100;
-const ACTIVATIONS: usize = 101;
-
-fn ntfs_source() -> NtfsCostResult<(tempfile::TempDir, tempfile::TempDir, u128)> {
-    let source = tempfile::tempdir()?;
-    let hot = source.path().join("hot");
-    std::fs::create_dir(&hot)?;
-    for directory in 0..DIRECTORIES {
-        let target = hot.join(format!("d{directory:03}"));
-        std::fs::create_dir(&target)?;
-        for file in 0..FILES_PER_DIRECTORY {
-            std::fs::write(
-                target.join(format!("f{file:03}.txt")),
-                format!("payload-{directory:03}-{file:03}\n"),
-            )?;
-        }
-    }
-
-    // A regular-file-only native copy is a lower bound, not an SDK-semantic
-    // substitute: it does not capture source lineage, conflicts, or recovery.
-    let native_view = tempfile::tempdir()?;
-    let started = Instant::now();
-    let native_hot = native_view.path().join("hot");
-    std::fs::create_dir(&native_hot)?;
-    for directory in 0..DIRECTORIES {
-        let name = format!("d{directory:03}");
-        let from = hot.join(&name);
-        let to = native_hot.join(&name);
-        std::fs::create_dir(&to)?;
-        for file in 0..FILES_PER_DIRECTORY {
-            let name = format!("f{file:03}.txt");
-            std::fs::copy(from.join(&name), to.join(&name))?;
-        }
-    }
-    let native_copy_us = started.elapsed().as_micros();
-
-    Ok((source, native_view, native_copy_us))
-}
-
-async fn attach_ntfs(
-    fs: &acyclic_fs::facade::LocalFs,
-    source: &std::path::Path,
-    name: &str,
-) -> NtfsCostResult<NtfsLazy> {
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(source.to_path_buf()),
-            FilesystemProfile::Windows,
-            VolumeLimits::default(),
-            None,
-            None,
-            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?,
-    );
-    let lazy = LazyWorkspace::attach(
-        fs,
-        name,
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if fs.capabilities().durable {
-                acyclic_fs::Lifecycle::Durable
-            } else {
-                acyclic_fs::Lifecycle::Ephemeral
-            }),
-            access_policy: None,
-        },
-        acyclic_fs_format::identity::OperationId::new(),
-        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-    )
-    .await
-    .map(|(lazy, _)| lazy)?;
-    Ok(lazy)
-}
-
-async fn prepare_ntfs(
-    lazy: &NtfsLazy,
-    view: &std::path::Path,
-) -> NtfsCostResult<
-    acyclic_fs::NativeWorkingSet<
-        acyclic_fs::facade::LocalAuthorityBackend,
-        acyclic_fs::facade::LocalObjectBackend,
-    >,
-> {
-    let metadata = tempfile::tempdir()?;
-    let store = acyclic_fs::LocalCoreStateStore::new(metadata.path())
-        .with_ownership_anchor(Some(acyclic_native_runtime::OwnershipAnchor::new(metadata)));
-    let mut materialization = MaterializeOptions::native(view);
-    materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
-    Ok(lazy
-        .prepare_native_working_set(
-            native_access::manual_mount_options(lazy.workspace())
-                .await?
-                .subdirectory("/hot"),
-            &materialization,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            PublicationPermit::Unrestricted,
-        )
-        .await?)
-}
-
-async fn ntfs_durable_phases(source: &std::path::Path) -> NtfsCostResult<(u128, u128)> {
-    // Profile the two preparation phases independently on a fresh lazy root.
-    let phase_state = tempfile::tempdir()?;
-    let phase_fs = Fs::local(LocalOptions::new(phase_state.path())).await?;
-    let phase_lazy = attach_ntfs(&phase_fs, source, "windows-ntfs-phases").await?;
-    let started = Instant::now();
-    let cancellation = CancellationToken::new();
-    let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
-    let phase_exact = phase_lazy
-        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
-        .await?;
-    let exactify_us = started.elapsed().as_micros();
-    let phase_view = tempfile::tempdir()?;
-    let started = Instant::now();
-    phase_exact
-        .materialize(
-            std::iter::once("/hot"),
-            &MaterializeOptions::native(phase_view.path()),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-    // The public materializer requests durable output, including file syncs;
-    // native working-set preparation uses a reconstructible view instead.
-    let durable_materialize_us = started.elapsed().as_micros();
-
-    Ok((exactify_us, durable_materialize_us))
-}
-
-#[tokio::test]
-async fn report_ntfs_working_set_costs() -> NtfsCostResult<()> {
-    let (source, _native_view, native_copy_us) = ntfs_source()?;
-    let state = tempfile::tempdir()?;
-    let fs = Fs::local(LocalOptions::new(state.path())).await?;
-    let started = Instant::now();
-    let lazy = attach_ntfs(&fs, source.path(), "windows-ntfs-costs").await?;
-    let attach_us = started.elapsed().as_micros();
-
-    let view = tempfile::tempdir()?;
-    let started = Instant::now();
-    let working_set = prepare_ntfs(&lazy, view.path()).await?;
-    let preparation_us = started.elapsed().as_micros();
-
-    let warm_view = tempfile::tempdir()?;
-    let started = Instant::now();
-    let warm_working_set = prepare_ntfs(&lazy, warm_view.path()).await?;
-    let warm_preparation_us = started.elapsed().as_micros();
-    let native_cancellation = CancellationToken::new();
-    let native_work =
-        acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &native_cancellation)
-            .map_err(|(error, _)| error)?;
-    warm_working_set
-        .validate_for_presentation(&native_work)
-        .await?;
-
-    let mut activation_samples = Vec::with_capacity(ACTIVATIONS);
-    for _ in 0..ACTIVATIONS {
-        let started = Instant::now();
-        working_set.validate_for_presentation(&native_work).await?;
-        activation_samples.push(started.elapsed().as_micros());
-    }
-    let activation_p50_us = percentile(&mut activation_samples.clone(), 50, 100);
-    let activation_p95_us = percentile(&mut activation_samples, 95, 100);
-
-    let mut changed = Vec::with_capacity(CHANGES);
-    for index in 0..CHANGES {
-        let directory = index % DIRECTORIES;
-        let file = index / DIRECTORIES;
-        std::fs::write(
-            view.path()
-                .join("hot")
-                .join(format!("d{directory:03}/f{file:03}.txt")),
-            format!("changed-{index}\n"),
-        )?;
-        changed.push(
-            MountPath::root()
-                .child(component(&format!("d{directory:03}")))
-                .child(component(&format!("f{file:03}.txt"))),
-        );
-    }
-    let started = Instant::now();
-    working_set
-        .capture_host_paths(&changed, &native_work)
-        .await?;
-    let capture_us = started.elapsed().as_micros();
-    let started = Instant::now();
-    working_set
-        .capture_host_subtree(&MountPath::root(), &native_work)
-        .await?;
-    let subtree_capture_us = started.elapsed().as_micros();
-    let started = Instant::now();
-    working_set
-        .sync_with_permit(PublicationPermit::Unrestricted, &native_work, |_| async {
-            Ok::<(), acyclic_fs::MountLifecycleError>(())
-        })
-        .await?;
-    let sync_us = started.elapsed().as_micros();
-
-    let (exactify_us, durable_materialize_us) = ntfs_durable_phases(source.path()).await?;
-
-    println!(
-        "{}",
-        json!({
-            "schema": "acyclic-windows-ntfs-working-set-cost-v4",
-            "files": DIRECTORIES * FILES_PER_DIRECTORY,
-            "changed_paths": CHANGES,
-            "native_copy_us": native_copy_us,
-            "attach_us": attach_us,
-            "preparation_us": preparation_us,
-            "exactify_us": exactify_us,
-            "durable_materialize_us": durable_materialize_us,
-            "warm_preparation_us": warm_preparation_us,
-            "activation_p50_us": activation_p50_us,
-            "activation_p95_us": activation_p95_us,
-            "capture_us": capture_us,
-            "subtree_capture_us": subtree_capture_us,
-            "sync_us": sync_us,
-        })
     );
     Ok(())
 }

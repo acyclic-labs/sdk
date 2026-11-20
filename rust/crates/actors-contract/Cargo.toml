@@ -9,9 +9,7 @@ description = "Actors v1 wire, semantic contract and guest ABI"
 
 [package.metadata.bazel]
 build-script-inputs = ["proto"]
-library-test-features = ["socket-test-support"]
-library-test-variant = "socket_test_support"
-unit-test-only-sources = ["src/guest/state/tests.rs"]
+unit-test-only-sources = ["src/**/tests.rs", "src/**/*_tests.rs"]
 test-build-script = ["actors-authorization"]
 test-narrow-runfiles = ["guest_loom"]
 

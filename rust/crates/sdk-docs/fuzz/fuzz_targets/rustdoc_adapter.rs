@@ -1,15 +1,13 @@
 //! Check Rustdoc decoder parity, round trips and production source selection.
 #![no_main]
 
-#[path = "../../src/public_api/decode.rs"]
-mod decode;
 #[path = "../../src/relative_spans.rs"]
 mod relative_spans;
 #[path = "../relative_spans.rs"]
 mod relative_spans_oracle;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    if let Ok(decoded) = decode::from_slice(bytes) {
+    if let Ok(decoded) = serde_json::from_slice::<rustdoc_types::Crate>(bytes) {
         if let Some(prototype) = decoded.index.values().next() {
             relative_spans_oracle::check(
                 prototype,
@@ -28,7 +26,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         }
         let replay = serde_json::to_vec(&decoded)
             .ok()
-            .and_then(|encoded| decode::from_slice(&encoded).ok());
+            .and_then(|encoded| serde_json::from_slice::<rustdoc_types::Crate>(&encoded).ok());
         assert!(
             replay.is_some_and(|replay| {
                 relative_spans::sources(replay.index.values()) == paths
@@ -41,10 +39,15 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         let owned = serde_json::from_value::<rustdoc_types::Crate>(value.clone());
         let canonical = serde_json::to_vec(&value);
         assert!(
-            canonical.is_ok_and(|canonical| match (owned, decode::from_slice(&canonical)) {
-                (Ok(owned), Ok(decoded)) => same_fields(&owned, &decoded),
-                (Err(_), Err(_)) => true,
-                _ => false,
+            canonical.is_ok_and(|canonical| {
+                match (
+                    owned,
+                    serde_json::from_slice::<rustdoc_types::Crate>(&canonical),
+                ) {
+                    (Ok(owned), Ok(decoded)) => same_fields(&owned, &decoded),
+                    (Err(_), Err(_)) => true,
+                    _ => false,
+                }
             }),
             "Rustdoc decoder changed admission or fields",
         );

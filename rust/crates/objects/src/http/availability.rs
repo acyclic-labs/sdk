@@ -1,7 +1,7 @@
 use super::*;
 use crate::availability::client::{Credential, observe, open};
 use crate::availability::framing;
-use acyclic_stream::wire_codec::session::FrameDecoder;
+use acyclic_stream_contract::wire_codec::session::FrameDecoder;
 use futures::stream;
 
 struct Source {

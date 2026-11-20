@@ -1,4 +1,5 @@
 use super::*;
+pub use acyclic_harness_workspace::workspace::WorkspaceMounting;
 use acyclic_native_runtime::signing_key::{MemorySigningStore, SigningStore};
 
 /// Resolves ambient or injected roots before checkout capture can write metadata.
@@ -33,36 +34,6 @@ pub(super) enum LocalProject {
     },
 }
 
-/// How a checkout's task views reach the host filesystem.
-///
-/// `Native` projects every task view, the home volume and bound volumes
-/// through the platform's native provider (Linux FUSE, Windows ProjFS, macOS
-/// NFS) and refuses to open without it. `Physical` needs no device, capability
-/// or mount helper: the checkout and every task view are plain directories,
-/// and their changes are captured from userspace at each tool boundary. See
-/// `NATIVE_MOUNT_QUALIFICATION.md` for the guarantees that differ.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum WorkspaceMounting {
-    /// Native projection; opening refuses when the host lacks it.
-    #[default]
-    Native,
-    /// Plain directories with userspace change capture.
-    Physical,
-}
-
-impl WorkspaceMounting {
-    /// `Native` when this host admits a native projection; otherwise
-    /// `Physical`, with the probe's reason for the caller to report.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub fn detect() -> (Self, Option<&'static str>) {
-        match acyclic_fs::probe_native_mount().unavailable_reason {
-            None => (Self::Native, None),
-            Some(reason) => (Self::Physical, Some(reason)),
-        }
-    }
-}
-
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) topology: Option<crate::topology::Topology>,
@@ -78,6 +49,7 @@ pub struct LocalHarnessConfig {
     /// Explicit composition that never discovers user settings or their tools.
     pub(super) without_user_settings: bool,
     pub(super) signing_store: Option<Arc<dyn SigningStore>>,
+    private_file_signing: bool,
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
@@ -249,8 +221,6 @@ impl LocalHarnessConfig {
                 }
             }
         }
-        #[cfg(target_arch = "wasm32")]
-        let _ = injected;
         Ok(self)
     }
 
@@ -284,6 +254,7 @@ impl LocalHarnessConfig {
             hermetic: false,
             without_user_settings: false,
             signing_store: None,
+            private_file_signing: false,
             test_state: None,
             model,
             model_base: None,
@@ -392,6 +363,30 @@ impl LocalHarnessConfig {
         self
     }
 
+    /// Uses owner-only signing files rooted in the selected state directory.
+    /// An explicitly injected signing store takes precedence.
+    #[must_use]
+    pub fn private_file_signing(mut self) -> Self {
+        self.private_file_signing = true;
+        self
+    }
+
+    pub(super) fn uses_private_file_signing(&self) -> bool {
+        self.private_file_signing || self.without_user_settings
+    }
+
+    pub(super) fn signing_custody<'a>(
+        &'a self,
+        directory: &'a Path,
+    ) -> acyclic_native_runtime::signing_key::SigningCustody<'a> {
+        use acyclic_native_runtime::signing_key::SigningCustody;
+        match self.signing_store.as_deref() {
+            Some(store) => SigningCustody::Store(store),
+            None if self.uses_private_file_signing() => SigningCustody::PrivateFile(directory),
+            None => SigningCustody::Configured,
+        }
+    }
+
     /// Delete an inactive store and its exact signing credential. All users must
     /// first disconnect. Deleting directories externally bypasses this operation.
     /// Credential refusal leaves the store intact; retry after restoring custody.
@@ -408,14 +403,7 @@ impl LocalHarnessConfig {
         };
         owner::planned_separated_directory(&directory, workspace)?;
         let private = directory.join("signing-custody");
-        let custody = match self.signing_store.as_deref() {
-            Some(store) => acyclic_native_runtime::signing_key::SigningCustody::Store(store),
-            None if self.without_user_settings => {
-                acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(&private)
-            }
-            None => acyclic_native_runtime::signing_key::SigningCustody::Configured,
-        };
-        owner::Owner::remove(&directory, custody)
+        owner::Owner::remove(&directory, self.signing_custody(&private))
     }
     /// Refuses ambient state/settings discovery and allocates state lazily unless explicitly rooted.
     #[must_use]
@@ -441,11 +429,11 @@ impl LocalHarnessConfig {
             if owner::STATE_ROOT.with_borrow(Option::is_some) {
                 return Ok(self);
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             TEMPORARY_STATES.with(|count| count.set(count.get() + 1));
             let state = tempfile::tempdir().map_err(storage)?;
             self.state_directory = Some(state.path().to_path_buf());
-            if self.signing_store.is_none() {
+            if self.signing_store.is_none() && !self.private_file_signing {
                 self.signing_store = Some(Arc::new(MemorySigningStore::new().map_err(storage)?));
             }
             self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
@@ -580,15 +568,6 @@ impl LocalHarnessConfig {
         self
     }
 
-    /// Prebinds web tools before opening an embedded runtime and issuing its grants.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn bind_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
-        if self.web_tools {
-            acyclic_harness_search::web::WebExecutor::bind(registry, self.search_provider.clone())?;
-        }
-        Ok(())
-    }
-
     /// Selects content, projection and model-loop bounds.
     #[must_use]
     pub fn limits(mut self, limits: Limits) -> Self {
@@ -645,9 +624,9 @@ impl LocalHarnessConfig {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
-    pub(super) static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]

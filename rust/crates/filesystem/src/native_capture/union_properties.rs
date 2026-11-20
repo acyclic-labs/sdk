@@ -58,9 +58,11 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         ..ProptestConfig::default()
     });
     runner.run(&(
-        prop::collection::btree_set(any::<u8>(), 0..65),
-        prop::collection::btree_set(any::<u8>(), 0..65),
+        prop::option::of(prop::collection::btree_set(any::<u8>(), 1..65)),
+        prop::option::of(prop::collection::btree_set(any::<u8>(), 1..65)),
     ), |(host, checkout)| {
+        let host = host.unwrap_or_default();
+        let checkout = checkout.unwrap_or_default();
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(
             crate::performance::work_budget(100_000, 8 * 1024 * 1024),
@@ -91,7 +93,12 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         }
         // Each pass consumes an input per step. Reinstating insertion shifts
         // or copying duplicate path payloads violates these output-only costs.
-        prop_assert!(after.unwrap().items_examined - before.unwrap().items_examined <= 4 * (host.len() + checkout.len()) as u64);
+        let examined = after.unwrap().items_examined - before.unwrap().items_examined;
+        if host.is_empty() || checkout.is_empty() {
+            prop_assert_eq!(examined, expected.len() as u64);
+        } else {
+            prop_assert!(examined <= 4 * (host.len() + checkout.len()) as u64);
+        }
         prop_assert_eq!(after.unwrap().backend_read_operations, before.unwrap().backend_read_operations);
         prop_assert_eq!(after.unwrap().allocation_operations - before.unwrap().allocation_operations, 2 * u64::from(!expected.is_empty()));
         prop_assert_eq!(after.unwrap().bytes_copied - before.unwrap().bytes_copied,

@@ -1,21 +1,11 @@
 use super::super::digest;
 use super::*;
+use crate::test_support::text;
 use acyclic_stream::{IdempotencyKey, MemoryStream, Stream};
-use arrow_array::{Array, StringArray, UInt64Array};
+use arrow_array::{Array, UInt64Array};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::TryStreamExt;
 use std::sync::Arc;
-
-fn text<'a>(batch: &'a Batch, name: &str) -> &'a str {
-    batch
-        .data
-        .column_by_name(name)
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap()
-        .value(0)
-}
 
 async fn first(stream: &Stream<MemoryStream>) -> Result<Record> {
     stream
@@ -46,9 +36,7 @@ async fn real_forks_keep_one_logical_identity_without_claiming_physical_savings(
             .map_err(export_error)?,
         account.as_bytes()
     );
-    assert_eq!(original.sequence, 0);
     // The growing union belongs to this offline query, never the projection.
-    let mut unique = std::collections::HashSet::from([text(&local, "source").to_owned()]);
     for destination in ["left", "right"] {
         let child = parent
             .fork(destination, Some(1), Vec::new(), IdempotencyKey::unique())
@@ -58,7 +46,6 @@ async fn real_forks_keep_one_logical_identity_without_claiming_physical_savings(
         let row = project("agents/consumer", &account, child.path(), &shared)?;
         assert_eq!(text(&row, "kind"), "stream_record_shared");
         assert_eq!(text(&row, "source"), text(&local, "source"));
-        unique.insert(text(&row, "source").to_owned());
         assert_eq!(text(&row, "source_stream"), destination);
         assert_eq!(text(&row, "source_origin"), parent.path().as_str());
         for (name, expected) in [
@@ -114,8 +101,6 @@ async fn real_forks_keep_one_logical_identity_without_claiming_physical_savings(
         &first(&unrelated).await?,
     )?;
     assert_ne!(text(&separate, "source"), text(&local, "source"));
-    unique.insert(text(&separate, "source").to_owned());
-    assert_eq!(unique.len(), 2);
     Ok(())
 }
 

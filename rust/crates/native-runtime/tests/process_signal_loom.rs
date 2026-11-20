@@ -2,13 +2,9 @@
 #![cfg(loom)]
 #[path = "../src/process_tree/events/outcome.rs"]
 mod outcome;
-#[path = "../src/sync/locks.rs"]
-pub mod sync;
 use outcome::ProcessWaitOutcome;
 #[path = "../src/process_tree/events/signal.rs"]
 mod signal;
-#[path = "../src/wake.rs"]
-mod wake;
 
 use loom::sync::Arc;
 use signal::Signal;

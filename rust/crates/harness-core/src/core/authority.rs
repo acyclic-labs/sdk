@@ -474,12 +474,6 @@ impl AuthorityRoot {
         Ok(self.runtime.trust.clone())
     }
 
-    /// The trusted time this runtime admits and issues at.
-    #[must_use]
-    pub fn trusted_now(&self) -> u64 {
-        self.runtime.public.now()
-    }
-
     /// Original authenticated trust event owner, without signing custody.
     pub fn trust_changes(&self) -> std::sync::Arc<dyn acyclic_auth::trust::ChangeSource> {
         self.runtime.trust.clone()

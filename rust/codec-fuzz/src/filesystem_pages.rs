@@ -1,5 +1,6 @@
 //! Immutable filesystem decoders use their production admission and encoders.
 use acyclic_fs::{FsError, kernel::*};
+use acyclic_fs_format::metadata::FileMetadata;
 mod evidence;
 mod historical;
 mod populated;

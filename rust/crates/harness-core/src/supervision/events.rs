@@ -141,7 +141,7 @@ mod tests {
                 &cancellation,
             )
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes()?;
             let io = PreparationIo::from_native_work(&original)?;
             let mut decoded = None;
             let physical = acyclic_test_support::measure(|| {
@@ -165,7 +165,7 @@ mod tests {
             drop(actual);
             drop(custody);
             drop(io);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes()?, baseline);
         }
         Ok(())
     }

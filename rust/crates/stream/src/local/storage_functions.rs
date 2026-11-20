@@ -1,7 +1,7 @@
 /// Creates `root` if it is missing and claims it exclusively.
-fn lock_root(root: &Path) -> Result<acyclic_native_runtime::StoreClaim, LocalStreamError> {
+fn lock_root(root: &Path) -> Result<acyclic_native_claim::StoreClaim, LocalStreamError> {
     std::fs::create_dir_all(root)?;
-    acyclic_native_runtime::StoreClaim::acquire(&root.join(LOCK_FILE)).map_err(|error| {
+    acyclic_native_claim::StoreClaim::acquire(&root.join(LOCK_FILE)).map_err(|error| {
         if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
             LocalStreamError::AlreadyOpen
         } else {

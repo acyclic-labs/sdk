@@ -92,28 +92,6 @@ impl ObjectContentStore {
         Ok(())
     }
 
-    /// Selects this volume's immutable content as an artifact without copying it.
-    pub fn artifact_ref(&self, file: &FileRef) -> Result<ArtifactRef> {
-        file.validate(&mut None)?;
-        if file.volume() != &self.volume {
-            return Err(Error::Unauthorized(
-                "artifact file is outside this Objects volume".into(),
-            ));
-        }
-        let record = self.record(file)?;
-        ArtifactRef::new(
-            self.volume.provider().clone(),
-            format!(
-                "{}/{}/@content/{}",
-                self.volume.storage_name(&mut None)?,
-                file.path(),
-                Digest::of(&record).to_hex()
-            )
-            .into_bytes(),
-            None,
-        )
-    }
-
     pub(super) fn record(&self, file: &FileRef) -> Result<Vec<u8>> {
         let content = self.content_digest(file)?;
         // A struct encodes deterministically: fixed field order, no maps.

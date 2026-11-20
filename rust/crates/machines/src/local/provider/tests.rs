@@ -156,12 +156,9 @@ async fn queued_spawn_observation_obeys_original_deadline_and_shutdown()
         )
         .await?;
         let command = ExecCommand::new(
-            vec![
-                std::env::current_exe()?.to_str().unwrap().into(),
-                "--exact".into(),
-                "local::tests::child".into(),
-                "--nocapture".into(),
-            ],
+            std::iter::once(std::env::current_exe()?.to_str().unwrap().into())
+                .chain(crate::local::tests::child_args())
+                .collect(),
             Some(5_000),
         )?;
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();

@@ -2,12 +2,11 @@ use super::access_policy::{current, publish, recorded};
 use super::*;
 use crate::{AuthoredMutation, NamedAttributeWriteMode};
 
-fn denied_policy() -> Vec<u8> {
+fn denied_policy() -> Result<Vec<u8>, serde_json::Error> {
     serde_json::to_vec(&crate::access::fixtures::denied(
         crate::access::Action::Write,
         "**",
-    ))
-    .unwrap()
+    )?)
 }
 
 fn assert_projection_denied<T>(result: &Result<T, WorkspaceError>) {
@@ -33,7 +32,7 @@ async fn set_metadata(protected: bool) -> Result<(), Box<dyn Error>> {
     };
     let workspace = unbounded!(fs, create_workspace(name))?;
     let mut donor = current(&workspace, true).await?;
-    let policy = denied_policy();
+    let policy = denied_policy()?;
     unbounded!(
         donor,
         write_access_policy(&policy, NamedAttributeWriteMode::Create)
@@ -106,7 +105,7 @@ async fn join(protected: bool) -> Result<(), Box<dyn Error>> {
     )
     .await?;
     let mut editor = current(&child, true).await?;
-    let policy = denied_policy();
+    let policy = denied_policy()?;
     unbounded!(
         editor,
         write_access_policy(&policy, NamedAttributeWriteMode::Create)
@@ -181,7 +180,7 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
     let mut editor = current(&workspace, true).await?;
     unbounded!(
         editor,
-        write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
+        write_access_policy(&denied_policy()?, NamedAttributeWriteMode::Create)
     )?;
     let volume = workspace.id().volume_id();
     let shared = fs.clone();
@@ -267,7 +266,7 @@ async fn independent_policy_owners(use_foreign_owner: bool) -> Result<(), Box<dy
     let mut independent = current(&other, true).await?;
     unbounded!(
         independent,
-        write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
+        write_access_policy(&denied_policy()?, NamedAttributeWriteMode::Create)
     )?;
     assert!(
         publish(&mut independent).await.is_ok(),
@@ -276,7 +275,7 @@ async fn independent_policy_owners(use_foreign_owner: bool) -> Result<(), Box<dy
     let mut transaction = unbounded!(shared, begin_transaction(IdempotencyKey::new()))?;
     unbounded!(
         transaction.checkout,
-        write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
+        write_access_policy(&denied_policy()?, NamedAttributeWriteMode::Create)
     )?;
     let before = unbounded!(workspace, head())?.id();
     assert_projection_denied(&commit(&mut transaction).await);

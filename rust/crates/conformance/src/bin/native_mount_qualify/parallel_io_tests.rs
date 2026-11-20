@@ -34,7 +34,7 @@ fn child(root: &Path, index: usize, count: usize) -> Result<ProcessCommand, Fail
     command
         .args([
             "--exact",
-            "parallel_io_tests::parallel_io_process",
+            acyclic_test_support::unit_test_name!(parallel_io_process).as_str(),
             "--nocapture",
         ])
         .env(CHILD_ROOT, root)

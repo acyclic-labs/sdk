@@ -21,7 +21,7 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
                 let mut view = original.clone();
                 view.bind_invocation(
                     CancellationToken::new(),
-                    crate::materializer::NativeResourceCredit::ReadBytes,
+                    crate::ledger::NativeResourceCredit::ReadBytes,
                 )
                 .unwrap();
                 view

@@ -1,5 +1,5 @@
 use super::{MountDestinationGuard, NativeMountError};
-use crate::materializer::NativeResourceCredit::WriteOperations;
+use crate::ledger::NativeResourceCredit::WriteOperations;
 use crate::native_host::NativeHostWork as _;
 use crate::native_ownership::{HASHED_BYTES, NativeOwnershipReceipt, RECEIPT_BYTES};
 use std::os::windows::fs::FileExt as _;

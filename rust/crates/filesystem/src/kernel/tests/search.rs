@@ -221,9 +221,12 @@ fn known_prefix_denies_each_probe_before_its_comparator() -> Result<(), crate::F
 fn native_known_prefix_preserves_completed_comparisons_on_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting =
         crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
     let mut calls = 0;
@@ -272,9 +275,12 @@ fn accounting_denies_a_probe_before_calling_its_comparator() -> Result<(), crate
 fn native_search_keeps_completed_probes_when_the_next_probe_is_cancelled()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting =
         crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
     let mut calls = 0;

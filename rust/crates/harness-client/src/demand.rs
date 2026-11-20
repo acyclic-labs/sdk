@@ -26,12 +26,6 @@ impl DemandPolicy {
     pub fn selected_capacity(self) -> Option<usize> {
         self.selected
     }
-
-    /// Maximum nodes with retained child-page windows.
-    #[must_use]
-    pub fn expanded_capacity(self) -> Option<usize> {
-        self.expanded
-    }
 }
 
 /// A rejected demand never replaces the caller's previously admitted view.
@@ -115,29 +109,6 @@ impl ViewDemand {
     /// Borrow only nodes whose child pages are needed by the current tree view.
     pub fn expanded(&self) -> impl Iterator<Item = &StreamPath> {
         self.expanded.iter()
-    }
-
-    /// Full follows to close before opening newly selected agents.
-    pub fn removed_full<'a>(&'a self, previous: &'a Self) -> impl Iterator<Item = &'a StreamPath> {
-        previous.full.difference(&self.full)
-    }
-
-    /// New full follows; overlapping visible/focused rows are already deduplicated.
-    pub fn added_full<'a>(&'a self, previous: &'a Self) -> impl Iterator<Item = &'a StreamPath> {
-        self.full.difference(&previous.full)
-    }
-
-    /// Child-page windows to release when tree nodes collapse.
-    pub fn collapsed<'a>(&'a self, previous: &'a Self) -> impl Iterator<Item = &'a StreamPath> {
-        previous.expanded.difference(&self.expanded)
-    }
-
-    /// Nodes needing lazy child discovery, without following every child.
-    pub fn newly_expanded<'a>(
-        &'a self,
-        previous: &'a Self,
-    ) -> impl Iterator<Item = &'a StreamPath> {
-        self.expanded.difference(&previous.expanded)
     }
 }
 

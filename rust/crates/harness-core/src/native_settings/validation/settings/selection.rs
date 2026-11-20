@@ -1,7 +1,7 @@
 //! Whole-entry source selection, before declaration validation.
 
 use super::harness;
-use super::{Files, NativeSettings, SettingsConfig, write};
+use super::{CheckResult, Files, NativeSettings, SettingsConfig, write};
 use harness::mcp::McpTransport;
 use serde_json::{Value, json};
 
@@ -17,58 +17,55 @@ fn workspace(
     ))
 }
 
-fn selected(snapshot: &harness::mcp::McpConfig, expected: &str) {
+fn selected(snapshot: &harness::mcp::McpConfig, expected: &str) -> CheckResult {
     let mut servers = snapshot.servers();
     let (name, server) = servers
         .next()
-        .expect("winning declaration must remain present");
+        .ok_or("winning declaration must remain present")?;
     assert_eq!(name, "selected");
     assert!(
         servers.next().is_none(),
         "disabled declarations must stay absent"
     );
     let McpTransport::Stdio { command, args, .. } = &server.transport else {
-        panic!("winning declaration changed transport");
+        return Err("winning declaration changed transport".into());
     };
     assert_eq!(command, expected);
     assert!(
         args.is_empty(),
         "whole-entry overrides must discard lower fields"
     );
+    Ok(())
 }
 
-fn scope(files: &Files, role: usize, value: &Value) {
+fn scope(files: &Files, role: usize, value: &Value) -> CheckResult {
     let (path, bytes) = match role {
         0 => (
             files.home.join(".claude.json"),
-            serde_json::to_vec(&json!({"mcpServers":value})).unwrap(),
+            serde_json::to_vec(&json!({"mcpServers":value}))?,
         ),
         1 => (
             files.codex.join("config.toml"),
-            toml::to_string(&json!({"mcp_servers":value}))
-                .unwrap()
-                .into_bytes(),
+            toml::to_string(&json!({"mcp_servers":value}))?.into_bytes(),
         ),
         2 => (
             files.workspace.join(".mcp.json"),
-            serde_json::to_vec(&json!({"mcpServers":value})).unwrap(),
+            serde_json::to_vec(&json!({"mcpServers":value}))?,
         ),
         _ => (
             files.workspace.join(".codex/config.toml"),
-            toml::to_string(&json!({"mcp_servers":value}))
-                .unwrap()
-                .into_bytes(),
+            toml::to_string(&json!({"mcp_servers":value}))?.into_bytes(),
         ),
     };
-    write(&path, &bytes);
+    write(&path, &bytes)
 }
 
-pub(super) fn inactive(bytes: &[u8]) {
-    let files = Files::new();
+pub(super) fn inactive(bytes: &[u8]) -> CheckResult {
+    let files = Files::new()?;
     write(
         &files.home.join(".claude/settings.json"),
         br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"guard"}]}]}}"#,
-    );
+    )?;
     let role = usize::from(bytes.first().copied().unwrap_or(0) % 4);
     let invalid = Value::String(String::from_utf8_lossy(bytes).into_owned());
     let path = match role {
@@ -78,15 +75,13 @@ pub(super) fn inactive(bytes: &[u8]) {
         _ => files.workspace.join(".codex/config.toml"),
     };
     let document = if role == 0 {
-        serde_json::to_vec(&invalid).unwrap()
+        serde_json::to_vec(&invalid)?
     } else if role == 2 {
-        serde_json::to_vec(&json!({"mcpServers":invalid})).unwrap()
+        serde_json::to_vec(&json!({"mcpServers":invalid}))?
     } else {
-        toml::to_string(&json!({"mcp_servers":invalid}))
-            .unwrap()
-            .into_bytes()
+        toml::to_string(&json!({"mcp_servers":invalid}))?.into_bytes()
     };
-    write(&path, &document);
+    write(&path, &document)?;
     for load_mcp in [false, true] {
         let mut config = files.config(true, true, u32::MAX.into());
         config.load_mcp = load_mcp;
@@ -97,7 +92,7 @@ pub(super) fn inactive(bytes: &[u8]) {
                 "active invalid MCP sections must be refused"
             );
         } else {
-            let snapshot = result.expect("inactive MCP sections must not block hooks");
+            let snapshot = result?;
             assert!(
                 !snapshot.hooks.is_empty(),
                 "selected hooks must remain present"
@@ -105,13 +100,14 @@ pub(super) fn inactive(bytes: &[u8]) {
             assert!(snapshot.mcp.server_names().next().is_none());
         }
     }
+    Ok(())
 }
 
 // Every consumer uses the production APIs' owning feature selection.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn partial(bytes: &[u8]) {
+pub(super) fn partial(bytes: &[u8]) -> CheckResult {
     // Refine the original MCP startup property through both public queries.
-    let files = Files::new();
+    let files = Files::new()?;
     let number = i64::from_le_bytes(
         bytes
             .get(..8)
@@ -128,55 +124,53 @@ pub(super) fn partial(bytes: &[u8]) {
     write(
         &files.codex.join("config.toml"),
         format!("hooks = {invalid}\n[mcp_servers.selected]\ncommand='winner'\n").as_bytes(),
-    );
+    )?;
     let config = std::sync::Arc::new(files.config(true, true, 512));
     for document in [&b"{}"[..], &b"{invalid JSON"[..]] {
         for path in [
             files.home.join(".claude/settings.json"),
             files.workspace.join(".claude/settings.json"),
         ] {
-            write(&path, document);
+            write(&path, document)?;
         }
-        let snapshot = futures::executor::block_on(NativeSettings::load_mcp(config.clone()))
-            .expect("MCP-only startup must ignore hook-only sections and sources");
-        selected(&snapshot, "winner");
+        let snapshot = futures::executor::block_on(NativeSettings::load_mcp(config.clone()))?;
+        selected(&snapshot, "winner")?;
         assert!(
             futures::executor::block_on(NativeSettings::load_hooks(config.clone())).is_err(),
             "hook-only startup must refuse selected invalid hooks"
         );
     }
+    Ok(())
 }
 
-pub(super) fn check() {
+pub(super) fn check() -> CheckResult {
     let invalid = json!({"selected":{"command":42,"args":["discard"]},"disabled":{"command":42}});
     let valid = json!({"selected":{"command":"winner"},"disabled":{"enabled":false,"command":42}});
     for winner in 0..4 {
-        let files = Files::new();
+        let files = Files::new()?;
         for role in 0..winner {
-            scope(&files, role, &invalid);
+            scope(&files, role, &invalid)?;
         }
-        scope(&files, winner, &valid);
-        let snapshot = files
-            .load(true)
-            .expect("winning scope must replace lower invalid declarations");
-        selected(&snapshot.mcp, "winner");
-        scope(&files, winner, &invalid);
+        scope(&files, winner, &valid)?;
+        let snapshot = files.load(true)?;
+        selected(&snapshot.mcp, "winner")?;
+        scope(&files, winner, &invalid)?;
         assert!(
             files.load(true).is_err(),
             "invalid winning declarations must be refused"
         );
     }
     for canonical_key in [false, true] {
-        let files = Files::new();
+        let files = Files::new()?;
         let configured = files.workspace.join("..").join("workspace");
-        let canonical = std::fs::canonicalize(&files.workspace).unwrap();
+        let canonical = std::fs::canonicalize(&files.workspace)?;
         let key = if canonical_key {
             &canonical
         } else {
             &configured
         };
         for role in 0..4 {
-            scope(&files, role, &invalid);
+            scope(&files, role, &invalid)?;
         }
         let home = files.home.join(".claude.json");
         let mut document = json!({"mcpServers":invalid,"projects":{
@@ -184,17 +178,17 @@ pub(super) fn check() {
             "another-project":42,
             (key.to_string_lossy().as_ref()):{"mcpServers":valid}
         }});
-        write(&home, &serde_json::to_vec(&document).unwrap());
+        write(&home, &serde_json::to_vec(&document)?)?;
         for trusted in [false, true] {
-            let snapshot = workspace(&files, &configured, trusted)
-                .expect("selected workspace entries must retain their winning declaration");
-            selected(&snapshot.mcp, "winner");
+            let snapshot = workspace(&files, &configured, trusted)?;
+            selected(&snapshot.mcp, "winner")?;
         }
         document["projects"][key.to_string_lossy().as_ref()]["mcpServers"] = invalid.clone();
-        write(&home, &serde_json::to_vec(&document).unwrap());
+        write(&home, &serde_json::to_vec(&document)?)?;
         assert!(
             workspace(&files, &configured, true).is_err(),
             "invalid selected workspace entries must be refused"
         );
     }
+    Ok(())
 }

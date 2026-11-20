@@ -4,6 +4,7 @@ use super::*;
 #[cfg(loom)]
 pub(in crate::native_mount) mod kernel;
 mod linux;
+pub(super) use linux::mount_id;
 #[cfg(test)]
 #[cfg(loom)]
 mod models;

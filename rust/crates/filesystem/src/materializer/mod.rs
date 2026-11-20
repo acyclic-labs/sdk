@@ -38,15 +38,7 @@ macro_rules! native_modules {
 #[cfg(not(target_arch = "wasm32"))]
 native_modules! {
     pub error;
-    pub work;
-    pub(crate) allowance;
-    pub allocation;
-    pub(crate) views;
-    pub(crate) window;
-    pub(crate) link;
-    pub reservation;
     pub preparation;
-    pub(crate) cleanup;
     pub buffers;
     pub backend;
     pub paths;
@@ -66,11 +58,13 @@ mod directories;
 ))]
 use directories::*;
 #[cfg(not(target_arch = "wasm32"))]
-mod checkout_work;
-#[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]
-mod runtime_meter;
+mod work;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ledger::NativeResourceCredit;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::ledger::{NativeAllocation, NativeMaterializationWork, NativeWorkReservation};
 
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 native_modules! {
@@ -83,7 +77,7 @@ native_modules! {
 mod directory_preparation;
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod byte_header_tests;
 #[cfg(test)]
 mod tests;

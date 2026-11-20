@@ -31,18 +31,7 @@ impl BrowserVolume {
 
         let before = decode_generation_id(&before)?;
         let after = decode_generation_id(&after)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .diff_generations(
-                before,
-                after,
-                maximum_changes,
-                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, diff_generations(before, after, maximum_changes,))?;
         encode_generation_diff(receipt.value, receipt.work)
     }
 
@@ -50,23 +39,10 @@ impl BrowserVolume {
         let options: BrowserCheckoutOptions =
             serde_wasm_bindgen::from_value(options).map_err(js_error)?;
         let mode = checkout_mode(&options);
-        let cancellation = CancellationToken::default();
-        let (engine, acquisition_work) = {
-            let volume = &self.engine;
-            let receipt = volume
-                .checkout(
-                    GenerationSelector::Head,
-                    mode,
-                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(js_error)?;
-            (receipt.value, receipt.work)
-        };
+        let receipt = browser_call!(self, checkout(GenerationSelector::Head, mode,))?;
         Ok(BrowserCheckout {
-            engine,
-            acquisition_work,
+            engine: receipt.value,
+            acquisition_work: receipt.work,
         })
     }
 }

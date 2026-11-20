@@ -2,13 +2,13 @@
 
 #[cfg(any(target_os = "macos", windows))]
 use crate::ObjectId;
-#[cfg(test)]
-use crate::demand::NativeDemandReadMeter;
 use crate::demand::{DemandError, SourceDemandReadWork};
 use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
+#[cfg(test)]
+use crate::ledger::NativeDemandReadMeter;
 use crate::native_host::HostRoot;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,

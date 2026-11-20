@@ -43,6 +43,14 @@ fn the_runner_selects_cases_from_its_arguments() {
     }
     let runner = env::var_os("CARGO_BIN_EXE_acyclic-test-runner")
         .expect("the runner executable is supplied as CARGO_BIN_EXE_acyclic-test-runner");
+    // A plain `rust_test` supplies the runfiles-relative path; the case runs the runner from
+    // another directory, so resolve it against the runfiles root first.
+    let runner = Path::new(&runner);
+    let runner = if runner.is_absolute() {
+        runner.to_path_buf()
+    } else {
+        env::current_dir().unwrap().join(runner)
+    };
     let dir = env::temp_dir().join(format!(
         "acyclic-test-runner-arguments-{}",
         std::process::id()

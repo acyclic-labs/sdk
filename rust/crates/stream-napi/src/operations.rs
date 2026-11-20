@@ -136,23 +136,14 @@ fn selected_follow(
     let records = futures::stream::iter(bootstrap).chain(records);
     let follow = NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records, path)))),
+            records: Arc::new(Mutex::new(Some(
+                wire_codec::record_frames(records, path).boxed(),
+            ))),
             token: cancellation_state(cancellation).unwrap_or_default(),
             closed: Arc::new(AtomicBool::new(false)),
         },
     };
     (follow, Buffer::from(opened.encode_to_vec()))
-}
-
-/// Encodes the records of `path`, spelling only an origin other than it.
-pub(super) fn record_frames(
-    records: impl futures::Stream<
-        Item = std::result::Result<acyclic_stream::Record, acyclic_stream::StreamError>,
-    > + Send
-    + 'static,
-    path: acyclic_stream::StreamPath,
-) -> FollowFrames {
-    wire_codec::record_frames(records, path).boxed()
 }
 
 pub(super) async fn children_page(
@@ -208,7 +199,7 @@ mod tests {
         let error = run_operation!(operation(), Some(&cancellation))
             .await
             .expect_err("cancelled before construction");
-        assert_eq!(error.code, "cancelled");
+        assert_eq!(error.0.code, "cancelled");
         assert_eq!(constructed.get(), 0);
         // Negative control: an eagerly constructed future has already done work.
         let eager = operation();
@@ -225,8 +216,8 @@ mod tests {
         assert!(futures::poll!(&mut pending).is_pending());
         drop(producer);
         let error = pending.await.expect_err("dropped event producer");
-        assert_eq!(error.code, StreamError::Unavailable.code());
-        assert_eq!(error.message, StreamError::Unavailable.to_string());
+        assert_eq!(error.0.code, StreamError::Unavailable.code());
+        assert_eq!(error.0.message, StreamError::Unavailable.to_string());
 
         let cancellation = NativeStreamCancellation::new();
         let (producer, event) = tokio::sync::oneshot::channel::<()>();
@@ -238,7 +229,7 @@ mod tests {
         assert!(futures::poll!(&mut pending).is_pending());
         cancellation.cancel();
         assert_eq!(
-            pending.await.expect_err("cancelled event wait").code,
+            pending.await.expect_err("cancelled event wait").0.code,
             "cancelled"
         );
         assert!(

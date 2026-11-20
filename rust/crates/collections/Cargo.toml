@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Caller-funded bounded collections shared by Acyclic primitives"
 
+[dependencies]
+acyclic-collections-page = { version = "=0.2.0", path = "../collections-page" }
+
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true

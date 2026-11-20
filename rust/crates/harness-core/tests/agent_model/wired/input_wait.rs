@@ -91,7 +91,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             (Default::default(), CompactionPolicy::Disabled),
             Arc::new(Grants(vec!["tool:call:wait".into()])),
         )
-        .with_agent_tools(&["wait".into()]);
+        .with_agent_tools(&["wait".into()])
+        // This case counts dispatches for what they mean; the seed feedback
+        // plugin's retrospective would add one after every settled turn.
+        .with_plugins(Arc::new(acyclic_harness_core::plugins::Enabled::default()));
         let turn_host = FilesystemTurnHost::new(
             stream.clone(),
             within(),
@@ -106,8 +109,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             ),
             TurnAdmission::LocalRoot,
             Arc::new(executors),
-            LIMITS,
-            acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+            (
+                LIMITS,
+                acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+            ),
         )
         .with_clock(clock.clone());
         let host = AgentHost::with_spawn_volumes(
@@ -155,7 +160,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         )
         .await?;
         let first = deliver(&host, &path, requested("start-input-waits", &path)).await?;
-        assert_eq!(model.requests().len(), 3);
+        assert_eq!(model.requests().len(), 2);
         assert_eq!(
             first.phase,
             Phase::Waiting {
@@ -217,7 +222,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             host.drain(&path).await?;
             assert_eq!(
                 model.requests().len(),
-                3,
+                2,
                 "reserved inputs woke the parked model"
             );
         }
@@ -238,7 +243,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         );
         assert_eq!(
             model.requests().len(),
-            4,
+            3,
             "the old reply released the second wait"
         );
         assert_eq!(second.steered_through, inbox + 1);
@@ -264,7 +269,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         host.drain(&path).await?;
         assert_eq!(
             model.requests().len(),
-            4,
+            3,
             "draining without new input released an input wait"
         );
         control
@@ -273,7 +278,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             .advance_to(if delayed { 130 } else { 119 })?;
         host.drain(&path).await?;
         assert_eq!(host.state(&path).await?.phase, second.phase);
-        assert_eq!(model.requests().len(), 4);
+        assert_eq!(model.requests().len(), 3);
         let second_inbox = if answer {
             let Delivered::Committed { inbox } = host
                 .send(&path, &super::super::user(), &message("second-reply"))
@@ -311,10 +316,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         );
         assert_eq!(
             model.requests().len(),
-            if reserved > 0 { 8 + 2 * reserved } else { 6 }
+            if reserved > 0 { 5 + reserved } else { 4 }
         );
         let requests = model.requests();
-        for (request, call) in [(3, "first-input"), (4, "second-input")] {
+        for (request, call) in [(2, "first-input"), (3, "second-input")] {
             let value = requests[request]
                 .messages
                 .iter()

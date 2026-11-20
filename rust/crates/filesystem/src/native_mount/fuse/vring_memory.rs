@@ -1,7 +1,7 @@
 //! One offered memory table, retained through its original used publication.
 
 use super::{FuseOwned, NativeMountError, fuse_vec};
-use crate::{NativeMaterializationWork, materializer::NativeResourceCredit::Items};
+use crate::{NativeMaterializationWork, ledger::NativeResourceCredit::Items};
 use std::{alloc::Layout, fs::File, sync::Arc};
 use vhost::vhost_user::message::{MAX_ATTACHED_FD_ENTRIES, VhostUserMemoryRegion};
 use vm_memory::{GuestAddress, GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmap};

@@ -5,12 +5,15 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 FEATURES = [
         "model-checking",
+        "socket-test-support",
         "test-support",
     ]
 
-WASM_FEATURES = []
+WASM_FEATURES = [
+        "test-support",
+    ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-actors-contract","CARGO_PKG_DESCRIPTION":"Actors v1 wire, semantic contract and guest ABI","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-actors-contract","CARGO_PKG_DESCRIPTION":"Actors v1 wire, semantic contract and guest ABI","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -20,6 +23,7 @@ cargo_build_script(
         "src/codegen.rs",
         "src/codegen/path.rs",
     ],
+    tags = ["resources:memory:256"],
     data = [
         "proto/actors/v1/actors.proto",
     ],
@@ -35,6 +39,7 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     build_script_env = PACKAGE_ENV,
@@ -48,10 +53,11 @@ cargo_build_script(
 rust_library(
     name = "acyclic_actors_contract",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/guest/state/tests.rs"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/**/tests.rs","src/**/*_tests.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "tests/fixtures/actors/v1/actors-pre-secrets.bin",
     ],
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -63,6 +69,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -97,64 +104,6 @@ rust_library(
         "//rust/crates/contract-derive:acyclic_contract_derive",
     ],
     visibility = ["//visibility:public"],
-)
-
-rust_library(
-    name = "acyclic_actors_contract_socket_test_support",
-    crate_name = "acyclic_actors_contract",
-    crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/guest/state/tests.rs"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES + [
-        "socket-test-support",
-    ],
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\", \"socket-test-support\", \"test-support\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = "//:workspace_lints",
-    deps = [
-        ":build_script",
-    ] + [
-        "//rust/crates/actors-call:acyclic_actors_call",
-        "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
-        "//rust/crates/objects:acyclic_objects",
-        "//rust/crates/stream-body:acyclic_stream_body",
-        "//rust/crates/stream-wire:acyclic_stream_wire",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//bytes-1.12.1",
-        "@sdk_crates//futures-0.3.34",
-        "@sdk_crates//http-1.5.0",
-        "@sdk_crates//http-body-1.1.0",
-        "@sdk_crates//loom-0.7.3",
-        "@sdk_crates//prost-0.14.4",
-        "@sdk_crates//prost-reflect-0.16.5",
-        "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2-0.11.1",
-        "@sdk_crates//thiserror-2.0.21",
-        "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-util-0.7.20",
-        "@sdk_crates//tonic-0.14.9",
-        "@sdk_crates//tonic-prost-0.14.6",
-        "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//ts-rs-12.0.1",
-    ],
-    proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
-    ],
-    visibility = ["//visibility:public"],
-    tags = ["manual"],
 )
 
 rust_test(
@@ -176,6 +125,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -213,7 +163,11 @@ rust_test(
         "//rust/crates/contract-derive:acyclic_contract_derive",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
@@ -254,6 +208,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -262,7 +217,11 @@ rust_test(
     ] + [
         "@sdk_crates//loom-0.7.3",
     ],
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -291,6 +250,7 @@ rust_binary(
     srcs = [
         "examples/actors-authorization.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -302,6 +262,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -321,6 +282,7 @@ cargo_build_script(
         "src/codegen.rs",
         "src/codegen/path.rs",
     ],
+    tags = ["resources:memory:256"],
     data = [
         "proto/actors/v1/actors.proto",
     ],
@@ -336,9 +298,9 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
-    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
     deps = [
         "//compatibility:acyclic_proto_build",
@@ -351,10 +313,11 @@ rust_library(
     name = "acyclic_actors_contract_wasm",
     crate_name = "acyclic_actors_contract",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/guest/state/tests.rs"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/**/tests.rs","src/**/*_tests.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "tests/fixtures/actors/v1/actors-pre-secrets.bin",
     ],
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,
@@ -366,6 +329,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],

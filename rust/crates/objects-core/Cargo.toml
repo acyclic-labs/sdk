@@ -1,0 +1,73 @@
+[package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**"]
+name = "acyclic-objects-core"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Content-addressed blob contract, canonical wire bindings and provider primitives"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-objects-core"
+keywords = ["objects", "storage", "grpc"]
+categories = ["api-bindings", "filesystem"]
+
+[package.metadata.bazel]
+# The build script reads only the crate-owned protocol; without this it also
+# reruns on every source edit, regenerating OUT_DIR and rebuilding the library.
+build-script-inputs = ["proto"]
+unit-test-only-sources = [
+    "src/availability/tests.rs",
+    "src/blob/tests.rs",
+    "src/route/tests.rs",
+]
+
+[features]
+# The original JavaScript request owner over canonical binary messages.
+javascript = ["acyclic-auth/javascript", "acyclic-stream-contract/js-bytes", "dep:wasm-bindgen"]
+# Request accounting over `acyclic_stream_contract::testing::Counted`.
+conformance = ["acyclic-stream-contract/conformance"]
+test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream-contract/test-support", "tokio/test-util"]
+
+[dependencies]
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+pin-project-lite = "0.2.16"
+acyclic-stream-contract = { version = "=0.2.0", path = "../stream-contract" }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
+async-trait.workspace = true
+blake3 = "1.8.2"
+bytes.workspace = true
+futures.workspace = true
+getrandom = { version = "=0.4.3", features = ["wasm_js"] }
+hex.workspace = true
+prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt", "macros"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+tonic = { workspace = true, default-features = true, features = ["tls-ring"] }
+tonic-prost = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+acyclic-compatibility-golden = { path = "../compatibility-golden" }
+tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
+
+[build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

@@ -153,6 +153,16 @@ impl ContextInput {
         prior: &[ModelMessage],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
+        Self::copy_turn_suffix(turn, step, prior, 0, io)
+    }
+
+    pub(crate) fn copy_turn_suffix(
+        turn: &crate::executor::TurnInput,
+        step: u32,
+        prior: &[ModelMessage],
+        covered: usize,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         let _span = tracing::debug_span!("acyclic.harness.context.copy_input").entered();
         let input = crate::executor::with_history_io(io, |work| {
@@ -162,37 +172,47 @@ impl ContextInput {
             .selected_context
             .as_ref()
             .map(|selected| {
+                let invalid = || {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "working context exceeds the selected conversation",
+                    )
+                };
+                let ids = selected
+                    .selection
+                    .message_ids
+                    .get(covered..)
+                    .ok_or_else(invalid)?;
+                let suffix = selected.messages.get(covered..).ok_or_else(invalid)?;
                 crate::executor::with_history_io(io, |work| {
                     if work.is_none() {
-                        return Ok::<_, crate::Error>(selected.clone());
+                        return Ok::<_, crate::Error>(SelectedModelContext {
+                            selection: crate::conversation::ModelContextSelection {
+                                conversation_revision: selected.selection.conversation_revision,
+                                message_ids: ids.to_vec(),
+                                checkpoint: selected.selection.checkpoint.clone(),
+                            },
+                            messages: suffix.to_vec(),
+                        });
                     }
                     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                     let mut message_ids = Vec::new();
-                    let copied = (selected.selection.message_ids.len()
-                        * std::mem::size_of::<uuid::Uuid>())
-                        as u64;
+                    let copied = std::mem::size_of_val(ids) as u64;
                     quota.observer()?.admit_copy(copied)?;
-                    compaction::reserve_vector(
-                        &mut message_ids,
-                        selected.selection.message_ids.len(),
-                        quota.work(),
-                    )?;
+                    compaction::reserve_vector(&mut message_ids, ids.len(), quota.work())?;
                     quota.adopt(
                         (message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64,
                     )?;
                     let result = (|| {
                         quota.observer()?.copy_bytes(copied)?;
-                        message_ids.extend_from_slice(&selected.selection.message_ids);
+                        message_ids.extend_from_slice(ids);
                         let checkpoint = match &selected.selection.checkpoint {
                             Some(file) => Some(file.clone_in_quota(&mut quota)?),
                             None => None,
                         };
-                        let (messages, claim) = compaction::clone_messages(
-                            &selected.messages,
-                            None,
-                            &[],
-                            quota.work(),
-                        )?;
+                        let (messages, claim) =
+                            compaction::clone_messages(suffix, None, &[], quota.work())?;
                         quota.adopt(claim)?;
                         Ok((checkpoint, messages))
                     })();

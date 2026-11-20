@@ -7,14 +7,15 @@ use crate::{
     wire,
 };
 use wire::ErrorCode::{Invalid, Storage};
-const PROTOCOL_VERSION: &str = "2";
 mod admission;
 pub(crate) use admission::Quota as CodecQuota;
 mod index;
 pub(crate) use index::{BorrowedIndexWork, OwnedIndexAllocation, OwnedIndexWork};
 mod protocol;
 #[doc(hidden)]
-pub use protocol::{COMPILED_PROTOCOL, protocol_identity, validate_protocol};
+pub use acyclic_harness_wire::{COMPILED_PROTOCOL, protocol_identity};
+#[doc(hidden)]
+pub use protocol::validate_protocol;
 mod errors;
 pub use errors::encode_error;
 mod authority;

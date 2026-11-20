@@ -3,10 +3,9 @@ use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::local::{Error, State};
 use acyclic_harness_core::agent::{AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{CommitMutation, StreamCategory, StreamPath, StreamProvider};
+use acyclic_stream::{CommitMutation, ProviderOwner, StreamCategory, StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
 use futures::future::Either;
-use std::sync::Arc;
 
 async fn output(
     host: &AgentHost<Observed>,
@@ -82,7 +81,7 @@ async fn checkpoint(provider: &Observed, schedule: &StreamPath, cut: u64) -> Res
                 _ => None,
             })
         })
-        .await;
+        .await?;
     saved_cursor(provider, path, cut).await
 }
 
@@ -105,7 +104,7 @@ async fn saved_cursor(provider: &Observed, path: StreamPath, cut: u64) -> Result
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::capturing(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::capturing(storage.open().await?));
     let host = vectors::host(backend, provider.clone())?;
     let agent = host
         .create(&vectors::intent("discovery-root")?, fixtures::adopted())
@@ -126,7 +125,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     .await?;
     drop(host);
     drop(provider);
-    let reopened = Arc::new(Observed::capturing(storage.open().await?));
+    let reopened = ProviderOwner::new(Observed::capturing(storage.open().await?));
     let host = vectors::host(backend, reopened.clone())?;
     host.send(&agent, &fixtures::sender(), &fixtures::request("after")?)
         .await?;
@@ -151,7 +150,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
     use super::observe::Fault;
     for fault in [Fault::Before, Fault::After] {
         let storage = backend.fresh().await?;
-        let provider = Arc::new(Observed::capturing(storage.open().await?));
+        let provider = ProviderOwner::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, provider.clone())?;
         let agent = host
             .create(&vectors::intent("cursor-crash")?, fixtures::adopted())
@@ -163,22 +162,29 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         provider.arm_matching(cursor_advance, fault);
         let error = until(&host, std::future::pending())
             .await
-            .expect_err("cursor crash did not interrupt discovery");
-        let Some(Error::Unknown {
-            publication,
-            source,
-        }) = error.downcast_ref::<Error>()
-        else {
-            return Err(format!("cursor crash lost its original publication: {error}").into());
+            .err()
+            .ok_or("cursor crash did not interrupt discovery")?;
+        let error = error
+            .downcast::<Error>()
+            .map_err(|error| format!("cursor crash lost its original publication: {error}"))?;
+        let (publication, source) = match *error {
+            Error::Unknown {
+                publication,
+                source,
+            } => (publication, source),
+            other => {
+                return Err(format!("cursor crash lost its original publication: {other}").into());
+            }
         };
         if source.category() != StreamCategory::Unavailable {
-            return Err(format!("cursor crash changed its original source: {error}").into());
+            return Err(format!("cursor crash changed its original source: {source}").into());
         }
-        let (path, cut) = cursor_publication(publication.request().mutations())
+        let request = publication.into_request()?;
+        let (path, cut) = cursor_publication(request.mutations())
             .ok_or("cursor crash did not retain its original dispatcher publication")?;
         drop(host);
         drop(provider);
-        let reopened = Arc::new(Observed::capturing(storage.open().await?));
+        let reopened = ProviderOwner::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, reopened.clone())?;
         until(&host, async {
             output(&host, &agent, 0, b"once").await?;

@@ -20,7 +20,7 @@ export function wasmAssetClosure(recovery) {
       const bytes = fs.readFileSync(path);
       const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
       asset = {path:`${basename(path, ".wasm")}.${sha256}.wasm`,
-        sha256, size:bytes.length, mediaType:"application/wasm", role:"module"};
+        sha256, size:bytes.length, mediaType:"application/wasm"};
       snapshots.set(path, asset);
       files.set(asset.path, bytes);
       assets.set(asset.path, asset);

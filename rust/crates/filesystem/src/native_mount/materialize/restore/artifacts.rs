@@ -69,7 +69,7 @@ pub(in crate::native_mount::materialize) fn with_restore_artifact<
 
 pub(in crate::native_mount::materialize) struct RestoreLock {
     file: acyclic_native_runtime::FileLock,
-    cleanup: Option<crate::materializer::NativeCleanupWrite>,
+    cleanup: Option<crate::ledger::NativeCleanupWrite>,
 }
 
 impl Drop for RestoreLock {
@@ -97,7 +97,7 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
             )
             .map_err(MaterializeError::from)?,
         );
-        work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+        work.started_io(crate::ledger::NativeResourceCredit::WriteOperations.delta(1))
             .map_err(MaterializeError::from)?;
         if blocking {
             file.lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
@@ -138,7 +138,7 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(MaterializeError::from)?;
-        work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+        work.started_io(crate::ledger::NativeResourceCredit::WriteOperations.delta(1))
             .map_err(MaterializeError::from)?;
         match file.write(remaining) {
             Ok(0) => {
@@ -149,17 +149,15 @@ pub(in crate::native_mount::materialize) fn create_restore_witness(
                 .into());
             }
             Ok(written) => {
-                work.record(
-                    crate::materializer::NativeResourceCredit::WriteBytes.delta(written as u64),
-                )
-                .map_err(MaterializeError::from)?;
+                work.record(crate::ledger::NativeResourceCredit::WriteBytes.delta(written as u64))
+                    .map_err(MaterializeError::from)?;
                 remaining = remaining.get(written..).ok_or(WorkError::Overflow)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.into()),
         }
     }
-    work.started_io(crate::materializer::NativeResourceCredit::DurabilityOperations.delta(1))
+    work.started_io(crate::ledger::NativeResourceCredit::DurabilityOperations.delta(1))
         .map_err(MaterializeError::from)?;
     file.sync_all()?;
     parent.sync_directory(work).map_err(MaterializeError::from)
@@ -200,15 +198,13 @@ pub(in crate::native_mount::materialize) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(MaterializeError::from)?;
-        work.started_io(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))
+        work.started_io(crate::ledger::NativeResourceCredit::ReadOperations.delta(1))
             .map_err(MaterializeError::from)?;
         match file.read(contents.get_mut(read..bound).ok_or(WorkError::Overflow)?) {
             Ok(0) => break,
             Ok(bytes) => {
-                work.record(
-                    crate::materializer::NativeResourceCredit::ReadBytes.delta(bytes as u64),
-                )
-                .map_err(MaterializeError::from)?;
+                work.record(crate::ledger::NativeResourceCredit::ReadBytes.delta(bytes as u64))
+                    .map_err(MaterializeError::from)?;
                 read += bytes;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}

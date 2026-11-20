@@ -1,4 +1,4 @@
-use crate::{Snapshot, block_ids};
+use acyclic_auth::trust::{Snapshot, block_ids};
 use acyclic_auth::{authority::decode_caveat, contract::*, verify::*};
 use js_sys::{Array, BigInt, Uint8Array};
 use prost::Message;

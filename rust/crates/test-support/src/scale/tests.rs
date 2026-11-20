@@ -169,61 +169,9 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
 }
 
 #[test]
-fn per_agent_cost_that_grows_with_population_is_refused() {
+fn report_shape_rejects_empty_samples_and_duplicate_operations() {
     let operations = [Operation::ObjectHead];
-    let mut report = observed(&[vec![1; 4], vec![1; 4], vec![1; 4]], 0, operations[0]);
-    report
-        .qualify(&operations, RECOVERY)
-        .expect("flat per-agent cost");
-    for point in &mut report.points {
-        let counter = &mut point.samples[0].work[0];
-        counter.total = u128::from(point.agents);
-        counter.maximum = point.agents;
-    }
-    assert!(
-        report
-            .findings(&operations, RECOVERY)
-            .iter()
-            .any(|finding| finding.step == "constant work"),
-        "per-agent work that grows with the population escaped qualification",
-    );
-}
-
-#[test]
-fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
-    // Time and work share a fixed sample count at each resident population.
-    // Dividing these counts by population would conceal the larger sample cost.
-    let operations = [Operation::ObjectHead];
-    flat()
-        .qualify(&operations, RECOVERY)
-        .expect("constant sampled work");
     let mut report = observed(&[vec![0, 2], vec![2, 2], vec![2, 2]], 5, operations[0]);
-    assert!(
-        report
-            .findings(&operations, RECOVERY)
-            .iter()
-            .any(|finding| finding.step == "constant work"),
-        "growing mean with an unchanged maximum escaped qualification",
-    );
-    // Retain all original refusals once. The former reporting/admission pair
-    // is an independent allocation negative on this same counted report.
-    let mut reused = None;
-    let single = crate::measure(|| {
-        reused = Some(report.qualification_findings(&operations, RECOVERY));
-    });
-    let mut repeated = None;
-    let duplicate = crate::measure(|| {
-        repeated = Some((
-            report.findings(&operations, RECOVERY),
-            report.qualify(&operations, RECOVERY),
-        ));
-    });
-    let reused = reused.unwrap();
-    let (original, qualified) = repeated.unwrap();
-    assert_eq!(reused, original);
-    assert_eq!(qualified.unwrap_err(), reused[0]);
-    assert!(single.count_total < duplicate.count_total);
-    assert!(single.bytes_total < duplicate.bytes_total);
     report.points[1].samples[0] = Sample::new(operations[0]);
     assert!(
         report

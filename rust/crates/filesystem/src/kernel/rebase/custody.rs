@@ -20,21 +20,21 @@ struct ProofDataWorkReport {
     original_cache_bytes: u64,
     original_cache_ledger: Option<std::sync::Weak<super::allocation::SharedAllocationState>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_accounting: Option<Arc<crate::demand::NativeAllocationAccounting>>,
+    native_accounting: Option<Arc<crate::ledger::NativeAllocationAccounting>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_registered: bool,
     #[cfg(not(target_arch = "wasm32"))]
     native_claimed: bool,
     // Last: keep the ledger alive until the last payload retirement is published.
     #[cfg(not(target_arch = "wasm32"))]
-    native_original: Option<Arc<crate::demand::NativeDemandReadMeter>>,
+    native_original: Option<Arc<crate::ledger::NativeDemandReadMeter>>,
 }
 
 impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn accepts_native_original(
         &self,
-        original: &Arc<crate::demand::NativeDemandReadMeter>,
+        original: &Arc<crate::ledger::NativeDemandReadMeter>,
     ) -> bool {
         self.completed_data_work
             .lock()
@@ -45,8 +45,8 @@ impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn bind_native_original(
         &self,
-        original: &Arc<crate::demand::NativeDemandReadMeter>,
-        accounting: &Arc<crate::demand::NativeAllocationAccounting>,
+        original: &Arc<crate::ledger::NativeDemandReadMeter>,
+        accounting: &Arc<crate::ledger::NativeAllocationAccounting>,
     ) -> bool {
         let mut completed = self.completed_data_work.lock();
         if let Some(bound) = &completed.native_original {
@@ -64,7 +64,7 @@ impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_registered_native_accounting(
         &self,
-        accounting: &Arc<crate::demand::NativeAllocationAccounting>,
+        accounting: &Arc<crate::ledger::NativeAllocationAccounting>,
     ) -> bool {
         let completed = self.completed_data_work.lock();
         completed.native_registered
@@ -76,7 +76,7 @@ impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn register_native_accounting(
         &self,
-        accounting: &Arc<crate::demand::NativeAllocationAccounting>,
+        accounting: &Arc<crate::ledger::NativeAllocationAccounting>,
     ) -> Result<(), crate::NativeTreeMaterializationError> {
         let mut completed = self.completed_data_work.lock();
         if completed.native_registered
@@ -93,7 +93,7 @@ impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_native_original(
         &self,
-        original: &Arc<crate::demand::NativeDemandReadMeter>,
+        original: &Arc<crate::ledger::NativeDemandReadMeter>,
     ) -> bool {
         self.completed_data_work
             .lock()
@@ -383,7 +383,7 @@ pub(crate) struct ProofDataClaim {
     pub(super) physical: bool,
     physical_reported: bool,
     #[cfg(not(target_arch = "wasm32"))]
-    native_resource: Option<crate::materializer::NativeResourceRetirement>,
+    native_resource: Option<crate::ledger::NativeResourceRetirement>,
     // Last: resource retirement precedes final custody destruction.
     owner: Option<Arc<ProofDataCustody>>,
 }
@@ -430,7 +430,7 @@ impl ProofDataClaim {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native_control(
         owner: &Arc<ProofDataCustody>,
-        retirement: crate::materializer::NativeResourceRetirement,
+        retirement: crate::ledger::NativeResourceRetirement,
     ) -> Self {
         let bytes = retirement.bytes();
         if bytes == 0 {
@@ -452,7 +452,7 @@ impl ProofDataClaim {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_native_original(
         &self,
-        original: &Arc<crate::demand::NativeDemandReadMeter>,
+        original: &Arc<crate::ledger::NativeDemandReadMeter>,
         known_bytes: u64,
     ) -> bool {
         if known_bytes == 0 {
@@ -473,7 +473,7 @@ impl ProofDataClaim {
     )]
     pub(crate) fn native_data(
         owner: &Arc<ProofDataCustody>,
-        retirement: crate::materializer::NativeResourceRetirement,
+        retirement: crate::ledger::NativeResourceRetirement,
     ) -> Self {
         let bytes = retirement.bytes();
         if bytes == 0 {

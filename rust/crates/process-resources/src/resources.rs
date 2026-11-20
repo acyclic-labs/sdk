@@ -18,35 +18,32 @@ pub struct ProcessResources {
     /// Open descriptors on Unix; open kernel handles of every kind on
     /// Windows.
     pub descriptors: u64,
-    /// Kernel watches beyond their descriptors: inotify watches on Linux.
-    /// macOS `kqueue` and `FSEvents` and Windows directory watches each hold a
-    /// descriptor or handle, which `descriptors` already counts.
-    pub watches: u64,
     /// CPU time used by the process, user and system, in hundredths of a
     /// second.
     pub cpu_centiseconds: u64,
 }
 
-/// One open descriptor or handle of this process.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum Descriptor {
-    /// A file or directory, by its path.
-    File(PathBuf),
-    /// Anything else, by its kind: a socket, pipe, event, thread or port.
-    Other(String),
+/// One mounted filesystem, as the platform's mount table records it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Mount {
+    /// Where it is mounted, in the form `canonicalize` returns.
+    pub point: PathBuf,
+    /// The user who mounted it. macOS records one for every mount (`f_owner`);
+    /// Linux and Windows record none.
+    pub owner: Option<u32>,
+    /// Its filesystem type as the table names it (`nfs`, `apfs`, `fuse`).
+    /// Windows' volume enumeration names none.
+    pub kind: Option<String>,
 }
 
 /// Reads this process's resources from one platform's OS.
 trait Sampler {
-    /// Reads every counter but `watches` on demand.
+    /// Reads every counter on demand.
     fn sample() -> io::Result<ProcessResources>;
-    /// Watches beyond their descriptors.
-    fn watches() -> io::Result<u64>;
-    /// This process's open descriptors or handles.
-    fn descriptors() -> io::Result<Vec<Descriptor>>;
-    /// Every mount point this process sees, in the form `canonicalize`
-    /// returns.
-    fn mount_points() -> io::Result<Vec<PathBuf>>;
+    /// The paths of this process's open files and directories.
+    fn open_paths() -> io::Result<Vec<PathBuf>>;
+    /// Every mount this process sees.
+    fn mount_points() -> io::Result<Vec<Mount>>;
 }
 
 #[cfg(target_os = "linux")]
@@ -56,32 +53,35 @@ type Native = apple::Libproc;
 #[cfg(windows)]
 type Native = windows::NtProcess;
 
-/// Reads every counter but `watches` on demand.
+/// Reads every counter on demand.
 pub fn sample_process_resources() -> io::Result<ProcessResources> {
     Native::sample()
-}
-
-/// Reads every counter on demand, including `watches`.
-pub fn process_resources() -> io::Result<ProcessResources> {
-    Ok(ProcessResources {
-        watches: Native::watches()?,
-        ..Native::sample()?
-    })
 }
 
 /// How many of this process's descriptors or handles are open on the file at
 /// `path`.
 pub fn descriptors_naming(path: &Path) -> io::Result<usize> {
-    let path = Descriptor::File(std::fs::canonicalize(path)?);
-    Ok(Native::descriptors()?
+    let path = std::fs::canonicalize(path)?;
+    Ok(Native::open_paths()?
         .into_iter()
-        .filter(|descriptor| *descriptor == path)
+        .filter(|open| *open == path)
         .count())
 }
 
-/// Every descriptor or handle this process holds.
-pub fn descriptors() -> io::Result<Vec<Descriptor>> {
-    Native::descriptors()
+/// How many of this process's descriptors or handles are open on files at or
+/// beneath `root`.
+pub fn descriptors_beneath(root: &Path) -> io::Result<usize> {
+    let root = std::fs::canonicalize(root)?;
+    Ok(Native::open_paths()?
+        .into_iter()
+        .filter(|open| open.starts_with(&root))
+        .count())
+}
+
+/// The mounts visible to this process, each with its owner and filesystem type
+/// where the platform records them.
+pub fn mount_points() -> io::Result<Vec<Mount>> {
+    Native::mount_points()
 }
 
 /// How many filesystems are mounted at `root` or beneath it.
@@ -92,9 +92,9 @@ pub fn descriptors() -> io::Result<Vec<Descriptor>> {
 /// serves are that owner's cost.
 pub fn mounts_beneath(root: &Path) -> io::Result<u64> {
     let root = std::fs::canonicalize(root)?;
-    Ok(Native::mount_points()?
+    Ok(mount_points()?
         .iter()
-        .filter(|point| point.starts_with(&root))
+        .filter(|mount| mount.point.starts_with(&root))
         .count() as u64)
 }
 
@@ -124,19 +124,11 @@ pub fn mountinfo_path_bytes(mut field: &[u8]) -> impl Iterator<Item = u8> {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Descriptor, ProcessResources, Sampler};
+    use super::{Mount, ProcessResources, Sampler};
     use std::ffi::OsString;
     use std::io;
     use std::os::unix::ffi::OsStringExt as _;
     use std::path::PathBuf;
-
-    /// A mountinfo path field, whose space, tab, newline and backslash bytes
-    /// are written as three octal digits after a backslash.
-    pub(super) fn unescape(field: &[u8]) -> PathBuf {
-        PathBuf::from(OsString::from_vec(
-            super::mountinfo_path_bytes(field).collect(),
-        ))
-    }
 
     pub(super) struct Procfs;
 
@@ -163,44 +155,44 @@ mod linux {
                 memory_bytes: field("VmRSS:")? * 1024,
                 threads: field("Threads:")?,
                 descriptors: std::fs::read_dir("/proc/self/fd")?.count() as u64,
-                watches: 0,
                 cpu_centiseconds: cpu,
             })
         }
 
-        fn watches() -> io::Result<u64> {
-            Ok(std::fs::read_dir("/proc/self/fdinfo")?
-                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path()).ok())
-                .map(|info| {
-                    info.lines()
-                        .filter(|line| line.starts_with("inotify"))
-                        .count() as u64
-                })
-                .sum())
-        }
-
-        fn descriptors() -> io::Result<Vec<Descriptor>> {
-            let mut descriptors = Vec::new();
+        fn open_paths() -> io::Result<Vec<PathBuf>> {
+            let mut paths = Vec::new();
             for entry in std::fs::read_dir("/proc/self/fd")? {
                 // A descriptor closed since the listing has no target.
                 let Ok(target) = std::fs::read_link(entry?.path()) else {
                     continue;
                 };
-                descriptors.push(if target.is_absolute() {
-                    Descriptor::File(target)
-                } else {
-                    Descriptor::Other(target.display().to_string())
-                });
+                // A relative target names no file: a socket, pipe or anon inode.
+                if target.is_absolute() {
+                    paths.push(target);
+                }
             }
-            Ok(descriptors)
+            Ok(paths)
         }
 
-        fn mount_points() -> io::Result<Vec<PathBuf>> {
-            // The fifth field of each mountinfo row is its mount point.
+        fn mount_points() -> io::Result<Vec<Mount>> {
+            // The fifth field of each mountinfo row is its mount point, whose
+            // space, tab, newline and backslash bytes are written as three
+            // octal digits after a backslash. The filesystem type follows the
+            // `-` that ends the optional fields.
             Ok(std::fs::read("/proc/self/mountinfo")?
                 .split(|byte| *byte == b'\n')
-                .filter_map(|row| row.split(|byte| *byte == b' ').nth(4))
-                .map(unescape)
+                .filter_map(|row| {
+                    let mut fields = row.split(|byte| *byte == b' ');
+                    let point = fields.nth(4)?;
+                    let kind = fields.skip_while(|field| *field != b"-").nth(1);
+                    Some(Mount {
+                        point: PathBuf::from(OsString::from_vec(
+                            super::mountinfo_path_bytes(point).collect(),
+                        )),
+                        owner: None,
+                        kind: kind.map(|kind| String::from_utf8_lossy(kind).into_owned()),
+                    })
+                })
                 .collect())
         }
     }
@@ -212,7 +204,7 @@ mod linux {
     reason = "FFI: proc_pidinfo, fcntl(F_GETPATH), getfsstat and getrusage"
 )]
 mod apple {
-    use super::{Descriptor, ProcessResources, Sampler};
+    use super::{Mount, ProcessResources, Sampler};
     use std::ffi::CStr;
     use std::io;
     use std::os::unix::ffi::OsStrExt as _;
@@ -304,23 +296,14 @@ mod apple {
                 memory_bytes: task.pti_resident_size,
                 threads: u64::try_from(task.pti_threadnum).unwrap_or(0),
                 descriptors: descriptors()?.len() as u64,
-                watches: 0,
                 cpu_centiseconds: centiseconds(usage.ru_utime) + centiseconds(usage.ru_stime),
             })
         }
 
-        fn watches() -> io::Result<u64> {
-            Ok(0)
-        }
-
-        fn descriptors() -> io::Result<Vec<Descriptor>> {
+        fn open_paths() -> io::Result<Vec<PathBuf>> {
             let mut named = Vec::new();
             for descriptor in descriptors()? {
                 if u32::try_from(libc::PROX_FDTYPE_VNODE).ok() != Some(descriptor.proc_fdtype) {
-                    named.push(Descriptor::Other(format!(
-                        "fdtype {}",
-                        descriptor.proc_fdtype
-                    )));
                     continue;
                 }
                 let mut buffer: [libc::c_char; MAXPATHLEN] = [0; MAXPATHLEN];
@@ -335,14 +318,12 @@ mod apple {
                 }
                 // SAFETY: F_GETPATH terminated the path within `buffer`.
                 let path = unsafe { CStr::from_ptr(buffer.as_ptr()) };
-                named.push(Descriptor::File(PathBuf::from(
-                    std::ffi::OsStr::from_bytes(path.to_bytes()),
-                )));
+                named.push(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())));
             }
             Ok(named)
         }
 
-        fn mount_points() -> io::Result<Vec<PathBuf>> {
+        fn mount_points() -> io::Result<Vec<Mount>> {
             // SAFETY: a null buffer only asks for the number of mounts.
             let mounted = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
             // Room for mounts added since, so the table is never cut short.
@@ -358,9 +339,19 @@ mod apple {
             Ok(table
                 .iter()
                 .map(|entry| {
-                    // SAFETY: the kernel terminates `f_mntonname` within it.
-                    let point = unsafe { CStr::from_ptr(entry.f_mntonname.as_ptr()) };
-                    PathBuf::from(std::ffi::OsStr::from_bytes(point.to_bytes()))
+                    // SAFETY: the kernel terminates `f_mntonname` and
+                    // `f_fstypename` within them.
+                    let (point, kind) = unsafe {
+                        (
+                            CStr::from_ptr(entry.f_mntonname.as_ptr()),
+                            CStr::from_ptr(entry.f_fstypename.as_ptr()),
+                        )
+                    };
+                    Mount {
+                        point: PathBuf::from(std::ffi::OsStr::from_bytes(point.to_bytes())),
+                        owner: Some(entry.f_owner),
+                        kind: Some(kind.to_string_lossy().into_owned()),
+                    }
                 })
                 .collect())
         }
@@ -373,11 +364,10 @@ mod apple {
     reason = "FFI: process counters, the handle snapshot, handles' final paths and volume mount points"
 )]
 mod windows {
-    use super::{Descriptor, ProcessResources, Sampler};
+    use super::{Mount, ProcessResources, Sampler};
     use std::io;
     use std::os::windows::ffi::OsStringExt as _;
     use std::path::PathBuf;
-    use windows_sys::Wdk::Foundation::{NtQueryObject, ObjectTypeInformation};
     use windows_sys::Wdk::System::Threading::{
         NtQueryInformationProcess, ProcessHandleInformation,
     };
@@ -496,43 +486,6 @@ mod windows {
         }
     }
 
-    /// The object type of `handle`, such as `Event`, `Thread` or
-    /// `IoCompletion`.
-    fn kind(handle: HANDLE) -> String {
-        // PUBLIC_OBJECT_TYPE_INFORMATION: a UNICODE_STRING naming the type,
-        // whose characters follow it in the same buffer. Whole words keep it
-        // aligned.
-        let mut buffer = [0_u64; 128];
-        let length = u32::try_from(std::mem::size_of_val(&buffer)).unwrap_or(0);
-        // SAFETY: the kernel writes at most `length` bytes into `buffer`.
-        let status = unsafe {
-            NtQueryObject(
-                handle,
-                ObjectTypeInformation,
-                buffer.as_mut_ptr().cast(),
-                length,
-                std::ptr::null_mut(),
-            )
-        };
-        if status < 0 {
-            return format!("unknown {status:#x}");
-        }
-        // UNICODE_STRING: a u16 byte length, a u16 capacity, then a pointer.
-        let bytes = usize::from(u16::try_from(buffer[0] & 0xffff).unwrap_or(0));
-        let start = usize::try_from(buffer[1]).unwrap_or(0);
-        let base = buffer.as_ptr() as usize;
-        // SAFETY: plain integers, viewed as the UTF-16 units they hold.
-        let units = unsafe {
-            std::slice::from_raw_parts(buffer.as_ptr().cast::<u16>(), size_of_val(&buffer) / 2)
-        };
-        // The name must lie within `buffer`.
-        start
-            .checked_sub(base)
-            .map(|offset| offset / 2)
-            .and_then(|offset| units.get(offset..offset + bytes / 2))
-            .map_or_else(|| "unknown".to_owned(), String::from_utf16_lossy)
-    }
-
     fn threads() -> io::Result<u64> {
         // SAFETY: a snapshot of every thread, closed below.
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -604,26 +557,15 @@ mod windows {
                 memory_bytes: memory.PrivateUsage as u64,
                 threads: threads()?,
                 descriptors: u64::from(handles),
-                watches: 0,
                 cpu_centiseconds: units(kernel) + units(user),
             })
         }
 
-        fn watches() -> io::Result<u64> {
-            Ok(0)
+        fn open_paths() -> io::Result<Vec<PathBuf>> {
+            Ok(handles()?.into_iter().filter_map(final_path).collect())
         }
 
-        fn descriptors() -> io::Result<Vec<Descriptor>> {
-            Ok(handles()?
-                .into_iter()
-                .map(|handle| {
-                    final_path(handle)
-                        .map_or_else(|| Descriptor::Other(kind(handle)), Descriptor::File)
-                })
-                .collect())
-        }
-
-        fn mount_points() -> io::Result<Vec<PathBuf>> {
+        fn mount_points() -> io::Result<Vec<Mount>> {
             // A volume GUID path, `\\?\Volume{GUID}\`, is 49 characters.
             let mut volume = [0u16; 64];
             let length = u32::try_from(volume.len()).unwrap_or(u32::MAX);
@@ -655,7 +597,7 @@ mod windows {
 
     /// Appends the paths `volume` is mounted at, in the verbatim form
     /// `canonicalize` returns.
-    fn volume_paths(volume: &[u16], points: &mut Vec<PathBuf>) -> io::Result<()> {
+    fn volume_paths(volume: &[u16], points: &mut Vec<Mount>) -> io::Result<()> {
         let mut needed = 0u32;
         // SAFETY: an empty buffer only asks for the length needed.
         if unsafe {
@@ -690,7 +632,11 @@ mod windows {
                 .map(|name| {
                     let mut point = std::ffi::OsString::from(r"\\?\");
                     point.push(std::ffi::OsString::from_wide(name));
-                    PathBuf::from(point)
+                    Mount {
+                        point: PathBuf::from(point),
+                        owner: None,
+                        kind: None,
+                    }
                 }),
         );
         Ok(())
@@ -742,11 +688,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn mountinfo_paths_decode_their_octal_escapes() {
-        assert_eq!(
-            linux::unescape(br"/a\040b\134c\011"),
-            Path::new("/a b\\c\t")
-        );
+        let decode = |field: &[u8]| mountinfo_path_bytes(field).collect::<Vec<u8>>();
+        assert_eq!(decode(br"/a\040b\134c\011"), b"/a b\\c\t");
         // A backslash that starts no escape is kept as written.
-        assert_eq!(linux::unescape(br"/a\9b\04"), Path::new(r"/a\9b\04"));
+        assert_eq!(decode(br"/a\9b\04"), br"/a\9b\04");
     }
 }

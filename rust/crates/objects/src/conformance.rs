@@ -9,7 +9,7 @@ use crate::{
     Blobs, ByteRange, Delete, Digest, Error, Kind, Manifest, Medium, Part, Put, RootId,
     wire::ErrorCode,
 };
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 
 /// Case inventory, shared with every language's harness.
 pub const SUITE: &[u8] = include_bytes!("../conformance/objects-v1.json");

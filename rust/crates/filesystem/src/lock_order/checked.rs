@@ -1,5 +1,5 @@
 #[cfg(any(
-    all(test, not(target_arch = "wasm32")),
+    all(test, loom, not(target_arch = "wasm32")),
     all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 use crate::sync::Condvar as RawCondvar;
@@ -34,8 +34,7 @@ struct Held(u16, &'static Location<'static>);
 impl Held {
     #[track_caller]
     fn check(rank: u16) {
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, loom))]
         if model::fault() == model::Fault::MissingCheck {
             return;
         }
@@ -129,13 +128,13 @@ impl<T, const RANK: u16> Mutex<T, RANK> {
 
 #[derive(Default)]
 #[cfg(any(
-    all(test, not(target_arch = "wasm32")),
+    all(test, loom, not(target_arch = "wasm32")),
     all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 pub(crate) struct Condvar(RawCondvar);
 
 #[cfg(any(
-    all(test, not(target_arch = "wasm32")),
+    all(test, loom, not(target_arch = "wasm32")),
     all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 impl Condvar {
@@ -160,7 +159,7 @@ impl Condvar {
 
 #[track_caller]
 #[cfg(any(
-    all(test, not(target_arch = "wasm32")),
+    all(test, loom, not(target_arch = "wasm32")),
     all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 fn wait_plain<G>(
@@ -175,8 +174,7 @@ fn wait_plain<G>(
     Held::check(rank);
     let wrap = |inner| {
         let held = Held(rank, site);
-        #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(all(test, loom))]
         let held = if model::fault() == model::Fault::MissingRestore {
             held
         } else {

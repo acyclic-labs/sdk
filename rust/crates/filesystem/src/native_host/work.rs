@@ -90,12 +90,12 @@ pub(crate) trait NativeHostWork {
         self.started_io(delta)?;
         operation().map_err(Into::into)
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
     #[cfg(any(target_os = "linux", all(test, unix)))]
     #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,
@@ -187,37 +187,29 @@ impl<W: DemandWorkContext> NativeHostWork for W {
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> {
         self.with_demand_work(|work| work.release(bytes))
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.with_demand_work(|work| {
-            work.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
-                .map(|()| 1)
-        })
+        self.with_demand_work(DemandWork::reserve_cleanup_write)
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
     #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         self.with_demand_work(|work| {
-            if let Err(error) = work.refund(
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation),
-            ) {
+            if let Err(error) =
+                work.refund(crate::ledger::NativeResourceCredit::WriteOperations.delta(reservation))
+            {
                 work.record_native_io_failure(error);
                 work.poison_native_original_work();
             }
         });
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: u64,
         operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>) {
-        let recorded = self.with_demand_work(|work| {
-            work.complete(
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation),
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            )
-        });
+        let recorded = self.with_demand_work(|work| work.complete_cleanup_write(reservation));
         // Cleanup may re-enter demand accounting and must run after unlocking.
         (operation(), recorded)
     }
@@ -286,7 +278,7 @@ impl NativeHostWork for &NativeMaterializationWork {
         drop(allocation);
         Ok(())
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         NativeMaterializationWork::reserve_cleanup_write(self)
     }
@@ -295,7 +287,7 @@ impl NativeHostWork for &NativeMaterializationWork {
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,

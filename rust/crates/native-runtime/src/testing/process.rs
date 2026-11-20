@@ -43,17 +43,8 @@ impl Schedule {
         + Sync
         + 'static,
     ) {
-        let mut state = self.0.state();
-        assert!(
-            state.trace.is_empty(),
-            "process provider must precede dispatch"
-        );
-        assert_eq!(state.active, 0, "cannot replace a live process provider");
-        assert!(
-            state.process.is_none(),
-            "process provider already installed"
-        );
-        state.process = Some(Arc::new(provider));
+        let provider: Arc<Provider> = Arc::new(provider);
+        self.set_boundary(provider);
     }
 }
 
@@ -64,13 +55,9 @@ pub fn capture_process(
     check: &mut dyn FnMut() -> io::Result<()>,
     observe: &mut dyn FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
 ) -> Option<Result<Output, ProcessCaptureFailure>> {
-    let context = Context::simulation()?;
-    let provider = {
-        let mut state = context.schedule.0.state();
-        let provider = state.process.clone()?;
-        state.trace.push(format!("process:{:?}", request.command));
-        provider
-    };
+    let schedule = Schedule::current()?;
+    let provider = schedule.boundary::<Arc<Provider>>()?;
+    schedule.record_boundary(format!("process:{:?}", request.command));
     // No schedule lock spans provider calls, ownership waits or observers.
     Some(provider(request, check, observe))
 }

@@ -8,8 +8,9 @@ use acyclic_fs_work::performance::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{allow, fork_workspace};
-use crate::selected_budget::selected_transaction_budget;
+use crate::workspace_transactions::fixtures::fork_workspace;
+use crate::workspace_transactions::selected_budget::selected_transaction_budget;
+use crate::workspace_transactions::transaction;
 
 fn permit(reservation: &PublicationReservation) -> PublicationPermit {
     PublicationPermit::Reservation {
@@ -34,7 +35,7 @@ async fn contextual_commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
             permit,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-            allow,
+            transaction::allow,
         )
         .await
         .map(|receipt| receipt.value)

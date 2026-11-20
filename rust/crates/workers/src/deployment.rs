@@ -44,9 +44,6 @@ impl Client<acyclic_objects::http::HttpObjects> {
     }
 }
 
-#[cfg(test)]
-mod credential_tests;
-
 impl<P: Blobs> Client<P> {
     /// Compose clients over the account's Objects and Actors services.
     pub fn new(actors: http::Client, objects: P) -> Self {

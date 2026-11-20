@@ -12,7 +12,7 @@ fn baseline_native_read<'a>(
 ) -> crate::NativeProviderFuture<'a, crate::NativeRecordStream> {
     let original = Arc::clone(&meter);
     crate::NativeProviderFuture::new(&original, async move {
-        if let Err(error) = validate_limit(request.limit) {
+        if let Err(error) = crate::validate_limit(request.limit) {
             return Ok(Err(error));
         }
         let state = provider.state.read().await;

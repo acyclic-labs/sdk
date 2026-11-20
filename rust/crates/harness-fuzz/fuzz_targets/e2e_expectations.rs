@@ -1,6 +1,6 @@
 #![no_main]
 
-#[path = "../../harness/tests/e2e/expectations.rs"]
+#[path = "../../harness-e2e/tests/e2e/expectations.rs"]
 mod expectations;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {

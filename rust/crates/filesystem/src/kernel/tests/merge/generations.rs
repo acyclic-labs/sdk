@@ -665,8 +665,12 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     .root;
     let request = stored_request(&store, base, ours, theirs).await?;
     let second_parent = GenerationId::from_root(request.theirs_generation);
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (outcome, allocation) = (merge_generation_with_accounting(
         &store,
@@ -795,12 +799,13 @@ async fn native_merge_original_allocation_denial_precedes_backend_work()
     };
     let request = request(base.clone(), ours, base);
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();

@@ -74,7 +74,7 @@ impl CheckoutRoots {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_original_scope(
         &self,
-        original: &Arc<crate::demand::NativeDemandReadMeter>,
+        original: &Arc<crate::ledger::NativeDemandReadMeter>,
     ) -> bool {
         if !self
             .working_control

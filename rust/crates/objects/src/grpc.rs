@@ -7,9 +7,10 @@ use crate::{
     Retained, RootId, Usage, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
-use acyclic_stream::query_sync::Arc as RevisionArc;
-use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
-use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamCategory};
+use acyclic_auth::operation::grpc_timeout;
+use acyclic_stream_contract::query_sync::Arc as RevisionArc;
+use acyclic_stream_contract::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
+use acyclic_stream_contract::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamCategory};
 use prost::Message;
 use std::sync::Arc;
 use tonic::{
@@ -66,7 +67,7 @@ impl GrpcObjects {
     /// observation. Cloned views still share every observed requirement; this
     /// selection never retires another account or changes authorization.
     #[must_use]
-    pub fn with_revision_scope(&self, scope: acyclic_stream::RevisionScope) -> Self {
+    pub fn with_revision_scope(&self, scope: acyclic_stream_contract::RevisionScope) -> Self {
         let mut client = self.clone();
         client.revisions = RevisionTracker::scoped(&self.revisions, scope);
         client
@@ -567,24 +568,6 @@ async fn deadline(metadata: &MetadataMap) {
     }
 }
 
-/// Parses the gRPC `TimeoutValue TimeoutUnit` spelling.
-fn grpc_timeout(value: &str) -> Option<std::time::Duration> {
-    let (amount, unit) = value.split_at(value.len().checked_sub(1)?);
-    if amount.is_empty() || amount.len() > 8 || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let amount: u64 = amount.parse().ok()?;
-    Some(match unit {
-        "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),
-        "M" => std::time::Duration::from_secs(amount.checked_mul(60)?),
-        "S" => std::time::Duration::from_secs(amount),
-        "m" => std::time::Duration::from_millis(amount),
-        "u" => std::time::Duration::from_micros(amount),
-        "n" => std::time::Duration::from_nanos(amount),
-        _ => return None,
-    })
-}
-
 fn stamp(metadata: &mut MetadataMap, revision: Option<&Revision>) {
     if let Some(revision) = revision {
         metadata.insert_bin(
@@ -617,7 +600,7 @@ where
                 .await
                 .ok()
                 .flatten()
-                .map(acyclic_stream::AppliedRevisions::current);
+                .map(acyclic_stream_contract::AppliedRevisions::current);
             stamp(status.metadata_mut(), current.as_ref());
             Err(status)
         }

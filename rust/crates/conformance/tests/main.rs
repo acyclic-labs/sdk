@@ -18,3 +18,10 @@ mod native_projection;
 #[cfg(feature = "local-runner")]
 #[path = "restore_gen.rs"]
 mod restore_gen;
+
+#[cfg(feature = "graphcoder-backends")]
+#[path = "graphcoder_backends.rs"]
+mod graphcoder_backends;
+#[cfg(feature = "actors-hosting")]
+#[path = "hosted_actors.rs"]
+mod hosted_actors;

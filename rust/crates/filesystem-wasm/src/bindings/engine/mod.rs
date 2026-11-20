@@ -233,10 +233,7 @@ impl BrowserFs {
             )
             .await
             .map_err(js_error)?;
-        ts(BrowserFileReadResult {
-            bytes: receipt.value.bytes.to_vec(),
-            work: browser_work(receipt.work),
-        })
+        file_read_result(receipt.value.bytes.to_vec(), receipt.work)
     }
 
     #[wasm_bindgen(js_name = importObject)]

@@ -1,13 +1,12 @@
 //! Client adapters over the shared pure UI projection.
-mod attention;
 mod cut;
 mod reply;
-use crate::{AgentPath, AgentRecord, Reader, reader::Want};
+use crate::{AgentPath, Reader, reader::Want};
+use acyclic_harness_core::agent::{AgentRecord as _, InboxRecord};
 pub use acyclic_harness_core::ui::{
     Affected, AgentRow, Children, Cut, Error, Node, Page, Result, UiPath, View, blocks,
     title_matches,
 };
-pub use attention::{attention, attention_wants};
 pub use cut::ReaderCut;
 pub use reply::{Reply, ReplyPayload, approval_reply};
 
@@ -25,9 +24,8 @@ pub fn agent_role(reader: &Reader, agent: &AgentPath) -> Option<String> {
     let from = cache
         .fork(&stream)
         .map_or(0, |origin| origin.inherited.forked_at);
-    let record =
-        acyclic_harness_core::agent::InboxRecord::decode(cache.record(&stream, from)?).ok()?;
-    let acyclic_harness_core::agent::InboxRecord::ForkAdopted(adopted) = record else {
+    let record = InboxRecord::decode(cache.record(&stream, from)?).ok()?;
+    let InboxRecord::ForkAdopted(adopted) = record else {
         return None;
     };
     if adopted.agent != agent.id() {

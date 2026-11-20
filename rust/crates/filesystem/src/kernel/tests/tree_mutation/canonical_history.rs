@@ -1,4 +1,6 @@
 use super::*;
+use crate::kernel::deterministic::next;
+use crate::test_support::tree_entries::{flatten_tree, wide_entry};
 
 /// Pages far smaller than many entries: names of 1 to 64 extra bytes make
 /// some entries share pages, some close the page they join, and some exceed
@@ -16,9 +18,10 @@ fn tiny_pages() -> (DecodeLimits, bool) {
 
 fn varied_entry(value: u16) -> Result<TreeEntry, Box<dyn std::error::Error>> {
     let padding = "p".repeat(usize::from(value.wrapping_mul(37) % 64));
+    let [low_byte, _] = value.to_le_bytes();
     entry(
         &format!("v{value:04}{padding}"),
-        value.to_le_bytes()[0],
+        low_byte,
         FileKind::Regular,
     )
 }
@@ -48,14 +51,13 @@ async fn apply(
 }
 
 /// Splits `items` into batches of 1..=`widest` drawn from `seed`.
-fn batches<T: Clone>(items: &[T], widest: u64, seed: &mut u64) -> Vec<Vec<T>> {
+fn batches<T: Clone>(mut items: &[T], widest: u64, seed: &mut u64) -> Vec<Vec<T>> {
     let mut result = Vec::new();
-    let mut start = 0;
-    while start < items.len() {
+    while !items.is_empty() {
         let width = usize::try_from(next(seed) % widest + 1).unwrap_or(1);
-        let end = items.len().min(start + width);
-        result.push(items[start..end].to_vec());
-        start = end;
+        let (batch, remaining) = items.split_at(items.len().min(width));
+        result.push(batch.to_vec());
+        items = remaining;
     }
     result
 }
@@ -180,14 +182,14 @@ async fn chunking_rewritten_pages_locally_makes_roots_history_dependent()
         }
     }
     for shape in [(limits_with(6), false), tiny_pages()] {
+        // The positive property above already proves every history converges
+        // under normal chunking, so this control only needs the local-chunking
+        // run: it must still build the right tree, and at least one seed must
+        // reach a different root.
+        let _reset = Reset;
+        crate::kernel::persistent_btree::LOCAL_REWRITE.with(|local| local.set(true));
         let mut diverged = 0;
-        for seed in 0..16 {
-            let store = MemoryObjectStore::default();
-            let (history, one_batch, _) =
-                history_and_one_batch_roots(&store, 400, seed, shape).await?;
-            assert_eq!(history, one_batch, "seed {seed}");
-            let _reset = Reset;
-            crate::kernel::persistent_btree::LOCAL_REWRITE.with(|local| local.set(true));
+        for seed in 0..8 {
             let store = MemoryObjectStore::default();
             let (history, one_batch, kept) =
                 history_and_one_batch_roots(&store, 400, seed, shape).await?;
@@ -246,8 +248,8 @@ fn ordinal_entry(ordinal: u32, suffix: &str) -> Result<TreeEntry, Box<dyn std::e
 #[tokio::test]
 async fn point_operations_cost_pages_proportional_to_height()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut heights = Vec::new();
-    for entries in [1_024_u32, 16_384] {
+    let mut heights = [0; 2];
+    for (entries, measured_height) in [1_024_u32, 16_384].into_iter().zip(&mut heights) {
         let store = MemoryObjectStore::default();
         let limits = limits_with(16);
         let empty = put(&store, &TreePage::Leaf(Vec::new()), 1_024).await?;
@@ -301,9 +303,10 @@ async fn point_operations_cost_pages_proportional_to_height()
             reads <= 3 * height,
             "{entries}: {reads} reads at height {height}"
         );
-        heights.push(height);
+        *measured_height = height;
     }
-    assert!(heights[1] > heights[0], "sixteenfold entries add a level");
+    let [small, large] = heights;
+    assert!(large > small, "sixteenfold entries add a level");
     Ok(())
 }
 

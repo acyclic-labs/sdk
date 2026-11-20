@@ -385,12 +385,24 @@ pub fn capability_text(capability: &[u8]) -> String {
 /// # Errors
 /// [`CredentialError::Invalid`] for anything else.
 pub fn capability_from_text(text: &str) -> Result<Vec<u8>, CredentialError> {
-    use base64::Engine as _;
-    let mut decoded = Zeroizing::new(Vec::new());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode_vec(text, &mut decoded)
-        .map_err(|_| CredentialError::Invalid)?;
+    let mut decoded = protected_capability_from_text(text).map_err(|_| CredentialError::Invalid)?;
     Ok(std::mem::take(&mut *decoded))
+}
+
+/// Decode the canonical capability text into protected bytes while retaining the decoder's error.
+///
+/// # Errors
+/// Returns the native decoder error for invalid unpadded base64url.
+pub fn protected_capability_from_text(
+    text: &str,
+) -> Result<Zeroizing<Vec<u8>>, base64::DecodeSliceError> {
+    use base64::Engine as _;
+    // Own the whole destination before the first write, including a partial decode.
+    let mut decoded = Zeroizing::new(vec![0; base64::decoded_len_estimate(text.len())]);
+    let length = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode_slice(text, decoded.as_mut_slice())?;
+    decoded.truncate(length);
+    Ok(decoded)
 }
 
 /// Serde adapter for capability bytes using the same text form as

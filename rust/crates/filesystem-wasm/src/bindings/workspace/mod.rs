@@ -411,11 +411,9 @@ impl BrowserWorkspace {
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "used as an Option::map adapter, which hands over the name by value"
-)]
-pub(in crate::bindings) fn browser_workspace_name_value(name: LogicalName) -> BrowserWorkspaceName {
+pub(in crate::bindings) fn browser_workspace_name_value(
+    name: &LogicalName,
+) -> BrowserWorkspaceName {
     BrowserWorkspaceName {
         encoding: name.encoding().as_str().to_owned(),
         bytes: name.as_bytes().to_vec(),
@@ -470,10 +468,7 @@ pub(in crate::bindings) fn browser_workspace_directory_page(
             .entries
             .into_iter()
             .map(|entry| BrowserWorkspaceDirectoryEntry {
-                name: BrowserWorkspaceName {
-                    encoding: entry.name.encoding().as_str().to_owned(),
-                    bytes: entry.name.as_bytes().to_vec(),
-                },
+                name: browser_workspace_name_value(&entry.name),
                 file_id: entry.file_id.into_bytes().to_vec(),
                 kind: entry.kind,
             })

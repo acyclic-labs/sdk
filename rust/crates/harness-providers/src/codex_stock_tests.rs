@@ -120,7 +120,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
             items_examined: prior,
             ..WorkCounters::UNCHARGED
         })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let result = provider.counted_with_native_work(&request, 0, &work)?.await;
         if total == 65_536 {
             let (count, custody) = result?;
@@ -131,7 +131,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
                 count.input_tokens,
                 provider.accounting.usage.codex_estimate(&request)?
             );
-            assert_eq!(work.receipt().items_examined, prior + completed_items);
+            assert_eq!(work.receipt()?.items_examined, prior + completed_items);
             drop((count, custody));
         } else {
             let Err(Error::NativeWork {
@@ -149,9 +149,9 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
             // Work errors carry the effective ceiling while cleanup is held.
             assert_eq!(observed + CLEANUP_RESERVED, total);
             assert_eq!(maximum + CLEANUP_RESERVED, 65_536);
-            assert_eq!(work.receipt().items_examined, prior + REGISTER + RETIRE);
+            assert_eq!(work.receipt()?.items_examined, prior + REGISTER + RETIRE);
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     assert_eq!(backend.counts.load(Ordering::SeqCst), 0);
     assert_eq!(backend.generations.load(Ordering::SeqCst), 0);

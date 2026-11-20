@@ -12,7 +12,7 @@ struct CheckpointFamily {
 }
 
 fn ordinary_checkpoint<T>(
-    operation: impl FnOnce(&mut crate::demand::DemandWork) -> Result<T, crate::DemandError>,
+    operation: impl FnOnce(&mut crate::ledger::DemandWork) -> Result<T, crate::DemandError>,
 ) -> Result<T, LocalCoreStateStoreError> {
     operation(&mut crate::native_host::ordinary_work()).map_err(|error| match error {
         crate::DemandError::Io(error) => LocalCoreStateStoreError::from(error),

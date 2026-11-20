@@ -25,7 +25,7 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{MemoryStream, StreamProvider};
+use acyclic_stream::{MemoryStream, ProviderOwner, StreamProvider};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -36,7 +36,7 @@ thread_local! {
 async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     agent: AgentId,
     filesystem: Fs<A, O>,
-    changes: Arc<dyn StreamProvider>,
+    changes: acyclic_stream::ProviderOwner<dyn StreamProvider>,
 ) -> Result<(Arc<FilesystemHost<A, O>>, VolumeRef)> {
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let shared_owner = filesystem.operation_claims().owner_identity()
@@ -120,7 +120,7 @@ pub struct MemoryHarnessStorage<
     write_capability: String,
     scope: Scope,
     issuer: AuthorityRoot,
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     conversation: Authority,
     maximum_file_bytes: Option<u64>,
 }
@@ -131,7 +131,7 @@ impl MemoryHarnessStorage {
         Self::with_stream(
             agent,
             maximum_file_bytes.into(),
-            Arc::new(MemoryStream::default()),
+            ProviderOwner::new(MemoryStream::default()),
         )
         .await
     }
@@ -142,7 +142,7 @@ impl<P: crate::store::JournalProvider> MemoryHarnessStorage<P> {
     pub async fn with_stream(
         agent: AgentId,
         maximum_file_bytes: impl Into<Option<u64>>,
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
     ) -> Result<Self> {
         Self::from_providers(agent, maximum_file_bytes.into(), Fs::memory(), stream).await
     }
@@ -160,7 +160,7 @@ impl<
         agent: AgentId,
         maximum_file_bytes: impl Into<Option<u64>>,
         filesystem: Fs<A, O>,
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
     ) -> BoxFuture<'a, Result<Self>>
     where
         P: 'a,
@@ -433,29 +433,6 @@ impl<
             .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))
     }
 
-    /// Publishes one owner-mediated exact-file read scope to another agent, independent of any fork relationship.
-    pub async fn delegate_file_read(
-        &self,
-        reader: AgentId,
-        id: impl Into<String>,
-        file: &FileRef,
-    ) -> Result<Scope> {
-        self.read(file).await?;
-        self.issuer
-            .delegate_private_file_read(&self.scope, reader, id, file)
-    }
-
-    /// Resolves a pinned reference under an owner-issued signed read scope.
-    pub async fn read_delegated(
-        &self,
-        scope: &Scope,
-        file: &FileRef,
-    ) -> Result<crate::conversation::Custody> {
-        self.delegated_reader(scope)?
-            .read(file, file.descriptor().byte_length(), None, None)?
-            .await
-    }
-
     /// Shares a private subtree with a named agent.
     pub fn delegate_directory_read(
         &self,
@@ -465,32 +442,6 @@ impl<
     ) -> Result<Scope> {
         self.issuer
             .delegate_private_directory_read(&self.scope, reader, id, &self.volume, prefix)
-    }
-
-    /// Lists a lazily opened owner-private directory under a signed grant.
-    pub async fn list_delegated(
-        &self,
-        scope: &Scope,
-        granted_prefix: &str,
-        path: &str,
-        expected_generation: Option<&GenerationRef>,
-        after: Option<&[u8]>,
-        maximum_entries: u32,
-    ) -> Result<crate::conversation::PrivateDirectoryPage> {
-        self.delegated_reader(scope)?
-            .list_private_directory(
-                &self.volume,
-                granted_prefix,
-                path,
-                crate::filesystem::DirectoryOptions {
-                    generation: expected_generation,
-                    after,
-                    maximum_entries,
-                    ceiling: None,
-                },
-            )
-            .await?
-            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))
     }
 
     /// Reads a named file from a delegated private directory and pins its observed version for later exact-reference use.
@@ -532,7 +483,7 @@ impl<
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &Arc<P> {
+    pub fn stream(&self) -> &acyclic_stream::ProviderOwner<P> {
         &self.stream
     }
 

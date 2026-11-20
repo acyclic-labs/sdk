@@ -177,7 +177,7 @@ impl NativeWorkspaceTransaction {
     }
 }
 
-pub(in crate::bindings) fn native_transaction_rebase(
+fn native_transaction_rebase(
     outcome: TransactionRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeTransactionRebaseResult {
     match outcome {
@@ -204,9 +204,7 @@ pub(in crate::bindings) fn native_transaction_rebase(
     }
 }
 
-pub(in crate::bindings) fn native_transaction_conflict(
-    value: RebaseConflict,
-) -> NativeTransactionConflict {
+fn native_transaction_conflict(value: RebaseConflict) -> NativeTransactionConflict {
     let mut result = NativeTransactionConflict {
         region: String::new(),
         file_id: None,
@@ -273,7 +271,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         DependencyRegion::DirectoryName { directory_id, name } => {
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = Some(native_workspace_name_value(&name));
+            result.name = Some(encode_name_component(&name));
         }
         DependencyRegion::DirectoryRange {
             directory_id,
@@ -282,7 +280,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         } => {
             "directory-range".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = after.as_ref().map(native_workspace_name_value);
+            result.name = after.as_ref().map(encode_name_component);
             result.maximum_entries = Some(maximum_entries);
         }
     }

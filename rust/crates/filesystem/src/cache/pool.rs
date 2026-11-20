@@ -225,6 +225,6 @@ impl Namespace {
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
 #[path = "pool_tests.rs"]
 mod tests;

@@ -28,6 +28,8 @@ mod preparation;
 mod profile;
 mod provider;
 mod recorded;
+/// Deterministic scripts over the ordinary model stream contract.
+pub mod scripted;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub(crate) use recorded::IgnoreDivergence;
 pub use recorded::{

@@ -852,7 +852,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
     assert_eq!(store.load(&actor).await?.state(), Some(&state));
     assert!(records(provider.as_ref(), "out/deleted").await?.is_empty());
     assert_eq!(
-        crate::local::tests::orphans(&store, &[actor]).await?,
+        crate::local::oracle::orphans(&store, &[actor]).await?,
         Vec::<String>::new()
     );
     // A closed original reservation must retain its actual acquisition failure
@@ -1338,11 +1338,6 @@ impl Handler for CapturesCuts {
     }
 }
 
-#[tokio::test]
-async fn capability_requests_are_bound_for_exactly_their_attempt() -> TestResult {
-    crate::conformance::request_ledger(Arc::new(MemoryStream::default()), root()?).await?;
-    Ok(())
-}
 /// Alarm resume must carry Actors' saved input cut even without a record.
 /// Resetting to zero would replay the two consumed commands after reopen.
 #[tokio::test]

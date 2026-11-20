@@ -143,7 +143,7 @@ logged!(
 #[serde(try_from = "Vec<Resident>")]
 pub(super) struct Change(
     pub(super) Vec<Resident>,
-    #[serde(skip)] pub(super) Option<crate::materializer::NativeAllocation>,
+    #[serde(skip)] pub(super) Option<crate::ledger::NativeAllocation>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -151,7 +151,7 @@ pub(super) struct Change(
 pub(super) struct Resident {
     pub(super) key: RecordKey,
     pub(super) value: Option<RecordValue>,
-    pub(super) allocation: Option<crate::materializer::NativeAllocation>,
+    pub(super) allocation: Option<crate::ledger::NativeAllocation>,
 }
 
 impl From<(RecordKey, Option<RecordValue>)> for Resident {
@@ -277,7 +277,7 @@ impl RecordValue {
 
 impl Change {
     pub(super) fn new(
-        work: &crate::materializer::NativeMaterializationWork,
+        work: &crate::ledger::NativeMaterializationWork,
     ) -> Result<Self, LocalCoreStateStoreError> {
         work.charge(crate::WorkCounters::UNCHARGED)?;
         Ok(Self(

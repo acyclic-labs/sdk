@@ -1,0 +1,589 @@
+use super::console_owner::Owner;
+use super::{Capabilities, Decoder, Environment, ProbeIo, RestoreGuard, ScreenMode, detect};
+use acyclic_harness_tui_core::key_event::InputEvent;
+use acyclic_native_runtime::terminal as ffi;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::os::windows::io::AsRawHandle;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
+
+struct ConsoleIo {
+    input: File,
+    output: File,
+    original: ffi::ConsoleState,
+}
+impl ConsoleIo {
+    fn apply(&mut self, state: ffi::ConsoleState) -> io::Result<()> {
+        ffi::console_apply(
+            self.input.as_raw_handle() as usize,
+            self.output.as_raw_handle() as usize,
+            state,
+        )
+    }
+    fn restore(&mut self) -> io::Result<()> {
+        self.apply(self.original)
+    }
+    fn reapply(&mut self) -> io::Result<()> {
+        let mut raw = self.original;
+        raw.input_mode = (raw.input_mode & !(1 | 2 | 4 | 64)) | 8 | 128 | 512;
+        raw.output_mode |= 1 | 4;
+        raw.input_page = 65001;
+        raw.output_page = 65001;
+        self.apply(raw)
+    }
+}
+impl Write for ConsoleIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        super::counters::wrote();
+        self.output.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
+impl super::console_owner::CloseWake for Arc<ffi::ConsoleClose> {
+    fn close(&self) -> io::Result<()> {
+        self.signal()
+    }
+}
+
+type ConsoleOwner = Owner<ConsoleIo, Arc<ffi::ConsoleClose>>;
+struct ConsoleSlot {
+    owner: Option<Arc<ConsoleOwner>>,
+    exiting: bool,
+}
+static CONSOLE: Mutex<ConsoleSlot> = Mutex::new(ConsoleSlot {
+    owner: None,
+    exiting: false,
+});
+static CONTROL: OnceLock<io::Result<()>> = OnceLock::new();
+
+fn close_console(owner: &Arc<ConsoleOwner>) -> io::Result<()> {
+    Owner::close(owner, ConsoleIo::restore)?;
+    let mut current = CONSOLE.lock().map_err(|_| io::ErrorKind::Other)?;
+    if current
+        .owner
+        .as_ref()
+        .is_some_and(|live| Arc::ptr_eq(live, owner))
+    {
+        current.owner = None;
+    }
+    Ok(())
+}
+
+fn console_control(event: u32) -> bool {
+    if matches!(event, 0 | 1 | 2 | 5 | 6)
+        && let Some(owner) = CONSOLE.lock().ok().and_then(|mut current| {
+            // Restoration can free descriptors, but an exiting process must
+            // never admit another owner before its default handler terminates.
+            current.exiting = true;
+            current.owner.clone()
+        })
+    {
+        let _ = close_console(&owner);
+    }
+    #[cfg(test)]
+    tests::observe_restored_console(event);
+    false
+}
+
+/// Windows console owner. Driver operations run outside the owner lock;
+/// restoration waits for cancellation acknowledgement before undoing modes.
+pub struct Tty {
+    owner: Arc<ConsoleOwner>,
+    reader: File,
+    closed: Arc<ffi::ConsoleClose>,
+    decoder: Decoder,
+    capabilities: Option<Capabilities>,
+}
+/// Output half using the console owner's existing I/O/restoration boundary.
+pub struct Output {
+    owner: Arc<ConsoleOwner>,
+}
+/// Bytes per console call, allowing close cancellation between frame chunks.
+const CONSOLE_CHUNK: usize = 256 * 1024;
+
+impl super::Present for Output {
+    fn supports_scroll_regions(&self) -> bool {
+        self.owner.supports_scroll_regions()
+    }
+    fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
+        let owner = &self.owner;
+        let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
+            Owner::run(owner, None, move |guard| part.apply(guard, effects))
+        });
+        if presented.is_err() {
+            let _ = Owner::run(owner, None, |guard| guard.abort_frame());
+        }
+        presented
+    }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        effects: super::FrameEffects,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if frame.is_empty() {
+            return self.owner.empty_if_current(expected);
+        }
+        let mut observed = expected;
+        let mut rejected = false;
+        let mut began = false;
+        let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
+            if rejected {
+                return Ok(());
+            }
+            let accepted = Owner::run(&self.owner, None, move |guard| {
+                let count = super::Present::outside_writes(guard);
+                if observed.is_some() && count != observed {
+                    return if began {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        Ok(None)
+                    };
+                }
+                part.apply(guard, effects)?;
+                Ok(count)
+            })?;
+            rejected = accepted.is_none();
+            observed = accepted;
+            began = true;
+            Ok(())
+        });
+        if presented.is_err() {
+            let _ = Owner::run(&self.owner, None, |guard| guard.abort_frame());
+        }
+        presented.map(|()| if rejected { None } else { observed })
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        self.owner.outside_writes()
+    }
+}
+
+impl Write for Output {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let end = super::frame::char_prefix(bytes, CONSOLE_CHUNK);
+        let bytes = bytes
+            .get(..end)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .to_vec();
+        Owner::run(&self.owner, None, move |guard| guard.writer().write(&bytes))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Owner::run(&self.owner, None, |guard| guard.writer().flush())
+    }
+}
+impl Drop for Output {
+    fn drop(&mut self) {
+        let _ = close_console(&self.owner);
+    }
+}
+
+impl Tty {
+    /// Query this owned terminal after splitting input and output, without reopening it.
+    pub fn size_reader(&self) -> impl Fn() -> io::Result<ratatui::layout::Size> + use<> {
+        let owner = Arc::clone(&self.owner);
+        move || {
+            Owner::run(&owner, None, |guard| {
+                let (width, height) =
+                    ffi::console_size(guard.writer().output.as_raw_handle() as usize)?;
+                Ok(ratatui::layout::Size::new(width, height))
+            })
+        }
+    }
+
+    /// Separate output while retaining this decoder's negotiation-buffered keys.
+    /// Dropping either half restores the console and cancels its outstanding I/O.
+    pub fn split(self) -> (Self, Output) {
+        let output = Output {
+            owner: Arc::clone(&self.owner),
+        };
+        (self, output)
+    }
+    /// Capture modes and code pages before enabling VT and UTF-8.
+    pub fn open() -> io::Result<Self> {
+        CONTROL
+            .get_or_init(|| ffi::console_register(console_control))
+            .as_ref()
+            .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
+        let mut current = CONSOLE.lock().map_err(|_| io::ErrorKind::Other)?;
+        if current.exiting {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        if current.owner.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
+        let output = OpenOptions::new().read(true).write(true).open("CONOUT$")?;
+        let original = ffi::console_state(
+            input.as_raw_handle() as usize,
+            output.as_raw_handle() as usize,
+        )?;
+        let reader = input.try_clone()?;
+        let guard = RestoreGuard::new(
+            ConsoleIo {
+                input,
+                output,
+                original,
+            },
+            &Capabilities::default(),
+        );
+        let closed = Arc::new(ffi::ConsoleClose::new()?);
+        let owner = Owner::notifying(guard, ffi::cancel_thread, Arc::clone(&closed));
+        current.owner = Some(Arc::clone(&owner));
+        drop(current);
+        if let Err(error) = Owner::run(&owner, None, |guard| guard.writer().reapply()) {
+            let _ = close_console(&owner);
+            return Err(error);
+        }
+        Ok(Self {
+            owner,
+            reader,
+            closed,
+            decoder: Decoder::default(),
+            capabilities: None,
+        })
+    }
+    negotiate!();
+    /// Enable known mutable modes, with all I/O waits outside owner state.
+    pub fn setup(&mut self, screen: ScreenMode) -> io::Result<()> {
+        Owner::run(&self.owner, None, move |guard| guard.setup(screen))
+    }
+    /// Enable one known mutable mode under the same journal.
+    pub fn enable_mode(&mut self, mode: u16) -> io::Result<()> {
+        Owner::run(&self.owner, None, move |guard| guard.enable_mode(mode))
+    }
+    /// Fence the worker, then restore DEC/console modes and code pages.
+    pub fn restore(&mut self) -> io::Result<()> {
+        close_console(&self.owner)
+    }
+    /// Read classified VT input; the decoder coalesces ConPTY CR/LF.
+    /// None waits on input or owner close without a readiness deadline.
+    pub fn read_events(&mut self, deadline: Option<Instant>) -> io::Result<Vec<InputEvent>> {
+        let events = self.decoder.take_events();
+        if !events.is_empty() {
+            return Ok(events);
+        }
+        let mut bytes = [0; 1024];
+        self.owner.check_open()?;
+        let count = ffi::console_read(
+            self.reader.as_raw_handle() as usize,
+            &self.closed,
+            &mut bytes,
+            self.decoder.input_deadline(deadline),
+        )?;
+        let input = bytes
+            .get(..count)
+            .ok_or_else(|| io::Error::other("console read exceeded its input buffer"))?;
+        self.decoder.feed(input)?;
+        if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            self.decoder.finish_input()?;
+        }
+        Ok(self.decoder.take_events())
+    }
+    fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
+        let bytes = bytes.to_vec();
+        Owner::run(&self.owner, Some(deadline), move |guard| {
+            guard.writer().write(&bytes)
+        })
+    }
+}
+impl ProbeIo for Tty {
+    // open() succeeded only after enabling native VT processing.
+    fn native_scroll_regions(&self) -> bool {
+        true
+    }
+
+    fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        if Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        while !bytes.is_empty() {
+            let count = self.write_until(bytes, deadline)?;
+            if count == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            bytes = bytes.get(count..).ok_or(io::ErrorKind::InvalidData)?;
+        }
+        Ok(())
+    }
+    fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
+        // Input stays on the caller: a timed-out output worker must never
+        // consume bytes whose result could be abandoned at the deadline.
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        self.owner.check_open()?;
+        ffi::console_read(
+            self.reader.as_raw_handle() as usize,
+            &self.closed,
+            bytes,
+            Some(deadline),
+        )
+    }
+    fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
+        let caps = caps.clone();
+        Owner::run(&self.owner, None, move |guard| guard.detected(&caps))
+    }
+}
+impl Write for Tty {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let bytes = bytes.to_vec();
+        Owner::run(&self.owner, None, move |guard| guard.writer().write(&bytes))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Owner::run(&self.owner, None, |guard| guard.writer().flush())
+    }
+}
+impl Drop for Tty {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+#[cfg(test)]
+#[path = "windows_wheel_tests.rs"]
+mod wheel_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    static REPORT: OnceLock<PathBuf> = OnceLock::new();
+    static BASELINE: OnceLock<ffi::ConsoleState> = OnceLock::new();
+
+    pub(super) fn observe_restored_console(event: u32) {
+        if let (Some(path), Some(old)) = (REPORT.get(), BASELINE.get()) {
+            let input = OpenOptions::new().read(true).write(true).open("CONIN$");
+            let output = OpenOptions::new().read(true).write(true).open("CONOUT$");
+            let (Ok(input), Ok(output)) = (input, output) else {
+                return;
+            };
+            if let Ok(actual) = ffi::console_state(
+                input.as_raw_handle() as usize,
+                output.as_raw_handle() as usize,
+            ) {
+                let contents = format!(
+                    "{event} {} {} {} {} {} {} {} {}",
+                    old.input_mode,
+                    old.output_mode,
+                    old.input_page,
+                    old.output_page,
+                    actual.input_mode,
+                    actual.output_mode,
+                    actual.input_page,
+                    actual.output_page
+                );
+                let _ = std::fs::write(path, contents);
+            }
+        }
+    }
+
+    #[test]
+    fn windows_lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
+        let Ok(report) = std::env::var("ACYCLIC_TERMINAL_WINDOWS_REPORT") else {
+            return Ok(());
+        };
+        let path = PathBuf::from(&report);
+        assert!(REPORT.set(path.clone()).is_ok());
+        let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
+        let output = OpenOptions::new().read(true).write(true).open("CONOUT$")?;
+        let mut baseline = ffi::console_state(
+            input.as_raw_handle() as usize,
+            output.as_raw_handle() as usize,
+        )?;
+        baseline.input_mode |= 1 | 2 | 4;
+        baseline.output_mode &= !4;
+        baseline.input_page = 437;
+        baseline.output_page = 437;
+        ffi::console_apply(
+            input.as_raw_handle() as usize,
+            output.as_raw_handle() as usize,
+            baseline,
+        )?;
+        assert!(BASELINE.set(baseline).is_ok());
+        let mut tty = Tty::open()?;
+        assert!(
+            matches!(tty.send(b"EXPIRED", Instant::now()), Err(error) if error.kind() == io::ErrorKind::TimedOut)
+        );
+        let raw = ffi::console_state(
+            input.as_raw_handle() as usize,
+            output.as_raw_handle() as usize,
+        )?;
+        assert_eq!(raw.input_mode & (1 | 2 | 4), 0);
+        assert_ne!(raw.input_mode & 512, 0);
+        assert_ne!(raw.output_mode & 4, 0);
+        assert_eq!((raw.input_page, raw.output_page), (65001, 65001));
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("break") {
+            assert!(
+                matches!(Tty::open(), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
+            );
+            let (stale_input, first_output) = tty.split();
+            drop(first_output);
+            let (second, stale_output) = Tty::open()?.split();
+            drop(stale_input);
+            second.owner.check_open()?;
+            drop(second);
+            tty = Tty::open()?;
+            drop(stale_output);
+            tty.owner.check_open()?;
+            let reopened = ffi::console_state(
+                input.as_raw_handle() as usize,
+                output.as_raw_handle() as usize,
+            )?;
+            assert_eq!(reopened.input_mode, raw.input_mode);
+            assert_eq!(reopened.output_mode, raw.output_mode);
+            assert_eq!(reopened.input_page, raw.input_page);
+            assert_eq!(reopened.output_page, raw.output_page);
+        }
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("output-completion") {
+            let ready = path.with_extension("output-ready");
+            let start = Instant::now();
+            Owner::run(&tty.owner, None, move |guard| {
+                // The host observes this worker's entry, holds its actual
+                // ConPTY output pipe past the probe deadline, then drains it.
+                std::fs::write(ready, b"ordinary output entered")?;
+                guard.writer().write_all(&vec![b'B'; 1024 * 1024])
+            })?;
+            assert!(start.elapsed() >= super::super::PROBE_TIMEOUT);
+            // Success above must precede close, which may cancel output.
+            drop(tty);
+            std::fs::write(path, b"ordinary output completed before close")?;
+            return Ok(());
+        }
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("input-close") {
+            let (mut tty, output_half) = tty.split();
+            let closing = std::thread::spawn(move || drop(output_half));
+            let result = tty.receive(&mut [0; 24], Instant::now() + Duration::from_secs(5));
+            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
+            closing
+                .join()
+                .map_err(|_| io::Error::other("input close worker panicked"))?;
+            // Exercise the native wait even when the concurrent close won
+            // before session admission. The same event remains published.
+            let result = ffi::console_read(
+                tty.reader.as_raw_handle() as usize,
+                &tty.closed,
+                &mut [0; 24],
+                None,
+            );
+            assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
+            // Removing only the published event fails that same close oracle
+            // at the native deadline, without an unbounded blocked control.
+            let unpublished = ffi::ConsoleClose::new()?;
+            assert_eq!(
+                ffi::console_read(
+                    tty.reader.as_raw_handle() as usize,
+                    &unpublished,
+                    &mut [0; 24],
+                    Some(Instant::now() + Duration::from_millis(1)),
+                )?,
+                0
+            );
+            let restored = ffi::console_state(
+                input.as_raw_handle() as usize,
+                output.as_raw_handle() as usize,
+            )?;
+            assert_eq!(restored.input_mode, baseline.input_mode);
+            assert_eq!(restored.output_mode, baseline.output_mode);
+            assert_eq!(restored.input_page, baseline.input_page);
+            assert_eq!(restored.output_page, baseline.output_page);
+            std::fs::write(
+                path,
+                b"input close joined; unpublished event refused the close oracle",
+            )?;
+            return Ok(());
+        }
+        // The ConPTY host sends one 100-byte input packet. A zero-capacity
+        // receive must consume nothing; the next receive may consume only 24.
+        std::fs::write(path.with_extension("input-ready"), b"input")?;
+        assert_eq!(
+            tty.receive(&mut [], Instant::now() + Duration::from_millis(20))?,
+            0
+        );
+        let mut first = [0; 24];
+        let first_count = tty.receive(&mut first, Instant::now() + Duration::from_millis(500))?;
+        assert!(first_count > 0 && first_count <= first.len());
+        let mut received = first[..first_count].to_vec();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while received.len() < 100 && Instant::now() < deadline {
+            let mut remaining = [0; 24];
+            let count = tty.receive(&mut remaining, deadline)?;
+            received.extend_from_slice(&remaining[..count]);
+        }
+        assert_eq!(received, b"0123456789".repeat(10));
+        std::fs::write(path.with_extension("probe-ready"), b"probe")?;
+        let caps = tty.negotiate(&Environment::default())?;
+        assert_eq!(caps.mode(2004), super::super::ModeState::Reset);
+        assert_eq!(caps.mode(1049), super::super::ModeState::Reset);
+        assert_eq!(caps.mode(1003), super::super::ModeState::Reset);
+        tty.setup(ScreenMode::Alternate)?;
+        wheel_tests::read_bursts(&mut tty, &path)?;
+        tty.enable_mode(1004)?;
+        let blocked = std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("blocked");
+        let payload = vec![b'B'; 1024 * 1024];
+        let mut setup_wait = None;
+        let mut close_wait = None;
+        if blocked {
+            // The host leaves ConPTY output unread through the whole send.
+            // The production-worker loom model checks that these waits do
+            // not retain the owner lock used to admit another operation.
+            for _ in 0..2 {
+                let start = Instant::now();
+                assert!(
+                    matches!(tty.send(&payload, start + Duration::from_millis(50)), Err(error) if error.kind() == io::ErrorKind::TimedOut)
+                );
+                assert!(start.elapsed() < Duration::from_millis(500));
+            }
+            let setting_up = Arc::clone(&tty.owner);
+            let setup = std::thread::spawn(move || {
+                let _ = Owner::run(&setting_up, None, |guard| guard.enable_mode(1003));
+            });
+            let start = Instant::now();
+            let result = tty.send(b"\x1b[c", start + Duration::from_millis(2));
+            assert!(
+                result.is_ok()
+                    || matches!(result, Err(error) if error.kind() == io::ErrorKind::TimedOut)
+            );
+            assert!(start.elapsed() < Duration::from_millis(50));
+            setup_wait = Some(setup);
+            let closing = Arc::clone(&tty.owner);
+            close_wait = Some(std::thread::spawn(move || {
+                Owner::close(&closing, ConsoleIo::restore)
+            }));
+            let start = Instant::now();
+            let result = tty.send(b"\x1b[c", start + Duration::from_millis(2));
+            assert!(
+                result.is_ok()
+                    || matches!(result, Err(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::NotConnected))
+            );
+            assert!(start.elapsed() < Duration::from_millis(50));
+        }
+        std::fs::write(path.with_extension("ready"), b"ready")?;
+        if blocked {
+            // The host starts draining after observing ready. These original
+            // workers finish only after that output can make progress.
+            if let Some(setup) = setup_wait {
+                setup
+                    .join()
+                    .map_err(|_| io::Error::other("setup worker panicked"))?;
+            }
+            if let Some(closing) = close_wait {
+                let _ = closing
+                    .join()
+                    .map_err(|_| io::Error::other("restoration worker panicked"))?;
+            }
+            ffi::console_break()?;
+        }
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("break") {
+            ffi::console_break()?;
+        }
+        loop {
+            std::thread::park();
+        }
+    }
+}

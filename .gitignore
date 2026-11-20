@@ -32,3 +32,6 @@ node_modules/
 /typescript/packages/harness/src/private-directory-page-contract.ts
 /typescript/packages/harness/src/limits-contract.ts
 /rust/crates/*/src/generated/
+
+# Python bytecode: build output, never tracked (the sync drops it too, etc/sync.yml).
+__pycache__/

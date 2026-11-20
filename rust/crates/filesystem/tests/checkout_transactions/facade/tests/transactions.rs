@@ -1,13 +1,14 @@
 use acyclic_fs::kernel::{GenerationMutationError, MAXIMUM_INLINE_FILE_BYTES, Mutation};
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, FileCloneRequest,
-    FsError, OperationFailure,
+    FsError,
 };
 use acyclic_fs_format::{
     identity::FileId,
     metadata::{FileMetadata, MetadataField},
     object_reference::ObjectKind,
 };
+use acyclic_fs_work::performance::OperationFailure;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

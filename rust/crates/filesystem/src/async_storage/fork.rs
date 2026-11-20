@@ -59,7 +59,8 @@ pub enum WorkspaceForkOutcome {
     CreationRejected,
 }
 
-pub(crate) async fn seal<G: AuthorityGuard>(
+/// Evaluates a publication guard under the provider's original work scope.
+pub async fn seal<G: AuthorityGuard>(
     guard: Option<&mut G>,
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityError<G::Error>> {

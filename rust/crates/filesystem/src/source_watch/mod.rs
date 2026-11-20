@@ -1,6 +1,7 @@
 //! Native source change notifications.
 
-use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::demand::{DemandError, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::ledger::DemandWork;
 use crate::native_host::NativeHostWork;
 use crate::performance::WorkCounters;
 use std::path::PathBuf;
@@ -41,8 +42,8 @@ pub(super) const fn arc_control_bytes<T>() -> u64 {
     }
 }
 
-fn cleanup_credits(delta: WorkCounters) -> [(crate::materializer::NativeResourceCredit, u64); 3] {
-    use crate::materializer::NativeResourceCredit::{Items, ReadOperations, WriteOperations};
+fn cleanup_credits(delta: WorkCounters) -> [(crate::ledger::NativeResourceCredit, u64); 3] {
+    use crate::ledger::NativeResourceCredit::{Items, ReadOperations, WriteOperations};
     [
         (ReadOperations, delta.backend_read_operations),
         (WriteOperations, delta.backend_write_operations),
@@ -98,7 +99,7 @@ pub(super) fn record_cleanup_credits(
             result = result.and(recorded);
         }
     }
-    let items = crate::materializer::NativeResourceCredit::Items.delta(delta.items_examined);
+    let items = crate::ledger::NativeResourceCredit::Items.delta(delta.items_examined);
     result.and(work.complete(items, items))
 }
 
@@ -151,7 +152,7 @@ pub(crate) trait HostChangeSink: Send + Sync {
     fn host_changed(
         &self,
         changes: &[HostChange],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError>;
 
     fn host_changed_with_native_work(
@@ -178,7 +179,7 @@ pub(crate) trait HostChangeSink: Send + Sync {
     fn host_changed_wide(
         &self,
         changes: &[HostChangeWide<'_>],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError>;
 
     #[cfg(windows)]
@@ -202,11 +203,11 @@ pub(crate) trait NativeEventSink: Send + Sync {
         relative: &std::path::Path,
         mask: u32,
         cookie: usize,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError>;
     fn invalidate_measured(
         &self,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError>;
     fn event_with_native_work(
         &self,

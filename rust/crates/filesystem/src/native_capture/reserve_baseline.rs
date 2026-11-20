@@ -41,7 +41,7 @@ pub(super) fn reserve<T>(
     let mut replacement = capture_vec(capacity, meter)?;
     capture_charge(
         meter,
-        crate::materializer::NativeResourceCredit::Copy.delta(copied as u64),
+        crate::ledger::NativeResourceCredit::Copy.delta(copied as u64),
     )?;
     replacement.append(values);
     let old_values = std::mem::replace(values, replacement);

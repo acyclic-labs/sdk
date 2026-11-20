@@ -19,14 +19,15 @@ struct PolicyOwner<A: 'static, O: 'static> {
 
 async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
-    scope: &Scope,
-    ceiling: &crate::Capabilities,
+    authority: NativeAccessAuthority<'_>,
     generation: Option<GenerationId>,
     writable: bool,
     io: &PreparationIo,
 ) -> Result<(PathTrie, NativeAllocation)> {
-    let label =
-        crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
+    let label = crate::core::filesystem_scope_label(
+        authority.scope.capabilities(),
+        &mut Some(&mut io.history_io()),
+    )?;
     let payload = match label {
         Some(_) => crate::filesystem::access::capability_payload(label, VolumeOperation::Read, io)?,
         None if writable => crate::filesystem::access::whole_volume_payload(
@@ -38,12 +39,12 @@ async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     };
     let (view, holds, _) = crate::filesystem::access::access_view(
         workspace,
-        scope,
+        authority.scope,
         generation,
         payload,
-        Some(ceiling),
+        Some(authority.ceiling),
         io,
-        crate::filesystem::access::access_now()?,
+        crate::filesystem::access::access_now_at(authority.verifier.now_unix_millis())?,
     )
     .await?;
     let mut custody = io
@@ -188,8 +189,11 @@ where
     verifier.verify(admitted_scope, &mut Some(&mut io.history_io()))?;
     let (compiled, custody) = compile(
         workspace,
-        admitted_scope,
-        admitted_ceiling,
+        NativeAccessAuthority {
+            verifier,
+            scope: admitted_scope,
+            ceiling: admitted_ceiling,
+        },
         generation,
         writable,
         &io,
@@ -283,10 +287,14 @@ where
                 .verify(&self.scope, &mut Some(&mut io.history_io()))?;
             let (view, custody) = compile(
                 &self.workspace,
-                &self.scope,
-                self.ceiling
-                    .as_ref()
-                    .map_or(self.scope.capabilities(), |(grants, _)| grants),
+                NativeAccessAuthority {
+                    verifier: &self.verifier,
+                    scope: &self.scope,
+                    ceiling: self
+                        .ceiling
+                        .as_ref()
+                        .map_or(self.scope.capabilities(), |(grants, _)| grants),
+                },
                 self.generation,
                 self.writable,
                 &io,

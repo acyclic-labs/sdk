@@ -8,10 +8,9 @@ use std::sync::Mutex;
 
 #[path = "../../../tests/support/git_history.rs"]
 mod fixtures;
-use fixtures::{TestExecutor, generation, tree, workspace};
+use fixtures::{generation, tree, workspace};
 
-#[path = "../../../tests/support/transaction.rs"]
-mod transaction;
+use crate::transaction_fixture as transaction;
 
 fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
     let name = WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &CancellationToken::new())

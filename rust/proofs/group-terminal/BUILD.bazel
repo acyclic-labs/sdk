@@ -3,7 +3,7 @@ load("//toolchains/kani:defs.bzl", "kani_test")
 kani_test(
     name = "terminal",
     src = "proof.rs",
-    srcs = ["//rust/crates/collections:src/page/selection.rs"],
+    srcs = ["//rust/crates/collections-page:src/selection.rs"],
     harness = "group_selection_failures_are_terminal",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     size = "small",

@@ -6,7 +6,7 @@ pub struct LocalStream {
     /// and a reopen in this process waits for the journal to close instead
     /// of finding the store open. Declared first, so it drops before
     /// `inner`.
-    handle: Option<acyclic_native_runtime::StoreHandle>,
+    handle: Option<acyclic_native_claim::StoreHandle>,
     inner: Arc<LocalInner>,
     work: Option<Arc<crate::native::Work>>,
 }

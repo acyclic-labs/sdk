@@ -3,11 +3,10 @@
 //! event delivery belong to the owner; gaps fail closed until a signed checkpoint.
 use crate::{
     contract::*,
-    crypto::{BlockId, public_key, verify_signature},
+    crypto::{BlockId, block_id, public_key, verify_signature},
     verify::{AccountState, Keys, RevocationCheck, Trust, VerifyError},
 };
 use prost::Message;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 /// Domain and version for the canonical `SignedRevocation` with signature cleared.
@@ -76,7 +75,7 @@ impl RevocationState {
             blocks: HashMap::new(),
         };
         state.checkpoint(checkpoint, now)?;
-        state.digest = digest(&transcript, &signed.signature);
+        state.digest = block_id(&transcript, &signed.signature);
         Ok(state)
     }
 
@@ -97,7 +96,7 @@ impl RevocationState {
                 RevocationEffect::Checkpoint
             }
         };
-        self.digest = digest(&transcript, &signed.signature);
+        self.digest = block_id(&transcript, &signed.signature);
         Ok(effect)
     }
 
@@ -266,14 +265,6 @@ fn authenticate(signed: &SignedRevocation, issuer: &BlockId) -> Result<Vec<u8>, 
     let transcript = transcript(&signed.publication);
     verify_signature(&issuer, &transcript, &signed.signature)?;
     Ok(transcript)
-}
-
-fn digest(transcript: &[u8], signature: &[u8]) -> BlockId {
-    Sha256::new()
-        .chain_update(transcript)
-        .chain_update(signature)
-        .finalize()
-        .into()
 }
 
 /// Revocation intersection with the existing owner trust implementation.

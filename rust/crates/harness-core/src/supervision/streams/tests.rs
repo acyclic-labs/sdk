@@ -276,7 +276,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
                     headers: acyclic_stream::RecordHeaders::new(
                         vec![
                             Bytes::from_static(CURRENT_RUN_KEY).into(),
-                            signal_key(a, Kind::RepeatFailure).into(),
+                            signal_key(a, Kind::RepeatFailure).unwrap().into(),
                         ],
                         Vec::new(),
                     )?,
@@ -1254,7 +1254,7 @@ async fn concurrent_sources_fence_one_durable_query_and_retain_its_pause() -> Te
     let signal = provider
         .latest(
             path(&agent)?,
-            signal_key(run, Kind::Spend).into(),
+            signal_key(run, Kind::Spend)?.into(),
             Default::default(),
         )
         .await?

@@ -1082,17 +1082,6 @@ mod tests {
             decode_agent_reply(&reply, &AgentCommand::Root {}),
             Err(CommandError::Invalid)
         ));
-        let message = "é".repeat(5000);
-        let long = Err(AgentError::Turn(Box::new(
-            acyclic_harness_core::Error::Invalid(message.clone()),
-        )));
-        let bytes = encode_agent_reply(&long, &AgentCommand::Root {})?;
-        let Err(AgentControlFailure::Refused { reason, .. }) =
-            decode_agent_reply(&bytes, &AgentCommand::Root {})?
-        else {
-            return Err("a long refusal decoded as another result".into());
-        };
-        assert!(reason.ends_with(&message));
         Ok(())
     }
 

@@ -1,4 +1,5 @@
 //! Original-accounting UI record reads through real Streams.
+#![cfg(test)]
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_harness_core::agent::{
@@ -31,13 +32,12 @@ fn navigation(
     })
 }
 
-fn namespace(path: &str) -> acyclic_fs::kernel::NamespacePath {
-    acyclic_fs::kernel::NamespacePath::from_text_in_profile(
+fn namespace(path: &str) -> Result<acyclic_fs::kernel::NamespacePath> {
+    Ok(acyclic_fs::kernel::NamespacePath::from_text_in_profile(
         path,
         acyclic_fs::FilesystemProfile::Portable,
         acyclic_fs::VolumeLimits::default(),
-    )
-    .expect("test namespace")
+    )?)
 }
 
 fn adoption(
@@ -118,7 +118,7 @@ async fn computed_role_reads_the_agents_own_adoption_after_its_fork_origin() -> 
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let mut ctx = KernelAccounting::native(&native, &cancellation);
-    let path = namespace("/role");
+    let path = namespace("/role")?;
     for (agent, expected) in [(parent, "orchestrator"), (child, "worker")] {
         let source = StreamUiProvider::new(
             streams.clone(),
@@ -242,7 +242,7 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
         .map_err(|(error, _)| error)?;
     let mut ctx = KernelAccounting::native(&native, &cancellation);
     let frozen = source.reference(&mut ctx).await?;
-    let path = namespace("/turns/0.md");
+    let path = namespace("/turns/0.md")?;
     let node = source
         .lookup(frozen.clone(), &path, &native, &cancellation)
         .await?
@@ -1089,7 +1089,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         sink.changes
             .lock()
             .unwrap()
-            .contains(&SourceChange::Name(namespace("/diagnostics"))),
+            .contains(&SourceChange::Name(namespace("/diagnostics")?)),
         "opening invalidates previously observed diagnostic descendants"
     );
     sink.changes.lock().unwrap().clear();
@@ -1107,10 +1107,10 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
     assert_eq!(
         *sink.changes.lock().unwrap(),
         [
-            SourceChange::Entry(namespace("/index.md")),
-            SourceChange::Entry(namespace("/status.md")),
-            SourceChange::Entry(namespace("/glyph")),
-            SourceChange::Name(namespace("/diagnostics"))
+            SourceChange::Entry(namespace("/index.md")?),
+            SourceChange::Entry(namespace("/status.md")?),
+            SourceChange::Entry(namespace("/glyph")?),
+            SourceChange::Name(namespace("/diagnostics")?)
         ]
     );
     sink.changes.lock().unwrap().clear();
@@ -1128,7 +1128,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         .await?;
     assert_eq!(
         *sink.changes.lock().unwrap(),
-        [SourceChange::Entry(namespace("/role"))]
+        [SourceChange::Entry(namespace("/role")?)]
     );
     sink.changes.lock().unwrap().clear();
     let child = spawn(
@@ -1140,7 +1140,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
     streams.commit(child.request).await?;
     assert_eq!(
         *sink.changes.lock().unwrap(),
-        [SourceChange::Name(namespace("/children"))]
+        [SourceChange::Name(namespace("/children")?)]
     );
     assert_eq!(sink.lost.load(Ordering::SeqCst), 0);
     watch.stop_accepted_cleanup()?;
@@ -1323,7 +1323,7 @@ async fn stream_ui_chunks_large_child_pages_at_one_exact_cut() -> Result {
         .map_err(|(error, _)| error)?;
     let mut ctx = KernelAccounting::native(&native, &cancellation);
     let empty_reference = provider.reference(&mut ctx).await?;
-    let first_path = namespace("/children/pages/0.md");
+    let first_path = namespace("/children/pages/0.md")?;
     let empty = provider
         .snapshot(empty_reference, ViewQuery::Open(&first_path), &mut ctx)
         .await?;
@@ -1369,7 +1369,7 @@ async fn stream_ui_chunks_large_child_pages_at_one_exact_cut() -> Result {
         (1, page_size as usize..expected.len(), false),
         (2, expected.len()..expected.len(), false),
     ] {
-        let path = namespace(&format!("/children/pages/{page}.md"));
+        let path = namespace(&format!("/children/pages/{page}.md"))?;
         let prepared = provider
             .snapshot(frozen.clone(), ViewQuery::Open(&path), &mut ctx)
             .await?;
@@ -1441,7 +1441,7 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
         frozen,
         "unrelated progress must not invalidate UI inputs"
     );
-    let status_path = namespace("/status.md");
+    let status_path = namespace("/status.md")?;
     let baseline = native.live_allocation_bytes();
     let old = source
         .lookup(frozen.clone(), &status_path, &native, &cancellation)
@@ -1493,7 +1493,7 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
     let children = source
         .list_page(
             frozen.clone(),
-            &namespace("/children"),
+            &namespace("/children")?,
             None,
             1,
             &native,
@@ -1501,7 +1501,7 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
         )
         .await?;
     assert_eq!(children.entries.len(), 1);
-    let child_link = namespace(&format!("/children/{}", child_path.id()));
+    let child_link = namespace(&format!("/children/{}", child_path.id()))?;
     let target = source
         .read_link(
             frozen.clone(),
@@ -1522,7 +1522,7 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
         source
             .lookup(
                 frozen.clone(),
-                &namespace("/children/not-an-agent"),
+                &namespace("/children/not-an-agent")?,
                 &native,
                 &cancellation
             )
@@ -1533,7 +1533,7 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
         source
             .lookup(
                 frozen.clone(),
-                &namespace("/turns/not-a-page.md"),
+                &namespace("/turns/not-a-page.md")?,
                 &native,
                 &cancellation
             )
@@ -1635,7 +1635,7 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
         let page = source
             .list_page(
                 frozen.clone(),
-                &namespace("/"),
+                &namespace("/")?,
                 cursor,
                 1,
                 &native,
@@ -1655,8 +1655,8 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
         Some(b"glyph".as_slice())
     );
     let digest = blake3::Hash::from_bytes(diagnostic.digest).to_hex();
-    let directory = namespace(&format!("/diagnostics/{digest}"));
-    for path in [namespace("/diagnostics"), directory.clone()] {
+    let directory = namespace(&format!("/diagnostics/{digest}"))?;
+    for path in [namespace("/diagnostics")?, directory.clone()] {
         let page = source
             .list_page(frozen.clone(), &path, None, 1, &native, &cancellation)
             .await?;
@@ -1665,7 +1665,7 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
     let mut from = 0;
     let mut complete = String::new();
     loop {
-        let path = namespace(&format!("/diagnostics/{digest}/{from}.md"));
+        let path = namespace(&format!("/diagnostics/{digest}/{from}.md"))?;
         let node = source
             .lookup(frozen.clone(), &path, &native, &cancellation)
             .await?
@@ -1699,7 +1699,7 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
             .parse()?;
     }
     assert_eq!(complete, original);
-    let forged = namespace(&format!("/diagnostics/{}", "0".repeat(64)));
+    let forged = namespace(&format!("/diagnostics/{}", "0".repeat(64)))?;
     assert!(
         source
             .lookup(frozen.clone(), &forged, &native, &cancellation)
@@ -1714,7 +1714,7 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
             idempotency_key: IdempotencyKey::unique(),
         })
         .await?;
-    let old_page = namespace(&format!("/diagnostics/{digest}/0.md"));
+    let old_page = namespace(&format!("/diagnostics/{digest}/0.md"))?;
     assert!(
         source
             .lookup(frozen, &old_page, &native, &cancellation)
@@ -1725,7 +1725,7 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
     let empty = source
         .list_page(
             current.clone(),
-            &namespace("/diagnostics"),
+            &namespace("/diagnostics")?,
             None,
             1,
             &native,

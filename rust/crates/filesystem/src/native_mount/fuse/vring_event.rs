@@ -1,7 +1,7 @@
 //! Kernel identity of an owned eventfd; an fd number is not its identity.
 
 use super::{NativeMountError, fuse_reserve, fuse_vec};
-use crate::{NativeMaterializationWork, materializer::NativeResourceCredit::Copy};
+use crate::{NativeMaterializationWork, ledger::NativeResourceCredit::Copy};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};

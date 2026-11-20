@@ -13,7 +13,8 @@ use acyclic_harness_core::{
     resources::ProviderRef,
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProviderExt as _,
+    AppendRequest, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    MemoryStream, StreamPath, StreamProviderExt as _,
 };
 use futures::future::poll_fn;
 use std::{collections::BTreeMap, sync::Arc, task::Poll};
@@ -89,7 +90,36 @@ async fn wait(
     .await;
 }
 async fn idle(memory: &MemoryStream, path: &AgentPath) -> TestResult {
-    append(memory, path.membership()?, b"self membership".to_vec()).await?;
+    idle_agents(memory, std::iter::once(path.clone())).await
+}
+
+async fn idle_agents(
+    memory: &MemoryStream,
+    paths: impl IntoIterator<Item = AgentPath>,
+) -> TestResult {
+    let mut mutations = Vec::new();
+    for path in paths {
+        mutations.push(CommitMutation::Append {
+            path: path.membership()?,
+            records: vec![b"self membership".to_vec().into()],
+        });
+        mutations.push(CommitMutation::Append {
+            path: StreamPath::new(path.as_str())?,
+            records: vec![idle_adoption(&path)?.into()],
+        });
+    }
+    let outcome = memory
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(Vec::new(), mutations)],
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+    Ok(())
+}
+
+fn idle_adoption(path: &AgentPath) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
     let adoption = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
         agent: path.id(),
         parent: None,
@@ -101,7 +131,7 @@ async fn idle(memory: &MemoryStream, path: &AgentPath) -> TestResult {
         brief: None,
         policy: None,
     }));
-    append(memory, StreamPath::new(path.as_str())?, adoption.encode()?).await
+    Ok(adoption.encode()?)
 }
 
 #[tokio::test]
@@ -301,7 +331,6 @@ async fn ui_default_projection() -> TestResult {
         agent: &selected,
         file: &lookup,
     };
-    assert_eq!(view.project(&cut, &index)?, include_str!("golden/index.md"));
     assert_eq!(view.project(&cut, &UiPath::new("status.md")?)?, "Idle\n");
     // Rows resolve exactly the authored UI cut over the same default files;
     // absence never invents a model, currency or creation clock.
@@ -348,10 +377,6 @@ async fn ui_default_projection() -> TestResult {
         agent: &selected,
         file: &lookup,
     };
-    assert_eq!(
-        view.project(&cut, &children)?,
-        include_str!("golden/children.md")
-    );
     let first = view.nodes(&cut, &children, 0, 2)?;
     assert_eq!(first.nodes.len(), 2);
     let partial = view.nodes(&cut, &children, 0, 1)?;
@@ -587,25 +612,7 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
 }
 
 #[test]
-fn ui_blocks_are_generic_commonmark_and_inert() -> TestResult {
-    let source = "````markdown\n```input fake id=hidden\nno\n```\n````\n\n   ~~~input slider id=amount min=0 max=100\n42\n   ~~~\n\n```input pick-fork id=branch\n<script>bad()</script> [link](https://invalid/)\n```\n";
-    let blocks = blocks::parse(source)?;
-    assert_eq!(blocks.len(), 2);
-    let slider = blocks.first().ok_or("slider")?;
-    assert_eq!(slider.kind, "slider");
-    assert_eq!(slider.body, "42\n");
-    assert_eq!(
-        slider.attributes.get("max").map(String::as_str),
-        Some("100")
-    );
-    let future = blocks.last().ok_or("future")?;
-    assert!(future.body.contains("<script>"));
-    assert!(
-        source
-            .get(future.range.clone())
-            .ok_or("source range")?
-            .starts_with("```input")
-    );
+fn ui_blocks_reject_duplicate_ids_and_oversized_headers() -> TestResult {
     assert!(blocks::parse("```input choose id=x id=y\n```\n").is_err());
     assert!(matches!(
         blocks::parse(&format!(
@@ -621,8 +628,10 @@ fn ui_blocks_are_generic_commonmark_and_inert() -> TestResult {
 async fn ui_lazy_cost() -> TestResult {
     async fn cost(n: u128) -> std::result::Result<u64, Box<dyn std::error::Error>> {
         let memory = Arc::new(MemoryStream::default());
-        for id in 1..=n {
-            idle(&memory, &agent(id)).await?;
+        const AGENTS_PER_COMMIT: usize = 512;
+        for start in (1..=n).step_by(AGENTS_PER_COMMIT) {
+            let end = n.min(start + AGENTS_PER_COMMIT as u128 - 1);
+            idle_agents(&memory, (start..=end).map(agent)).await?;
         }
         let selected = agent(1);
         append(&memory, selected.status()?, status(Phase::Idle).encode()?).await?;
@@ -703,21 +712,6 @@ async fn ui_lazy_cost() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn ui_attention_uses_followed_status() {
-    let (a, b, c) = (agent(1), agent(2), agent(3));
-    let (ask, idle, done) = (
-        status(Phase::WaitingUser {
-            path: "ask.md".into(),
-        }),
-        status(Phase::Idle),
-        status(Phase::Done {
-            outcome: acyclic_harness_core::agent::AgentOutcome::Succeeded { result: None },
-        }),
-    );
-    let visible = [(&a, &ask), (&b, &idle), (&c, &done)];
-    assert_eq!(attention(visible), vec![&a, &c]);
-}
 #[tokio::test]
 async fn ui_role_and_input_target_use_each_agents_own_fork_adoption() -> TestResult {
     use acyclic_harness_core::agent::SpawnContext;

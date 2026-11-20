@@ -42,7 +42,7 @@ impl LocalHarnessConfig {
             }
         }
         if (!self.hermetic || self.state_directory.is_some())
-            && !self.without_user_settings
+            && !self.uses_private_file_signing()
             && self.signing_store.is_none()
         {
             failures.extend(
@@ -62,7 +62,7 @@ impl LocalHarnessConfig {
             if self.workspace_mounting == WorkspaceMounting::Native
                 && matches!(self.project, LocalProject::Workspace(_))
                 && let Err(error) =
-                    workspace::volumes::require_available(self.native_mount_probe.probe())
+                    workspace::volumes::require_available(&self.native_mount_probe.probe())
             {
                 failures.push(error);
             }
@@ -72,10 +72,6 @@ impl LocalHarnessConfig {
                     "shell: {error}; recovery: install the native platform shell and add it to PATH"
                 )));
             }
-        }
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        if native && matches!(self.project, LocalProject::Workspace(_)) {
-            failures.push(Error::Unsupported("checkout workspaces require native-execution; recovery: install a native-execution build".into()));
         }
         if let LocalProject::Workspace(path) = &self.project
             && !path.is_dir()

@@ -370,7 +370,8 @@ void acyclic_fs_darwin_mount_session_free(struct acyclic_fs_darwin_mount_session
 int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session, int argc, char **argv,
                           const char *mountpoint, uintptr_t context,
                           void (*mounted)(void *arg), void *mounted_arg,
-                          int *interrupted_before_namespace) {
+                          int *interrupted_before_namespace,
+                          const unsigned char *owner_image, size_t owner_image_len, int fence) {
   if (session == NULL) {
     return 4;
   }
@@ -383,7 +384,7 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
   }
   pthread_mutex_unlock(&session->mutex);
   struct fuse_args arguments = FUSE_ARGS_INIT(argc, argv);
-  struct fuse_chan *channel = fuse_mount(mountpoint, &arguments);
+  struct fuse_chan *channel = fuse_mount(mountpoint, &arguments, owner_image, owner_image_len, fence);
   if (channel == NULL) {
     return 2;
   }
@@ -398,14 +399,12 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
   pthread_mutex_lock(&session->mutex);
   if (session->stop_requested) {
     pthread_mutex_unlock(&session->mutex);
-    fuse_unmount(NULL, channel);
     fuse_destroy(instance);
     *interrupted_before_namespace = 1;
     return 0;
   }
   if (session->instance != NULL) {
     pthread_mutex_unlock(&session->mutex);
-    fuse_unmount(NULL, channel);
     fuse_destroy(instance);
     return 3;
   }
@@ -415,8 +414,7 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
   pthread_mutex_lock(&session->mutex);
   session->instance = NULL;
   pthread_mutex_unlock(&session->mutex);
-  /* Rust owns bounded unmount and verifies that the kernel detached before
-     interrupting this loop. Repeating umount here races concurrent teardown. */
+  /* The loop has joined the mount custodian before releasing its channel. */
   fuse_destroy(instance);
   return status;
 }
@@ -437,6 +435,14 @@ int acyclic_fs_darwin_mount_invalidate(struct acyclic_fs_darwin_mount_session *s
   }
   pthread_mutex_unlock(&session->mutex);
   return status;
+}
+
+pid_t acyclic_fs_darwin_mount_owner_pid(struct acyclic_fs_darwin_mount_session *session) {
+  if (session == NULL) return 0;
+  pthread_mutex_lock(&session->mutex);
+  pid_t owner = session->instance == NULL ? 0 : fuse_mount_owner_pid(session->instance);
+  pthread_mutex_unlock(&session->mutex);
+  return owner;
 }
 
 unsigned acyclic_fs_darwin_mount_attribute_timeout(void) {

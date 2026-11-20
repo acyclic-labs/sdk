@@ -1,0 +1,315 @@
+//! Trusted JavaScript model and tool callbacks behind the stock executor's
+//! provider and tool contracts.
+
+use super::{Error, Result, from_js, to_js_client};
+use crate::wasm::cancel::Cancel;
+use crate::{
+    context::ModelContextCapacity,
+    conversation::{ContentResidencyVerifier, verified_content_bytes},
+    model::{
+        FileProjectionPolicy, Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest,
+    },
+    tool::{ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
+};
+use js_sys::{Function, Promise};
+use serde_json::Value;
+use std::sync::Arc;
+use wasm_bindgen::{JsCast as _, prelude::*};
+use wasm_bindgen_futures::JsFuture;
+
+/// Trusted host effects are explicitly composed; rejection is an uncertain
+/// provider result, so the existing runner retains its reconciliation journal.
+pub(super) struct HostTool {
+    pub(super) execute: Function,
+    pub(super) reconcile: Function,
+    pub(super) project: Function,
+}
+impl HostTool {
+    async fn call<T: serde::de::DeserializeOwned>(
+        &self,
+        callback: &Function,
+        invocation: ToolInvocation,
+    ) -> Result<T> {
+        let input = to_js_client(&invocation)
+            .map_err(|_| Error::Invalid("tool invocation encoding failed".into()))?;
+        let result = callback
+            .call1(&JsValue::UNDEFINED, &input)
+            .map_err(|_| Error::Storage("host tool result is uncertain".into()))?;
+        let result = JsFuture::from(Promise::resolve(&result))
+            .await
+            .map_err(|_| Error::Storage("host tool result is uncertain".into()))?;
+        // The callback already ran; a malformed receipt cannot establish that
+        // execution was rejected. Retain the original attempt for reconciliation.
+        from_js(result).map_err(|_| Error::Storage("host tool result is uncertain".into()))
+    }
+}
+impl ToolExecutor for HostTool {
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ToolResult>> {
+        Box::pin(self.call(&self.execute, invocation))
+    }
+    fn reconcile<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(self.call(&self.reconcile, invocation))
+    }
+}
+impl ToolProjection for HostTool {
+    fn project(
+        &self,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+        _work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
+        let invocation = to_js_client(invocation)
+            .map_err(|_| Error::Invalid("tool projection invocation encoding failed".into()))?;
+        let result = to_js_client(result)
+            .map_err(|_| Error::Invalid("tool projection result encoding failed".into()))?;
+        let value = self
+            .project
+            .call2(&JsValue::UNDEFINED, &invocation, &result)
+            .map_err(|_| Error::Invalid("tool projection failed".into()))?;
+        from_js(value)
+            .map(|value| (value, None))
+            .map_err(|_| Error::Invalid("tool projection is invalid".into()))
+    }
+}
+
+/// A trusted JavaScript model. Its `generate` receives the canonical request
+/// bytes, then the verified bytes of each file the request projects in full, in
+/// request order, read through the turn's authenticated reader.
+#[derive(Clone)]
+pub(super) struct HostModel {
+    pub(super) generate: Function,
+    pub(super) reconcile: Function,
+    pub(super) capacity: Option<Function>,
+    pub(super) count_tokens: Option<Function>,
+    pub(super) content: Option<(Arc<dyn ContentResidencyVerifier>, Option<u64>)>,
+}
+
+struct HostModelIterator {
+    iterator: JsValue,
+    cancel: Cancel,
+}
+impl Drop for HostModelIterator {
+    fn drop(&mut self) {
+        self.cancel.abort();
+        if let Ok(value) = js_sys::Reflect::get(&self.iterator, &JsValue::from_str("return"))
+            && let Ok(close) = value.dyn_into::<Function>()
+        {
+            let _ = close.call0(&self.iterator);
+        }
+    }
+}
+
+impl HostModel {
+    fn failure(dispatch: Option<ModelDispatch>, stream: bool) -> Error {
+        match (dispatch.is_some(), stream) {
+            (true, false) => Error::Storage("host model dispatch is uncertain".into()),
+            (true, true) => Error::Storage("host model stream is uncertain".into()),
+            (false, false) => Error::Invalid("model token counting callback failed".into()),
+            (false, true) => Error::Invalid("model token counting stream failed".into()),
+        }
+    }
+
+    /// Verified bytes of every non-reference file part, in request order.
+    async fn files(&self, request: &PreparedModelRequest) -> Result<js_sys::Array> {
+        let files = js_sys::Array::new();
+        if let Some((_, maximum)) = &self.content {
+            request.projected_file_bytes(*maximum)?;
+        }
+        for message in &request.request().messages {
+            for (file, policy) in message.content.file_parts() {
+                if matches!(policy, FileProjectionPolicy::Reference) {
+                    continue;
+                }
+                let (reader, _) = self.content.as_ref().ok_or_else(|| {
+                    Error::Unsupported("model file byte resolution is unavailable".into())
+                })?;
+                let (bytes, _hold) =
+                    verified_content_bytes(reader.as_ref(), file, None, None, None).await?;
+                files.push(&js_sys::Uint8Array::from(bytes.as_slice()));
+            }
+        }
+        Ok(files)
+    }
+
+    async fn start(
+        &self,
+        request: &PreparedModelRequest,
+        dispatch: Option<ModelDispatch>,
+    ) -> Result<HostModelIterator> {
+        let files = if dispatch.is_some() {
+            Some(self.files(request).await?)
+        } else {
+            None
+        };
+        let cancel =
+            Cancel::new().map_err(|error| Error::Unsupported(format!("browser model {error}")))?;
+        let signal = cancel.signal.clone();
+        let mut attempt = HostModelIterator {
+            iterator: JsValue::UNDEFINED,
+            cancel,
+        };
+        let arguments = js_sys::Array::new();
+        arguments.push(&js_sys::Uint8Array::from(request.bytes()));
+        let (callback, identity) = match dispatch {
+            Some(dispatch) => (&self.generate, to_js_client(&dispatch)),
+            None => (
+                self.count_tokens.as_ref().ok_or_else(|| {
+                    Error::Unsupported("selected model token counting is unavailable".into())
+                })?,
+                to_js_client(&request.request_digest()),
+            ),
+        };
+        arguments.push(
+            &identity
+                .map_err(|_| Error::Invalid("model request identity encoding failed".into()))?,
+        );
+        arguments.push(&signal);
+        if let Some(files) = files {
+            arguments.push(&files);
+        }
+        attempt.iterator = callback
+            .apply(&JsValue::UNDEFINED, &arguments)
+            .map_err(|_| Self::failure(dispatch, false))?;
+        Ok(attempt)
+    }
+    fn events<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: Option<ModelDispatch>,
+    ) -> crate::model::ModelStream<'a> {
+        // Pull exactly one event per poll. The stock executor owns admission,
+        // event limits, cancellation, request identity and durable consumption.
+        crate::model::ModelStream::new(Box::pin(futures::stream::try_unfold(
+            None,
+            move |iterator: Option<HostModelIterator>| async move {
+                let iterator = match iterator {
+                    Some(iterator) => iterator,
+                    None => self.start(request, dispatch).await?,
+                };
+                let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
+                    .ok()
+                    .and_then(|value| value.dyn_into::<Function>().ok())
+                    .ok_or_else(|| {
+                        Error::Invalid("host model must return an async iterator".into())
+                    })?;
+                let pending = next
+                    .call0(&iterator.iterator)
+                    .map_err(|_| Self::failure(dispatch, true))?;
+                let item = JsFuture::from(Promise::resolve(&pending))
+                    .await
+                    .map_err(|_| Self::failure(dispatch, true))?;
+                let done = js_sys::Reflect::get(&item, &JsValue::from_str("done"))
+                    .map_err(|_| Error::Invalid("host model iterator result is invalid".into()))?;
+                if done.as_bool() == Some(true) {
+                    return Ok(None);
+                }
+                if done.as_bool() != Some(false) {
+                    return Err(Error::Invalid(
+                        "host model iterator completion flag is invalid".into(),
+                    ));
+                }
+                let value = js_sys::Reflect::get(&item, &JsValue::from_str("value"))
+                    .map_err(|_| Error::Invalid("host model event is missing".into()))?;
+                let event: ModelEvent = from_js(value)
+                    .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
+                if dispatch.is_none() {
+                    match &event {
+                        ModelEvent::Wait(_) | ModelEvent::Trace { .. } => {}
+                        ModelEvent::Counted { count } => {
+                            count.validate(request, &mut None)?;
+                        }
+                        _ => {
+                            return Err(Error::Invalid(
+                                "host counter emitted generation output".into(),
+                            ));
+                        }
+                    }
+                }
+                Ok(Some((event, Some(iterator))))
+            },
+        )))
+    }
+}
+
+impl ModelProvider for HostModel {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        maximum_bytes: Option<u64>,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        Some(Arc::new(Self {
+            content: Some((reader, maximum_bytes)),
+            ..self.clone()
+        }))
+    }
+
+    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
+        let callback = self.capacity.as_ref().ok_or_else(|| {
+            Error::Unsupported("selected model context capacity is unavailable".into())
+        })?;
+        let model = to_js_client(model)
+            .map_err(|_| Error::Invalid("model capacity selection encoding failed".into()))?;
+        let value = callback
+            .call1(&JsValue::UNDEFINED, &model)
+            .map_err(|_| Error::Invalid("model capacity callback failed".into()))?;
+        let capacity: ModelContextCapacity = from_js(value)
+            .map_err(|_| Error::Invalid("model capacity callback returned invalid data".into()))?;
+        capacity.validate()?;
+        Ok(capacity)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        _ceiling: u64,
+    ) -> crate::model::ModelStream<'a> {
+        self.events(request, None)
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        self.events(request, Some(dispatch))
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        dispatch: ModelDispatch,
+        observed: &'a [ModelEvent],
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async move {
+            let attempt = to_js_client(&dispatch)
+                .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
+            super::super::set_js_field(
+                &attempt,
+                "observed",
+                &to_js_client(&observed)
+                    .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?,
+            )
+            .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
+            let pending = self
+                .reconcile
+                .call1(&JsValue::UNDEFINED, &attempt)
+                .map_err(|_| Error::Storage("host model reconciliation is uncertain".into()))?;
+            let result = JsFuture::from(Promise::resolve(&pending))
+                .await
+                .map_err(|_| Error::Storage("host model reconciliation is uncertain".into()))?;
+            from_js(result)
+                .map_err(|_| Error::Invalid("host model reconciliation is invalid".into()))
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "accounting_tests.rs"]
+mod accounting_tests;

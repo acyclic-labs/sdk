@@ -1179,6 +1179,9 @@ static int caller_in_group(const struct fuse_context *caller, gid_t gid)
  * except executing a file no one may execute.  A directory's write bit
  * grants deleting its entries; deleting a non-directory is decided by the
  * directory that holds it, so the file itself never withholds DELETE.
+ * The macOS NFS client requests ACCESS4_EXECUTE for a directory's search
+ * bit and denies access when it is absent, so a directory grants both
+ * LOOKUP and EXECUTE for that bit.
  */
 static uint32_t access_granted(const struct stat *st,
                                const struct fuse_context *caller)
@@ -1202,7 +1205,8 @@ static uint32_t access_granted(const struct stat *st,
         granted |= ACCESS4_MODIFY | ACCESS4_EXTEND |
                    (directory ? ACCESS4_DELETE : 0);
     if (bits & 01)
-        granted |= directory ? ACCESS4_LOOKUP : ACCESS4_EXECUTE;
+        granted |= directory ? (ACCESS4_LOOKUP | ACCESS4_EXECUTE)
+                             : ACCESS4_EXECUTE;
     return granted;
 }
 
@@ -1242,10 +1246,13 @@ static uint32_t handle_access(const darwinfuse_config_t *config,
     uint32_t granted = access_granted(&st, caller);
     if (is_attribute_inode) {
         /* An attribute directory and its streams carry the owning file's
-         * read and write rights; streams are data, never executable. */
+         * read and write rights; streams are data, never executable.  The
+         * attribute directory itself is a directory, so its search bit also
+         * grants the EXECUTE right the macOS client checks. */
         uint32_t rights = 0;
         if (granted & ACCESS4_READ)
-            rights |= ACCESS4_READ | ACCESS4_LOOKUP;
+            rights |= ACCESS4_READ | ACCESS4_LOOKUP |
+                      (type == DFUSE_INO_ATTRDIR ? ACCESS4_EXECUTE : 0);
         if (granted & ACCESS4_MODIFY)
             rights |= ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE;
         granted = rights;
@@ -3969,10 +3976,11 @@ int nfs4_test_access_rights(void)
                                            ACCESS4_EXECUTE | ACCESS4_DELETE))
         status = 6;
     else if (access_test_granted(&config, &conn, &ctx, S_IFDIR | 0555, 501, 0,
-                                 NULL) != (ACCESS4_READ | ACCESS4_LOOKUP))
+                                 NULL) != (ACCESS4_READ | ACCESS4_LOOKUP |
+                                            ACCESS4_EXECUTE))
         status = 7;
     else if (access_test_granted(&config, &conn, &ctx, S_IFDIR | 0700, 501, 0,
-                                 NULL) != 0x1f)
+                                 NULL) != 0x3f)
         status = 8;
     darwinfuse_set_context(0, 0, 0, NULL);
     dfuse_itable_destroy(config.inode_table);

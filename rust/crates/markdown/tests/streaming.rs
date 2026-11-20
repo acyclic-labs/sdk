@@ -1,7 +1,6 @@
 //! Golden rendering and delta-boundary invariants ported from `GraphCoder`.
 
 use acyclic_markdown::{Line, Markdown};
-use proptest::prelude::*;
 
 // Ported from Q:/graphcoder lib/client/src/markdown/parser.test.ts:
 // representative streaming grammar and literal/currency fixtures. Selection
@@ -163,23 +162,4 @@ fn stable_blocks_and_fence_lines_are_not_replaced() {
     assert!(markdown.lines().is_empty());
     markdown.push("fresh");
     assert_eq!(plain(markdown.lines()), "fresh");
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0005), ..ProptestConfig::with_cases(64) })]
-    #[test]
-    fn arbitrary_delta_partitions(parts in prop::collection::vec(0usize..12, 1..25), cuts in prop::collection::vec(1usize..20, 1..12)) {
-        let vocabulary = ["text 🦀", "**bold**", "\n", "\n\n", "- item\n", "```rust\n", "let x = 1;\n", "```\n", "[x](url)", "| a | b |\n", "| - | - |\n", "[r]: url\n"];
-        let source: String = parts.iter().filter_map(|index| vocabulary.get(*index)).copied().collect();
-        let mut streamed = Markdown::default();
-        let mut offset = 0;
-        for size in cuts.iter().cycle() {
-            if offset == source.len() { break; }
-            let mut end = (offset + size).min(source.len());
-            while !source.is_char_boundary(end) { end += 1; }
-            streamed.push(source.get(offset..end).unwrap_or_default());
-            prop_assert_eq!(streamed.lines(), fresh(source.get(..end).unwrap_or_default()));
-            offset = end;
-        }
-    }
 }

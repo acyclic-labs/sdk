@@ -46,8 +46,8 @@ use crate::{
     AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildrenPage,
     ChildrenPageRequest, CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome,
     CommitRequest, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, ReadRequest, Record, RecordStream,
+    StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 #[cfg(all(loom, not(target_arch = "wasm32")))]
@@ -100,13 +100,6 @@ include!("work.rs");
 
 include!("commit.rs");
 include!("receipt.rs");
-
-#[cfg(test)]
-impl UnixMillisClock for std::sync::atomic::AtomicU64 {
-    fn now_unix_millis(&self) -> u64 {
-        self.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
 
 include!("append.rs");
 include!("fork.rs");

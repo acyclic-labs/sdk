@@ -29,7 +29,7 @@ where
 }
 
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 pub(super) async fn sync_generation_file<E, F, Fut>(
     file: &acyclic_native_runtime::NativeFile,
     receipt: &mut GenerationReceipt,

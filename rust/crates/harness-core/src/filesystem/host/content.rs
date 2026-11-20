@@ -109,40 +109,4 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?
         .await
     }
-
-    /// Stages a complete canonical attachment list for a manifest-backed event.
-    pub async fn put_attachment_manifest(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        items: &[Attachment],
-        maximum_bytes: Option<u64>,
-        idempotency_key: &IdempotencyKey,
-    ) -> Result<ReferencedAttachments>
-    where
-        A: 'static,
-        O: 'static,
-    {
-        let bytes = crate::conversation::encode_attachment_manifest(items)?;
-        let manifest = self
-            .put_content(
-                volume,
-                grant,
-                path,
-                &bytes,
-                crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
-                "attachments.json",
-                maximum_bytes,
-                idempotency_key,
-                None,
-                crate::conversation::ContentAccess::default(),
-            )
-            .await?;
-        Ok(ReferencedAttachments::Manifest {
-            manifest,
-            item_count: u32::try_from(items.len())
-                .map_err(|_| Error::Invalid("attachment count exceeds limit".into()))?,
-        })
-    }
 }

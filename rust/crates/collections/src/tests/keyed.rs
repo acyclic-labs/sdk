@@ -4,7 +4,6 @@ use super::*;
 fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
 -> Result<(), &'static str> {
     keyed_generated_histories()?;
-    keyed_global_cut_negative()?;
     keyed_population_work()?;
     binary_key_order_and_refusal()?;
     keyed_wide_path_retirement()?;
@@ -128,40 +127,8 @@ fn keyed_generated_histories() -> Result<(), &'static str> {
     Ok(())
 }
 
-fn keyed_global_cut_negative() -> Result<(), &'static str> {
-    // A lexical composite prefix is the actual existing operation, and cannot
-    // implement a global sequence cut: it keeps a future row under a lower key.
-    let mut work = Work::default();
-    let composite = |key: u64, sequence: u64| {
-        let mut result = [0; 16];
-        result[..8].copy_from_slice(&key.to_be_bytes());
-        result[8..].copy_from_slice(&sequence.to_be_bytes());
-        result
-    };
-    let old = PersistentIndex::default().insert(&composite(0, 9), 9, &mut work)?;
-    assert!(
-        old.prefix(composite(1, 5), &mut work)?
-            .predecessor(composite(0, 9), &mut work)?
-            .is_some()
-    );
-    let original =
-        KeyedIndex::<_, _, 8>::default().insert(&0_u64.to_be_bytes(), 9, 9, &mut work)?;
-    let corrected = original
-        .cap(5)
-        .insert(&1_u64.to_be_bytes(), 5, 5, &mut work)?;
-    assert_eq!(corrected.seek(0_u64.to_be_bytes(), 0, 20, &mut work)?, None);
-    assert_eq!(
-        corrected.seek(1_u64.to_be_bytes(), 0, 20, &mut work)?,
-        Some((5, &5))
-    );
-    drop((old, original, corrected));
-    assert_eq!(work.live.get(), 0);
-    Ok(())
-}
-
 fn keyed_population_work() -> Result<(), &'static str> {
-    let mut indexed_work = [[0; 3]; 2];
-    for (observations, population) in indexed_work.iter_mut().zip([1_u64, 100_000]) {
+    for population in [1_u64, 100_000] {
         let mut work = Work {
             observe_retirement: true,
             ..Work::default()
@@ -183,15 +150,13 @@ fn keyed_population_work() -> Result<(), &'static str> {
                 let capped = index.cap(7);
                 let fork = capped.clone();
                 assert_eq!(work.claims, claims);
-                for (observation, key) in observations.iter_mut().zip([0, population - 1, u64::MAX])
-                {
+                for key in [0, population - 1, u64::MAX] {
                     let items = work.items;
                     let actual = index.seek(key.to_be_bytes(), 0, 8, &mut work)?;
                     assert_eq!(
                         actual.map(|(s, v)| (s, *v)),
                         (key < population).then_some((7, key))
                     );
-                    *observation = work.items - items;
                     assert!(work.items - items <= 3 * 65 * 60);
                     assert_eq!(work.claims, claims);
                     assert_eq!(fork.seek(key.to_be_bytes(), 0, 8, &mut work)?, None);
@@ -243,9 +208,6 @@ fn keyed_population_work() -> Result<(), &'static str> {
     assert!(
         old_work[1] > old_work[0],
         "the actual ordered-map negative must expose population growth"
-    );
-    println!(
-        "population=[1,100000] indexed_items={indexed_work:?} ordered_comparisons={old_work:?}; seek/cap allocations=0"
     );
     Ok(())
 }

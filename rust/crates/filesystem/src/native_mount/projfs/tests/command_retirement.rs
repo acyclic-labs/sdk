@@ -225,8 +225,8 @@ async fn failed_projection_cleanup_refunds_no_work_and_retries_on_original_budge
     // Empty and populated projections must both recover after root-tag failure.
     for count in 0..3 {
         let cancellation = CancellationToken::new();
-        let ledger = Arc::new(crate::demand::NativeDemandReadMeter::new(
-            crate::demand::DemandWork::new(
+        let ledger = Arc::new(crate::ledger::NativeDemandReadMeter::new(
+            crate::ledger::DemandWork::new(
                 WorkBudget {
                     backend_write_operations: 256,
                     ..WorkBudget::UNBOUNDED

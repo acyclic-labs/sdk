@@ -1,3 +1,4 @@
+use super::metadata::read_file_annotation_at;
 use super::*;
 mod unindexed;
 
@@ -27,8 +28,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{}", file.path()), work)
         })?;
         let _path_hold = io.guard_owned(path.capacity() as u64)?;
+        let key = content_metadata_key_io(file.volume(), file.path(), Some(io))?;
+        let _key_hold = io.guard_owned(key.retained_bytes() as u64)?;
         let original =
-            Self::authenticate_selected_file(&workspace, &selected, file, &path, io).await?;
+            Self::authenticate_selected_file(&workspace, &selected, file, (&path, &key), io)
+                .await?;
         let base = Self::publication_base(&workspace, &original, io).await?;
         if io.sdk(
             original
@@ -75,11 +79,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let _reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
-        let workspace = self.open(&reference, Some(io)).await?;
-        let original = self
-            .generation(&workspace, &changes.generation, Some(io))
-            .await?;
-        let base = Self::publication_base(&workspace, &original, io).await?;
+        let root = self.open(&reference, Some(io)).await?;
+        let (workspace, _binding) = self
+            .content_operation_workspace(&root, changes.operation, false, io)
+            .await?
+            .ok_or_else(|| io.invalid("original change workspace is absent"))?;
+        let publication = io
+            .sdk(
+                workspace
+                    .operation_publication(changes.operation, None, io, io.cancellation())
+                    .await,
+            )?
+            .ok_or_else(|| io.invalid("original change publication is absent"))?;
+        let original = publication.generation();
+        if original.id().to_bytes().as_slice() != changes.generation.as_resource().key() {
+            return Err(io.invalid("change receipt names a different publication generation"));
+        }
+        let base = io
+            .sdk(publication.predecessor(io, io.cancellation()).await)?
+            .ok_or_else(|| io.invalid("original change publication has no predecessor"))?;
+        if original.id() == base.id() {
+            return Ok(false);
+        }
         for member in &changes.members {
             let path = crate::executor::with_history_io(Some(io), |work| {
                 crate::executor::preparation_format(format_args!("/{}", member.path()), work)
@@ -90,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .matches_optional_content(&base, &path, io, io.cancellation())
                     .await,
             )? {
-                bounded_io::retain(&original, Some(io)).await?;
+                bounded_io::retain(original, Some(io)).await?;
                 return Ok(true);
             }
         }
@@ -141,8 +162,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
+        let _path_hold = io.guard_owned(path.capacity() as u64)?;
+        let key = content_metadata_key_io(reference.volume(), reference.path(), Some(io))?;
+        let _key_hold = io.guard_owned(key.retained_bytes() as u64)?;
         let original =
-            Self::authenticate_selected_file(opened, selected, reference, &path, io).await?;
+            Self::authenticate_selected_file(opened, selected, reference, (&path, &key), io)
+                .await?;
         let chunk = io.sdk(
             selected
                 .read_range_if_unchanged(&original, &path, range, io, io.cancellation())
@@ -158,13 +183,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         opened: &Workspace<A, O>,
         selected: &acyclic_fs::Generation<A, O>,
         reference: &FileRef,
-        path: &str,
+        annotation: (&str, &AttributeName),
         io: &PreparationIo,
     ) -> Result<acyclic_fs::Generation<A, O>> {
-        let metadata_key = content_metadata_key_io(reference.volume(), reference.path(), Some(io))?;
-        let metadata =
-            read_file_annotation(selected, reference.path(), &metadata_key, None, Some(io)).await?;
+        let (path, metadata_key) = annotation;
+        let metadata = read_file_annotation_at(selected, path, metadata_key, None, io).await?;
         let original = if let Some(metadata) = metadata {
+            let _metadata_hold = io.guard_bytes(&metadata)?;
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume() || staged.path() != reference.path() {
                 return Err(stock_boundary(
@@ -174,8 +199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
             let original =
-                matching_publication(opened, selected, &staged, &metadata_key, &metadata, io)
-                    .await?;
+                matching_publication(opened, selected, &staged, annotation, &metadata, io).await?;
             if let Some(original) = original {
                 if staged.descriptor() != reference.descriptor()
                     || staged.display_name() != reference.display_name()
@@ -205,7 +229,7 @@ pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectS
     opened: &Workspace<A, O>,
     selected: &acyclic_fs::Generation<A, O>,
     staged: &FileRef,
-    metadata_key: &AttributeName,
+    annotation: (&str, &AttributeName),
     metadata: &[u8],
     io: &PreparationIo,
 ) -> Result<Option<acyclic_fs::Generation<A, O>>> {
@@ -235,8 +259,13 @@ pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectS
             )
         })?;
     if selected.id() != original.id() {
+        let (path, metadata_key) = annotation;
         let original_metadata =
-            read_file_annotation(&original, staged.path(), metadata_key, None, Some(io)).await?;
+            read_file_annotation_at(&original, path, metadata_key, None, io).await?;
+        let _metadata_hold = original_metadata
+            .as_ref()
+            .map(|metadata| io.guard_bytes(metadata))
+            .transpose()?;
         if original_metadata.as_deref() != Some(metadata) {
             return Err(stock_boundary(
                 Some(io),
@@ -244,14 +273,9 @@ pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectS
                 "range index differs from its publication",
             ));
         }
-        let path = crate::executor::preparation_format(
-            format_args!("/{}", staged.path()),
-            &mut Some(&mut io.history_io()),
-        )?;
-        let _path_hold = io.guard_owned(path.capacity() as u64)?;
         if !io.sdk(
             selected
-                .matches_file_payload(&original, &path, io, io.cancellation())
+                .matches_file_payload(&original, path, io, io.cancellation())
                 .await,
         )? {
             return Ok(None);

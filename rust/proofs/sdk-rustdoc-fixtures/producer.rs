@@ -6,6 +6,7 @@ fn main() {
     let artifacts = PathBuf::from(args.next().unwrap());
     let rustup = fs::canonicalize(args.next().unwrap()).unwrap();
     let toolchain = args.next().unwrap().into_string().unwrap();
+    let target_triple = args.next().unwrap().into_string().unwrap();
     let package = args.next().unwrap().into_string().unwrap();
     let manifest_path = PathBuf::from(args.next().unwrap());
     let selected_lock = PathBuf::from(args.next().unwrap());
@@ -50,6 +51,11 @@ fn main() {
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .unwrap();
+    let target_triple = if target_triple.is_empty() {
+        host
+    } else {
+        &target_triple
+    };
     let bin = home
         .join("toolchains")
         .join(format!("{toolchain}-{host}"))
@@ -77,7 +83,7 @@ fn main() {
         .arg(source.join(manifest_path))
         .args(["--package", &package])
         .args(target_args)
-        .args(["--target", host])
+        .args(["--target", target_triple])
         .args(args);
     if !selected_lock.as_os_str().is_empty() {
         let lock = fs::canonicalize(source.join(selected_lock)).unwrap();
@@ -101,7 +107,7 @@ fn main() {
         .env("CARGO_PROFILE_DEV_DEBUG", "0")
         .env(
             "CARGO_ENCODED_RUSTFLAGS",
-            if cfg!(windows) {
+            if target_triple.ends_with("-windows-msvc") {
                 "-C\u{1f}prefer-dynamic"
             } else {
                 ""
@@ -115,7 +121,7 @@ fn main() {
     let rustdoc = (if proc_macro {
         target.join("doc")
     } else {
-        target.join(host).join("doc")
+        target.join(target_triple).join("doc")
     })
     .join(format!("{receipt_name}.json"));
     if artifacts.as_os_str().is_empty() {

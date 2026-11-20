@@ -135,12 +135,11 @@ pub(super) fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
 /// One existing physical driver's accounting activation, not task authority.
 #[derive(Default)]
 pub(crate) struct NativeMountMeterActivation {
-    pub(super) meter: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
-    pub(super) resource_allowance:
-        Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
-    pub(super) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
-    pub(super) invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
-    pub(super) execution: Option<std::sync::Weak<crate::materializer::NativeSourceExecutionView>>,
+    pub(super) meter: std::sync::Weak<crate::ledger::NativeDemandReadMeter>,
+    pub(super) resource_allowance: Option<std::sync::Weak<crate::ledger::NativeResourceAllowance>>,
+    pub(super) capture_origin: Option<std::sync::Weak<crate::ledger::CaptureTransientCustody>>,
+    pub(super) invocation: Option<std::sync::Weak<crate::ledger::NativeInvocationView>>,
+    pub(super) execution: Option<std::sync::Weak<crate::ledger::NativeSourceExecutionView>>,
     pub(super) depth: u64,
     pub(super) generation: u64,
 }

@@ -22,6 +22,8 @@ macro_rules! record {
 mod counters;
 #[cfg(feature = "enabled")]
 pub use counters::{Counts, node, scan, snapshot, span_copy};
+#[cfg(feature = "enabled")]
+pub mod work;
 
 #[cfg(all(test, feature = "enabled"))]
 #[test]

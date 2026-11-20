@@ -363,7 +363,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         let prepared = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
         crate::call_ids::CallIds::assert_round_trip(prepared.request());
         let body = crate::projection::body_named(
-            provider,
+            &**provider,
             prepared.request(),
             &crate::tool_names::Names::new(prepared.request()),
             &provider.reasoning_origin(None, None),

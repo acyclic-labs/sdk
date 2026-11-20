@@ -367,7 +367,7 @@ impl Screen<'_> {
     }
 
     /// Construct activity spans only when their row is inside the painted viewport.
-    pub fn thinking_line(
+    fn thinking_line(
         &self,
         input: &PromptInput,
         areas: &ScreenAreas,

@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/completion.rs
-+++ b/rust/crates/harness/src/completion.rs
+--- a/rust/crates/harness-cli/src/completion.rs
++++ b/rust/crates/harness-cli/src/completion.rs
 @@ -149,7 +149,7 @@
      tokio::select! {
          result = write => match result {

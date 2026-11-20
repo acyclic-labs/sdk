@@ -48,7 +48,7 @@ impl Driver {
 
     /// Start a process with an explicit budget for tests at the exact boundary.
     pub fn budgeted(root: &Path, scenario: &str, fault: &str, steps: u64) -> io::Result<Self> {
-        let mut child = Command::new("bun")
+        let mut child = Command::new(acyclic_test_support::host_tool!("bun"))
             .arg(if scenario.starts_with("deadline") {
                 "node_modules/@acyclic-labs/stream/test/session-deadline-model-driver.ts"
             } else if scenario == "queue-work" {

@@ -162,7 +162,9 @@ fn check(text: &[String; 3], invalid: bool) -> TestCaseResult {
             && semantic(&old_trace) == semantic(&new_trace)
             && preparations(&old_trace) == if invalid { 0 } else { 4 }
             && preparations(&new_trace) == if invalid { 0 } else { 1 }
-            && publications == if invalid { 0 } else { 1 },
+            // The first cut writes its reusable header, message segment,
+            // manifest and projection exactly once.
+            && publications == if invalid { 0 } else { 4 },
         "independent preparation differs or repeats removed work: old={old:?}, new={new:?}, old_trace={old_trace:?}, new_trace={new_trace:?}"
     );
     Ok(())

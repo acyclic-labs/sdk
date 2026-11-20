@@ -165,19 +165,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
     }
 }
 
-use build_metadata::generated;
-
-/// Generated Protobuf envelopes shared by every transport: the harness contract and the protocol handshake it negotiates with.
-pub mod wire {
-    pub use super::generated::acyclic::harness::v2::*;
-    pub use super::generated::acyclic::protocol::v1::*;
-    pub use acyclic_machines::wire::selection::{
-        ProviderRef, VolumeClass, VolumeOwner, VolumeRef, volume_owner,
-    };
-}
-
-/// Canonical harness descriptor set used for transport compatibility.
-pub const FILE_DESCRIPTOR_SET: &[u8] = build_metadata::FILE_DESCRIPTOR_SET;
+pub use acyclic_harness_wire::{FILE_DESCRIPTOR_SET, wire};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::executor::json::json_from_value_bounded;

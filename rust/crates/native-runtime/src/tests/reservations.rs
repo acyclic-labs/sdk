@@ -1,13 +1,5 @@
 use super::*;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Credit {
-    Operations,
-    Bytes,
-    Codec,
-    AllocationReservation,
-    Allocation,
-}
+use crate::test_fixtures::Credit;
 
 fn exercise_credit(
     credit: Credit,

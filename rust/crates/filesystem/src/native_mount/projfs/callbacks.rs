@@ -11,7 +11,7 @@ pub(super) struct Runtime {
     pub(super) work: Mutex<crate::NativeMaterializationWork>,
     pub(super) active_work: Mutex<super::super::NativeMountMeterActivation>,
     /// Signalled when the last accounting activation leaves `active_work`.
-    pub(super) active_work_idle: crate::sync::Condvar,
+    pub(super) active_work_idle: acyclic_native_runtime::InlineCondvar,
     pub(super) original_work: Mutex<Option<crate::NativeMaterializationWork>>,
     pub(super) callback_guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(super) root: PathBuf,

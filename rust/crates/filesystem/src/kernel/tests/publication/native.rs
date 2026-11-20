@@ -86,8 +86,12 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
     let root = native_fixture(&objects, volume_id).await?;
     let request = native_request(&objects, &authority, volume_id, root).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let owner_epoch = std::sync::Arc::new(AtomicU64::new(1));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -179,8 +183,12 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         } else {
             budget.backend_read_operations = 3;
         }
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            budget,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let owner_calls = calls.clone();
@@ -249,8 +257,12 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         SimulationFault::AmbiguousAuthorityAppend,
     );
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
     let evidence =
         acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
@@ -296,8 +308,12 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         "unexpected publication failure: {failure:?}"
     );
     assert_eq!(original.receipt().unwrap().authority_records_appended, 1);
-    let reopened = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let reopened = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let resolved = crate::AsyncAuthorityStore::find_operation(
         &authority,
         request.authority_id,
@@ -364,6 +380,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         );
         let (payload, fingerprint) = construct_publication_commit(
             request,
+            None,
             Some(intent.operation_context.ok_or("missing original context")?),
             decoded.original_evidence,
             &mut accounting,

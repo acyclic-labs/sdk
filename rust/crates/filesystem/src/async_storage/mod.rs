@@ -25,6 +25,8 @@ pub use cache::{
     DecodedCacheAdmission, DecodedCacheKey, DecodedCacheLookup, DecodedCacheMiss, DecodedCacheValue,
 };
 mod fork;
+#[cfg(feature = "test-support")]
+pub use fork::seal as seal_test_guard;
 pub use fork::{
     EphemeralForkCommit, GenerationFork, GenerationForkSource, WorkspaceForkCommit,
     WorkspaceForkOutcome,
@@ -41,7 +43,7 @@ mod authority;
 mod generation;
 pub(crate) use generation::generation_fact;
 mod owned_group;
-pub(crate) use authority::MAX_AUTHORITY_GROUP_MEMBERS;
+pub use authority::MAX_AUTHORITY_GROUP_MEMBERS;
 pub use authority::{AppendGroupOutcome, AsyncAuthorityStore, AuthorityGroupCost};
 pub use owned_group::{OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask};
 mod policy;

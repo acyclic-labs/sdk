@@ -508,7 +508,7 @@ pub(crate) fn retained_object_reads_bytes(
     })
 }
 
-pub(crate) struct OriginalReadAccounting<'a, 'operation> {
+pub struct OriginalReadAccounting<'a, 'operation> {
     // Declared first so unused copy credit is refunded before `allocation`
     // drops; the refund releases the leaf before an owner can re-enter it.
     #[cfg(not(target_arch = "wasm32"))]

@@ -348,11 +348,11 @@ impl SealedExec {
             _arguments: arguments,
             _environment: environment,
         };
-        let flags = libc::POSIX_SPAWN_SETEXEC | libc::POSIX_SPAWN_CLOEXEC_DEFAULT;
+        let flags =
+            libc::c_short::try_from(libc::POSIX_SPAWN_SETEXEC | libc::POSIX_SPAWN_CLOEXEC_DEFAULT)
+                .map_err(refused)?;
         // SAFETY: initialized, exclusively held attribute object.
-        status(unsafe {
-            libc::posix_spawnattr_setflags(&raw mut result.attributes, flags as libc::c_short)
-        })?;
+        status(unsafe { libc::posix_spawnattr_setflags(&raw mut result.attributes, flags) })?;
         for descriptor in [0, 1, 2] {
             // SAFETY: live action object and standard descriptors, which std
             // establishes before the exec hook; no ambient FD is inherited.

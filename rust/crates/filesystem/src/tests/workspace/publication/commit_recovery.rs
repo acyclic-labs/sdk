@@ -30,16 +30,19 @@ fn run_child(
     root: &std::path::Path,
     kind: PublicationKind,
     cut: Option<(usize, &str)>,
-) -> TestResult<usize> {
+) -> TestResult<(usize, bool)> {
     run_seeded_child(root, kind, cut, 113)
 }
 
+/// Returns the publication's physical call count and whether the armed cut fired.
+/// A cut armed past the last call never fires: that run is the acknowledged
+/// publication, so the baseline needs no separate pass.
 fn run_seeded_child(
     root: &std::path::Path,
     kind: PublicationKind,
     cut: Option<(usize, &str)>,
     seed: u64,
-) -> TestResult<usize> {
+) -> TestResult<(usize, bool)> {
     let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     command
         .args(["--exact", CHILD, "--nocapture"])
@@ -66,16 +69,18 @@ fn run_seeded_child(
             None,
         )
         .map_err(|failure| failure.error)?;
-    assert_eq!(
-        output.status.code(),
-        Some(match cut {
-            Some((_, "io" | "full")) => 87,
-            Some(_) => 86,
-            None => 0,
-        }),
-        "workspace cut {cut:?}: {output:?}"
-    );
-    Ok(std::fs::read_to_string(root.join("physical-count"))?.parse()?)
+    let fired = match (cut, output.status.code()) {
+        (None, Some(0)) => false,
+        (Some((_, "io" | "full")), Some(87)) => true,
+        (Some((_, "io" | "full")), Some(0)) => false,
+        (Some(_), Some(86)) => true,
+        (Some(_), Some(0)) => false,
+        _ => panic!("workspace cut {cut:?}: {output:?}"),
+    };
+    Ok((
+        std::fs::read_to_string(root.join("physical-count"))?.parse()?,
+        fired,
+    ))
 }
 
 async fn seed(root: &std::path::Path, kind: PublicationKind) -> TestResult {
@@ -145,34 +150,46 @@ async fn every_local_commit_crash_reopens_atomically_and_allows_a_live_successor
     assert_publication_cuts(PublicationKind::Transaction, &["before", "after", "torn"]).await
 }
 
-#[tokio::test]
-async fn every_multi_root_crash_resumes_and_releases_the_dead_owners_reservations() -> TestResult {
-    assert_publication_cuts(PublicationKind::MultiRoot, &["before", "after", "torn"]).await
+macro_rules! publication_fault_cases {
+    ($($name:ident => ($kind:ident, $fault:literal),)+) => {
+        $(
+            #[tokio::test]
+            async fn $name() -> TestResult {
+                assert_publication_cuts(PublicationKind::$kind, &[$fault]).await
+            }
+        )+
+    };
 }
 
-#[tokio::test]
-async fn storage_failures_do_not_acknowledge_partial_publications_or_fence_successors() -> TestResult
-{
-    for kind in [PublicationKind::Transaction, PublicationKind::MultiRoot] {
-        assert_publication_cuts(kind, &["io", "full"]).await?;
-    }
-    Ok(())
+// Each failure mode still visits every physical cut. Separate cases let the
+// runner schedule the independent proofs and report the precise failing fault.
+publication_fault_cases! {
+    multi_root_crash_before_write_releases_reservations => (MultiRoot, "before"),
+    multi_root_crash_after_write_releases_reservations => (MultiRoot, "after"),
+    multi_root_torn_write_releases_reservations => (MultiRoot, "torn"),
+    multi_root_io_failure_does_not_publish_or_fence_successor => (MultiRoot, "io"),
+    multi_root_disk_full_does_not_publish_or_fence_successor => (MultiRoot, "full"),
+    transaction_io_failure_does_not_publish_or_fence_successor => (Transaction, "io"),
+    transaction_disk_full_does_not_publish_or_fence_successor => (Transaction, "full"),
 }
 
 async fn assert_publication_cuts(kind: PublicationKind, faults: &[&str]) -> TestResult {
     let directory = tempfile::tempdir()?;
-    let baseline = directory.path().join("baseline");
-    seed(&baseline, kind).await?;
-    let count = run_child(&baseline, kind, None)?;
-    assert!(
-        count > 0,
-        "the real transaction bypassed physical crash boundaries"
-    );
-    assert_recovery(&baseline, kind, true).await?;
     let directory = directory.path();
-    let jobs = (0..count)
-        .flat_map(|ordinal| {
-            faults.iter().copied().map(move |fault| {
+    // The cut count is only known once a publication completes, so the first
+    // round arms one cut past the batch's end: the run that does not fire is
+    // the acknowledged publication, and it costs no separate serial pass.
+    let mut ordinal = 0;
+    loop {
+        let unfired = std::sync::Mutex::new(Vec::new());
+        // Every run that does not fire is the same acknowledged publication, so
+        // one of them proves its recovery, beside the cuts rather than after them.
+        let acknowledged = std::sync::atomic::AtomicBool::new(false);
+        let end = ordinal + acyclic_test_support::physical_cuts::workers();
+        let jobs: Vec<_> = (ordinal..end)
+            .flat_map(|ordinal| faults.iter().copied().map(move |fault| (ordinal, fault)))
+            .map(|(ordinal, fault)| {
+                let (unfired, acknowledged) = (&unfired, &acknowledged);
                 let root = directory.join(format!("{ordinal}-{fault}"));
                 move || {
                     tokio::runtime::Builder::new_current_thread()
@@ -181,22 +198,40 @@ async fn assert_publication_cuts(kind: PublicationKind, faults: &[&str]) -> Test
                         .unwrap()
                         .block_on(async {
                             seed(&root, kind).await?;
-                            run_child(&root, kind, Some((ordinal, fault)))?;
-                            assert_recovery(&root, kind, false).await
+                            let (physical, fired) = run_child(&root, kind, Some((ordinal, fault)))?;
+                            if fired {
+                                assert_recovery(&root, kind, false).await?;
+                            } else {
+                                assert!(
+                                    physical > 0,
+                                    "the real transaction bypassed physical crash boundaries"
+                                );
+                                unfired.lock().unwrap().push(ordinal);
+                                if !acknowledged.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                    assert_recovery(&root, kind, true).await?;
+                                }
+                            }
+                            Ok::<_, Box<dyn Error>>(())
                         })
                         .unwrap();
                     ordinal
                 }
             })
-        })
-        .collect();
-    let completed = crate::test_support::finish_physical_cuts(jobs);
-    assert_eq!(completed.len(), count * faults.len());
-    eprintln!(
-        "WORKSPACE_CRASH_CUTS kind={kind:?} faults={faults:?} physical={count} cases={}",
-        completed.len()
-    );
-    Ok(())
+            .collect();
+        let completed = crate::test_support::finish_physical_cuts(jobs);
+        let mut unfired = unfired.into_inner().unwrap();
+        unfired.sort_unstable();
+        // Every ordinal below the first unfired one fired, so it is the count.
+        if let Some(&count) = unfired.first() {
+            eprintln!(
+                "WORKSPACE_CRASH_CUTS kind={kind:?} faults={faults:?} physical={count} cases={}",
+                count * faults.len()
+            );
+            return Ok(());
+        }
+        assert_eq!(completed.len(), (end - ordinal) * faults.len());
+        ordinal = end;
+    }
 }
 
 #[test]
@@ -282,17 +317,17 @@ fn commit_crash_child() -> TestResult {
         schedule.drained().await;
         driver.abort();
         let _ = driver.await;
-        if let Some((ordinal, fault)) = returned_fault {
+        // A cut armed past the last physical call never fires: the publication
+        // completes and is acknowledged, which is the baseline the caller needs.
+        let fired = schedule.storage_fault();
+        if let Some((ordinal, fault)) = returned_fault
+            && let Some(observed) = &fired
+        {
             // Public provider failures are sanitized and may report an unknown
             // outcome. The physical schedule, not a private error payload,
             // identifies the failed operation; cold recovery resolves its effect.
             result.expect_err("a refused physical operation cannot be acknowledged");
-            assert_eq!(
-                schedule
-                    .storage_fault()
-                    .map(|original| (original.ordinal, original.fault)),
-                Some((ordinal, fault))
-            );
+            assert_eq!((observed.ordinal, observed.fault), (ordinal, fault));
         } else {
             result?;
         }
@@ -301,6 +336,6 @@ fn commit_crash_child() -> TestResult {
             schedule.durable_write_count().to_string(),
         )?;
         // The acknowledged case also leaves all live store owners in place.
-        std::process::exit(if returned_fault.is_some() { 87 } else { 0 });
+        std::process::exit(if fired.is_some() { 87 } else { 0 });
     })
 }

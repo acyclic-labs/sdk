@@ -1,18 +1,5 @@
 use super::*;
 
-impl Credential {
-    pub(crate) fn for_config(self, config: &ProviderSpec) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(self, Self::Codex(_))
-            && config.authentication != Authentication::ApiKeyOrCodexLogin
-        {
-            return Self::Missing;
-        }
-        let _ = config;
-        self
-    }
-}
-
 impl Registry {
     pub(super) fn selected_credential(
         &self,

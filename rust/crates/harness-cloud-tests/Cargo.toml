@@ -1,0 +1,42 @@
+[package]
+name = "acyclic-harness-cloud-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Local-cloud Actors and Objects integration tests for the Acyclic harness"
+
+[package.metadata.bazel]
+integration-test-shards = 4
+
+[features]
+test-support = ["acyclic-harness/test-support"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+required-features = ["test-support"]
+
+[dev-dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness = { version = "=0.2.0", path = "../harness" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-test-support = { path = "../test-support" }
+futures.workspace = true
+proptest.workspace = true
+prost.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+sha2.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
+tonic-prost.workspace = true
+
+[lints]
+workspace = true

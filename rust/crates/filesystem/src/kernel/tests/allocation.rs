@@ -218,12 +218,13 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
         .flat_map(|(owned, budget)| [1, 31].map(|capacity| (owned, budget, capacity)))
     {
         let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(
+        let original = crate::NativeMaterializationWork::root(
             WorkBudget {
                 bytes_copied: copy_budget,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();

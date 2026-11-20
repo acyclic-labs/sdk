@@ -1,0 +1,52 @@
+[package]
+autotests = false
+name = "acyclic-harness-tui-term"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The terminal layer: one session over the OS terminal, its frames and its restoration"
+
+[features]
+model-checking = ["dep:loom"]
+
+[dependencies]
+acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
+acyclic-harness-tui-terminal = { version = "=0.2.0", path = "../harness-tui-terminal" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+futures.workspace = true
+loom = { version = "0.7.3", optional = true }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+alacritty_terminal = "0.26"
+proptest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+shell-words = "1.1"
+tempfile = "3.27"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["event", "fs", "termios"] }
+signal-hook = { version = "0.4" }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["event"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["process"] }
+rustix-openpty = "0.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui" }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

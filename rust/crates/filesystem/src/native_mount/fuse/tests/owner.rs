@@ -406,6 +406,7 @@ const SHARED_HOST_TEST: &str =
 #[test]
 fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead as _, BufReader, Write as _};
+    use std::os::unix::fs::MetadataExt as _;
     if std::env::var_os(SHARED_HOST_CASE).is_some() {
         let root = std::path::PathBuf::from(
             std::env::var_os(SHARED_HOST_ROOT).ok_or("shared host root absent")?,
@@ -413,7 +414,7 @@ fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std:
         crate::initialize_native_mount_services()?;
         let (source, _) = shared_sources(posix_config())?;
         let volume_id = source.volume_id()?;
-        let mut session = mount(Arc::new(source), volume_id, &root)?;
+        let session = mount(Arc::new(source), volume_id, &root)?;
         std::fs::write(root.join("child"), b"child")?;
         assert_eq!(std::fs::read(root.join("child"))?, b"child");
         println!("SHARED_HOST_READY");
@@ -426,6 +427,7 @@ fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std:
     let custody_root = tempfile::tempdir()?;
     let custody = acyclic_native_runtime::ProcessCustody::acquire(custody_root.path())?;
     let child_root = tempfile::tempdir()?;
+    let child_before = std::fs::metadata(child_root.path())?;
     let (ready_read, ready_write) = std::io::pipe()?;
     let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     command
@@ -449,11 +451,19 @@ fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std:
     let (source, _) = shared_sources(posix_config())?;
     let volume_id = source.volume_id()?;
     let parent_root = tempfile::tempdir()?;
-    let mut session = mount(Arc::new(source), volume_id, parent_root.path())?;
+    let parent_before = std::fs::metadata(parent_root.path())?;
+    let mut session = mount(Arc::new(source), volume_id, parent_root.path())
+        .map_err(|error| format!("starting the second FUSE session: {error}"))?;
     std::fs::write(parent_root.path().join("parent"), b"before")?;
     assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"before");
     // Retire the first owner's whole process tree, including its descendants.
     tree.terminate(None)?;
+    let child_after = std::fs::metadata(child_root.path())?;
+    assert_eq!(
+        (child_after.dev(), child_after.ino()),
+        (child_before.dev(), child_before.ino()),
+        "tree retirement left the first owner's mount"
+    );
     std::fs::write(parent_root.path().join("parent"), b"after")?;
     assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"after");
     // The host belongs to the last attached session. Dropping this one is the
@@ -462,25 +472,18 @@ fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std:
         .host_id()
         .ok_or("shared host id absent")?;
     let host_exit = process_event(host, false)?;
-    drop(session);
+    assert!(
+        session
+            .stop()
+            .map_err(|error| format!("retiring the second FUSE session: {error}"))?
+    );
     wait_exit(&host_exit)?;
-    // Both mounts outlive their sessions. Unmount the now-dead mounts through
-    // the canonical helper so the temporary directory is not a live mount when
-    // the test runner removes it.
-    for root in [child_root.path(), parent_root.path()] {
-        for helper in super::super::lifecycle::FUSE_HELPERS {
-            use std::os::unix::ffi::OsStrExt as _;
-            let program = std::ffi::OsStr::from_bytes(helper.to_bytes());
-            if std::process::Command::new(program)
-                .args(["-u", "-q", "-z", "--"])
-                .arg(root)
-                .status()
-                .is_ok_and(|status| status.success())
-            {
-                break;
-            }
-        }
-    }
+    let parent_after = std::fs::metadata(parent_root.path())?;
+    assert_eq!(
+        (parent_after.dev(), parent_after.ino()),
+        (parent_before.dev(), parent_before.ino()),
+        "stopping the last owner left its mount"
+    );
     Ok(())
 }
 
@@ -620,7 +623,7 @@ fn pending_owner(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn process_event(id: u32, thread: bool) -> std::io::Result<std::os::fd::OwnedFd> {
+pub(super) fn process_event(id: u32, thread: bool) -> std::io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::FromRawFd;
     // SAFETY: ids name live original participants whose handles are retained
     // before sending SIGKILL. pidfd_open returns one new owned descriptor.
@@ -638,7 +641,7 @@ fn process_event(id: u32, thread: bool) -> std::io::Result<std::os::fd::OwnedFd>
     Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(file as i32) })
 }
 
-fn wait_exit(event: &std::os::fd::OwnedFd) -> std::io::Result<()> {
+pub(super) fn wait_exit(event: &std::os::fd::OwnedFd) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     let mut interest = libc::pollfd {
         fd: event.as_raw_fd(),
@@ -810,7 +813,9 @@ fn an_open_waits_for_its_cached_size_without_holding_a_callback_worker()
         })?;
         let volume = source.volume_id()?;
         let destination = tempfile::tempdir()?;
-        let mut session = mount(Arc::new(source), volume, destination.path())?;
+        let mut session = mount(Arc::new(source), volume, destination.path()).map_err(|error| {
+            format!("starting the FUSE size-wait case, retire={retire}: {error}")
+        })?;
         let mounted = destination.path().join("versioned");
         assert!(std::fs::read(&mounted)?.is_empty());
         let core = Arc::clone(&session.driver.as_ref().ok_or("driver absent")?.core);
@@ -888,7 +893,9 @@ fn an_open_waits_for_its_cached_size_without_holding_a_callback_worker()
             cleanup.armed = false;
             Ok(())
         })?;
-        assert!(session.stop()?);
+        assert!(session.stop().map_err(|error| {
+            format!("retiring the FUSE size-wait case, retire={retire}: {error}")
+        })?);
     }
     Ok(())
 }

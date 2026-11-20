@@ -91,29 +91,12 @@ async fn model_calls_carry_the_admitted_request_replay_key() -> Result<()> {
     let expected = blake3::Hash::from(acyclic_harness_core::model::replay_key(prepared.bytes())?)
         .to_hex()
         .to_string();
-    let mut after = 0;
-    let mut found = false;
-    loop {
-        let page = journal_page(
-            journal.as_ref(),
-            operation,
-            "agents/generated",
-            after,
-            |_| None,
-        )
-        .await?;
-        for batch in page
-            .batches
-            .iter()
-            .filter(|batch| batch.table == Table::ModelCalls)
-        {
-            found |= replay_keys(batch).contains(&expected);
-        }
-        match page.next {
-            Some(next) => after = next,
-            None => break,
-        }
-    }
+    let page = journal_page(journal.as_ref(), operation, "agents/generated", 0, |_| None).await?;
+    let found = page
+        .batches
+        .iter()
+        .filter(|batch| batch.table == Table::ModelCalls)
+        .any(|batch| replay_keys(batch).contains(&expected));
     assert!(found, "export must identify reconstructed request content");
     Ok(())
 }

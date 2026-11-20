@@ -30,10 +30,9 @@ fn budget_intersection_preserves_every_declared_allowance() -> Result<(), serde_
     let mut left = fields.clone();
     let mut right = fields.clone();
     let mut expected = fields.clone();
-    for (index, name) in names.keys().enumerate() {
-        let low = (index + 1) as u64;
+    for (low, name) in (1_u64..).zip(names.keys()) {
         let high = low + 24;
-        let (a, b) = if index % 2 == 0 {
+        let (a, b) = if low % 2 == 1 {
             (low, high)
         } else {
             (high, low)

@@ -51,27 +51,6 @@ impl Client {
         Self::local(provider, authority, Products::default(), executor, None)
     }
 
-    /// The in-process pool whose product follows, such as `fs:/` filesystem
-    /// changes, are resolved by their owning provider, exactly as a node
-    /// session serving the same resources would.
-    pub fn in_process_with_resources<P: StreamProvider + ?Sized>(
-        provider: ProviderOwner<P>,
-        authority: Arc<super::Authority>,
-        resources: Arc<dyn ResourceProvider>,
-        executor: Arc<dyn Executor>,
-    ) -> Self {
-        Self::local(
-            provider,
-            authority,
-            Products {
-                resources: Some(resources),
-                ..Products::default()
-            },
-            executor,
-            None,
-        )
-    }
-
     /// Uses the identical channel admission/credit/dispatch as a network host.
     /// When supplied, the host's lifetime closes outstanding calls and follows.
     pub fn in_process_with_products<P: StreamProvider + ?Sized>(

@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-fs-storage-probe","CARGO_PKG_DESCRIPTION":"Native filesystem storage capability discovery","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-fs-storage-probe","CARGO_PKG_DESCRIPTION":"Native filesystem storage capability discovery","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 rust_library(
     name = "acyclic_fs_storage_probe",
@@ -16,6 +16,7 @@ rust_library(
         "//conditions:default": [],
     }),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -27,19 +28,23 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//libc-0.2.191",
         "@sdk_crates//thiserror-2.0.21",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//libc-0.2.191",
         "@sdk_crates//thiserror-2.0.21",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//windows-0.62.2",
     ],
@@ -60,13 +65,18 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
         "@sdk_crates//tempfile-3.27.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

@@ -2,6 +2,7 @@ use crate::conformance::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::guest::{
     self, Checkpoint, Delivery, GuestFuture, Handler, Manifest, Transition, wire,
 };
+use acyclic_stream::ProviderOwner;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -60,7 +61,7 @@ impl Handler for Stalled {
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let handler = vectors::handler(&provider)?;
     strict(handler.manifest())?;
     let mut manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
@@ -74,11 +75,12 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let root = host
         .create(&vectors::intent("timeout")?, fixtures::adopted())
         .await?;
-    super::dispatcher::until(&host, std::future::pending())
-        .await
-        .expect_err("guest timeout did not surface a failure");
-    if aborted.load(Ordering::SeqCst) != 1 {
-        return Err("timed-out guest turn was not aborted".into());
+    let Err(failure) = super::dispatcher::until(&host, std::future::pending()).await else {
+        return Err("guest timeout did not surface a failure".into());
+    };
+    let aborted = aborted.load(Ordering::SeqCst);
+    if aborted != 1 {
+        return Err(format!("timed-out guest turn had {aborted} aborts: {failure}").into());
     }
     let snapshot = acyclic_harness_core::agent::actor_store(&provider)?
         .load(&host.actor(&root)?)

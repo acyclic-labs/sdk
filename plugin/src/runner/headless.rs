@@ -543,7 +543,12 @@ pub(super) async fn prompt(
                     Some(answers) => answers,
                     None => answers.insert(stdin_lines()?),
                 };
-                let answer = answers.next_line().await?.unwrap_or_default();
+                let answer = answers.next_line().await?.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "approval input closed before a decision was entered",
+                    )
+                })?;
                 let approved = matches!(answer.trim(), "y" | "Y" | "yes");
                 conversation
                     .decide_with_binding(&id, binding, approved.into())
@@ -647,9 +652,12 @@ async fn settled(
             sequence,
             entry,
             origin,
-            ..
+            steering,
         } => {
-            let inbox = origin.as_ref().map_or(entry.inbox, |origin| origin.inbox);
+            let inbox = steering.map_or_else(
+                || origin.as_ref().map_or(entry.inbox, |origin| origin.inbox),
+                |steering| steering.inbox,
+            );
             // Only a completed turn is an answer. A cancelled or failed turn's
             // partial output is never a result, so it cannot replace a final
             // artifact.
@@ -1242,6 +1250,25 @@ pub(super) async fn jsonl(
                 } else if let Some(run) = entry.goal {
                     outstanding.goals.remove(&run);
                 }
+                if let Some(steering) = &entry.steering {
+                    // The conversation event settles the steering inputs too.
+                    // The canonical reply distinguishes admitted messages from
+                    // independent inputs that also fall within this cut.
+                    use std::ops::Bound::{Excluded, Unbounded};
+                    let steered = outstanding
+                        .pending
+                        .range((Excluded(entry.inbox), Unbounded))
+                        .take_while(|(inbox, _)| **inbox < steering.through)
+                        .map(|(&inbox, _)| inbox)
+                        .collect::<Vec<_>>();
+                    for inbox in steered {
+                        if let Some(request) = outstanding.pending.remove(&inbox) {
+                            outstanding
+                                .settle(conversation, output, inbox, request, None)
+                                .await?;
+                        }
+                    }
+                }
                 outstanding.resend(conversation, output).await?;
             }
             Some(Event::Status(status)) => {
@@ -1341,7 +1368,7 @@ mod tests {
     use futures::FutureExt as _;
     use std::{
         future::{Future as _, poll_fn},
-        io::{Read as _, Seek as _},
+        io::{self, Read as _, Seek as _},
         os::fd::AsFd as _,
         pin::Pin,
         task::Poll,
@@ -1349,7 +1376,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt as _, AsyncWrite as _, AsyncWriteExt as _, BufReader};
 
     #[test]
-    fn a_full_answer_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
+    fn a_full_output_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
         // Redirected output is a synchronous sink: the borrowed adapter refuses
         // it. The same headless owner must return before the next frame writes.
         acyclic_native_runtime::coordination_runtime()?.block_on(async {
@@ -1376,16 +1403,10 @@ mod tests {
             assert_eq!(received, expected);
             Ok::<(), Failure>(())
         })?;
-        for terminal in [Terminal::Cancel, Terminal::Drain, Terminal::ReaderLost] {
-            full_output_pipe(terminal, false)?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn a_full_diagnostic_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
-        for terminal in [Terminal::Cancel, Terminal::Drain, Terminal::ReaderLost] {
-            full_output_pipe(terminal, true)?;
+        for diagnostics in [false, true] {
+            for terminal in [Terminal::Cancel, Terminal::Drain, Terminal::ReaderLost] {
+                full_output_pipe(terminal, diagnostics)?;
+            }
         }
         Ok(())
     }
@@ -1434,7 +1455,9 @@ mod tests {
             let (entered, blocked) = tokio::sync::oneshot::channel();
             let (terminate, signal) = tokio::sync::oneshot::channel();
             let shutdown = async move {
-                signal.await.unwrap();
+                signal
+                    .await
+                    .map_err(|error| Arc::new(io::Error::other(error)))?;
                 Ok(143)
             }
             .boxed()
@@ -1461,7 +1484,7 @@ mod tests {
                         .await?;
                         diagnostic(
                             &mut diagnostic_output,
-                            || panic!("a repeated diagnostic must reuse its admitted writer"),
+                            || Err(io::Error::other("repeated diagnostic reopened its writer")),
                             task,
                             message.clone(),
                         )
@@ -1480,45 +1503,48 @@ mod tests {
                     Poll::Ready(())
                 })
                 .await;
-                entered.send(()).unwrap();
+                entered.send(()).map_err(|()| "missing write observer")?;
                 writing.await?;
                 Ok(())
             };
             let host = async {
                 let mut owner = BufReader::new(owner);
                 let mut line = String::new();
-                owner.read_line(&mut line).await.unwrap();
-                blocked.await.unwrap();
-                let mut bytes = serde_json::to_vec(&request).unwrap();
+                owner.read_line(&mut line).await?;
+                blocked.await?;
+                let mut bytes = serde_json::to_vec(&request)?;
                 bytes.push(b'\n');
-                owner.get_mut().write_all(&bytes).await.unwrap();
+                owner.get_mut().write_all(&bytes).await?;
                 line.clear();
-                owner.read_line(&mut line).await.unwrap();
-                let ack: ReportAck = serde_json::from_str(&line).unwrap();
+                owner.read_line(&mut line).await?;
+                let ack: ReportAck = serde_json::from_str(&line)?;
                 assert_eq!(ack.request_id, request.request_id);
                 assert_eq!(ack.generation, request.generation);
                 assert_eq!(ack.outcome, ReportOutcome::Report);
-                assert_eq!(ack.waits.len(), 1);
-                assert_eq!(ack.waits[0].primitive, "inherited-output");
-                assert_eq!(ack.waits[0].key, task.to_string());
-                let mut terminate = Some(terminate);
-                let reader = match terminal {
+                let [wait] = ack.waits.as_slice() else {
+                    return Err("expected one inherited-output wait".into());
+                };
+                assert_eq!(wait.primitive, "inherited-output");
+                assert_eq!(wait.key, task.to_string());
+                let (reader, terminate) = match terminal {
                     Terminal::Cancel => {
-                        terminate.take().unwrap().send(()).unwrap();
-                        Some(reader)
+                        terminate
+                            .send(())
+                            .map_err(|()| "missing shutdown observer")?;
+                        (Some(reader), None)
                     }
                     Terminal::Drain => {
-                        drain_prefix(&mut reader, filled, &chunk).unwrap();
-                        Some(reader)
+                        drain_prefix(&mut reader, filled, &chunk)?;
+                        (Some(reader), Some(terminate))
                     }
                     Terminal::ReaderLost => {
                         drop(reader);
-                        None
+                        (None, Some(terminate))
                     }
                 };
-                (owner, reader, terminate)
+                Ok::<_, Failure>((owner, reader, terminate))
             };
-            let ((result, report_result, _failure_report), (owner, reader, _terminate)) = tokio::join!(
+            let ((result, report_result, _failure_report), host) = tokio::join!(
                 acyclic_harness::completion::observe(
                     &report,
                     Ok(Some(port)),
@@ -1528,31 +1554,35 @@ mod tests {
                 ),
                 host,
             );
+            let (owner, reader, _terminate) = host?;
             match terminal {
                 Terminal::Cancel => assert_eq!(
                     result
-                        .unwrap_err()
-                        .downcast_ref::<acyclic_harness::completion::Exit>()
+                        .err()
+                        .as_deref()
+                        .and_then(|error| error.downcast_ref::<acyclic_harness::completion::Exit>())
                         .map(|exit| exit.code().get()),
                     Some(143)
                 ),
                 Terminal::Drain => result?,
                 Terminal::ReaderLost => assert_eq!(
                     result
-                        .unwrap_err()
-                        .downcast_ref::<std::io::Error>()
-                        .unwrap()
-                        .kind(),
-                    std::io::ErrorKind::BrokenPipe,
+                        .err()
+                        .as_deref()
+                        .and_then(|error| error.downcast_ref::<io::Error>())
+                        .map(io::Error::kind),
+                    Some(io::ErrorKind::BrokenPipe),
                 ),
             }
             report_result?;
-            assert_eq!(opened.get(), usize::from(diagnostics));
             if !matches!(terminal, Terminal::Drain) {
                 let unavailable = if diagnostics {
                     diagnostic(
                         &mut diagnostic_output,
-                        || panic!("a consumed diagnostic writer must never be reopened"),
+                        || {
+                            opened.set(opened.get() + 1);
+                            Err(io::Error::other("consumed diagnostic reopened its writer"))
+                        },
                         task,
                         message.clone(),
                     )
@@ -1570,10 +1600,11 @@ mod tests {
                     .await
                 };
                 assert_eq!(
-                    unavailable.unwrap_err().kind(),
-                    std::io::ErrorKind::NotConnected,
+                    unavailable.err().map(|error| error.kind()),
+                    Some(io::ErrorKind::NotConnected),
                 );
             }
+            assert_eq!(opened.get(), usize::from(diagnostics));
             drop(diagnostic_output);
             assert!(report.snapshot().is_empty());
             drop(output);

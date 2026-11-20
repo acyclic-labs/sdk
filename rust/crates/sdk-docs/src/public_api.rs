@@ -11,8 +11,6 @@ use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
 use std::{io::Write, path::Path};
 
-pub(crate) mod decode;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicItemSignature {
     pub id: Id,
@@ -335,6 +333,7 @@ fn remove_known_fields(
 #[cfg(test)]
 mod tests {
     use super::{exported_path, exported_path_for_item, remove_known_fields};
+    use proptest::prelude::*;
     use public_api::tokens::Token;
     use serde_json::json;
 
@@ -373,261 +372,90 @@ mod tests {
         );
     }
 
-    #[test]
-    fn token_path_handles_all_procedural_macro_kinds() {
-        for (open, close) in [("", "!()"), ("#[", "]"), ("#[derive(", ")]")] {
-            let mut tokens = vec![
-                Token::Qualifier("pub".into()),
-                Token::Whitespace,
-                Token::Kind("proc".into()),
-                Token::Whitespace,
-                Token::Kind("macro".into()),
-                Token::Whitespace,
-                Token::Identifier("crate_name".into()),
-                Token::Symbol("::".into()),
-            ];
-            if !open.is_empty() {
-                tokens.push(Token::Symbol(open.into()));
+    /// One token of the rendered signature vocabulary public-api emits.
+    fn token() -> impl Strategy<Value = Token> {
+        let name = "[A-Za-z_][A-Za-z0-9_]{0,8}";
+        prop_oneof![
+            name.prop_map(Token::Identifier),
+            name.prop_map(Token::Type),
+            name.prop_map(Token::Function),
+            name.prop_map(Token::Generic),
+            name.prop_map(Token::Primitive),
+            name.prop_map(Token::Qualifier),
+            name.prop_map(Token::Kind),
+            name.prop_map(Token::Keyword),
+            name.prop_map(Token::Annotation),
+            "'[a-z]{1,4}".prop_map(Token::Lifetime),
+            Just(Token::Self_("Self".into())),
+            Just(Token::Whitespace),
+            prop::sample::select(
+                [
+                    "::",
+                    "<",
+                    ">",
+                    "&",
+                    "*",
+                    "[",
+                    "]",
+                    ";",
+                    "(",
+                    ")",
+                    "#[",
+                    "#[derive(",
+                    ")]"
+                ]
+                .map(|symbol| Token::Symbol(symbol.into()))
+                .to_vec(),
+            ),
+        ]
+    }
+
+    /// Render an exported path as the token sequence public-api emits for it.
+    fn path_tokens(path: &[String]) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        for (index, component) in path.iter().enumerate() {
+            if index != 0 {
+                tokens.push(Token::Symbol("::".into()));
             }
-            tokens.push(Token::Identifier("Exported".into()));
-            tokens.push(Token::Symbol(close.into()));
-            assert_eq!(
-                exported_path(tokens.iter()).expect("procedural macro path"),
-                ["crate_name", "Exported"]
-            );
+            tokens.push(Token::Identifier(component.clone()));
         }
-        let unsupported = [
-            Token::Kind("proc".into()),
-            Token::Whitespace,
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Identifier("invented".into()),
-        ];
-        assert!(exported_path(unsupported.iter()).is_err());
+        tokens
     }
 
-    #[test]
-    fn token_path_preserves_exported_alias_and_qualified_method() {
-        let tokens = [
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Parent".into()),
-            Token::Symbol("::".into()),
-            Token::Function("method".into()),
-            Token::Symbol("<".into()),
-            Token::Generic("T".into()),
-            Token::Symbol(">".into()),
-        ];
-        assert_eq!(
-            exported_path(tokens.iter()).expect("qualified method path"),
-            ["crate_name", "Parent", "method"]
-        );
-
-        let alias = [
-            Token::Kind("use".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Identifier("exported_alias".into()),
-        ];
-        assert_eq!(
-            exported_path(alias.iter()).expect("alias path"),
-            ["crate_name", "exported_alias"]
-        );
+    fn token_sequences() -> impl Strategy<Value = Vec<Token>> {
+        prop_oneof![
+            prop::collection::vec(token(), 0..24),
+            prop::collection::vec("[A-Za-z0-9_ .:<>\\[\\]&*;()#]{1,8}", 1..5)
+                .prop_map(|path| path_tokens(&path)),
+        ]
     }
-    #[test]
-    fn token_path_handles_generic_receivers_and_enum_variants() {
-        let method = [
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Generic".into()),
-            Token::Symbol("<".into()),
-            Token::Generic("T".into()),
-            Token::Symbol(">".into()),
-            Token::Symbol("::".into()),
-            Token::Function("method".into()),
-            Token::Symbol("<".into()),
-            Token::Generic("U".into()),
-            Token::Symbol(">".into()),
-        ];
-        assert_eq!(
-            exported_path(method.iter()).expect("generic method path"),
-            ["crate_name", "Generic", "method"]
-        );
 
-        let variant = [
-            Token::Qualifier("pub".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Choice".into()),
-            Token::Symbol("::".into()),
-            Token::Identifier("First".into()),
-        ];
-        assert_eq!(
-            exported_path(variant.iter()).expect("variant path"),
-            ["crate_name", "Choice", "First"]
-        );
-
-        let generic_receiver = [
-            Token::Qualifier("pub".into()),
-            Token::Kind("fn".into()),
-            Token::Generic("T".into()),
-            Token::Symbol("::".into()),
-            Token::Function("commit_workspace_fork".into()),
-        ];
-        assert_eq!(
-            exported_path(generic_receiver.iter()).expect("generic receiver path"),
-            ["T", "commit_workspace_fork"]
-        );
-
-        let array_receiver = [
-            Token::Qualifier("pub".into()),
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Symbol("[".into()),
-            Token::Primitive("u8".into()),
-            Token::Symbol(";".into()),
-            Token::Whitespace,
-            Token::Primitive("32".into()),
-            Token::Symbol("]".into()),
-            Token::Symbol("::".into()),
-            Token::Function("from".into()),
-        ];
-        assert_eq!(
-            exported_path(array_receiver.iter()).expect("array receiver path"),
-            ["[u8; 32]", "from"]
-        );
-
-        let borrowed_receiver = [
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Symbol("&".into()),
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Cancellation".into()),
-            Token::Symbol("::".into()),
-            Token::Function("type_name".into()),
-        ];
-        assert_eq!(
-            exported_path(borrowed_receiver.iter()).expect("borrowed receiver path"),
-            ["crate_name", "Cancellation", "type_name"]
-        );
-    }
-    #[test]
-    fn token_path_rejects_unknown_sequences() {
-        let unknown = [Token::Keyword("unknown".into())];
-        assert!(exported_path(unknown.iter()).is_err());
-
-        let broken = [
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-        ];
-        assert!(exported_path(broken.iter()).is_err());
-    }
-    #[test]
-    fn token_path_handles_impl_targets() {
-        let implementation = [
-            Token::Keyword("impl".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Parent".into()),
-        ];
-        assert_eq!(
-            exported_path(implementation.iter()).expect("impl path"),
-            ["crate_name", "Parent"]
-        );
-
-        let trait_implementation = [
-            Token::Keyword("impl".into()),
-            Token::Whitespace,
-            Token::Type("Trait".into()),
-            Token::Whitespace,
-            Token::Keyword("for".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Parent".into()),
-        ];
-        assert_eq!(
-            exported_path(trait_implementation.iter()).expect("trait impl path"),
-            ["crate_name", "Parent"]
-        );
-
-        let generic_implementation = [
-            Token::Keyword("impl".into()),
-            Token::Symbol("<".into()),
-            Token::Generic("T".into()),
-            Token::Symbol(">".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Parent".into()),
-        ];
-        assert_eq!(
-            exported_path(generic_implementation.iter()).expect("generic impl path"),
-            ["crate_name", "Parent"]
-        );
-
-        let lifetime_implementation = [
-            Token::Keyword("impl".into()),
-            Token::Symbol("<".into()),
-            Token::Lifetime("'a".into()),
-            Token::Symbol(">".into()),
-            Token::Whitespace,
-            Token::Identifier("crate_name".into()),
-            Token::Symbol("::".into()),
-            Token::Type("Parent".into()),
-            Token::Symbol("<".into()),
-            Token::Lifetime("'a".into()),
-            Token::Symbol(">".into()),
-        ];
-        assert_eq!(
-            exported_path(lifetime_implementation.iter()).expect("lifetime impl path"),
-            ["crate_name", "Parent"]
-        );
-
-        for target in [
-            vec![Token::Symbol("(".into()), Token::Symbol(")".into())],
-            vec![
-                Token::Symbol("&".into()),
-                Token::Lifetime("'a".into()),
-                Token::Identifier("crate_name".into()),
-                Token::Symbol("::".into()),
-                Token::Type("Parent".into()),
-            ],
-            vec![
-                Token::Keyword("dyn".into()),
-                Token::Identifier("crate_name".into()),
-                Token::Symbol("::".into()),
-                Token::Type("Trait".into()),
-            ],
-        ] {
-            let mut tokens = vec![Token::Keyword("impl".into()), Token::Whitespace];
-            tokens.extend(target);
-            assert!(exported_path_for_item(tokens.iter(), true)
-                .expect("compound impl should be retained without an exported path")
-                .is_empty());
+    proptest! {
+        // Every accepted sequence is a fixed point of its own rendering, every
+        // rejection names the tokens it could not place, and an impl occurrence
+        // is retained even when it has no exported path.
+        #[test]
+        fn exported_paths_are_fixed_points_and_rejections_name_their_tokens(
+            tokens in token_sequences(),
+        ) {
+            match exported_path(tokens.iter()) {
+                Ok(path) => {
+                    prop_assert!(!path.is_empty());
+                    let rendered = path_tokens(&path);
+                    prop_assert_eq!(
+                        exported_path(rendered.iter()).expect("rendered path must parse"),
+                        path
+                    );
+                }
+                Err(reason) => prop_assert!(
+                    reason.contains(&format!("{tokens:?}")),
+                    "diagnostic must name the offending tokens: {reason}"
+                ),
+            }
+            prop_assert!(exported_path_for_item(tokens.iter(), true).is_ok());
         }
     }
 
-    #[test]
-    fn token_path_error_identifies_the_typed_offending_tokens() {
-        let broken = [
-            Token::Kind("fn".into()),
-            Token::Whitespace,
-            Token::Symbol("<".into()),
-        ];
-        let error = exported_path(broken.iter()).expect_err("unsupported path must fail");
-        assert!(error.contains("Symbol(\"<\")"), "diagnostic: {error}");
-    }
     #[test]
     fn adapter_rejects_populated_typed_metadata() {
         let mut value = base();

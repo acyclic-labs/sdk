@@ -59,6 +59,12 @@ pub struct ResolvedModel {
     pub(crate) explicit_codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
+impl<'a> From<&'a ResolvedModel> for crate::projection::ProjectionInput<'a> {
+    fn from(model: &'a ResolvedModel) -> Self {
+        model.projection()
+    }
+}
+
 impl ResolvedModel {
     // All derived selections retain these original owners. Only content
     // rebinding changes the reader, and only profile admission changes identity.
@@ -247,53 +253,30 @@ impl ResolvedModel {
     pub fn model(&self) -> &Model {
         &self.model
     }
+    /// The fields that select wire projection, borrowed from this selection.
+    pub(crate) fn projection(&self) -> crate::projection::ProjectionInput<'_> {
+        crate::projection::ProjectionInput {
+            config: &self.config,
+            model: &self.model.name,
+            profile: self.profile.as_ref(),
+            conversation: self.conversation,
+            capacity: self.capacity,
+            files_maximum_bytes: self.files.maximum_bytes,
+            estimator: &self.accounting.estimator,
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login: self.codex_login.is_some(),
+            #[cfg(target_arch = "wasm32")]
+            codex_login: false,
+            credential_scope: self.credential_scope,
+        }
+    }
+
     pub(crate) fn reasoning_origin(
         &self,
         key: Option<&str>,
         account: Option<&str>,
     ) -> acyclic_harness_core::model::ReasoningOrigin {
-        let family = acyclic_harness_provider_response::stream::family(self.config.adapter);
-        // Native continuity belongs to whoever authenticates the request. An
-        // anonymous route sends no credential of ours: the endpoint and its
-        // configured headers (a gateway or proxy that injects credentials)
-        // are that owner, so the route itself scopes the bytes it signed.
-        // (ownership marker, credential bytes, whether the route headers
-        // identify the owner)
-        let owner: Option<(&[u8], &[u8], bool)> = match (
-            self.credential_scope.as_ref(),
-            account.or(key).filter(|value| !value.is_empty()),
-        ) {
-            (Some(scope), _) => Some((&b"protected-account\0"[..], &scope[..], false)),
-            (None, Some(credential)) => Some((&b""[..], credential.as_bytes(), false)),
-            (None, None) if self.config.authentication == crate::Authentication::Optional => {
-                Some((&b"anonymous-route\0"[..], &b""[..], true))
-            }
-            (None, None) => None,
-        };
-        let credential_scope = owner.map(|(kind, credential, route)| {
-            let mut scope = blake3::Hasher::new();
-            scope.update(b"harness-reasoning-scope-v1\0");
-            scope.update(kind);
-            let mut field = |value: &[u8]| {
-                scope.update(&(value.len() as u64).to_be_bytes());
-                scope.update(value);
-            };
-            field(family.as_bytes());
-            field(self.config.base_url.as_bytes());
-            field(credential);
-            if route {
-                for (name, value) in &self.config.headers {
-                    field(name.as_bytes());
-                    field(value.as_bytes());
-                }
-            }
-            *scope.finalize().as_bytes()
-        });
-        acyclic_harness_core::model::ReasoningOrigin {
-            provider: family.into(),
-            model: self.model.name.clone(),
-            credential_scope,
-        }
+        self.projection().reasoning_origin(key, account)
     }
 
     pub(crate) fn observe(

@@ -22,16 +22,6 @@ fn cached(cache: &Arc<Cache<Native>>, path: &Path) -> io::Result<Arc<Entry<Nativ
     })
 }
 
-/// Descriptors this process holds on files under `directory`.
-fn descriptors_under(directory: &Path) -> io::Result<usize> {
-    Ok(acyclic_process_resources::resources::descriptors()?
-        .into_iter()
-        .filter(|descriptor| {
-            matches!(descriptor, acyclic_process_resources::resources::Descriptor::File(path) if path.starts_with(directory))
-        })
-        .count())
-}
-
 fn write_at(entry: &Arc<Entry<Native>>, offset: u64, bytes: &[u8]) -> io::Result<()> {
     entry
         .lease(&mut |_| Ok(()))?
@@ -59,7 +49,7 @@ fn idle_files_hold_at_most_the_capacity_in_descriptors() -> io::Result<()> {
         write_at(file, 0, format!("file {index}").as_bytes())?;
     }
     assert!(cache.cached() <= 4, "{} cached", cache.cached());
-    assert!(descriptors_under(&directory_path)? <= 4);
+    assert!(acyclic_process_resources::resources::descriptors_beneath(&directory_path)? <= 4);
     // Every file reopens with its contents.
     for (index, file) in files.iter().enumerate() {
         assert_eq!(read(file, 64)?, format!("file {index}").into_bytes());

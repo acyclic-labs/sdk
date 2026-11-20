@@ -2,7 +2,7 @@
 use crate::{
     agent::{
         AgentPath, AgentRecord as _, AgentState, ContextAction, ContextCut, ConversationEntry,
-        HistoryCheckpoint, SavedVolume,
+        HistoryCheckpoint, HistoryVolume, SavedVolume, WorkspaceEntry,
     },
     conversation::VolumeClass,
 };
@@ -19,7 +19,7 @@ use {
 
 mod creation;
 mod retention;
-pub(super) use creation::capture_creation;
+pub use creation::capture_creation;
 
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
@@ -71,7 +71,9 @@ pub async fn read_boundary<P: StreamProvider + ?Sized>(
     Ok(checkpoint)
 }
 
-pub(super) async fn capture<P, O>(
+/// Publishes one settled turn's history contribution: its conversation cut,
+/// context fork and retained volume generations.
+pub async fn capture<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     parent: &AgentState,
     next: &AgentState,
@@ -102,67 +104,22 @@ where
     // A file publication names one conversation cut. Other settled entries
     // in that publication have no distinct file cut, so accepting such a
     // contribution would silently attach the wrong generation to a turn.
-    if entries.len() != 1
-        && entries.iter().any(|entry| {
-            entry.outcome.is_completed()
-                && matches!(entry.input.context(), Some(ContextAction::Restore { mode, .. }) if mode.files())
-        })
-    {
+    if publishes_file_restore(&entries) {
         return Err(guest(
             "file restoration must publish its own conversation cut",
         ));
     }
     let cancel = CancellationToken::new();
-    let restore = match entries.as_slice() {
-        [entry] if entry.outcome.is_completed() => match entry.input.context() {
-            Some(ContextAction::Restore { at, mode, expected }) => {
-                if *at >= parent.conversation_tail {
-                    return Err(guest("restore cut is not a prior settled turn"));
-                }
-                if mode.files() {
-                    let saved = read(fs.stream_provider().as_ref(), &parent.path, *at)
-                        .await
-                        .map_err(crate::Error::guest)?;
-                    Some((entry, saved, expected))
-                } else {
-                    if !expected.is_empty() {
-                        return Err(guest("context-only restore carries file heads"));
-                    }
-                    None
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    };
-    let mut volumes = Vec::new();
-    for binding in &parent.volumes {
-        if binding
-            .as_volume()
-            .is_none_or(|volume| volume.class() != VolumeClass::Project)
-        {
-            continue;
+    let restore = match restore_target(&entries, parent)? {
+        Some((entry, at, expected)) => {
+            let saved = read(fs.stream_provider().as_ref(), &parent.path, at)
+                .await
+                .map_err(crate::Error::guest)?;
+            Some((entry, saved, expected))
         }
-        let workspace = fs
-            .open_workspace(
-                binding
-                    .volume()
-                    .map_err(guest)?
-                    .storage_name(&mut None)
-                    .map_err(guest)?,
-                WorkBudget::UNBOUNDED,
-                &cancel,
-            )
-            .await
-            .map_err(|failure| crate::Error::guest(failure.error))?
-            .value;
-        let head = workspace
-            .head(WorkBudget::UNBOUNDED, &cancel)
-            .await
-            .map_err(|failure| crate::Error::guest(failure.error))?
-            .value;
-        volumes.push((binding.clone(), head));
-    }
+        None => None,
+    };
+    let mut volumes = project_heads(fs, parent, &cancel).await?;
     let mut restored_snapshots = None;
     let mut restored_context = None;
     if let Some((entry, saved, expected)) = restore {
@@ -381,4 +338,90 @@ where
         records,
     });
     Ok(())
+}
+
+/// The single settled restore entry that names a file cut, if any.
+type RestoreTarget<'a> = (&'a ConversationEntry, u64, &'a [HistoryVolume]);
+
+fn restore_target<'a>(
+    entries: &'a [ConversationEntry],
+    parent: &AgentState,
+) -> Result<Option<RestoreTarget<'a>>, GuestError> {
+    let [entry] = entries else {
+        return Ok(None);
+    };
+    if !entry.outcome.is_completed() {
+        return Ok(None);
+    }
+    let Some(ContextAction::Restore { at, mode, expected }) = entry.input.context() else {
+        return Ok(None);
+    };
+    if *at >= parent.conversation_tail {
+        return Err(guest("restore cut is not a prior settled turn"));
+    }
+    if !mode.files() {
+        if !expected.is_empty() {
+            return Err(guest("context-only restore carries file heads"));
+        }
+        return Ok(None);
+    }
+    Ok(Some((entry, *at, expected)))
+}
+
+/// A publication that restores files must name exactly one conversation cut:
+/// other settled entries in it have no distinct file cut, so accepting them
+/// would silently attach the wrong generation to a turn.
+fn publishes_file_restore(entries: &[ConversationEntry]) -> bool {
+    entries.len() != 1
+        && entries.iter().any(|entry| {
+            entry.outcome.is_completed()
+                && matches!(entry.input.context(), Some(ContextAction::Restore { mode, .. }) if mode.files())
+        })
+}
+
+/// Opens every project binding and pins its authenticated head.
+async fn project_heads<P, O>(
+    fs: &Fs<StreamAuthorityStore<P>, O>,
+    parent: &AgentState,
+    cancel: &CancellationToken,
+) -> Result<
+    Vec<(
+        WorkspaceEntry,
+        acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
+    )>,
+    GuestError,
+>
+where
+    P: AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let mut volumes = Vec::new();
+    for binding in &parent.volumes {
+        if binding
+            .as_volume()
+            .is_none_or(|volume| volume.class() != VolumeClass::Project)
+        {
+            continue;
+        }
+        let workspace = fs
+            .open_workspace(
+                binding
+                    .volume()
+                    .map_err(guest)?
+                    .storage_name(&mut None)
+                    .map_err(guest)?,
+                WorkBudget::UNBOUNDED,
+                cancel,
+            )
+            .await
+            .map_err(|failure| crate::Error::guest(failure.error))?
+            .value;
+        let head = workspace
+            .head(WorkBudget::UNBOUNDED, cancel)
+            .await
+            .map_err(|failure| crate::Error::guest(failure.error))?
+            .value;
+        volumes.push((binding.clone(), head));
+    }
+    Ok(volumes)
 }

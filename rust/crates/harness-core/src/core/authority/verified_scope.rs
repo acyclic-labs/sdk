@@ -11,6 +11,11 @@ pub(crate) struct VerifiedScope {
 }
 
 impl AuthorityVerifier {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn now_unix_millis(&self) -> u64 {
+        self.public.now_unix_millis()
+    }
+
     /// Original authenticated trust publisher, without signing custody.
     /// Register before checking authority; producer loss ends active use.
     #[must_use]

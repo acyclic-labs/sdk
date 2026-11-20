@@ -1,0 +1,31 @@
+[package]
+autotests = false
+include = ["Cargo.toml", "src/**"]
+name = "acyclic-auth-operation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Caller-owned deadline and cancellation shared across an entire operation"
+
+[features]
+javascript = ["dep:js-sys", "dep:wasm-bindgen"]
+js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Event", "EventTarget"], optional = true }
+
+[lints]
+workspace = true

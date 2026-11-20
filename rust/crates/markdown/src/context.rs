@@ -135,7 +135,7 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
 fn columns(source: &str, start: usize) -> usize {
     acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
-    work::scan(source.len());
+    acyclic_markdown_work::work::scan(source.len());
     source.bytes().fold(start, |column, byte| {
         column + if byte == b'\t' { 4 - column % 4 } else { 1 }
     })
@@ -190,8 +190,8 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
     acyclic_markdown_work::record!(scan(probe.len()));
     #[cfg(test)]
     {
-        work::copy(probe.len());
-        references::PARSED_BYTES.with(|work| work.set(work.get() + probe.len()));
+        acyclic_markdown_work::work::copy(probe.len());
+        acyclic_markdown_work::work::parsed(probe.len());
     }
     Parser::new_ext(&probe, options())
         .into_offset_iter()

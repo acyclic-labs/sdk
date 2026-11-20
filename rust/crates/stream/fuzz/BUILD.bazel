@@ -3,15 +3,16 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-stream-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-stream-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_binary(
     name = "follow_contract",
     crate_root = "fuzz_targets/follow_contract.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/follow_contract.rs",
         "//rust/crates/stream:tests/support/follow_contract.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -23,6 +24,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -39,8 +41,10 @@ rust_binary(
 rust_binary(
     name = "grpc_status",
     crate_root = "fuzz_targets/grpc_status.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/grpc_status.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -52,6 +56,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -68,8 +73,10 @@ rust_binary(
 rust_binary(
     name = "path_text",
     crate_root = "fuzz_targets/path_text.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/path_text.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -81,6 +88,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -97,10 +105,11 @@ rust_binary(
 rust_binary(
     name = "session",
     crate_root = "fuzz_targets/session.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/session.rs",
         "//rust/crates/stream:tests/support/follow_data.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -112,6 +121,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -128,8 +138,10 @@ rust_binary(
 rust_binary(
     name = "status",
     crate_root = "fuzz_targets/status.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/status.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -141,6 +153,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [

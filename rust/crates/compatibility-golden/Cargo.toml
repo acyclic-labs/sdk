@@ -1,0 +1,12 @@
+[package]
+name = "acyclic-compatibility-golden"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared golden-frame byte baseline for wire and persisted format tests"
+publish = false
+
+[lints]
+workspace = true

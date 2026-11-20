@@ -1,4 +1,5 @@
 use super::*;
+use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -85,30 +86,38 @@ fn profile_catalog_union_retains_feature_only_items() {
         .any(|entry| entry.path == "demo::FeatureOnly"));
 }
 
+proptest! {
+    // Distinct versions never share a path segment, and every segment is one
+    // portable filename component.
+    #[test]
+    fn version_paths_are_injective_and_portable(a in ".{0,40}", b in ".{0,40}") {
+        prop_assume!(a != b);
+        let (Ok(left), Ok(right)) = (safe_version(&a), safe_version(&b)) else {
+            return Ok(());
+        };
+        prop_assert!(left != right);
+        for segment in [&left, &right] {
+            prop_assert!(!segment.is_empty());
+            prop_assert!(segment.len() <= 255);
+            prop_assert!(!segment.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']));
+            prop_assert!(!segment.ends_with('.'));
+        }
+    }
+}
+
 #[test]
-fn preview_version_paths_are_injective_and_portable() {
-    assert_eq!(safe_version("preview-1").unwrap(), "preview-1");
-    assert_eq!(safe_version("preview:1").unwrap(), "~707265766965773a31");
-    assert_eq!(safe_version("preview_1").unwrap(), "preview_1");
-    assert_eq!(safe_version("branch_ABC").unwrap(), "~6272616e63685f414243");
-    assert_ne!(
-        safe_version("preview:1").unwrap(),
-        safe_version("preview_1").unwrap()
-    );
-    assert_eq!(safe_version("a%b").unwrap(), "~612562");
-    assert_eq!(safe_version("CON").unwrap(), "~434f4e");
-    assert_eq!(safe_version("con.txt").unwrap(), "~636f6e2e747874");
-    assert_eq!(safe_version("a/b").unwrap(), "~612f62");
+fn version_paths_bound_the_segment_and_escape_windows_reserved_names() {
     assert_eq!(safe_version(&"a".repeat(255)).unwrap().len(), 255);
     assert!(safe_version(&"a".repeat(256))
         .unwrap_err()
         .to_string()
         .contains("exceeds 255 bytes"));
-    assert_eq!(safe_version(&":".repeat(127)).unwrap().len(), 255);
-    assert!(safe_version(&":".repeat(128))
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds 255 bytes"));
+    for reserved in ["CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "LPT9"] {
+        assert!(
+            safe_version(reserved).unwrap().starts_with('~'),
+            "{reserved} must be escaped"
+        );
+    }
 }
 
 #[test]

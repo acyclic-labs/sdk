@@ -18,11 +18,262 @@ use acyclic_harness::{
 use acyclic_harness_client::AgentCommand;
 use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamCategory, StreamError};
 use futures::{StreamExt as _, TryStreamExt as _};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::oneshot;
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const ROOT: [u8; 16] = [91; 16];
+const TASK_PROMPT: &str = "Answer the conformance task";
+
+#[tokio::test]
+async fn configured_volume_script_runs_a_hosted_swarm_and_fork() -> Outcome {
+    use acyclic_harness::{
+        IdempotencyKey,
+        agent::{AgentPath, ConversationEntry, TurnOutcome, WorkspaceRole, decode_record},
+        filesystem::{Grants, StockExecutors, WorkspaceMutation},
+        hosting::{Bound, Serving, Turns, serve},
+        model::ModelContent,
+    };
+    use acyclic_harness_client::{AgentBinding, AgentControls, AgentReply, PreparedCommand};
+    use acyclic_harness_providers::{Credentials, ProviderConfig, Registry};
+    use prost::Message as _;
+
+    #[derive(serde::Deserialize)]
+    struct OwnerConfig {
+        model: ModelConfig,
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelConfig {
+        provider: String,
+        selection: String,
+        spec: ProviderConfig,
+        limits: Limits,
+        compaction: CompactionPolicy,
+    }
+    let owner = std::fs::read(acyclic_test_support::crate_path!(
+        "fixtures/owner.scripted.json"
+    ))?;
+    let ModelConfig {
+        provider,
+        selection,
+        spec,
+        limits,
+        compaction,
+    } = serde_json::from_slice::<OwnerConfig>(&owner)?.model;
+    let ProviderConfig::Scripted(scripted) = &spec else {
+        return Err("swarm owner must select a scripted provider".into());
+    };
+    let script_path = format!("/{}", scripted.script.path);
+    let script = std::fs::read(acyclic_test_support::crate_path!(
+        "fixtures/scripted-swarm.v1.json"
+    ))?;
+    let mut registry = Registry::new(Credentials::explicit(Default::default()))?;
+    registry.register_config(provider, spec)?;
+    assert!(!registry.needs_credentials(&selection)?);
+    let names = acyclic_harness::tools::default_names();
+    let tools = acyclic_harness::tools::registry(&names, |_| false, Vec::new())?;
+    let grants = acyclic_harness::tools::call_grants(&tools, names.iter().map(String::as_str))?;
+    let executors = StockExecutors::new(
+        registry.resolve_binding(&selection)?,
+        tools,
+        (limits, compaction),
+        Arc::new(Grants(grants)),
+    )
+    .with_agent_tools(&names)
+    .with_templates()
+    .with_plugins(Arc::new(acyclic_harness::plugins::Enabled::default()))
+    .with_models(Arc::new(registry.into_model_resolver()));
+    let stream = Arc::new(MemoryStream::default());
+    let provider = ProviderRef::new(
+        "scripted".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let agent = AgentId::from_bytes(ROOT);
+    let bound = Bound::local_root(
+        AuthorityRoot::new(
+            "scripted-swarm",
+            [91; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: agent.to_string(),
+            },
+        ),
+        Placement {
+            filesystem: Fs::new(
+                StreamAuthorityStore::new(stream.clone()),
+                LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+                EmbeddedCapabilities::MEMORY,
+            ),
+            provider: provider.clone(),
+            within: ActorReference::new(b"test", b"scripted-swarm", b"root")?,
+        },
+        Turns {
+            executors: Arc::new(executors),
+            limits: TurnLimits {
+                maximum_bytes: Some(1 << 20),
+                history_turns: 8,
+            },
+            actors: ActorLimits::new(5_000, 1 << 20, 1 << 16)?,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
+            approval_policy: acyclic_harness::approvals::ApprovalPolicy::accept_all("host"),
+        },
+    )?;
+    let project = VolumeRef::new(
+        provider.clone(),
+        "project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("swarm".into()),
+        &mut None,
+    )?;
+    let workspace = bound.volumes().create_volume(&project).await?.workspace;
+    bound
+        .volumes()
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: script_path,
+                bytes: script.into(),
+            }],
+            &IdempotencyKey::new("script")?,
+        )
+        .await?;
+    let private = acyclic_harness::conversation::private_volume(provider, &agent)?;
+    let Serving::Served(server) = serve(
+        bound,
+        Arc::new(Owner(None)),
+        &IntentId::try_from("scripted-root")?,
+        RootRequest {
+            peer: false,
+            agent,
+            fresh: vec![WorkspaceEntry::initial_volume(
+                WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                private,
+            )],
+            retained: vec![WorkspaceEntry::initial_volume(
+                WorkspaceRole::User,
+                "project".into(),
+                project,
+            )],
+            brief: None,
+            policy: None,
+        },
+    )
+    .await?
+    else {
+        return Err("root submission was uncertain".into());
+    };
+    let bound = server.bound();
+    let root = server.root();
+    let observation = bound.client_credential(root, server.resource()).await?;
+    let client = acyclic_stream::session::Client::in_process_with_products(
+        stream,
+        observation.authority,
+        None,
+        server.clone(),
+        Some(server.clone()),
+        Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        None,
+    );
+    client.register_credential(0, observation.credential.into())?;
+    let controls = AgentControls::new(
+        client,
+        0,
+        AgentBinding::new(&server.binding().encode_to_vec())?,
+    );
+    let run = {
+        let server = server.clone();
+        tokio::spawn(async move { server.run(|_, _| {}).await })
+    };
+    let _abort = Abort(run.abort_handle());
+    let prompt = async |text: &str| -> Outcome {
+        let command = PreparedCommand::new(&AgentCommand::Prompt {
+            peer: None,
+            agent: root.clone(),
+            id: IntentId::try_from(text)?,
+            body: ModelContent::Text(text.into()),
+        })?;
+        controls.execute(&controls.prepare(command)?).await?;
+        Ok(())
+    };
+    prompt("delegate").await?;
+    let output =
+        async |agent: &AgentPath, from: u64| -> Outcome<acyclic_harness::executor::TurnOutput> {
+            let record = bound
+                .agents()
+                .follow_conversation(agent, from)
+                .await?
+                .try_next()
+                .await?
+                .ok_or("conversation did not settle")?;
+            let entry: ConversationEntry = decode_record(&record.value)?;
+            assert!(
+                !matches!(entry.outcome, TurnOutcome::Failed { .. }),
+                "{:?}",
+                entry.outcome
+            );
+            let (bytes, _) = bound
+                .read_conversation_file(
+                    agent,
+                    &entry.output,
+                    record.sequence,
+                    0,
+                    entry.output.descriptor().byte_length(),
+                )
+                .await?;
+            Ok(serde_json::from_slice(&bytes)?)
+        };
+    let parent_output = output(root, 0).await?;
+    assert_eq!(parent_output.text, "root delegated");
+    assert_eq!(parent_output.steps, 2);
+    let children = PreparedCommand::new(&AgentCommand::Children {
+        agent: root.clone(),
+        page: Default::default(),
+    })?;
+    let AgentReply::Children { items, .. } = controls.execute(&controls.prepare(children)?).await?
+    else {
+        return Err("child page missing".into());
+    };
+    let [child] = items.as_slice() else {
+        return Err("expected one spawned child".into());
+    };
+    let state = bound.agents().state(&child.agent).await?;
+    assert_eq!(
+        output(&child.agent, state.conversation_base).await?.text,
+        "child settled"
+    );
+    assert_eq!(output(root, 1).await?.text, "root saw child settle");
+    prompt("again").await?;
+    assert_eq!(output(root, 2).await?.text, "root continued");
+    let fork = PreparedCommand::new(&AgentCommand::Fork {
+        parent: root.clone(),
+        id: IntentId::try_from("scripted-fork")?,
+        at: 0,
+        brief: ModelContent::Text("fork".into()),
+        role: "worker".into(),
+        continuation: None,
+    })?;
+    let AgentReply::Spawned { agent: fork, .. } =
+        controls.execute(&controls.prepare(fork)?).await?
+    else {
+        return Err("fork missing".into());
+    };
+    let state = bound.agents().state(&fork).await?;
+    assert_eq!(state.conversation_base, 1);
+    assert_eq!(
+        output(&fork, state.conversation_base).await?.text,
+        "fork settled"
+    );
+    run.abort();
+    let _ = run.await;
+    Ok(())
+}
 
 async fn listener() -> std::io::Result<tokio::net::TcpListener> {
     tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await
@@ -55,7 +306,7 @@ impl acyclic_harness::hosting::Platform for Owner {
             _ => command.kind(),
         };
         let gate = self.0.as_ref().and_then(|gate| {
-            let mut gate = gate.lock().unwrap();
+            let mut gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
             let pending = gate.as_mut().filter(|gate| gate.command == kind)?;
             // Query policy runs again before disclosure. Only prompt retries
             // use earlier admissions to select an otherwise identical command.
@@ -78,16 +329,11 @@ impl acyclic_harness::hosting::Platform for Owner {
 
 /// The shared host-suite script is gated by a real producer, which the negative
 /// vector drops. No timeout invents model completion or an agent status.
-struct ModelGate {
-    entered: Mutex<Option<oneshot::Sender<()>>>,
-    output: Mutex<Option<oneshot::Receiver<()>>>,
-}
+#[derive(Default)]
+struct ModelGate(Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>);
 
 /// A real root credential is minted before its publication owner parks.
-struct CredentialGate {
-    entered: Mutex<Option<oneshot::Sender<()>>>,
-    published: Mutex<Option<oneshot::Receiver<()>>>,
-}
+struct CredentialGate(Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>);
 
 impl server::Verifier for CredentialGate {
     fn caller(
@@ -102,9 +348,10 @@ impl server::Verifier for CredentialGate {
         &'a self,
         root: server::RootCredential<'a>,
     ) -> BoxProviderFuture<'a, acyclic_harness::Result<Option<server::Observation>>> {
-        let entered = self.entered.lock().unwrap().take().unwrap();
-        let published = self.published.lock().unwrap().take().unwrap();
+        let gate = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
         Box::pin(async move {
+            let (entered, published) =
+                gate.ok_or_else(|| Error::Invalid("credential publication started twice".into()))?;
             let observation = server::Verifier::observation(&server::KeyFileVerifier, root).await?;
             let _ = entered.send(());
             published
@@ -117,18 +364,38 @@ impl server::Verifier for CredentialGate {
 impl ModelProvider for ModelGate {
     fn generate<'a>(
         &'a self,
-        _: &'a PreparedModelRequest,
-        _: ModelDispatch,
+        request: &'a PreparedModelRequest,
+        dispatch: ModelDispatch,
     ) -> acyclic_harness::model::ModelStream<'a> {
-        let entered = self.entered.lock().unwrap().take();
-        let output = self.output.lock().unwrap().take();
-        acyclic_harness::model::ModelStream::new(
+        use acyclic_harness::model::{ModelEvent, ModelStream};
+        if dispatch.step == 1
+            && acyclic_harness_core::test_support::is_retrospective(request.request())
+        {
+            return ModelStream::new(
+                futures::stream::iter([
+                    Ok(ModelEvent::Content {
+                        delta: "none".into(),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    }),
+                ])
+                .boxed(),
+            );
+        }
+        let gate = (dispatch.step == 0)
+            .then(|| self.0.lock().unwrap_or_else(PoisonError::into_inner).take())
+            .flatten();
+        ModelStream::new(
             futures::stream::once(async move {
-                if let Some(entered) = entered {
-                    let _ = entered.send(());
-                }
+                let (entered, output) = gate.ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "unexpected model dispatch at step {}",
+                        dispatch.step
+                    ))
+                })?;
+                let _ = entered.send(());
                 output
-                    .ok_or_else(|| Error::Invalid("model dispatched twice".into()))?
                     .await
                     .map_err(|_| Error::Storage("model producer closed".into()))?;
                 Ok::<_, Error>(futures::stream::iter(
@@ -253,17 +520,17 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
         let host = tokio::spawn(server::serve(
             listener().await?,
             ServerConfig::new(composition_at(
-                Arc::new(ModelGate {
-                    entered: Mutex::new(None),
-                    output: Mutex::new(None),
-                }),
+                Arc::new(ModelGate::default()),
                 Owner(None),
                 member,
             )?),
             |endpoint| {
                 let _ = ready.send((
                     endpoint.endpoint.clone(),
-                    endpoint.observation.as_ref().unwrap().credential.clone(),
+                    endpoint
+                        .observation
+                        .as_ref()
+                        .map(|observation| observation.credential.clone()),
                 ));
             },
             async {
@@ -272,6 +539,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
         ));
         let abort = Abort(host.abort_handle());
         let (url, credential) = announced.await?;
+        let credential = credential.ok_or("missing hosted observation")?;
         let options = acyclic_harness_client::resolve_connection_options(
             Some(&url),
             Some(&credential),
@@ -310,7 +578,11 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
         let mut other = published.clone();
         match field {
             "account" => other.account_id.push(b'x'),
-            _ => other.namespace.as_mut().unwrap().push('x'),
+            _ => other
+                .namespace
+                .as_mut()
+                .ok_or("missing published namespace")?
+                .push('x'),
         }
         assert!(matches!(
             AgentControls::discover_at(
@@ -354,23 +626,15 @@ enum Producer {
 async fn startup_shutdown() -> Outcome {
     let (entered, pending) = oneshot::channel();
     let (publisher, published) = oneshot::channel();
-    let mut config = ServerConfig::new(composition(
-        Arc::new(ModelGate {
-            entered: Mutex::new(None),
-            output: Mutex::new(None),
-        }),
-        Owner(None),
-    )?);
-    config.verifier = Arc::new(CredentialGate {
-        entered: Mutex::new(Some(entered)),
-        published: Mutex::new(Some(published)),
-    });
+    let mut config = ServerConfig::new(composition(Arc::new(ModelGate::default()), Owner(None))?);
+    config.verifier = Arc::new(CredentialGate(Mutex::new(Some((entered, published)))));
     let listener = listener().await?;
     let (stop, stopping) = oneshot::channel::<()>();
+    let announced = AtomicBool::new(false);
     let serving = server::serve(
         listener,
         config,
-        |_| panic!("unfinished credential was announced"),
+        |_| announced.store(true, Ordering::Relaxed),
         async {
             let _ = stopping.await;
         },
@@ -385,6 +649,10 @@ async fn startup_shutdown() -> Outcome {
         serving.await,
         Err(server::ActorsError::Failed(Error::Cancelled))
     ));
+    assert!(
+        !announced.load(Ordering::Relaxed),
+        "unfinished credential was announced"
+    );
     drop(publisher);
     Ok(())
 }
@@ -393,19 +661,11 @@ async fn startup_completion() -> Outcome {
     use server::Composition as _;
     let (entered, pending) = oneshot::channel();
     let (publisher, published) = oneshot::channel();
-    let verifier: Arc<dyn server::Verifier> = Arc::new(CredentialGate {
-        entered: Mutex::new(Some(entered)),
-        published: Mutex::new(Some(published)),
-    });
-    let host = composition(
-        Arc::new(ModelGate {
-            entered: Mutex::new(None),
-            output: Mutex::new(None),
-        }),
-        Owner(None),
-    )?
-    .open(&verifier)
-    .await?;
+    let verifier: Arc<dyn server::Verifier> =
+        Arc::new(CredentialGate(Mutex::new(Some((entered, published)))));
+    let host = composition(Arc::new(ModelGate::default()), Owner(None))?
+        .open(&verifier)
+        .await?;
     let (owner, completion) = oneshot::channel::<()>();
     let mut config = ServerConfig::new(host.with_completion(async {
         completion
@@ -414,10 +674,11 @@ async fn startup_completion() -> Outcome {
     }));
     config.verifier = verifier;
     let listener = listener().await?;
+    let announced = AtomicBool::new(false);
     let serving = server::serve(
         listener,
         config,
-        |_| panic!("stopped runtime was announced"),
+        |_| announced.store(true, Ordering::Relaxed),
         std::future::pending(),
     );
     tokio::pin!(serving);
@@ -428,6 +689,10 @@ async fn startup_completion() -> Outcome {
     drop(owner);
     assert!(
         matches!(serving.await, Err(Error::Storage(reason)) if reason == "startup runtime producer closed")
+    );
+    assert!(
+        !announced.load(Ordering::Relaxed),
+        "stopped runtime was announced"
     );
     drop(publisher);
     Ok(())
@@ -446,10 +711,7 @@ async fn run(producer: Producer) -> Outcome {
     );
     let (entered, entering) = oneshot::channel();
     let (output, generated) = oneshot::channel();
-    let model = Arc::new(ModelGate {
-        entered: Mutex::new(Some(entered)),
-        output: Mutex::new(Some(generated)),
-    });
+    let model = Arc::new(ModelGate(Mutex::new(Some((entered, generated)))));
     let (deciding, decision) = oneshot::channel();
     let (command, commanding) = oneshot::channel();
     let owner = Owner(drop_command.then(|| {
@@ -476,7 +738,10 @@ async fn run(producer: Producer) -> Outcome {
         |endpoint| {
             let _ = ready.send((
                 endpoint.endpoint.clone(),
-                endpoint.observation.as_ref().unwrap().credential.clone(),
+                endpoint
+                    .observation
+                    .as_ref()
+                    .map(|observation| observation.credential.clone()),
             ));
         },
         async {
@@ -492,6 +757,7 @@ async fn run(producer: Producer) -> Outcome {
         )
         .into());
     };
+    let credential = credential.ok_or("missing hosted observation")?;
     let options = acyclic_harness_client::resolve_connection_options(
         Some(&url),
         Some(&credential),
@@ -501,13 +767,17 @@ async fn run(producer: Producer) -> Outcome {
     let session = endpoint::connect(&options).await?;
     let scenario = Scenario {
         id: IntentId::try_from("live-client")?,
-        prompt: "Answer the conformance task".into(),
+        prompt: TASK_PROMPT.into(),
         expected_text: acyclic_harness::conformance::protocol::REPLY.into(),
     };
     let (waiting, pending) = oneshot::channel();
     let waiting = Mutex::new(Some(waiting));
     let qualification = endpoint::verify_with_reply_wait(session, &scenario, || {
-        if let Some(waiting) = waiting.lock().unwrap().take() {
+        if let Some(waiting) = waiting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             let _ = waiting.send(());
         }
     });
@@ -515,7 +785,7 @@ async fn run(producer: Producer) -> Outcome {
     // a later command must not manufacture a second, unrelated model failure.
     let mut output = Some(output);
     if matches!(producer, Producer::Command { .. }) {
-        let _ = output.take().unwrap().send(());
+        let _ = output.take().ok_or("missing model producer")?.send(());
     }
     tokio::pin!(qualification);
     let result = tokio::select! {
@@ -550,8 +820,27 @@ async fn run(producer: Producer) -> Outcome {
         let _ = stop.send(());
     }
     let serving = hosted.await;
-    if drop_model || drop_command || drop_reply_host {
-        let failure = result.expect_err("closed producer must fail the waiting client");
+    if drop_model {
+        let failure = result
+            .err()
+            .ok_or("closed model producer completed the turn")?;
+        assert_eq!(failure.case, "model_turn");
+        assert!(
+            matches!(
+                &failure.cause,
+                Some(acyclic_conformance::client::Cause::Turn(
+                    acyclic_harness::agent::TurnOutcome::Failed { message },
+                )) if message == concat!(
+                    "model request interrupted before completing, and its provider cannot resume it: ",
+                    "storage failure: model producer closed",
+                )
+            ),
+            "closed model producer returned {failure:?}"
+        );
+    } else if drop_command || drop_reply_host {
+        let failure = result
+            .err()
+            .ok_or("closed producer must fail the waiting client")?;
         assert!(
             matches!(
                 &failure.cause,
@@ -576,8 +865,6 @@ async fn run(producer: Producer) -> Outcome {
     }
     if abort_host {
         assert!(matches!(serving, Err(error) if error.is_cancelled()));
-    } else if drop_model {
-        assert!(serving?.is_err());
     } else {
         serving??;
     }

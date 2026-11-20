@@ -10,7 +10,7 @@ pub(super) fn capture_work(
 
 pub(super) struct CaptureWorkScope {
     pub(super) native: crate::NativeMaterializationWork,
-    pub(super) custody: Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>,
+    pub(super) custody: Option<std::sync::Arc<crate::ledger::CaptureTransientCustody>>,
 }
 
 impl CaptureWorkScope {
@@ -18,7 +18,7 @@ impl CaptureWorkScope {
         native: &crate::NativeMaterializationWork,
     ) -> Result<Self, OperationFailure<CaptureError>> {
         let custody =
-            crate::demand::CaptureTransientCustody::new_native(native).map_err(|error| {
+            crate::ledger::CaptureTransientCustody::new_native(native).map_err(|error| {
                 OperationFailure::observed(CaptureError::from(error), native.receipt())
             })?;
         // Capture is also a standalone entry point: metered native I/O cannot
@@ -150,7 +150,7 @@ pub(super) fn capture_reserve<T>(
     let mut replacement = capture_vec(capacity, meter)?;
     capture_charge(
         meter,
-        crate::materializer::NativeResourceCredit::Copy.delta(copied as u64),
+        crate::ledger::NativeResourceCredit::Copy.delta(copied as u64),
     )?;
     replacement.append(values);
     let old_values = std::mem::replace(values, replacement);
@@ -170,10 +170,7 @@ pub(super) fn capture_position<V>(
 ) -> Result<Result<usize, usize>, CaptureError> {
     let (mut low, mut high) = (0, entries.len());
     while low < high {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(2),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(2))?;
         let middle = low + (high - low) / 2;
         match entries.get(middle).ok_or(WorkError::Overflow)?.0.cmp(key) {
             std::cmp::Ordering::Less => low = middle + 1,
@@ -199,7 +196,7 @@ pub(super) fn capture_insert_at<V>(
     capture_reserve(entries, 1, meter)?;
     capture_charge(
         meter,
-        crate::materializer::NativeResourceCredit::Copy.delta(copied),
+        crate::ledger::NativeResourceCredit::Copy.delta(copied),
     )?;
     entries.insert(index, (key, value));
     Ok(())
@@ -250,7 +247,7 @@ pub(super) fn capture_remove<V>(
         .ok_or(WorkError::Overflow)? as u64;
     capture_charge(
         meter,
-        crate::materializer::NativeResourceCredit::Copy.delta(copied),
+        crate::ledger::NativeResourceCredit::Copy.delta(copied),
     )?;
     Ok(Some(entries.remove(index)))
 }
@@ -263,10 +260,7 @@ pub(super) fn capture_push_entry<V>(
     value: V,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    capture_charge(
-        meter,
-        crate::materializer::NativeResourceCredit::Items.delta(1),
-    )?;
+    capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
     capture_reserve(entries, 1, meter)?;
     entries.push((path, value));
     Ok(())
@@ -280,10 +274,7 @@ pub(super) fn capture_order_entries<V>(
     capture_sort_by(entries, |left, right| left.0.cmp(&right.0), meter)?;
     let mut unique = usize::from(!entries.is_empty());
     for index in 1..entries.len() {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(2),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(2))?;
         if entries[index].0 != entries[unique - 1].0 {
             entries.swap(unique, index);
             unique += 1;

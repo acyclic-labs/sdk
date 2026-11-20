@@ -8,19 +8,23 @@ license.workspace = true
 repository.workspace = true
 description = "Streaming model providers for the acyclic harness"
 
+[package.metadata.bazel]
+integration-test-shards = 3
+
 [features]
 research = ["acyclic-harness-core/research", "acyclic-harness?/research"]
 endpoint-presets = []
 local = ["dep:acyclic-harness-local"]
 # The browser content reader lives in the facade's wasm bindings.
-browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
+browser = ["acyclic-harness-core/browser", "acyclic-harness-provider-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
-fuzzing = ["acyclic-harness-core/test-support"]
-model-checking = ["dep:loom"]
+fuzzing = ["acyclic-harness-core/test-support", "acyclic-harness-provider-core/fuzzing"]
+model-checking = ["dep:loom", "acyclic-harness-provider-core/model-checking"]
 
 [dependencies]
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+acyclic-harness-provider-core = { path = "../harness-provider-core", version = "=0.2.0" }
 acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", version = "=0.2.0" }
 acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0" }
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
@@ -78,7 +82,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 # The paused clock drives the exchange deadline properties without wall time.
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 tempfile = "3.27.0"
 loom = "0.7.3"
 proptest.workspace = true
@@ -92,17 +96,7 @@ workspace = true
 
 [package.metadata.bazel.test-dependencies]
 credential-fixture = ["acyclic_harness_providers"]
-live-cache = ["acyclic_harness_core", "acyclic_harness_providers", "acyclic_stream", "async_stream", "bytes", "futures", "serde_json", "tokio"]
-prefix-cache = ["acyclic_actors", "acyclic_fs", "acyclic_harness_core", "acyclic_harness_local", "acyclic_harness_providers", "acyclic_objects", "acyclic_stream", "bytes", "futures", "harness_mock_model", "serde_json", "tempfile", "tokio"]
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "live-cache"
-path = "tests/live_cache.rs"
-
-[[test]]
-name = "prefix-cache"
-path = "tests/prefix_cache_cases.rs"

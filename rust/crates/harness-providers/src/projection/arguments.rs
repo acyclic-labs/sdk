@@ -22,7 +22,7 @@ impl Serialize for Arguments<'_> {
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 mod judge;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) use judge::assert_normalization;
+pub(crate) use judge::check_normalization;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use judge::{

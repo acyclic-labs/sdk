@@ -1,0 +1,55 @@
+diff --git a/repositories.bzl b/repositories.bzl
+--- a/repositories.bzl
++++ b/repositories.bzl
+@@ -185,37 +185,51 @@
+ 
+ def load_musl_toolchains(extra_exec_compatible_with=[], extra_target_compatible_with=[], target_settings=[]):
++    patches = [Label("@@//:toolchains_musl-cxx-dialect.patch")]
++    patch_args = ["-p1"]
+     http_archive(
+         name = "musl-1_2_3-platform-x86_64-unknown-linux-gnu-target-x86_64-linux-musl",
+         sha256 = "ddcba8aaeb4f0fdd9fbb48e8903345999c0dcd531d0cc867f6dfe6ff2dc95f49",
+         url = "https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.2.0/musl-1.2.3-platform-x86_64-unknown-linux-gnu-target-x86_64-linux-musl.tar.gz",
++        patches = patches,
++        patch_args = patch_args,
+     )
+ 
+     http_archive(
+         name = "musl-1_2_3-platform-aarch64-unknown-linux-gnu-target-x86_64-linux-musl",
+         sha256 = "b618de308f237f2f705b07d09f27ef5f473c614684f26ccc4eb6ad77c4278e53",
+         url = "https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.2.0/musl-1.2.3-platform-aarch64-unknown-linux-gnu-target-x86_64-linux-musl.tar.gz",
++        patches = patches,
++        patch_args = patch_args,
+     )
+ 
+     http_archive(
+         name = "musl-1_2_3-platform-aarch64-apple-darwin-target-x86_64-linux-musl",
+         sha256 = "fb4331e079d2d07dca0787c5843fc147f5804c368c8d1c58d261ffd4f7f81a91",
+         url = "https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.2.0/musl-1.2.3-platform-aarch64-apple-darwin-target-x86_64-linux-musl.tar.gz",
++        patches = patches,
++        patch_args = patch_args,
+     )
+ 
+     http_archive(
+         name = "musl-1_2_3-platform-x86_64-unknown-linux-gnu-target-aarch64-linux-musl",
+         sha256 = "7779f48906b02c99b36af2249b064922c058b3970e636dde6ed5977ff3572ecf",
+         url = "https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.2.0/musl-1.2.3-platform-x86_64-unknown-linux-gnu-target-aarch64-linux-musl.tar.gz",
++        patches = patches,
++        patch_args = patch_args,
+     )
+ 
+     http_archive(
+         name = "musl-1_2_3-platform-aarch64-unknown-linux-gnu-target-aarch64-linux-musl",
+         sha256 = "8d213f077497bd1f4102c478b114261b90215f42cf507bc0ad897be2f93a93d1",
+         url = "https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.2.0/musl-1.2.3-platform-aarch64-unknown-linux-gnu-target-aarch64-linux-musl.tar.gz",
++        patches = patches,
++        patch_args = patch_args,
+     )
+ 
+     http_archive(
+         name = "musl-1_2_3-platform-aarch64-apple-darwin-target-aarch64-linux-musl",
+         sha256 = "89b94e310ecbdc810fd77da199d8d3dffc33bf68fea0baa5a7e9c91d929ab1b0",
+         url = "https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.2.0/musl-1.2.3-platform-aarch64-apple-darwin-target-aarch64-linux-musl.tar.gz",
++        patches = patches,
++        patch_args = patch_args,
+     )

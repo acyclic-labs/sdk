@@ -1,0 +1,20 @@
+# One crate compiled through clippy-driver from two checkouts, with its clippy.toml a symlink into each, as
+# a sandbox stages a source input: the metadata must be identical, or two checkouts of one commit publish
+# two crates under one cache key. The same compile with clippy reading the symlink in place is the control:
+# it must differ, so the check still reaches the class it guards. Hand-written: no Cargo manifest describes
+# a check of the build rules themselves.
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load(":check.bzl", "checkout_paths_check")
+
+rust_binary(
+    name = "checker",
+    srcs = ["checker.rs"],
+    crate_root = "checker.rs",
+    edition = "2024",
+)
+
+checkout_paths_check(
+    name = "checkout_paths",
+    src = "probe.rs",
+    clippy_config = "//:clippy.toml",
+)

@@ -19,18 +19,16 @@ name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors-call",
+ "acyclic-actors-client",
  "acyclic-actors-contract",
  "acyclic-actors-inventory",
  "acyclic-auth",
- "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-observability",
- "acyclic-protobuf-json",
  "acyclic-stream",
  "acyclic-stream-body",
  "acyclic-stream-wire",
  "acyclic-test-support",
- "acyclic-tonic-web-wasm-client",
  "async-trait",
  "bytes",
  "futures",
@@ -42,8 +40,6 @@ dependencies = [
  "prost",
  "prost-reflect",
  "rcgen",
- "reqwest 0.12.28",
- "rustls",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -51,13 +47,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "tonic",
  "tonic-prost",
- "tracing",
  "tracing-subscriber",
  "ts-rs",
- "url",
  "uuid",
  "wasm-bindgen-test",
 ]
@@ -74,6 +67,42 @@ dependencies = [
  "prost",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-actors-client"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors-contract",
+ "acyclic-actors-inventory",
+ "acyclic-auth",
+ "acyclic-grpc-observability",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-protobuf-json",
+ "acyclic-test-support",
+ "acyclic-tonic-web-wasm-client",
+ "futures",
+ "http",
+ "http-body",
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "reqwest 0.12.28",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
+ "ts-rs",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -129,8 +158,6 @@ dependencies = [
  "napi-derive",
  "serde",
  "serde_json",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -173,6 +200,8 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-auth-operation",
+ "acyclic-auth-refusal",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-observability",
@@ -228,13 +257,45 @@ version = "0.0.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-auth-action",
- "acyclic-auth-wasm",
  "ed25519-dalek",
  "libfuzzer-sys",
  "prost",
  "serde_json",
  "syn 3.0.9",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-auth-operation"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "zeroize",
+]
+
+[[package]]
+name = "acyclic-auth-refusal"
+version = "0.2.0"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "http",
+ "js-sys",
+ "napi",
+ "napi-derive",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ts-rs",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -257,14 +318,13 @@ name = "acyclic-cloudflare-conformance"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
- "acyclic-agent-host-conformance",
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-suite",
  "acyclic-hosted-actors-conformance",
  "acyclic-stream",
- "base64 0.23.1",
  "bytes",
  "futures",
  "js-sys",
@@ -282,6 +342,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-compatibility-golden",
  "acyclic-fs",
  "acyclic-fs-format",
  "acyclic-fs-wire",
@@ -323,9 +384,21 @@ dependencies = [
 name = "acyclic-collections"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections-page",
  "acyclic-test-support",
  "proptest",
 ]
+
+[[package]]
+name = "acyclic-collections-page"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
+name = "acyclic-compatibility-golden"
+version = "0.2.0"
 
 [[package]]
 name = "acyclic-conformance"
@@ -391,6 +464,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-darwin-mount-retire"
+version = "0.2.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "acyclic-decimal-u64"
 version = "0.2.0"
 dependencies = [
@@ -423,9 +503,11 @@ dependencies = [
  "acyclic-fs-merge",
  "acyclic-fs-native-contract",
  "acyclic-fs-storage-probe",
+ "acyclic-fs-test-support",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-grpc-observability",
+ "acyclic-native-claim",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
@@ -512,6 +594,7 @@ version = "0.0.0"
 name = "acyclic-fs-darwin-bridge"
 version = "0.2.0"
 dependencies = [
+ "acyclic-darwin-mount-retire",
  "cc",
 ]
 
@@ -620,6 +703,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-fs-format",
+ "acyclic-fs-work",
  "acyclic-stream",
  "async-trait",
  "axum",
@@ -661,10 +745,23 @@ name = "acyclic-fs-storage-probe"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs-native-contract",
+ "acyclic-native-runtime",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
  "windows",
+]
+
+[[package]]
+name = "acyclic-fs-test-support"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-fs-work",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
 ]
 
 [[package]]
@@ -684,7 +781,6 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
- "serde_json",
  "thiserror 2.0.21",
  "tsify",
  "wasm-bindgen",
@@ -720,7 +816,7 @@ name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
- "acyclic-observability",
+ "acyclic-observability-core",
  "acyclic-test-support",
  "futures",
  "http-body",
@@ -754,11 +850,11 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
- "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-fs-format",
- "acyclic-fs-native-contract",
  "acyclic-fs-work",
+ "acyclic-harness-browser",
+ "acyclic-harness-cli",
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-hosting",
@@ -766,74 +862,89 @@ dependencies = [
  "acyclic-harness-search",
  "acyclic-harness-suite",
  "acyclic-harness-tui",
- "acyclic-host-platform",
  "acyclic-machines",
- "acyclic-machines-daytona",
  "acyclic-machines-grpc",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
  "acyclic-stream-wire",
  "acyclic-test-support",
- "arrayvec",
  "async-trait",
- "base64 0.23.1",
- "blake3",
  "bytes",
  "diffy",
- "dirs",
  "ed25519-dalek",
  "futures",
- "getrandom 0.4.3",
- "hex",
  "http",
- "http-body-util",
- "hyper",
- "hyper-util",
  "js-sys",
- "jsonschema",
- "keyring",
  "loom",
- "notify",
- "once_cell",
- "proc-macro2",
  "proptest",
  "prost",
- "prost-reflect",
- "pulldown-cmark",
- "ratatui",
  "rcgen",
  "regex-lite",
  "rmcp",
  "rustix",
- "rustls",
- "rustls-platform-verifier",
  "same-file",
  "schemars",
  "serde",
- "serde-saphyr",
- "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.11.1",
  "shuttle",
- "syn 3.0.9",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tokio-rustls",
- "toml",
  "tonic",
  "tonic-prost",
- "tower",
- "tracing",
  "tracing-subscriber",
- "tsify",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "which",
- "x509-parser",
+]
+
+[[package]]
+name = "acyclic-harness-browser"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-harness-hosting",
+ "acyclic-machines",
+ "acyclic-machines-daytona",
+ "acyclic-machines-grpc",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-stream-wire",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "futures",
+ "js-sys",
+ "prost",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tsify",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-harness-cli"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-core",
+ "acyclic-harness-tui",
+ "acyclic-native-runtime",
+ "futures",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -865,20 +976,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-cloud-tests"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-harness",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "futures",
+ "proptest",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
 name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-format",
+ "acyclic-fs-merge",
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-host-platform",
+ "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
  "futures",
+ "hex",
  "serde",
  "serde_json",
  "tempfile",
@@ -893,6 +1035,33 @@ dependencies = [
  "libfuzzer-sys",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "acyclic-harness-contracts"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-fs-work",
+ "acyclic-harness",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "blake3",
+ "bytes",
+ "diffy",
+ "futures",
+ "proptest",
+ "prost",
+ "rmcp",
+ "rustls",
+ "serde",
+ "serde_json",
+ "shuttle",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -927,11 +1096,13 @@ dependencies = [
  "acyclic-fs-work",
  "acyclic-harness-control",
  "acyclic-harness-control-checks",
+ "acyclic-harness-hosting",
  "acyclic-harness-json",
  "acyclic-harness-layout",
  "acyclic-harness-model-cache",
  "acyclic-harness-modules",
  "acyclic-harness-sse",
+ "acyclic-harness-wire",
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-conformance",
@@ -940,7 +1111,6 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
- "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-stream-wire",
  "acyclic-test-support",
@@ -971,7 +1141,6 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "prost",
- "prost-build",
  "prost-reflect",
  "pulldown-cmark",
  "rcgen",
@@ -1008,14 +1177,93 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-dst"
+version = "0.2.0"
+dependencies = [
+ "acyclic-executable-search",
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-fs-native-contract",
+ "acyclic-fs-work",
+ "acyclic-harness",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-harness-tui",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "blake3",
+ "futures",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "acyclic-harness-e2e"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness",
+ "acyclic-harness-core",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "blake3",
+ "futures",
+ "hex",
+ "proptest",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "acyclic-harness-files"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-fs-work",
+ "acyclic-harness",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "bytes",
+ "futures",
+ "hex",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-executable-search",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-tui-core",
+ "acyclic-harness-tui-terminal",
  "acyclic-mcp",
  "acyclic-native-runtime",
  "acyclic-plugin",
@@ -1118,6 +1366,7 @@ dependencies = [
  "acyclic-harness-hosting",
  "acyclic-harness-layout",
  "acyclic-harness-search",
+ "acyclic-harness-workspace",
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-daytona",
@@ -1246,6 +1495,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-native-tests"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "proptest",
+ "regex-lite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "acyclic-harness-provider-core"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-fs-work",
+ "acyclic-harness-core",
+ "acyclic-harness-provider-protocol",
+ "acyclic-harness-provider-response",
+ "acyclic-model-render",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "async-stream",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
+ "futures",
+ "http",
+ "httpdate",
+ "keyring",
+ "loom",
+ "proptest",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "tsify",
+ "url",
+ "wasm-bindgen",
+ "zeroize",
+]
+
+[[package]]
 name = "acyclic-harness-provider-protocol"
 version = "0.2.0"
 dependencies = [
@@ -1280,6 +1581,7 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-local",
+ "acyclic-harness-provider-core",
  "acyclic-harness-provider-protocol",
  "acyclic-harness-provider-response",
  "acyclic-model-render",
@@ -1409,24 +1711,18 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness-tui-core",
  "acyclic-harness-tui-editor-io",
- "acyclic-harness-tui-terminal",
+ "acyclic-harness-tui-term",
  "acyclic-markdown",
- "acyclic-native-runtime",
  "acyclic-test-support",
  "alacritty_terminal",
  "crossterm",
- "futures",
  "image",
  "loom",
- "nix 0.31.3",
  "proptest",
  "ratatui",
- "rustix",
- "rustix-openpty",
  "serde",
  "serde_json",
  "shell-words",
- "signal-hook 0.4.5",
  "tempfile",
  "unicode-segmentation",
  "unicode-width",
@@ -1463,9 +1759,35 @@ name = "acyclic-harness-tui-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-harness-tui",
+ "acyclic-harness-tui-core",
+ "acyclic-harness-tui-term",
  "libfuzzer-sys",
  "serde_json",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "acyclic-harness-tui-term"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-tui",
+ "acyclic-harness-tui-core",
+ "acyclic-harness-tui-terminal",
+ "acyclic-native-runtime",
+ "acyclic-test-support",
+ "alacritty_terminal",
+ "futures",
+ "loom",
+ "nix 0.31.3",
+ "proptest",
+ "ratatui",
+ "rustix",
+ "rustix-openpty",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "signal-hook 0.4.5",
+ "tempfile",
 ]
 
 [[package]]
@@ -1474,6 +1796,51 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness-tui-core",
  "vte",
+]
+
+[[package]]
+name = "acyclic-harness-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "acyclic-proto-build",
+ "blake3",
+ "prost",
+ "prost-build",
+]
+
+[[package]]
+name = "acyclic-harness-workspace"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-executable-search",
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-fs-merge",
+ "acyclic-fs-native-contract",
+ "acyclic-fs-work",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-harness-hosting",
+ "acyclic-host-platform",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "blake3",
+ "bytes",
+ "futures",
+ "hex",
+ "loom",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "which",
 ]
 
 [[package]]
@@ -1611,7 +1978,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-harness-core",
- "acyclic-harness-providers",
+ "acyclic-harness-provider-core",
  "acyclic-machines",
  "acyclic-machines-conformance",
  "acyclic-stream",
@@ -1632,6 +1999,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-machines",
+ "acyclic-machines-conformance",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-stream",
@@ -1668,7 +2036,6 @@ dependencies = [
  "acyclic-auth",
  "acyclic-machines",
  "acyclic-stream",
- "futures",
  "hex",
  "js-sys",
  "serde",
@@ -1719,14 +2086,21 @@ dependencies = [
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
+ "acyclic-markdown-delimiters",
  "acyclic-markdown-work",
  "acyclic-syntect",
  "acyclic-test-support",
  "proptest",
  "pulldown-cmark",
  "unicase",
- "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "acyclic-markdown-delimiters"
+version = "0.2.0"
+dependencies = [
+ "acyclic-markdown-work",
 ]
 
 [[package]]
@@ -1760,7 +2134,6 @@ dependencies = [
 name = "acyclic-model-render"
 version = "0.2.0"
 dependencies = [
- "acyclic-collections",
  "proptest",
  "serde",
  "serde_json",
@@ -1776,6 +2149,34 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+]
+
+[[package]]
+name = "acyclic-native-claim"
+version = "0.2.0"
+dependencies = [
+ "acyclic-native-file",
+ "acyclic-native-runtime",
+ "acyclic-process-identity",
+ "acyclic-test-support",
+ "libc",
+ "loom",
+ "rustix",
+ "tempfile",
+]
+
+[[package]]
+name = "acyclic-native-file"
+version = "0.2.0"
+dependencies = [
+ "acyclic-test-support",
+ "keyring",
+ "linux-keyutils",
+ "loom",
+ "parking_lot 0.13.0",
+ "rustix",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1807,6 +2208,7 @@ dependencies = [
  "acyclic-collections",
  "acyclic-executable-search",
  "acyclic-host-platform",
+ "acyclic-native-file",
  "acyclic-observability",
  "acyclic-process-identity",
  "acyclic-process-resources",
@@ -1833,7 +2235,6 @@ dependencies = [
  "security-framework 3.7.0",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "subtle",
  "tempfile",
  "tokio",
@@ -1860,13 +2261,14 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-compatibility-golden",
  "acyclic-contract-derive",
  "acyclic-log-frame",
  "acyclic-native-runtime",
+ "acyclic-objects-core",
  "acyclic-observability",
  "acyclic-proto-build",
- "acyclic-protobuf-json",
- "acyclic-stream",
+ "acyclic-stream-contract",
  "acyclic-stream-wire",
  "acyclic-test-support",
  "async-trait",
@@ -1880,18 +2282,15 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper-util",
- "js-sys",
  "libc",
  "object_store",
  "pin-project-lite",
  "prost",
- "prost-reflect",
  "quick-xml 0.41.0",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
  "rustls",
  "serde_json",
- "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -1900,8 +2299,38 @@ dependencies = [
  "tower",
  "tracing",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-objects-core"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-compatibility-golden",
+ "acyclic-native-runtime",
+ "acyclic-proto-build",
+ "acyclic-protobuf-json",
+ "acyclic-stream-contract",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "futures",
+ "getrandom 0.4.3",
+ "hex",
+ "js-sys",
+ "pin-project-lite",
+ "prost",
+ "prost-reflect",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1923,10 +2352,20 @@ name = "acyclic-observability"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-observability-core",
  "acyclic-test-support",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "acyclic-observability-core"
+version = "0.2.0"
+dependencies = [
  "futures",
  "serde",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2048,7 +2487,6 @@ dependencies = [
  "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-test-support",
- "arrayvec",
  "libfuzzer-sys",
  "prettyplease 0.3.0",
  "proptest",
@@ -2070,6 +2508,80 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-collections",
+ "acyclic-compatibility-golden",
+ "acyclic-contract-derive",
+ "acyclic-grpc-observability",
+ "acyclic-log-frame",
+ "acyclic-native-claim",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-process-resources",
+ "acyclic-stream-body",
+ "acyclic-stream-contract",
+ "acyclic-stream-contract-bytes",
+ "acyclic-stream-trust",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "acyclic-tonic-web-wasm-client",
+ "async-trait",
+ "axum",
+ "bytes",
+ "ed25519-dalek",
+ "futures",
+ "getrandom 0.4.3",
+ "h2",
+ "http",
+ "hyper",
+ "hyper-util",
+ "indexed_db_futures",
+ "js-sys",
+ "loom",
+ "pin-project-lite",
+ "proptest",
+ "prost",
+ "rcgen",
+ "reqwest 0.12.28",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "tonic",
+ "tonic-web",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "tsify",
+ "url",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
+name = "acyclic-stream-body"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "bytes",
+]
+
+[[package]]
+name = "acyclic-stream-contract"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-collections",
+ "acyclic-compatibility-golden",
  "acyclic-contract-derive",
  "acyclic-decimal-u64",
  "acyclic-grpc-observability",
@@ -2077,8 +2589,11 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-process-resources",
- "acyclic-proto-build",
+ "acyclic-stream",
  "acyclic-stream-body",
+ "acyclic-stream-contract-core",
+ "acyclic-stream-contract-engine",
+ "acyclic-stream-contract-wire",
  "acyclic-stream-trust",
  "acyclic-stream-wire",
  "acyclic-test-support",
@@ -2134,11 +2649,103 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-stream-body"
+name = "acyclic-stream-contract-bytes"
+version = "0.2.0"
+dependencies = [
+ "acyclic-native-runtime",
+ "js-sys",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-stream-contract-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
+ "acyclic-contract-derive",
+ "acyclic-decimal-u64",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-stream-contract-bytes",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "async-trait",
+ "blake3",
  "bytes",
+ "futures",
+ "getrandom 0.4.3",
+ "http",
+ "js-sys",
+ "loom",
+ "pin-project-lite",
+ "proptest",
+ "prost",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "smallvec",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
+name = "acyclic-stream-contract-engine"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-collections",
+ "acyclic-contract-derive",
+ "acyclic-decimal-u64",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-stream-contract-bytes",
+ "acyclic-stream-contract-core",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "futures",
+ "getrandom 0.4.3",
+ "http",
+ "js-sys",
+ "loom",
+ "pin-project-lite",
+ "proptest",
+ "prost",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "smallvec",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+ "web-time",
 ]
 
 [[package]]
@@ -2149,6 +2756,26 @@ dependencies = [
  "acyclic-stream-wire",
  "libfuzzer-sys",
  "prost",
+]
+
+[[package]]
+name = "acyclic-stream-contract-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-compatibility-golden",
+ "acyclic-stream-contract-bytes",
+ "acyclic-stream-contract-core",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "bytes",
+ "futures",
+ "http",
+ "proptest",
+ "prost",
+ "ruzstd",
+ "thiserror 2.0.21",
+ "tonic",
 ]
 
 [[package]]
@@ -2190,7 +2817,6 @@ dependencies = [
  "proptest",
  "prost",
  "rcgen",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
@@ -2284,7 +2910,9 @@ dependencies = [
 name = "acyclic-test-runner"
 version = "0.2.0"
 dependencies = [
+ "acyclic-darwin-mount-retire",
  "acyclic-native-runtime",
+ "acyclic-process-resources",
 ]
 
 [[package]]
@@ -2293,7 +2921,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-differential",
  "proptest",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2927,15 +3554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bit-set"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
-dependencies = [
- "bit-vec 0.10.1",
-]
-
-[[package]]
 name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2947,16 +3565,6 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
 dependencies = [
- "serde",
-]
-
-[[package]]
-name = "bit-vec"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
-dependencies = [
- "borsh",
  "serde",
 ]
 
@@ -3045,30 +3653,6 @@ name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
-
-[[package]]
-name = "borsh"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
-dependencies = [
- "borsh-derive",
- "bytes",
- "cfg_aliases",
-]
-
-[[package]]
-name = "borsh-derive"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12cdfe656708a01f89b451a7d36466e6fe6c414de0aa18fc54f864f6f9ca9f56"
-dependencies = [
- "once_cell",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 3.0.9",
-]
 
 [[package]]
 name = "bumpalo"
@@ -4258,7 +4842,7 @@ version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a2e16b9a584b602f1e0e5e22c30ca0906786088c27500653e432d086def8b53"
 dependencies = [
- "bit-set 0.8.0",
+ "bit-set",
  "regex-automata",
  "regex-syntax",
 ]
@@ -7273,8 +7857,6 @@ version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
 dependencies = [
- "bit-set 0.11.1",
- "bit-vec 0.10.1",
  "bitflags 2.13.2",
  "chacha20",
  "core_detect",
@@ -7282,8 +7864,6 @@ dependencies = [
  "rand 0.10.3",
  "rand_xorshift",
  "regex-syntax",
- "rusty-fork",
- "tempfile",
  "unarray",
 ]
 
@@ -7440,12 +8020,6 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
-
-[[package]]
-name = "quick-error"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-xml"
@@ -8213,18 +8787,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
-name = "rusty-fork"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
-dependencies = [
- "fnv",
- "quick-error",
- "tempfile",
- "wait-timeout",
-]
-
-[[package]]
 name = "ruzstd"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8462,6 +9024,7 @@ dependencies = [
 name = "sdk-generation"
 version = "0.1.0"
 dependencies = [
+ "acyclic-native-runtime",
  "acyclic-test-support",
  "cargo_metadata",
  "flate2",
@@ -10123,15 +10686,6 @@ dependencies = [
  "log",
  "memchr",
  "serde",
-]
-
-[[package]]
-name = "wait-timeout"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
-dependencies = [
- "libc",
 ]
 
 [[package]]

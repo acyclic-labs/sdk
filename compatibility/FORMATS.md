@@ -9,7 +9,7 @@ its RPC route; framing and semantic decoders are separate boundaries below.
 Fuzzing and proofs run on demand. A source entry is not evidence of an executed
 campaign or proof. Captured corpus provenance is `rust/codec-fuzz/corpus/SOURCES.tsv`;
 descriptor baselines live in `compatibility/descriptors/`. Golden payloads belong
-in `compatibility/frames/`, alongside their producing encoder and refusal cases.
+in `rust/crates/compatibility-golden/frames/`, alongside their producing encoder and refusal cases.
 
 The registered SDK corpus contains writer outputs and original physical schedule
 configurations. The initial 1,594 writer outputs were
@@ -143,8 +143,8 @@ have passed at their recorded source revisions. They do not establish a fuzz
 campaign, and the earlier ID campaign does not qualify subsequently added controls.
 
 The Harness descriptor baseline was captured with Buf 1.75.0 from the actual
-schemas using `buf build --path rust/crates/harness-core/proto/harness/v2/harness.proto
---path rust/crates/harness-core/proto/protocol/v1/protocol.proto --output
+schemas using `buf build --path rust/crates/harness-wire/proto/harness/v2/harness.proto
+--path rust/crates/harness-wire/proto/protocol/v1/protocol.proto --output
 compatibility/descriptors/harness-v2.bin`. The shared descriptor equality check
 passed for all eight families after capturing current Auth, Actors and Session
 descriptors through the same compiler. Shared manifest digest joins remain open.

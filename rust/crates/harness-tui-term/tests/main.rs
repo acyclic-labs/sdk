@@ -1,0 +1,40 @@
+//! Terminal integration behaviour tests.
+#![cfg(all(test, not(loom)))]
+
+acyclic_test_support::counting_allocator!();
+
+static TERMINAL_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn terminal_owner() -> std::sync::MutexGuard<'static, ()> {
+    match TERMINAL_OWNER.lock() {
+        Ok(owner) => owner,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[path = "terminal_negotiation.rs"]
+mod terminal_negotiation;
+
+#[path = "terminal_frames.rs"]
+mod terminal_frames;
+
+#[path = "cases/terminal.rs"]
+mod terminal;
+
+#[path = "cases/terminal_allocations.rs"]
+mod terminal_allocations;
+
+#[path = "cases/terminal_conformance.rs"]
+mod terminal_conformance;
+
+#[path = "cases/terminal_decoder.rs"]
+mod terminal_decoder;
+
+#[path = "cases/terminal_frame_faults.rs"]
+mod terminal_frame_faults;
+
+#[path = "cases/terminal_regions.rs"]
+mod terminal_regions;
+
+#[path = "cases/terminal_signals.rs"]
+mod terminal_signals;

@@ -1,45 +1,53 @@
+//! Checks client file layout, admission, and reply invariants against the wire codec.
 #![no_main]
 use acyclic_harness_client::{AgentCommand, AgentReply, PreparedCommand, decode_agent_reply};
 use acyclic_harness_core::{
-    client_files::FileSource, command_request::layout_view, conversation::validate_content_path,
+    agent::AgentPath,
+    client_files::{ClientFiles, FileCut, FileRoot, FileSource},
+    command_request::layout_view,
+    conversation::validate_content_path,
 };
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeSet;
 
+fn check_layout(data: &[u8]) {
+    if let Ok(layout) = serde_json::from_slice::<serde_json::Value>(data)
+        && let Ok(view) = layout_view(&layout)
+    {
+        assert_eq!(
+            layout.get("version").and_then(serde_json::Value::as_u64),
+            Some(1),
+            "layout version admitted outside v1"
+        );
+        assert!(layout.is_object());
+        assert_eq!(
+            view,
+            layout.get("open_view").and_then(serde_json::Value::as_str)
+        );
+        assert!(
+            layout
+                .get("open_view")
+                .is_none_or(|v| v.is_null() || v.is_string())
+        );
+    }
+}
+
 // A standalone layout, or an original command, NUL, and its encoded reply.
 // JSON encoders escape NUL, so the separator cannot split a protocol string.
-fuzz_target!(|data: &[u8]| {
-    if let Ok(layout) = serde_json::from_slice::<serde_json::Value>(data) {
-        if let Ok(view) = layout_view(&layout) {
-            assert_eq!(
-                layout.get("version").and_then(serde_json::Value::as_u64),
-                Some(1),
-                "layout version admitted outside v1"
-            );
-            assert!(layout.is_object());
-            assert_eq!(
-                view,
-                layout.get("open_view").and_then(serde_json::Value::as_str)
-            );
-            assert!(
-                layout
-                    .get("open_view")
-                    .is_none_or(|v| v.is_null() || v.is_string())
-            );
-        }
-    }
-    let Some(split) = data.iter().position(|byte| *byte == 0) else {
-        return;
+fn check(data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    check_layout(data);
+    let mut parts = data.splitn(2, |byte| *byte == 0);
+    let (Some(command), Some(reply)) = (parts.next(), parts.next()) else {
+        return Ok(());
     };
-    let (command, reply) = data.split_at(split);
     let Ok(typed) = serde_json::from_slice::<AgentCommand>(command) else {
-        return;
+        return Ok(());
     };
     if !matches!(
         typed,
         AgentCommand::ClientFiles { .. } | AgentCommand::PublishClientFiles { .. }
     ) {
-        return;
+        return Ok(());
     }
     // Compare the host decoder with admission by the original caller encoder.
     // Starting from a decoded command alone would miss refusals of valid input.
@@ -50,13 +58,108 @@ fuzz_target!(|data: &[u8]| {
         decoded.is_ok(),
         "client files encoder and decoder disagree on admission"
     );
-    let Ok(command) = decoded else { return };
-    let encoded = encoded.expect("admitted command encodes");
+    let Ok(command) = decoded else { return Ok(()) };
+    let encoded = encoded?;
     assert_eq!(
-        serde_json::to_value(&command).unwrap(),
-        serde_json::to_value(encoded.decoded().unwrap()).unwrap()
+        serde_json::to_value(&command)?,
+        serde_json::to_value(encoded.decoded()?)?
     );
-    match &command {
+    assert_eq!(
+        std::mem::discriminant(&typed),
+        std::mem::discriminant(&command),
+        "decoded command changed its kind"
+    );
+    check_command(&command);
+    let Ok(Ok(reply)) = decode_agent_reply(reply, &command) else {
+        return Ok(());
+    };
+    match (reply, command) {
+        (
+            AgentReply::ClientFiles { snapshot },
+            AgentCommand::ClientFiles {
+                paths,
+                after,
+                agent,
+                root,
+                ..
+            },
+        ) => {
+            check_snapshot(&snapshot, &agent, &root, &paths, after.as_ref())?;
+        }
+        (reply, command) => assert!(
+            matches!(
+                (reply, command),
+                (
+                    AgentReply::ClientFilesPublished { .. },
+                    AgentCommand::PublishClientFiles { .. }
+                )
+            ),
+            "reply accepted for another command"
+        ),
+    }
+    Ok(())
+}
+
+fn check_snapshot(
+    snapshot: &ClientFiles,
+    agent: &AgentPath,
+    root: &FileRoot,
+    paths: &[String],
+    after: Option<&FileCut>,
+) -> acyclic_harness_core::Result<()> {
+    assert_eq!(&snapshot.root, root);
+    assert_eq!(snapshot.cut.version, 1);
+    assert!(after.is_none_or(|after| !after.same_inputs(&snapshot.cut)));
+    assert_eq!(snapshot.files.len(), paths.len());
+    assert!(
+        paths.iter().all(|path| snapshot.files.contains_key(path)),
+        "requested path missing"
+    );
+    let mut files = snapshot
+        .files
+        .iter()
+        .filter_map(|(path, file)| file.as_ref().map(|file| (path, file)))
+        .peekable();
+    if files.peek().is_none() {
+        return Ok(());
+    }
+    if let FileRoot::ClientSession { session } = root {
+        assert_eq!(
+            acyclic_harness_core::client_files::volume(
+                snapshot.volume.provider().clone(),
+                agent,
+                *session
+            )?,
+            snapshot.volume
+        );
+    }
+    for (path, file) in files {
+        match &file.source {
+            FileSource::Authored { file } => {
+                assert_eq!(file.path(), path.as_str(), "reply file path differs");
+                assert_eq!(&snapshot.volume, file.volume());
+            }
+            FileSource::Query { view, input, .. } => {
+                assert!(!view.is_empty());
+                assert!(
+                    snapshot
+                        .cut
+                        .queries
+                        .get(&input.stream)
+                        .is_some_and(|through| input.sequence < *through)
+                );
+            }
+        }
+        if path == "layout.json" {
+            // The TUI checks the contents of committed layouts independently.
+            check_layout(file.text.as_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn check_command(command: &AgentCommand) {
+    match command {
         AgentCommand::ClientFiles { paths, .. } => {
             assert!(!paths.is_empty());
             assert_eq!(
@@ -89,74 +192,11 @@ fuzz_target!(|data: &[u8]| {
                 );
             }
         }
-        _ => return,
+        _ => {}
     }
-    let Ok(Ok(reply)) = decode_agent_reply(&reply[1..], &command) else {
-        return;
-    };
-    match (reply, command) {
-        (
-            AgentReply::ClientFiles { snapshot },
-            AgentCommand::ClientFiles {
-                paths,
-                after,
-                agent,
-                root,
-                ..
-            },
-        ) => {
-            assert_eq!(snapshot.root, root);
-            assert_eq!(snapshot.cut.version, 1);
-            assert!(after.is_none_or(|after| !after.same_inputs(&snapshot.cut)));
-            assert_eq!(snapshot.files.len(), paths.len());
-            for path in paths {
-                let file = snapshot.files.get(&path).expect("requested path retained");
-                if let Some(file) = file {
-                    match &file.source {
-                        FileSource::Authored { file } => {
-                            assert_eq!(file.path(), path, "reply file path differs");
-                            assert_eq!(&snapshot.volume, file.volume());
-                        }
-                        FileSource::Query { view, input, .. } => {
-                            assert!(!view.is_empty());
-                            assert!(
-                                snapshot
-                                    .cut
-                                    .queries
-                                    .get(&input.stream)
-                                    .is_some_and(|through| input.sequence < *through)
-                            );
-                        }
-                    }
-                    if let acyclic_harness_core::client_files::FileRoot::ClientSession { session } =
-                        root
-                    {
-                        assert_eq!(
-                            acyclic_harness_core::client_files::volume(
-                                snapshot.volume.provider().clone(),
-                                &agent,
-                                session
-                            )
-                            .unwrap(),
-                            snapshot.volume
-                        );
-                    }
-                    if path == "layout.json" {
-                        // Contents are untrusted: the TUI's decoder, not transport,
-                        // decides whether a committed file can be rendered.
-                        if let Ok(layout) = serde_json::from_str::<serde_json::Value>(&file.text) {
-                            if layout_view(&layout).is_ok() {
-                                assert_eq!(
-                                    layout.get("version").and_then(serde_json::Value::as_u64),
-                                    Some(1)
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        (AgentReply::ClientFilesPublished { .. }, AgentCommand::PublishClientFiles { .. }) => {}
-        _ => panic!("reply accepted for another command"),
-    }
+}
+
+fuzz_target!(|data: &[u8]| {
+    let result = check(data);
+    assert!(result.is_ok(), "client files round-trip failed: {result:?}");
 });

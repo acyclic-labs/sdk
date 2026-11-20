@@ -390,43 +390,8 @@
       "original_blob": "35e65ee92853be6287fc8c8f2af34b89e42cc8d8",
       "original_sha256": "1873193e4bfaed4ec94929f35dddfa225e29aedb7d14adc74733e3f0d0ddbcff",
       "original_bytes": 46667,
-      "redacted_sha256": "944cedc5a478001f8b5058c4c619daf889cf5931e98bd7edcaef8736c912e14d",
-      "redacted_bytes": 46669
-    },
-    "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/adoption-rb-identity.md": {
-      "original_blob": "3c5e57da450a6b76f5481856ae3c4ac66e75085a",
-      "original_sha256": "43bc4dcb0334caca1b9ad2b9df6363399a1f54a644e19b8c9b338741145836f0",
-      "original_bytes": 7855,
-      "redacted_sha256": "b10eab7a61d16017805a245a9258673598e7b291cbfb5c262dbfd5544aaa91b5",
-      "redacted_bytes": 7336
-    },
-    "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/handover.md": {
-      "original_blob": "9e68fe7c77848d5438a8914ec328b81f26c6ccc5",
-      "original_sha256": "f4628b33fab0a619ac0ca06320a057b54e16414d528d5cb4319d6f9f1066ef3b",
-      "original_bytes": 19638,
-      "redacted_sha256": "54212a71aa22bf95615220bb8810ad5fd8ee585a8e847f2cbc1ed360f3cb7184",
-      "redacted_bytes": 18102
-    },
-    "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/rb-identity.md": {
-      "original_blob": "ab619ae9ec8915c3c6a218bd6d6ee8b6d3191ae5",
-      "original_sha256": "835835b64eae00cea06f2517ea83b78e70d8f0afd2467acb91c2f21d44b11288",
-      "original_bytes": 10259,
-      "redacted_sha256": "2dfcf09d7b032eff66daf093bad49ab6cbc5ef8e475d6128bee394770a923916",
-      "redacted_bytes": 10200
-    },
-    "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/source-ownership-20261026T031900Z.md": {
-      "original_blob": "ef244339f6b9ead8430bbbb94ed3ff6201b56156",
-      "original_sha256": "86610f06bcd949bf6dcdb17ff025b946e27644d1eca3bffd9b5d29141ae3218f",
-      "original_bytes": 1430,
-      "redacted_sha256": "1a4bb98631fcd204980104f5eab7ce06d91778e33abeb112cb8d364656937d90",
-      "redacted_bytes": 1402
-    },
-    "scripts/tests/fixtures/proof-policy/source-review-20261026/sources.json": {
-      "original_blob": "e644b7ecd4cf3d005e0044d718aeebecf2e46fd1",
-      "original_sha256": "0b11f705989616e25e1103a98279412f8f3e292617f4a123468e7548ebb34f6c",
-      "original_bytes": 4610,
-      "redacted_sha256": "0b7ecdfb879d1fe5812dbdc5b08a384abf056af3fd5e250708c6c0b0d14c961c",
-      "redacted_bytes": 4517
+      "redacted_sha256": "15dbbe792fdd6db276d4ccb20aa563ddbd71f78a11ff5db662786d15c91775a0",
+      "redacted_bytes": 44600
     },
     "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/logs/adoption.md": {
       "original_blob": "aceb77a29e1fc7236bc8f7e8ee4a10b9e4b22388",

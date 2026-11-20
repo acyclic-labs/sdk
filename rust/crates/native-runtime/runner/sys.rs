@@ -18,6 +18,7 @@ pub struct Errno(pub i32);
 // Error numbers, flags and signals shared by x86_64 and aarch64.
 pub const EPERM: i32 = 1;
 pub const ENOENT: i32 = 2;
+pub const ESRCH: i32 = 3;
 pub const EINTR: i32 = 4;
 pub const EIO: i32 = 5;
 pub const ENOMEM: i32 = 12;
@@ -35,6 +36,7 @@ pub const O_RDWR: i32 = 2;
 pub const O_CREAT: i32 = 0o100;
 pub const O_EXCL: i32 = 0o200;
 pub const O_CLOEXEC: i32 = 0o2_000_000;
+const O_NONBLOCK: usize = 0o4000;
 
 pub const SIGHUP: i32 = 1;
 pub const SIGINT: i32 = 2;
@@ -300,14 +302,7 @@ pub fn socketpair() -> Result<[Fd; 2], Errno> {
     unsafe {
         call(
             number::SOCKETPAIR,
-            [
-                1,
-                5 | 0o2_000_000,
-                0,
-                ends.as_mut_ptr().addr(),
-                0,
-                0,
-            ],
+            [1, 5 | O_CLOEXEC as usize, 0, ends.as_mut_ptr().addr(), 0, 0],
         )
     }?;
     Ok(ends)
@@ -353,6 +348,11 @@ pub fn getpgrp() -> Pid {
 pub fn setpgid(pid: Pid, group: Pid) -> Result<(), Errno> {
     // SAFETY: changes the group of this process or its unexeced child.
     unsafe { call(number::SETPGID, [arg(pid), arg(group), 0, 0, 0, 0]) }.map(drop)
+}
+
+pub fn set_process_name(name: &CStr) -> Result<(), Errno> {
+    // SAFETY: PR_SET_NAME reads a NUL-terminated name of at most 15 bytes.
+    unsafe { call(number::PRCTL, [15, name.as_ptr().addr(), 0, 0, 0, 0]) }.map(drop)
 }
 
 pub fn kill(pid: Pid, signal: i32) -> Result<(), Errno> {
@@ -823,7 +823,7 @@ pub unsafe fn unmap(base: *mut u8, length: usize) {
 pub fn nonblocking(file: Fd) -> Result<(), Errno> {
     // SAFETY: F_GETFL and F_SETFL have no pointer arguments.
     let flags = unsafe { call(number::FCNTL, [arg(file), 3, 0, 0, 0, 0]) }?;
-    unsafe { call(number::FCNTL, [arg(file), 4, flags | 0o4000, 0, 0, 0]) }?;
+    unsafe { call(number::FCNTL, [arg(file), 4, flags | O_NONBLOCK, 0, 0, 0]) }?;
     Ok(())
 }
 
@@ -878,13 +878,12 @@ pub fn peer_user(file: Fd) -> Result<u32, Errno> {
 }
 
 pub fn accept(listener: Fd) -> Result<Fd, Errno> {
-    // SAFETY: no peer address is requested. The accepted control stays
-    // blocking: a receipt that cannot be written must wait for its owner to
-    // drain it, never be dropped as EAGAIN and lose the retirement ack.
+    // SAFETY: no peer address is requested. The shared host must keep serving
+    // other sessions when this control peer runs out of receive credit.
     unsafe {
         call(
             number::ACCEPT4,
-            [arg(listener), 0, 0, O_CLOEXEC as usize, 0, 0],
+            [arg(listener), 0, 0, O_CLOEXEC as usize | O_NONBLOCK, 0, 0],
         )
     }
     .map(fd)

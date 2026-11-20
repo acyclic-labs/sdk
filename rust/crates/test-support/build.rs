@@ -8,7 +8,6 @@ fn main() {
     let compiler = std::env::var_os("RUSTC").expect("Cargo compiler");
     // The build's own target: a cross build's compiler need not have the host's standard library.
     let target = std::env::var_os("TARGET").expect("Cargo target");
-    let mut reached = Vec::new();
     for (index, (declaration, child, leaf)) in module_cases::CASES.into_iter().enumerate() {
         let root = output.join("module-oracle").join(index.to_string());
         if root.exists() {
@@ -48,8 +47,5 @@ fn main() {
         let errors = String::from_utf8_lossy(&compiled.stderr);
         let found = !compiled.status.success() && errors.contains("policy descendant reached");
         assert!(found, "{declaration}: {errors}");
-        reached.push(found);
     }
-    std::fs::write(output.join("module-compiler.rs"), format!("{reached:?}"))
-        .expect("compiler observations");
 }

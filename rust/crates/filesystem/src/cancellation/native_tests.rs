@@ -285,7 +285,7 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
     assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     original.receipt().unwrap().verify(budget(128)).unwrap();
 
-    let mut demand = crate::demand::DemandWork::new(
+    let mut demand = crate::ledger::DemandWork::new(
         crate::WorkBudget {
             allocation_operations: 0,
             ..crate::WorkBudget::UNBOUNDED

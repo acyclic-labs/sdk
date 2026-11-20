@@ -272,14 +272,11 @@ impl Demands {
 
     /// Transfer ready membership and admitted observations to the original
     /// request, retaining its rotated age for a possible retry.
-    pub(super) fn dispatch(&mut self, key: &OpKey, ticket: u64) -> Paging {
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("dispatch retains its selected demand");
+    pub(super) fn dispatch(&mut self, key: &OpKey, ticket: u64) -> Option<Paging> {
+        let entry = self.entries.get_mut(key)?;
         entry.set_ready(key, &mut self.order, false);
         entry.demand.ticket = ticket;
-        std::mem::take(&mut entry.demand.paging)
+        Some(std::mem::take(&mut entry.demand.paging))
     }
 }
 

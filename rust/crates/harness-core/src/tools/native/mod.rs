@@ -113,9 +113,11 @@ fn copy_schema(value: &Value, custody: &mut acyclic_fs::NativeCustody) -> Result
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use allocation::check as check_native_arguments;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod arguments_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// Exact source declarations in the profile's registration order: the

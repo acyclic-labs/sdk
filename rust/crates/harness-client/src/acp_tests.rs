@@ -1,40 +1,19 @@
 use super::*;
-use crate::{AgentBinding, AgentCall, AgentEvent, AgentId, Phase, StatusRecord};
+use crate::test_support::{Endpoint, status};
+use crate::{AgentBinding, AgentCall, AgentId, Phase, StatusRecord};
 use acyclic_actors::wire::InvokeActorRequest;
 use acyclic_harness_core::{
     conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
     resources::ProviderRef,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendRequest, BoxProviderFuture, MemoryStream, StreamError, StreamProviderExt as _,
+    AppendRequest, MemoryStream, StreamError,
     runtime::PlatformExecutor,
-    session::{self, Client, transport},
+    session::{self, Client},
 };
-use futures::StreamExt as _;
 use prost::Message as _;
 use std::{io, sync::Arc};
-
-struct Endpoint(Arc<MemoryStream>);
-
-impl transport::Transport for Endpoint {
-    fn session(
-        &self,
-        source: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses<transport::Failure>, transport::Failure>>
-    {
-        Box::pin(async move {
-            let response = session::serve(
-                self.0.clone(),
-                session::testing::authority(),
-                "node".into(),
-                session::Limits::default(),
-                source.map(Ok).boxed(),
-            )?;
-            Ok(Box::pin(response.map(|frame| frame.map_err(Into::into)))
-                as transport::Responses<transport::Failure>)
-        })
-    }
-}
 
 fn attachment(
     memory: Arc<MemoryStream>,
@@ -60,14 +39,6 @@ fn attachment(
         AgentControls::new(pool, 0, binding),
         AgentSelection::new(agent, 0, status_from),
     )?)
-}
-
-async fn status(editor: &mut AttachedSession) -> Result<StatusRecord, AgentClientError> {
-    loop {
-        if let AgentEvent::Status { status, .. } = editor.observer().next().await? {
-            return Ok(status);
-        }
-    }
 }
 
 fn snapshot() -> Result<FileRef, acyclic_harness_core::Error> {
@@ -188,7 +159,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
             idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
-    assert_eq!(status(&mut editor).await?, next);
+    assert_eq!(status(editor.observer()).await?, next);
 
     pending_context(&mut editor, &memory, &agent).await?;
     rejected_context(&editor, &agent, uri).await?;
@@ -246,7 +217,7 @@ async fn pending_context(
         .await?;
     // The original observer progresses while the same preparation remains
     // pending. No select branch drops it or restarts the publisher's work.
-    assert_eq!(status(editor).await?, running);
+    assert_eq!(status(editor.observer()).await?, running);
     assert!(futures::poll!(&mut prepared).is_pending());
     let file = snapshot()?;
     producer

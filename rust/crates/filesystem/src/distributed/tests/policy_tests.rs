@@ -217,15 +217,13 @@ async fn revocation(omit_fence: bool) -> TestResult {
         .create_workspace("source", WorkBudget::UNBOUNDED, &token)
         .await?
         .value;
+    let policy = crate::access::fixtures::denied(crate::access::Action::Read, "**")?;
     let publish = || async {
         let writer = source.clone();
+        let policy = policy.clone();
         // A separate task models an independently polling remote policy writer.
         let published = tokio::spawn(async move {
-            let outcome = crate::access::fixtures::publish_policy(
-                &writer,
-                &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
-            )
-            .await;
+            let outcome = crate::access::fixtures::publish_policy(&writer, &policy).await;
             assert!(outcome.is_ok(), "policy writer failed: {outcome:?}");
         })
         .await;

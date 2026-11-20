@@ -46,6 +46,16 @@ fn child() -> io::Result<()> {
     std::process::exit(9);
 }
 
+/// The libtest arguments that select exactly [`child`] in this binary: its
+/// module path past the crate root, derived so a move cannot strand a name.
+pub(super) fn child_args() -> [String; 3] {
+    [
+        "--exact".to_owned(),
+        acyclic_test_support::unit_test_name!(child),
+        "--nocapture".to_owned(),
+    ]
+}
+
 #[tokio::test]
 async fn local_machine_spawns_public_command_once_and_returns_original_custody()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -68,12 +78,9 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     )?;
     let command = || {
         ExecCommand::new(
-            vec![
-                std::env::current_exe().unwrap().to_str().unwrap().into(),
-                "--exact".into(),
-                "local::tests::child".into(),
-                "--nocapture".into(),
-            ],
+            std::iter::once(std::env::current_exe().unwrap().to_str().unwrap().into())
+                .chain(child_args())
+                .collect(),
             None,
         )
         .unwrap()
@@ -226,7 +233,7 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
         let lose_owner = mode == "owner_lost";
         let mut command = ProcessCommand::new(std::env::current_exe()?);
         command
-            .args(["--exact", "local::tests::child", "--nocapture"])
+            .args(child_args())
             .env(
                 "ACYCLIC_TEST_MACHINE_PROCESS",
                 if stop { "credit" } else { "exit" },

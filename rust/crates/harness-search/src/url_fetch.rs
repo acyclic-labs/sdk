@@ -56,17 +56,17 @@ pub(crate) fn validate_url_text(url: &str, work: acyclic_fs::NativeWork<'_>) -> 
         || url.chars().any(|c| c.is_whitespace() || c.is_control())
         || url.contains(['#', '\\'])
     {
-        return Err(rejection(work, "invalid fetch URL"));
+        return Err(crate::rejection(work, "invalid fetch URL"));
     }
     let Some((scheme, rest)) = url.split_once("://") else {
-        return Err(rejection(work, "fetch URL must use HTTP or HTTPS"));
+        return Err(crate::rejection(work, "fetch URL must use HTTP or HTTPS"));
     };
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
     if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
         || authority.is_empty()
         || authority.contains('@')
     {
-        return Err(rejection(
+        return Err(crate::rejection(
             work,
             "invalid fetch URL scheme, host, or user information",
         ));
@@ -124,13 +124,5 @@ pub trait FetchProvider: acyclic_stream::ProviderPlatform {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "fetch provider has no native producer",
         })
-    }
-}
-
-pub(crate) fn rejection(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
-    let _ = work;
-    Error::ToolRejected {
-        code: crate::wire::ErrorCode::Invalid,
-        reason,
     }
 }

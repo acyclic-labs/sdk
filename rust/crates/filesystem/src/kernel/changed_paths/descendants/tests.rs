@@ -125,8 +125,12 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancel = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut work = KernelAccounting::native(&original, &cancel);
         let mut walk = Descendants::new(directory(0, metadata, entries), config, &mut work)?;

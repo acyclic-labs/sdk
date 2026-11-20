@@ -52,16 +52,11 @@ impl LocalHarness {
         work: &mut DiscoveryWork,
     ) -> Result<Vec<SkillMetadata>> {
         let mut skills = Vec::new();
-        #[cfg(any(test, not(target_arch = "wasm32")))]
         let sources = self.bound_skill_sources(binding)?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
         let native_project = generation.is_none()
             && self.checkout_context
             && sources.is_some()
             && binding.workspace.is_some();
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let native_project = false;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
         if native_project
             && let Some(sources) = &sources
             && let Some(workspace) = &binding.workspace

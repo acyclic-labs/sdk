@@ -7,7 +7,7 @@ FEATURES = []
 
 WASM_FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-stream-wire","CARGO_PKG_DESCRIPTION":"Generated Stream protobuf messages, gRPC services and protocol identity","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-stream-wire","CARGO_PKG_DESCRIPTION":"Generated Stream protobuf messages, gRPC services and protocol identity","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -15,6 +15,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     data = [
         "proto/stream/v1/session.proto",
         "proto/stream/v1/stream.proto",
@@ -31,6 +32,7 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     build_script_env = PACKAGE_ENV,
@@ -42,8 +44,9 @@ cargo_build_script(
 rust_library(
     name = "acyclic_stream_wire",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/bin/stream-http-contract.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -55,6 +58,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -84,13 +88,18 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
         "//compatibility:acyclic_proto_build",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -116,8 +125,10 @@ isolated_test(
 rust_binary(
     name = "stream-http-contract",
     crate_root = "src/bin/stream-http-contract.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/bin/stream-http-contract.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -129,6 +140,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -152,6 +164,7 @@ rust_binary(
     srcs = [
         "examples/stream-authorization.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -163,6 +176,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -187,6 +201,7 @@ rust_binary(
     srcs = [
         "examples/token-operations.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -198,6 +213,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -222,6 +238,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     data = [
         "proto/stream/v1/session.proto",
         "proto/stream/v1/stream.proto",
@@ -238,9 +255,9 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
-    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
     deps = [
         "//compatibility:acyclic_proto_build",
@@ -253,6 +270,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,
@@ -264,6 +282,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],

@@ -115,16 +115,6 @@ pub struct EntryAsset {
     pub size: u64,
     /// Media type the file is delivered with; a module is `application/wasm`.
     pub media_type: String,
-    /// How the entry uses the file.
-    pub role: AssetRole,
-}
-
-/// Use of an entry asset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum AssetRole {
-    /// A WebAssembly module the entry instantiates.
-    Module,
 }
 
 /// Product configuration lowered to the corresponding platform request.

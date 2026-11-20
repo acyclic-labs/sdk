@@ -148,13 +148,6 @@ impl DeviceRunner {
         }
     }
 
-    /// Uses the owner's approver for human, model and parent stages.
-    #[must_use]
-    pub fn with_approver(mut self, approver: Arc<dyn DeviceApprover>) -> Self {
-        self.approver = Some(approver);
-        self
-    }
-
     /// A fresh connection: its socket open request and session. Each
     /// connection has its own session; a run queued for another never runs.
     ///

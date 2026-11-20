@@ -94,7 +94,7 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
     for directory in [
         "rust/crates/actors-contract/proto",
         "rust/crates/filesystem-wire/proto",
-        "rust/crates/objects/proto",
+        "rust/crates/objects-core/proto",
         "rust/crates/machines/proto",
         "rust/crates/inference/proto",
         "rust/crates/stream-wire/proto",
@@ -173,7 +173,7 @@ fn authorization_catalog(pool: &DescriptorPool) -> Result<Catalog, Box<dyn std::
             .values()
             .all(|(_, actions)| actions.iter().all(|a| catalog.contains(a)))
     );
-    for action in acyclic_auth::FS_ACTIONS {
+    for action in acyclic_auth::action::FsAction::NAMES {
         assert!(catalog.contains(&format!("fs/{action}")));
     }
     Ok(Catalog {

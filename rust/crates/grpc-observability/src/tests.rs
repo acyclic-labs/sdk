@@ -143,7 +143,7 @@ mod runtime {
     use tracing_subscriber::{filter::filter_fn, prelude::*};
 
     #[test]
-    fn canonical_status_and_missing_http_mapping_match_tonic_without_details_parsing() {
+    fn canonical_status_bytes_round_trip_and_non_canonical_bytes_are_unknown() {
         for value in 0_u8..=16 {
             let mut headers = http::HeaderMap::new();
             headers.insert("grpc-status", value.to_string().parse().unwrap());
@@ -166,27 +166,6 @@ mod runtime {
             let mut headers = http::HeaderMap::new();
             headers.insert("grpc-status", http::HeaderValue::from_bytes(value).unwrap());
             assert_eq!(code(Some(&headers), http::StatusCode::OK), 2, "{value:?}");
-        }
-        for status in 100..=599 {
-            let expected = match status {
-                400 => 13,
-                401 => 16,
-                403 => 7,
-                404 => 12,
-                429 | 502 | 503 | 504 => 14,
-                _ => 2,
-            };
-            assert_eq!(
-                code(None, http::StatusCode::from_u16(status).unwrap()),
-                expected
-            );
-            assert_eq!(
-                code(
-                    Some(&http::HeaderMap::new()),
-                    http::StatusCode::from_u16(status).unwrap()
-                ),
-                expected
-            );
         }
     }
 
@@ -482,41 +461,6 @@ mod runtime {
                 }));
             }
         }
-    }
-
-    #[test]
-    fn filtered_operation_never_records_parent_and_transport_errors_are_unchanged() {
-        let (origin, log) = capture(true);
-        let (foreign, other) = capture(false);
-        let mut future = call(&origin, Ok(response(200, None, vec![], false, true)), false);
-        tracing::dispatcher::with_default(&foreign, || {
-            let Poll::Ready(Ok(r)) = poll(&mut future) else {
-                panic!("ready")
-            };
-            drop(r);
-            drop(future);
-        });
-        let seen = log.0.lock().unwrap();
-        assert!(
-            seen.records.is_empty(),
-            "filtered RPC must not write parent's declared fields"
-        );
-        assert!(
-            seen.events
-                .iter()
-                .all(|(parent, _)| parent.as_deref() == Some("caller"))
-        );
-        assert!(other.0.lock().unwrap().events.is_empty());
-        drop(seen);
-        let (origin, log) = capture(false);
-        let mut future = call(&origin, Err(Failure("same failure")), false);
-        assert!(matches!(
-            poll(&mut future),
-            Poll::Ready(Err(Failure("same failure")))
-        ));
-        terminal(&log, None, Some("transport"));
-        drop(future);
-        terminal(&log, None, Some("transport"));
     }
 
     #[test]

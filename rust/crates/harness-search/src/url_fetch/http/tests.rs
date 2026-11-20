@@ -1,15 +1,16 @@
 use super::*;
+use crate::http::MAXIMUM_RESPONSE_BYTES;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-type Server = tokio::task::JoinHandle<Result<String>>;
+pub(crate) type Server = tokio::task::JoinHandle<Result<(String, tokio::net::TcpListener)>>;
 
-pub(super) enum Framing {
+pub(crate) enum Framing {
     Length,
     Close,
     Chunked,
 }
 
-pub(super) async fn serve(
+pub(crate) async fn serve(
     status: u16,
     headers: &str,
     body: Vec<u8>,
@@ -45,14 +46,14 @@ pub(super) async fn serve(
                     || socket.write_all(chunk).await.is_err()
                     || socket.write_all(b"\r\n").await.is_err()
                 {
-                    return Ok(request);
+                    return Ok((request, listener));
                 }
             }
             let _ = socket.write_all(b"0\r\n\r\n").await;
         } else {
             let _ = socket.write_all(&body).await;
         }
-        Ok(request)
+        Ok((request, listener))
     });
     Ok((format!("http://{address}/"), server))
 }
@@ -69,8 +70,20 @@ pub(super) async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<S
             return Err(Error::Invalid("fixture request disconnected".into()));
         }
         input.extend_from_slice(&buffer[..count]);
-        if input.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+        if let Some(end) = input.windows(4).position(|window| window == b"\r\n\r\n") {
+            let header = String::from_utf8_lossy(&input[..end]).to_ascii_lowercase();
+            let length = header
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")?
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            if input.len() >= end + 4 + length {
+                break;
+            }
         }
         if input.len() > 32_768 {
             return Err(Error::Invalid("fixture request exceeds bound".into()));
@@ -79,10 +92,13 @@ pub(super) async fn read_request(socket: &mut tokio::net::TcpStream) -> Result<S
     String::from_utf8(input).map_err(|_| Error::Invalid("fixture request is not UTF-8".into()))
 }
 
-pub(super) async fn joined(server: Server) -> Result<String> {
-    server
+pub(crate) async fn joined(server: Server) -> Result<String> {
+    let (request, listener) = server
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?
+        .map_err(|error| Error::Storage(error.to_string()))??;
+    // The caller's original result has settled before this fixture is joined.
+    assert!(futures::poll!(std::pin::pin!(listener.accept())).is_pending());
+    Ok(request)
 }
 
 pub(super) fn nonce() -> String {

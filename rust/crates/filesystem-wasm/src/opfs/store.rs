@@ -7,10 +7,6 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         bytes: OwnedBytes,
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<(), acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
@@ -44,10 +40,6 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         writes: &[ObjectWrite],
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<(), acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
@@ -154,10 +146,6 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         object_id: ObjectId,
         context: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<bool, acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {

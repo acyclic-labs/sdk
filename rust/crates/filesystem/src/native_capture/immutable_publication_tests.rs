@@ -150,7 +150,7 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
 /// path. In particular, promoting existing visible bytes must flush the file.
 #[test]
 fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandError> {
-    use crate::demand::DemandWork;
+    use crate::ledger::DemandWork;
     let directory = tempfile::tempdir()?;
     let held = hold_root(directory.path())?;
     let stop = CancellationToken::new();

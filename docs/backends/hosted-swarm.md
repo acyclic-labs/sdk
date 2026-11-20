@@ -91,7 +91,7 @@ This sends a model request and retains its effects in the served tree.
 The deterministic integration check is:
 
 ```sh
-cargo test -p acyclic-conformance --features actors-hosting --test hosted_actors
+cargo test -p acyclic-conformance --features actors-hosting --test main hosted_actors::
 ```
 
 It runs the public endpoint vectors through the GraphCoder composition and a
@@ -213,8 +213,53 @@ Actor application. Build it from an owner configuration with `options`,
 bun scripts/build-harness-actor.mjs --config owner.json --out artifact
 ```
 
-`artifact/` then holds `harness-actor.mjs`, which exports `actor`, every
-WebAssembly module it loads, and `agent-deploy.json`. The entry declares each
+### Scripted model
+
+Select `scripted/default` in the ordinary owner model configuration:
+
+```json
+{
+  "provider": "scripted",
+  "selection": "scripted/default",
+  "spec": {
+    "adapter": "scripted",
+    "script": { "path": "swarm.json", "sha256": "<lowercase SHA-256 of the file>" }
+  },
+  "limits": {},
+  "compaction": { "kind": "disabled" }
+}
+```
+
+Place the file at the relative path in the agent's primary workspace. Agents
+without a primary workspace use their private volume. A project workspace
+forks with the child, carrying the script at the fork's volume cut. If agents
+use only private volumes, provide the same file in each agent's volume before
+its first turn. The provider uses the existing authenticated filesystem reader.
+It refuses absent files, digest changes and unsupported script versions. The
+bundle declares no model fetch binding or model credential for this adapter.
+
+Version 1 maps exact UTF-8 prompt or brief text to an array of model steps.
+`child_settled` can provide steps for turns woken by a child's settlement.
+A step is either a complete text reply or an ordered array of scripted events.
+Event arrays can include content, reasoning, tool calls and completion.
+The executor's original step number selects the answer. On interrupted delivery,
+the provider reconstructs that answer, checks the durable event prefix and
+supplies only the remaining events. Concurrent agents and forks share the script
+bytes without sharing a cursor.
+
+The [example owner](../../rust/crates/conformance/fixtures/owner.scripted.json)
+enables child turns and expects the [swarm script](../../rust/crates/conformance/fixtures/scripted-swarm.v1.json)
+at `swarm.json`. Build it with the same producer for a harness or swarm namespace:
+
+```sh
+bun scripts/build-harness-actor.mjs --config rust/crates/conformance/fixtures/owner.scripted.json --out artifact/swarm-harness
+```
+
+### Artifact contents
+
+`artifact/` holds `harness-actor.mjs` with the strict-wire `manifest`,
+`onRecord` and `acceptsInterrupt` exports, every WebAssembly module it loads,
+and `agent-deploy.json`. The entry declares each
 module in its `assets` with path, SHA-256, size, media type and role. Static module
 URLs retain their importing file's exact identity during bundling. Only surviving
 references enter the closure; each selected WASM file is read and hashed once per build,
@@ -237,11 +282,10 @@ journal history is paged, never copied into metadata. `fetch` is the one entry,
 terminal gRPC trailers follow the body, and runs an agent call the platform
 routed from a session ActorCall (`/agents/bind`, `/agents/command`, with the
 caller's original command as the body) through the same authenticated call,
-under the credential of the invocation's `hostAccess` admission. Its tree lives
-in that one actor's journal, so the artifact runs no children. It leaves the
-`children` option unset, so its turns bind no creation templates. Its spawn tool
-answers `unsupported capability`, and a spawn command is refused as
-`spawn_refused` before anything commits.
+under the credential of the invocation's `hostAccess` admission. To enable
+creation templates for swarms, set `options.children` to `true` and use a
+platform that places and wakes children. The default leaves creation templates
+disabled.
 
 `machinesWorkspace` is a `BrowserMachinesWorkspaceSource` (`provider`,
 `observation`, `open`). The entry opens it with

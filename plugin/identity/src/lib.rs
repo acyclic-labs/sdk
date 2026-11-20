@@ -466,6 +466,10 @@ struct DeviceCode {
     binding: LoginBinding,
     #[serde(skip)]
     reconcile_upgrade: bool,
+    /// When the last token request went out. A retried login keeps the interval
+    /// from that poll instead of polling again immediately.
+    #[serde(skip)]
+    polled_at: Option<tokio::time::Instant>,
 }
 
 fn random_secret() -> Result<String, Error> {
@@ -736,21 +740,29 @@ impl Identity {
             .ok_or_else(|| Error::new("invalid_response", "device expiry overflow"))?;
         tokio::pin!(cancelled);
         loop {
-            let sleep = Duration::from_secs(device.interval.max(1));
+            // The interval bounds the gap between polls, not the wait before the
+            // first one: an approval that already happened settles immediately.
+            let wait = device.polled_at.map_or(Duration::ZERO, |polled| {
+                (polled + Duration::from_secs(device.interval.max(1)))
+                    .saturating_duration_since(tokio::time::Instant::now())
+            });
             if tokio::time::Instant::now()
-                .checked_add(sleep)
+                .checked_add(wait)
                 .is_none_or(|next| next >= deadline)
             {
                 return Err(Error::new("expired_token", "device approval expired"));
             }
-            let delay = tokio::time::sleep(sleep);
-            #[cfg(test)]
-            let delay = tests::poll_clock::observe(delay);
-            tokio::select! {
-                biased;
-                () = &mut cancelled => return Err(Error::new("request_cancelled", "device polling cancelled")),
-                () = delay => {}
+            if !wait.is_zero() {
+                let delay = tokio::time::sleep(wait);
+                #[cfg(test)]
+                let delay = tests::poll_clock::observe(delay);
+                tokio::select! {
+                    biased;
+                    () = &mut cancelled => return Err(Error::new("request_cancelled", "device polling cancelled")),
+                    () = delay => {}
+                }
             }
+            device.polled_at = Some(tokio::time::Instant::now());
             // Once dispatched, a successful exchange must reach the credential store.
             let result = self
                 .token(&[

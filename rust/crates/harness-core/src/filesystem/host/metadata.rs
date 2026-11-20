@@ -22,10 +22,20 @@ pub(in crate::filesystem) async fn read_file_annotation<
         &mut Some(&mut io.history_io()),
     )?;
     let _hold = io.guard_owned(absolute.capacity() as u64)?;
+    read_file_annotation_at(generation, &absolute, key, maximum_bytes, io).await
+}
+
+pub(super) async fn read_file_annotation_at<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    generation: &Generation<A, O>,
+    absolute: &str,
+    key: &AttributeName,
+    maximum_bytes: Option<u64>,
+    io: &PreparationIo,
+) -> Result<Option<acyclic_stream::OwnedBytes>> {
     let value = io
         .sdk_if_present(
             generation
-                .read_named_attribute(&absolute, key, maximum_bytes, io, io.cancellation())
+                .read_named_attribute(absolute, key, maximum_bytes, io, io.cancellation())
                 .await,
         )?
         .flatten();

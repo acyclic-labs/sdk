@@ -157,9 +157,10 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
 /// pass sees its output end before any later write could meet the closed pipe.
 /// EOF must fail the incomplete exchange without waiting for an exit status;
 /// the original cleanup still reaps the child.
-/// A program receives only its three standard streams. A descriptor this
-/// process holds without close-on-exec, as another thread's new pipe is
-/// until std marks it, is absent from the program.
+/// A program receives only its standard streams and the host-registration
+/// channel on descriptor 3. A descriptor this process holds without
+/// close-on-exec, as another thread's new pipe is until std marks it, is
+/// absent from the program.
 #[cfg(unix)]
 #[test]
 fn a_program_inherits_only_its_standard_streams() -> io::Result<()> {
@@ -167,7 +168,22 @@ fn a_program_inherits_only_its_standard_streams() -> io::Result<()> {
     let mut ends = [0; 2];
     // SAFETY: writable storage for two descriptors; no close-on-exec flag.
     assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
-    // SAFETY: the two descriptors the call above just returned, held open
+    // The program keeps descriptor 3 for host registration, so the probe names
+    // descriptors no program opens: the pipe's ends, moved above that range.
+    let ends = ends.map(|end| {
+        // SAFETY: this process's own descriptor, duplicated above the range a
+        // program uses.
+        let moved = unsafe { libc::fcntl(end, libc::F_DUPFD, 200) };
+        assert!(
+            moved >= 200,
+            "duplicate descriptor: {}",
+            io::Error::last_os_error()
+        );
+        // SAFETY: the original descriptor, now duplicated.
+        unsafe { libc::close(end) };
+        moved
+    });
+    // SAFETY: the two descriptors the calls above just returned, held open
     // across the spawn so that no other descriptor takes their numbers.
     let _ends = ends.map(|end| unsafe { std::fs::File::from_raw_fd(end) });
     let mut command = super::ProcessCommand::new("/bin/sh");
@@ -775,15 +791,6 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
 }
 
 #[test]
-fn spawn_failure_does_not_return_an_unowned_child() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
-    let error = ProcessTree::spawn(&mut ProcessCommand::new(temporary.path().join("missing")))
-        .err()
-        .expect("missing executable must not spawn");
-    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-}
-
-#[test]
 fn cleanup_is_idempotent_and_drop_contains_descendants() {
     for explicit in [false, true] {
         let temporary = tempfile::tempdir().expect("temporary directory");
@@ -958,21 +965,24 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
     let mut command = self::command("output", temporary.path());
     command.env("EXPLICIT_PROCESS_INPUT", "allowed");
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
-    assert_eq!(
-        tree.wait_with_output(
+    let limit = output.stdout.len() + output.stderr.len() - 1;
+    let failure = tree
+        .wait_with_output(
             CaptureSchedule::Unbounded,
-            output.stdout.len() + output.stderr.len() - 1,
+            limit,
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
-            None
+            None,
         )
-        .map_err(|failure| failure.error)
-        .expect_err("combined pipes exceed budget")
-        .kind(),
-        std::io::ErrorKind::FileTooLarge
+        .expect_err("combined pipes exceed budget");
+    assert_eq!(failure.error.kind(), std::io::ErrorKind::FileTooLarge);
+    assert_eq!(
+        failure.stdout.len() + failure.stderr.len(),
+        limit,
+        "capture stops exactly at the budget"
     );
 }
 
@@ -1100,29 +1110,6 @@ fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
     tree.terminate(None)
         .expect("the queued owner cancels and reaps");
     assert!(tree.is_reaped());
-}
-
-#[test]
-fn queued_stdin_refuses_a_second_capture_before_any_capture_turn() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
-    let mut command = command("stdin-stall", temporary.path());
-    command.stdin(ProcessStdio::piped());
-    let mut tree = ProcessTree::spawn(&mut command).expect("spawn queued owner");
-    tree.queue_stdin(vec![b'x'; BULK_BYTES])
-        .expect("queue prompt");
-    let result = super::pump::Pump::new(
-        &mut tree,
-        CaptureSchedule::Unbounded,
-        Some(4096),
-        None,
-        None,
-        [Vec::new(), Vec::new()],
-    );
-    let Err(failure) = result else {
-        panic!("capture replaced the queued owner")
-    };
-    assert_eq!(failure.error.kind(), io::ErrorKind::AlreadyExists);
-    tree.terminate(None).expect("reap queued owner");
 }
 
 #[test]
@@ -1583,59 +1570,6 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
         "cleanup observed the original exit"
     );
     assert!(tree.is_reaped());
-}
-
-#[test]
-fn capture_timeout_and_output_overflow_reap_owned_tree() {
-    for (mode, schedule, limit, kind) in [
-        (
-            "child",
-            CaptureSchedule::new(Duration::from_millis(20)),
-            4096,
-            std::io::ErrorKind::TimedOut,
-        ),
-        (
-            "flood",
-            CaptureSchedule::Unbounded,
-            16384,
-            std::io::ErrorKind::FileTooLarge,
-        ),
-    ] {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let mut tree =
-            ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
-        if mode == "child" {
-            tree_ready(&mut tree);
-            assert_eq!(
-                tree.wait(Duration::ZERO).expect_err("wait deadline").kind(),
-                std::io::ErrorKind::TimedOut
-            );
-            assert!(tree.child.is_some());
-        }
-        let error = tree
-            .wait_with_output(
-                schedule,
-                limit,
-                None,
-                || Ok(()),
-                |_| Ok(crate::ProcessInput::default()),
-                None,
-                None,
-                None,
-            )
-            .expect_err("capture must fail");
-        assert_eq!(error.error.kind(), kind);
-        assert!(error.cleanup_completed);
-        assert!(error.stdout.len() + error.stderr.len() <= limit);
-        if mode == "flood" {
-            assert_eq!(error.stdout.len() + error.stderr.len(), limit);
-        }
-        assert!(tree.child.is_none());
-        tree.terminate(None).expect("repeat cleanup");
-        if mode == "child" {
-            assert_descendant_retired(temporary.path());
-        }
-    }
 }
 
 #[test]

@@ -6,6 +6,7 @@ use super::{
 };
 use acyclic_actors::guest::CancellationToken;
 use acyclic_harness_core::agent::*;
+use acyclic_stream::ProviderOwner;
 use futures::channel::oneshot;
 use std::sync::{Arc, Mutex};
 
@@ -60,7 +61,8 @@ impl TurnDriver for Waiting {
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let error = interrupted(backend, Some(Fault::Before))
         .await
-        .expect_err("pre-turn provider loss did not terminate the interrupt vector");
+        .err()
+        .ok_or("pre-turn provider loss did not terminate the interrupt vector")?;
     if !matches!(
         error.downcast_ref::<acyclic_actors::local::Error>(),
         Some(acyclic_actors::local::Error::Stream(error))
@@ -73,7 +75,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 
 async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let (started, running) = oneshot::channel();
     let handler = backend.handler(Arc::new(AgentHandler::new(
         actor_store(&provider)?,

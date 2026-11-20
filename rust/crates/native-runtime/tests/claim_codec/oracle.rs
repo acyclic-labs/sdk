@@ -1,5 +1,5 @@
 //! The persisted claim codec itself, including its checksum for grammar mutations.
-#[path = "../../src/claim/record.rs"]
+#[path = "../../../native-claim/src/record.rs"]
 mod record;
 
 use record::{Contents, MAGIC, Process, Record};

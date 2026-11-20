@@ -562,7 +562,7 @@ fn capture_result(
     })
 }
 
-pub(in crate::bindings) fn encode_watch_batch(
+fn encode_watch_batch(
     batch: &WatchBatch,
     work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeWatchBatch> {
@@ -594,7 +594,7 @@ pub(in crate::bindings) fn encode_watch_batch(
     }
 }
 
-pub(in crate::bindings) fn encode_watch_change(change: &WatchChange) -> NativeWatchChange {
+fn encode_watch_change(change: &WatchChange) -> NativeWatchChange {
     match change {
         WatchChange::Created(path) => single_watch_change("created", path),
         WatchChange::Modified(path) => single_watch_change("modified", path),
@@ -610,10 +610,7 @@ pub(in crate::bindings) fn encode_watch_change(change: &WatchChange) -> NativeWa
     }
 }
 
-pub(in crate::bindings) fn single_watch_change(
-    kind: &str,
-    path: &NamespacePath,
-) -> NativeWatchChange {
+fn single_watch_change(kind: &str, path: &NamespacePath) -> NativeWatchChange {
     NativeWatchChange {
         kind: kind.to_owned(),
         path: Some(encode_namespace_path(path)),

@@ -32,7 +32,7 @@ pub(super) struct Binding<'a> {
     pub(super) workspace: Option<Arc<LocalWorkspace>>,
 }
 
-pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
+pub fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(domain);
     hash.update(key);
@@ -44,7 +44,7 @@ pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
 /// The one publication identity of `turn`'s pinned host hooks: its staging
 /// operation and journal path. Every reader derives it here, never by text.
 #[cfg(any(test, not(target_arch = "wasm32")))]
-pub(super) fn host_hooks_publication(turn: OperationId) -> (OperationId, String) {
+pub fn host_hooks_publication(turn: OperationId) -> (OperationId, String) {
     (
         publication_operation(b"acyclic.local.host-hooks/v1\0", &turn.into_bytes()),
         format!("config/host-hooks/{turn}.json"),
@@ -749,13 +749,12 @@ impl LocalHarness {
 /// The name of a mentioned path's copy: 128 bits of its hash, so the copy's
 /// path has a fixed length. A model never sees it; it sees the mentioned
 /// path in the prompt and the copy's bytes.
-pub(in crate::local) fn copy_name(path: &str) -> String {
+pub fn copy_name(path: &str) -> String {
     blake3::hash(path.as_bytes()).to_hex()[..32].to_owned()
 }
 
 impl LocalHarness {
     /// Captures mentioned checkout files under their original native admission.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn checkout_mentions(
         &self,
         base: &str,
@@ -769,16 +768,6 @@ impl LocalHarness {
         self.capture_checkout_mentions(workspace, text, base, publisher, operation)
             .await
             .map(Some)
-    }
-    #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-    async fn checkout_mentions(
-        &self,
-        _: &str,
-        _: &str,
-        _: &dyn ContentPublisher,
-        _: OperationId,
-    ) -> Result<Option<crate::conversation::ContentChanges>> {
-        Ok(None)
     }
 }
 
@@ -852,7 +841,6 @@ mod tests {
                 &'static dyn ContentPublisher,
             )| local.context_epoch(agent, binding, publisher),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         let catalog = retained_operation_bytes(
             |(sources, root, view, cut, work): (
                 &'static crate::context::native_skills::NativeSkills,
@@ -862,17 +850,13 @@ mod tests {
                 &'static mut crate::context::DiscoveryWork,
             )| sources.catalog(root, view, cut, "", work),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         let users = retained_operation_bytes(
             |(sources, work): (
                 &'static crate::context::native_skills::NativeSkills,
                 &'static mut crate::context::DiscoveryWork,
             )| sources.user_catalog(work),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         let sizes = [manifest, catalog, users];
-        #[cfg(target_arch = "wasm32")]
-        let sizes = [manifest];
         eprintln!("context retained bytes: {sizes:?}");
         assert!(
             sizes.into_iter().all(|bytes| bytes <= 512),

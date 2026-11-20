@@ -26,7 +26,7 @@ fn fence_attempt_key(
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod fence_tests {
     use super::*;
 

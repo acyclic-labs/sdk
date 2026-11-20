@@ -96,6 +96,7 @@ node_test(
     name = "bazel_build_files_test",
     srcs = [
         "//:rust-toolchain.toml",
+        "//:rustfmt.toml",
         "//:scripts/bazel-build-files.mjs",
         "//:scripts/bazel-build-files.test.mjs",
         "//:scripts/bazel-executables.mjs",
@@ -105,6 +106,8 @@ node_test(
         "//:scripts/protobuf-bindings.mjs",
         "//:scripts/policy-core.mjs",
         "//:scripts/workspace-model.mjs",
+        "//:windows_paths.bzl",
+        "//:xwin_repo.bzl",
     ],
     entry = "scripts/bazel-build-files.test.mjs",
     name_pattern = "a patched crate uses crate-universe spokes",

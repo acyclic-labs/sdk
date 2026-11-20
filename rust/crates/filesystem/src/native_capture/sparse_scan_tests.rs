@@ -20,7 +20,7 @@ fn fixture(
 ) {
     let cancellation = CancellationToken::new();
     let root = NativeMaterializationWork::new(limits(limit), &cancellation).unwrap();
-    root.charge(crate::materializer::NativeResourceCredit::Items.delta(used.min(limit)))
+    root.charge(crate::ledger::NativeResourceCredit::Items.delta(used.min(limit)))
         .unwrap();
     let mut view = root.clone();
     for &limit in nested {
@@ -34,10 +34,7 @@ fn fixture(
 
 fn legacy(block: &[u8], work: &NativeMaterializationWork) -> Result<bool, CaptureError> {
     for byte in block {
-        capture_charge(
-            work,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        capture_charge(work, crate::ledger::NativeResourceCredit::Items.delta(1))?;
         if *byte != 0 {
             return Ok(true);
         }
@@ -69,7 +66,7 @@ proptest! {
         prop_assert_eq!(a_root.receipt().unwrap(), b_root.receipt().unwrap());
         prop_assert_eq!(outcome(a_view.remaining()), outcome(b_view.remaining()));
         // A subsequent operation detects leaked reservations and pending credit.
-        let item = crate::materializer::NativeResourceCredit::Items.delta(1);
+        let item = crate::ledger::NativeResourceCredit::Items.delta(1);
         prop_assert_eq!(outcome(a_view.charge(item)), outcome(b_view.charge(item)));
         prop_assert_eq!(a_root.receipt().unwrap(), b_root.receipt().unwrap());
     }
@@ -91,7 +88,7 @@ fn differential_property_rejects_charging_the_unexamined_tail() {
         // Deliberately broken: charge the whole admitted block despite the
         // first byte ending the scan. The differential property must fail.
         current
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(length as u64))
+            .charge(crate::ledger::NativeResourceCredit::Items.delta(length as u64))
             .unwrap();
         prop_assert_eq!(block.iter().any(|byte| *byte != 0), correct);
         prop_assert_eq!(root.receipt().unwrap(), expected_root.receipt().unwrap());

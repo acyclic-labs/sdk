@@ -48,6 +48,13 @@ pub fn initialize_native_watch_services() -> notify::Result<()> {
     Ok(())
 }
 
+/// Loads every process-global native framework and returns the proof a root
+/// work ledger requires.
+pub(crate) fn native_services() -> notify::Result<crate::services::ServicesInitialized> {
+    initialize_native_watch_services()?;
+    Ok(crate::services::ServicesInitialized::__after_framework_init())
+}
+
 /// Exact guarantees supplied by the compiled native watcher.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeWatchCapabilities {
@@ -518,7 +525,7 @@ impl crate::source_watch::HostChangeSink for NativeEventDelivery {
     fn host_changed(
         &self,
         changes: &[crate::source_watch::HostChange],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         invalidate_root_hints(&self.shared, changes, work)
     }
@@ -560,18 +567,16 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
     Ok(())
 }
 
-/// `FSEvents` reports only hints, so a change to the captured tree requires a
-/// rescan. A change beneath an excluded subtree is not part of that tree, and
-/// the fence cookie written there confirms that every earlier change was
-/// delivered: a quiet command never rescans, so it never reads files it did
-/// not touch.
+/// Queues path hints from `FSEvents` and retains stream-wide invalidations.
+/// Excluded subtrees can hold a fence cookie that confirms earlier delivery
+/// without asking the consumer to read those subtrees.
 #[cfg(any(target_os = "macos", all(test, unix)))]
 struct RootHints {
-    root: PathBuf,
-    shared: Arc<WatchState>,
-    fenced: Arc<Condvar>,
-    _root_allocation: Option<crate::NativeAllocation>,
+    delivery: NativeEventDelivery,
 }
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+type PathHint<'a> = (&'a Path, fn(NamespacePath) -> WatchChange);
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 impl RootHints {
@@ -586,6 +591,7 @@ impl RootHints {
         use crate::source_watch::HostChange;
         work.check()?;
         let mut state = self
+            .delivery
             .shared
             .state
             .lock()
@@ -596,52 +602,109 @@ impl RootHints {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let relative = match change {
-                HostChange::Departed(relative)
-                | HostChange::Rebound(relative)
-                | HostChange::Altered(relative) => Some(relative.as_path()),
+            let hint: Option<PathHint<'_>> = match change {
+                HostChange::Departed(relative) => Some((relative, WatchChange::Removed)),
+                HostChange::Rebound(relative) => Some((relative, WatchChange::Arrived)),
+                HostChange::Altered(relative) if relative.as_os_str().is_empty() => {
+                    Some((relative, WatchChange::MetadataChanged))
+                }
+                HostChange::Altered(relative) => Some((relative, WatchChange::Modified)),
                 HostChange::Everything => None,
                 #[cfg(any(target_os = "macos", windows))]
                 HostChange::Unconfirmed => None,
                 #[cfg(windows)]
-                HostChange::Observed { path, .. } => Some(path.as_path()),
+                HostChange::Observed { path, .. } => Some((path, WatchChange::Modified)),
             };
             let beneath = |host: &Path| {
-                relative.is_some_and(|relative| {
-                    host.strip_prefix(&self.root).is_ok_and(|host| {
-                        !host.as_os_str().is_empty() && relative.starts_with(host)
-                    })
+                hint.is_some_and(|(relative, _)| {
+                    host.strip_prefix(&self.delivery.context.root)
+                        .is_ok_and(|host| {
+                            !host.as_os_str().is_empty() && relative.starts_with(host)
+                        })
                 })
             };
             if state.fence.as_deref().is_some_and(beneath) {
                 cookie = true;
-            } else if !state.excluded.iter().any(|excluded| beneath(excluded)) {
-                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-                self.fenced.notify_all();
+            } else if state.invalidation.is_none()
+                && !state.excluded.iter().any(|excluded| beneath(excluded))
+            {
+                if let Some((relative, build_change)) = hint {
+                    if relative.as_os_str().is_empty()
+                        && matches!(change, HostChange::Departed(_) | HostChange::Rebound(_))
+                    {
+                        state.invalidation = Some(WatchInvalidationReason::RootChanged);
+                    } else {
+                        self.enqueue(relative, build_change, &mut state, work)?;
+                    }
+                } else {
+                    state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+                }
             }
         }
         if cookie {
             state.fence = None;
-            self.fenced.notify_all();
+        }
+        if cookie || state.invalidation.is_some() {
+            self.delivery.fenced.notify_all();
         }
         Ok(())
+    }
+
+    fn enqueue<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        relative: &Path,
+        change: fn(NamespacePath) -> WatchChange,
+        state: &mut SharedState,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        let context = &self.delivery.context;
+        let (path, bytes, allocation) =
+            match namespace_hint_with_work(relative, context.profile, context.limits, work) {
+                Ok(hint) => hint,
+                Err(DemandError::InvalidRequest) => {
+                    state.invalidation = Some(WatchInvalidationReason::UnrepresentablePath);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+        let result = work.started_io(WorkCounters {
+            items_returned: 1,
+            ..WorkCounters::default()
+        });
+        if result.is_ok() {
+            self.delivery.publish_locked(
+                state,
+                QueuedWatchChange {
+                    change: change(path),
+                    allocations: [allocation, None],
+                },
+            );
+        } else {
+            drop(path);
+            drop(allocation);
+        }
+        if bytes != 0 {
+            work.release(bytes)?;
+        }
+        result
     }
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 impl crate::source_watch::HostChangeSink for RootHints {
     fn delivery_finished(&self) {
-        self.shared.changed.notify_waiters();
+        self.delivery.shared.changed.notify_waiters();
     }
 
     fn logical_owned_bytes(&self) -> u64 {
-        size_of::<Self>() as u64 + self.root.capacity() as u64
+        size_of::<Self>() as u64 + self.delivery.context.root.capacity() as u64
     }
 
     fn host_changed(
         &self,
         changes: &[crate::source_watch::HostChange],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         self.accept(changes, work)
     }
@@ -655,7 +718,7 @@ impl crate::source_watch::HostChangeSink for RootHints {
     }
 
     fn delivery_lost(&self) {
-        lose_delivery(&self.shared, &self.fenced);
+        lose_delivery(&self.delivery.shared, &self.delivery.fenced);
     }
 }
 
@@ -708,7 +771,7 @@ impl Drop for AdapterDelivery {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 struct NativeEventDelivery {
     context: NativeEventContext,
     sender: QueueSender<QueuedWatchChange>,
@@ -717,21 +780,10 @@ struct NativeEventDelivery {
     fenced: Arc<Condvar>,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 impl NativeEventDelivery {
-    /// Queues the observed half of a rename whose other end is outside the
-    /// watched tree as that path's departure. Its caller already charged it.
-    fn depart_locked(&self, state: &mut SharedState) {
-        let Some(pending) = state.pending_rename.take() else {
-            return;
-        };
-        if state.invalidation.is_some() {
-            return;
-        }
-        match self.sender.try_send(QueuedWatchChange {
-            change: WatchChange::Removed(pending.from),
-            allocations: [pending.allocation, None],
-        }) {
+    fn publish_locked(&self, state: &mut SharedState, change: QueuedWatchChange) {
+        match self.sender.try_send(change) {
             Ok(()) => {
                 self.queued.fetch_add(1, Ordering::Release);
             }
@@ -739,6 +791,25 @@ impl NativeEventDelivery {
                 state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             }
         }
+    }
+
+    /// Queues the observed half of a rename whose other end is outside the
+    /// watched tree as that path's departure. Its caller already charged it.
+    #[cfg(any(target_os = "linux", windows))]
+    fn depart_locked(&self, state: &mut SharedState) {
+        let Some(pending) = state.pending_rename.take() else {
+            return;
+        };
+        if state.invalidation.is_some() {
+            return;
+        }
+        self.publish_locked(
+            state,
+            QueuedWatchChange {
+                change: WatchChange::Removed(pending.from),
+                allocations: [pending.allocation, None],
+            },
+        );
     }
 }
 
@@ -769,7 +840,7 @@ impl crate::source_watch::NativeEventSink for NativeEventDelivery {
 
     fn invalidate_measured(
         &self,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         self.invalidate_with_work(work)
     }
@@ -779,7 +850,7 @@ impl crate::source_watch::NativeEventSink for NativeEventDelivery {
         relative: &Path,
         mask: u32,
         cookie: usize,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         self.event_with_work(relative, mask, cookie, work)
     }
@@ -951,14 +1022,7 @@ impl NativeEventDelivery {
                     allocations: [payload.2, None],
                 }
             };
-            match self.sender.try_send(change) {
-                Ok(()) => {
-                    self.queued.fetch_add(1, Ordering::Release);
-                }
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                    state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                }
-            }
+            self.publish_locked(&mut state, change);
             Ok::<(), DemandError>(())
         })();
         if bytes != 0 {
@@ -1119,7 +1183,7 @@ fn wide_hint_names(
 struct WindowsRegistrations {
     /// The root handle's final path, under which reported short names resolve.
     root: Vec<u16>,
-    _root_allocation: Option<crate::materializer::NativeAllocation>,
+    _root_allocation: Option<crate::ledger::NativeAllocation>,
     entries: std::collections::BTreeMap<Vec<u16>, WindowsRegistration>,
     /// Negative control: key the requested path as given and match reported
     /// paths exactly, as the per-directory design did.
@@ -1135,7 +1199,7 @@ struct WindowsRegistrations {
 struct WindowsRegistration {
     path: Vec<u16>,
     identity: NativeRootIdentity,
-    _allocation: Option<crate::materializer::NativeAllocation>,
+    _allocation: Option<crate::ledger::NativeAllocation>,
 }
 
 #[cfg(windows)]
@@ -1226,7 +1290,7 @@ impl crate::source_watch::HostChangeSink for WindowsRootSink {
     fn host_changed(
         &self,
         changes: &[crate::source_watch::HostChange],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         self.host_changed_with_work(changes, work)
     }
@@ -1242,7 +1306,7 @@ impl crate::source_watch::HostChangeSink for WindowsRootSink {
     fn host_changed_wide(
         &self,
         changes: &[crate::source_watch::HostChangeWide<'_>],
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         self.host_changed_wide_with_work(changes, work)
     }
@@ -1514,14 +1578,7 @@ impl WindowsRootSink {
                 allocations: [allocation, None],
             },
         };
-        match self.delivery.sender.try_send(change) {
-            Ok(()) => {
-                self.delivery.queued.fetch_add(1, Ordering::Release);
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            }
-        }
+        self.delivery.publish_locked(state, change);
         Ok::<(), DemandError>(())
     }
 }
@@ -1618,7 +1675,7 @@ impl std::fmt::Debug for NativeWatch {
 
 struct NativeWatchHeldRoot {
     root: Option<WatchRoot>,
-    cleanup: Option<crate::materializer::NativeCleanupWrite>,
+    cleanup: Option<crate::ledger::NativeCleanupWrite>,
 }
 
 /// The watched root: held while the watch starts, then named by path and
@@ -1773,26 +1830,6 @@ impl NativeWatch {
         .map_err(|failure| failure.error)
     }
 
-    /// Transfers an actual already-paid owner allocation on this same ledger.
-    pub fn retain_owner_allocation(
-        &mut self,
-        incoming: &mut crate::NativeAllocation,
-    ) -> Result<(), crate::NativeTreeMaterializationError> {
-        let original = self
-            .original_work
-            .as_ref()
-            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-        if !original.shares_allocation_context(incoming.work()) {
-            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
-        }
-        if let Some(owner) = &mut self.owner_allocation {
-            owner.absorb(incoming)
-        } else {
-            self.owner_allocation = Some(incoming.split_off(incoming.bytes())?);
-            Ok(())
-        }
-    }
-
     /// Settles the native producer and its children using their birth-paid cleanup.
     /// The current invocation funds housekeeping and controls cancellation while waiting.
     pub fn shutdown_with_native_work(
@@ -1895,7 +1932,7 @@ impl NativeWatch {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Self>, NativeWatchError> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        let mut work = crate::ledger::DemandWork::new(budget, cancellation);
         // The notify adapter handles recursive inotify or an unsupported host. Every held native producer retains its original
         // ledger, independently of which public constructor its caller uses.
         if cfg!(any(target_os = "linux", target_os = "macos", windows))
@@ -2094,8 +2131,8 @@ impl NativeWatch {
                 fenced: Arc::clone(&fenced),
             })
         };
-        #[cfg(target_os = "linux")]
-        let linux_sender = sender.clone();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let source_sender = sender.clone();
         #[cfg(not(windows))]
         let callback = if use_adapter {
             let (context_root, context_allocation) =
@@ -2152,7 +2189,7 @@ impl NativeWatch {
                     limits: options.limits,
                     _root_allocation: event_allocation,
                 },
-                sender: linux_sender,
+                sender: source_sender,
                 shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
@@ -2194,10 +2231,19 @@ impl NativeWatch {
             let (hint_root, hint_allocation) = Self::copy_startup_path(&root, work, original)?;
             Self::startup_control(work)?;
             let sink = Arc::new(RootHints {
-                root: hint_root,
-                shared: Arc::clone(&shared),
-                fenced: Arc::clone(&fenced),
-                _root_allocation: hint_allocation,
+                delivery: NativeEventDelivery {
+                    context: NativeEventContext {
+                        root: hint_root,
+                        root_identity,
+                        profile,
+                        limits: options.limits,
+                        _root_allocation: hint_allocation,
+                    },
+                    sender: source_sender,
+                    shared: Arc::clone(&shared),
+                    queued: Arc::clone(&queued),
+                    fenced: Arc::clone(&fenced),
+                },
             });
             Some(crate::source_watch::NativeSourceWatch::start(
                 held, sink, work,
@@ -2319,7 +2365,7 @@ impl NativeWatch {
         #[cfg(any(target_os = "linux", windows))]
         {
             let cancellation = CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let mut work = crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
             self.watch_directory_with_work(directory, &mut work)
                 .map_err(demand_watch_error)
         }
@@ -2702,7 +2748,7 @@ impl NativeWatch {
     /// Negative control: key registrations as requested and match reported
     /// paths exactly.
     #[cfg(test)]
-    #[cfg(all(windows))]
+    #[cfg(windows)]
     pub(crate) fn windows_match_exactly(&self) {
         if let Ok(mut state) = self.shared.state.lock()
             && let Some(registered) = &mut state.registered
@@ -2713,7 +2759,7 @@ impl NativeWatch {
 
     /// Directories a non-recursive Windows watch currently observes.
     #[cfg(test)]
-    #[cfg(all(windows))]
+    #[cfg(windows)]
     pub(crate) fn windows_registered(&self) -> usize {
         self.shared
             .state
@@ -3004,7 +3050,7 @@ impl NativeWatch {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        let mut work = crate::ledger::DemandWork::new(budget, cancellation);
         let result = self.accept_lazy_baseline_with_work(&mut work);
         result
             .map(|value| OperationReceipt {
@@ -3063,7 +3109,7 @@ impl NativeWatch {
     /// Starts a baseline scan and atomically discards only pre-scan hints.
     pub fn begin_rescan(&mut self) -> Result<NativeWatchRescan, NativeWatchError> {
         let cancellation = CancellationToken::new();
-        self.begin_rescan_with_work(&mut crate::demand::DemandWork::new(
+        self.begin_rescan_with_work(&mut crate::ledger::DemandWork::new(
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -3184,42 +3230,6 @@ impl NativeWatch {
         Ok((self.epoch, invalidation))
     }
 
-    /// Admits a baseline only when the Windows USN journal proves continuity.
-    #[cfg(target_os = "windows")]
-    pub fn accept_windows_usn_baseline(
-        &mut self,
-        checkpoint: crate::WindowsUsnCheckpoint,
-    ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
-        let mut shared = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        if shared.rescan.is_some()
-            || shared.invalidation != Some(WatchInvalidationReason::InitialSnapshotRequired)
-            || self.epoch != 0
-        {
-            return Err(NativeWatchError::RescanAlreadyInProgress);
-        }
-        let verified = match crate::validate_windows_usn_checkpoint(&self.root, checkpoint) {
-            Ok(crate::WindowsUsnContinuity::Unchanged) => crate::WindowsUsnContinuity::Unchanged,
-            Ok(_) => {
-                return Ok(Ok(crate::WindowsUsnContinuity::BaselineRequired(
-                    crate::WindowsUsnDiscontinuity::VolumeAdvanced,
-                )));
-            }
-            Err(error) => return Ok(Err(error)),
-        };
-        // The journal verifies prior hints; this lock fences later callbacks.
-        self.epoch = self
-            .epoch
-            .checked_add(1)
-            .ok_or(NativeWatchError::SequenceExhausted)?;
-        self.next_sequence = 0;
-        shared.invalidation = None;
-        Ok(Ok(verified))
-    }
-
     /// Seals the caller's baseline scan.
     pub fn finish_rescan(
         &mut self,
@@ -3228,7 +3238,7 @@ impl NativeWatch {
         let cancellation = CancellationToken::new();
         self.finish_rescan_with_work(
             rescan,
-            &mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            &mut crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
         )
     }
 
@@ -3284,7 +3294,7 @@ impl NativeWatch {
             return self.exclude_subtrees_with_native_work(subtrees, &work);
         }
         let cancellation = CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         self.exclude_subtrees_with_work(subtrees, &mut work, None)
     }
 
@@ -3674,7 +3684,7 @@ impl NativeWatch {
         let adapter = false;
         if !adapter {
             let mut work =
-                crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+                crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
             return self.fence_with_work(&mut work);
         }
         let delivered = self
@@ -3978,30 +3988,6 @@ impl NativeWatch {
         })
     }
 
-    /// Runs the consumer's guarded publication before committing watch progress.
-    pub fn poll_with_native_work_guarded<F>(
-        &mut self,
-        maximum_changes: u32,
-        original: &crate::NativeMaterializationWork,
-        before_publish: F,
-    ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError>
-    where
-        F: FnMut(&WatchBatch) -> Result<(), crate::demand::DemandError>,
-    {
-        if maximum_changes == 0 {
-            return Err(NativeWatchError::ZeroPollLimit);
-        }
-        let mut work = crate::NativeMaterializationWork::clone(original);
-        let (batch, allocation) =
-            self.poll_with_work(maximum_changes, &mut work, Some(original), before_publish)?;
-        Ok((
-            batch,
-            allocation.ok_or(NativeWatchError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ))?,
-        ))
-    }
-
     fn poll_with_work<W, F>(
         &mut self,
         maximum_changes: u32,
@@ -4247,7 +4233,7 @@ impl NativeWatch {
 fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
     bytes: u64,
     work: &mut W,
-) -> Result<Option<crate::materializer::NativeAllocation>, crate::demand::DemandError> {
+) -> Result<Option<crate::ledger::NativeAllocation>, crate::demand::DemandError> {
     work.check()?;
     if work.is_native_original() {
         let native = work
@@ -5037,7 +5023,7 @@ mod demand_admission_tests {
         {
             let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
             let cancellation = CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let mut work = crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
             // Deliver the actual rename after both destination and replacement
             // registrations were admitted. Replayed departure halves must not
             // erase either newly authenticated current binding.
@@ -5278,7 +5264,7 @@ mod demand_admission_tests {
         const FENCE_GROWTH: u64 = 16;
         let fence_items = |held: &mut NativeWatch| -> Result<u64, NativeWatchError> {
             let cancellation = CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let mut work = crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
             held.fence_with_work(&mut work)?;
             Ok(work.work.items_examined)
         };

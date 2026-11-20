@@ -170,7 +170,7 @@ pub(super) fn ownership_child(
     child
         .args([
             "--exact",
-            "core_state::tests::ownership_child_acts_on_its_namespace",
+            acyclic_test_support::unit_test_name!(ownership_child_acts_on_its_namespace).as_str(),
             "--nocapture",
         ])
         .env("ACYCLIC_CORE_STATE_CHILD_ROOT", root)

@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Bounded response decoding for harness providers"
 
 [features]
-test-support = []
+test-support = ["acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-harness-core/test-support"]
 
 [dependencies]
 acyclic-fs-work = { path = "../filesystem-work", version = "=0.2.0" }

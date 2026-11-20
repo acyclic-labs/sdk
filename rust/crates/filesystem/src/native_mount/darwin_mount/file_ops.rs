@@ -2,7 +2,7 @@ use super::*;
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
     result: *mut NativeStat,
@@ -31,7 +31,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     flags: c_int,
     handle: *mut u64,
@@ -58,7 +58,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     mode: u32,
     uid: u32,
@@ -94,7 +94,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_release(
-    address: usize,
+    address: CallbackAddress,
     _path: *const c_char,
     handle: u64,
 ) -> c_int {
@@ -121,7 +121,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_release(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
     buffer: *mut c_char,
@@ -149,7 +149,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
     buffer: *const c_char,
@@ -178,7 +178,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
     length: i64,
@@ -197,7 +197,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_flush(
-    address: usize,
+    address: CallbackAddress,
     handle: u64,
 ) -> c_int {
     ffi_path(
@@ -214,7 +214,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_flush(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     handle: u64,
 ) -> c_int {
@@ -236,7 +236,9 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(
 }
 
 #[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
+pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(
+    address: CallbackAddress,
+) -> c_int {
     ffi_path_with_root(
         address,
         c"/".as_ptr(),

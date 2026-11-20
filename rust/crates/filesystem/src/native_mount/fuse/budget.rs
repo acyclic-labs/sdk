@@ -1,6 +1,6 @@
 use super::{MountPath, NativeMountError};
 use crate::demand::NativeMountAllocationCustody;
-use crate::materializer::NativeResourceCredit::{Copy, Items};
+use crate::ledger::NativeResourceCredit::{Copy, Items};
 use crate::{NativeMaterializationWork, WorkError};
 
 pub(super) struct FuseOwned<T> {

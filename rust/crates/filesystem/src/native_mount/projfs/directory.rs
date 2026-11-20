@@ -26,7 +26,7 @@ pub(super) fn projected_entry(
     let Some(info) = basic(lookup.node, Some(lookup.metadata)) else {
         return Ok(None);
     };
-    let copied = crate::materializer::NativeResourceCredit::Copy.delta(component.len() as u64);
+    let copied = crate::ledger::NativeResourceCredit::Copy.delta(component.len() as u64);
     projection.work.admit(copied)?;
     let mut allocation = projection.work.claim(
         (component.len() as u64)
@@ -156,7 +156,7 @@ fn insert_projected_entry(
     let mut high = entries.len();
     let mut collision = false;
     while low < high {
-        work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+        work.charge(crate::ledger::NativeResourceCredit::Items.delta(1))?;
         let middle = low + (high - low) / 2;
         let candidate = entries.get(middle).ok_or(MountSourceError::Stale)?;
         // SAFETY: both names include NUL and retain their allocations.
@@ -178,7 +178,7 @@ fn insert_projected_entry(
     }
     if !collision {
         work.charge(
-            crate::materializer::NativeResourceCredit::Copy
+            crate::ledger::NativeResourceCredit::Copy
                 .delta(((entries.len() - low) * size_of::<ProjectedEntry>()) as u64),
         )?;
         entries.insert(low, projected);
@@ -223,7 +223,7 @@ pub(super) fn source_listing(
         for entry in page_entries {
             projection
                 .work
-                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+                .charge(crate::ledger::NativeResourceCredit::Items.delta(1))?;
             let lookup = MountLookup {
                 node: entry.node,
                 metadata: entry.metadata,

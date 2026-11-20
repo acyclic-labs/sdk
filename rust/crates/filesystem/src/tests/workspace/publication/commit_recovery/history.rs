@@ -141,7 +141,7 @@ fn seeded_physical_crash_history() -> TestResult {
                 let directory = tempfile::tempdir()?;
                 let baseline = directory.path().join("baseline");
                 seed(&baseline, seed_value).await?;
-                let count =
+                let (count, _) =
                     run_seeded_child(&baseline, PublicationKind::History, None, seed_value)?;
                 assert!(count > 0, "history bypassed physical fault sites");
                 recover(&baseline).await?;

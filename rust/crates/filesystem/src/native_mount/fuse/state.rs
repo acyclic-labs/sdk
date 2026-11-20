@@ -68,8 +68,7 @@ pub(super) struct ProjectionState {
     pub(super) files: HashMap<u64, FileHandle>,
     pub(super) streams: DirectoryStreams,
     pub(super) invalidation: InvalidationQueue,
-    pub(super) superseded_attributes:
-        FuseOwned<Vec<(u64, crate::materializer::NativeWorkReservation)>>,
+    pub(super) superseded_attributes: FuseOwned<Vec<(u64, crate::ledger::NativeWorkReservation)>>,
     /// Numbers listing replies, so a reply can tell an inode it already
     /// carries (see [`InodeEntry::listed_in_reply`]).
     pub(super) listing_replies: u64,
@@ -413,7 +412,7 @@ impl ProjectionState {
         (
             Duration,
             FuseOwned<MountPath>,
-            crate::materializer::NativeWorkReservation,
+            crate::ledger::NativeWorkReservation,
         ),
         NativeMountError,
     > {
@@ -444,7 +443,7 @@ impl ProjectionState {
         &mut self,
         parent: u64,
         name: &MountPath,
-        mut completion: crate::materializer::NativeWorkReservation,
+        mut completion: crate::ledger::NativeWorkReservation,
     ) {
         if let Some(component) = name.components().last()
             && let Some(entry) = self.by_inode.get_mut(&parent)

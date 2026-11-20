@@ -7,7 +7,7 @@ The first implemented suite is `acyclic_stream::conformance::wave1`. Its public 
 Run memory and local histories on Linux:
 
 ```sh
-cargo test -p acyclic-stream --features conformance --test provider-contracts wave1_keys:: -- --nocapture --test-threads=1
+cargo test -p acyclic-stream --features conformance --test main provider_contracts::wave1_keys:: -- --nocapture --test-threads=1
 ```
 
 For an isolated HTTP endpoint, provide `ACYCLIC_CONFORMANCE_ENDPOINT`, `ACYCLIC_CONFORMANCE_TOKEN` and `ACYCLIC_CONFORMANCE_NAMESPACE` in the runner's environment, then run:
@@ -28,7 +28,7 @@ Check the manifest, source references and captured negative/Clippy evidence with
 
 The append source review under `../../scripts/tests/fixtures/proof-policy/fs-append-review/` is separate from runtime qualification. It captures the owner's unsigned source and the real rejected first run: five of six append cases passed, the prefix/publication case returned `FileRead(InvalidRange)`, and the mutation was never executed. The reviewed source hashes have not been mapped to that compiled run. Neither those five passes nor a native-work argument on the memory provider qualify persistent/hosted behavior. The new `fs.append-segments` obligation tracks EOF alias fencing, immutable prefix/range semantics, atomic refusals and original-key crash recovery.
 
-Run `python scripts/test-wave1-inventory.py` to exercise the evidence policy against the real captures. Controls alter copies of captured logs/receipts and recompute outer hashes: missing semantic witnesses, zero-case selection, a mismatched executed oracle, an over-budget run and relabelled source-review/mutation credit must still fail. These tests prove only those inventory refusals, not Rust protocol correctness.
+Run `python scripts/test-wave1-inventory.py` to exercise the evidence policy against the captured evidence and synthetic source-registration inputs. Controls alter copies of captured logs/receipts and recompute outer hashes: missing semantic witnesses, zero-case selection, a mismatched executed oracle, an over-budget run and relabelled source-review/mutation credit must still fail. These tests prove only those inventory refusals, not Rust protocol correctness.
 
 Policy tests run on Linux, or in the existing PR gate; do not repeat them locally. Captured test inputs live under `scripts/tests/fixtures/proof-policy/`. Their original receipt paths and bytes stay immutable. `scripts/proof_fixture_paths.py` maps the exact historical `docs/proofs/evidence/` prefix to that single physical directory, without falling back to another copy. Product contracts remain under `docs/proofs/`; ordinary lane logs remain external.
 

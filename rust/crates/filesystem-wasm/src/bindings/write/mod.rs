@@ -1,5 +1,19 @@
 use super::*;
 
+impl BrowserCheckout {
+    async fn change<F: acyclic_fs::ContentFile>(
+        &mut self,
+        file: F,
+        change: acyclic_fs::ContentChange<F>,
+    ) -> Result<Ts<BrowserMutationResult>, JsValue> {
+        let receipt = browser_call!(
+            self,
+            change_content(file, change, acyclic_fs::ContentTimes::Preserve)
+        )?;
+        mutation_value(receipt.work)
+    }
+}
+
 #[wasm_bindgen]
 impl BrowserCheckout {
     #[wasm_bindgen(js_name = writeFile)]
@@ -10,19 +24,14 @@ impl BrowserCheckout {
         bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let bytes = bytes::Bytes::from(bytes);
-        let receipt = browser_call!(
-            self,
-            change_content(
-                path,
-                acyclic_fs::ContentChange::Write {
-                    offset: offset,
-                    bytes: (bytes).into(),
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(
+            path,
+            acyclic_fs::ContentChange::Write {
+                offset,
+                bytes: bytes.into(),
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = writeFileById)]
@@ -33,19 +42,14 @@ impl BrowserCheckout {
         bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let bytes = bytes::Bytes::from(bytes);
-        let receipt = browser_call!(
-            self,
-            change_content(
-                file_id,
-                acyclic_fs::ContentChange::Write {
-                    offset: offset,
-                    bytes: (bytes).into(),
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(
+            file_id,
+            acyclic_fs::ContentChange::Write {
+                offset,
+                bytes: bytes.into(),
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = resizeFile)]
@@ -55,17 +59,8 @@ impl BrowserCheckout {
         logical_bytes: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let receipt = browser_call!(
-            self,
-            change_content(
-                path,
-                acyclic_fs::ContentChange::Resize {
-                    logical_bytes: logical_bytes,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(path, acyclic_fs::ContentChange::Resize { logical_bytes })
+            .await
     }
 
     #[wasm_bindgen(js_name = resizeFileById)]
@@ -75,17 +70,8 @@ impl BrowserCheckout {
         logical_bytes: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let receipt = browser_call!(
-            self,
-            change_content(
-                file_id,
-                acyclic_fs::ContentChange::Resize {
-                    logical_bytes: logical_bytes,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(file_id, acyclic_fs::ContentChange::Resize { logical_bytes })
+            .await
     }
 
     #[wasm_bindgen(js_name = zeroFileRange)]
@@ -98,19 +84,15 @@ impl BrowserCheckout {
         extend: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let receipt = browser_call!(
-            self,
-            change_content(
-                path,
-                acyclic_fs::ContentChange::ZeroRange {
-                    range: ByteRange { offset, length },
-                    allocated: allocated,
-                    extend: extend,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(
+            path,
+            acyclic_fs::ContentChange::ZeroRange {
+                range: ByteRange { offset, length },
+                allocated,
+                extend,
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = zeroFileRangeById)]
@@ -123,19 +105,15 @@ impl BrowserCheckout {
         extend: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let receipt = browser_call!(
-            self,
-            change_content(
-                file_id,
-                acyclic_fs::ContentChange::ZeroRange {
-                    range: ByteRange { offset, length },
-                    allocated: allocated,
-                    extend: extend,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(
+            file_id,
+            acyclic_fs::ContentChange::ZeroRange {
+                range: ByteRange { offset, length },
+                allocated,
+                extend,
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = preallocateFile)]
@@ -147,18 +125,14 @@ impl BrowserCheckout {
         keep_size: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let receipt = browser_call!(
-            self,
-            change_content(
-                path,
-                acyclic_fs::ContentChange::Preallocate {
-                    range: ByteRange { offset, length },
-                    keep_size: keep_size,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(
+            path,
+            acyclic_fs::ContentChange::Preallocate {
+                range: ByteRange { offset, length },
+                keep_size,
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = preallocateFileById)]
@@ -170,18 +144,14 @@ impl BrowserCheckout {
         keep_size: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let receipt = browser_call!(
-            self,
-            change_content(
-                file_id,
-                acyclic_fs::ContentChange::Preallocate {
-                    range: ByteRange { offset, length },
-                    keep_size: keep_size,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        self.change(
+            file_id,
+            acyclic_fs::ContentChange::Preallocate {
+                range: ByteRange { offset, length },
+                keep_size,
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = cloneFileRange)]
@@ -193,27 +163,18 @@ impl BrowserCheckout {
         destination_offset: u64,
         length: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let request = FileCloneRequest {
-            source: browser_path(&source, self.engine.volume_config())?,
-            source_offset,
-            destination: browser_path(&destination, self.engine.volume_config())?,
-            destination_offset,
-            length,
-        };
-        let receipt = browser_call!(
-            self,
-            change_content(
-                request.destination,
-                acyclic_fs::ContentChange::CloneFrom {
-                    source: request.source,
-                    source_offset: request.source_offset,
-                    offset: request.destination_offset,
-                    length: request.length,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        let source = browser_path(&source, self.engine.volume_config())?;
+        let destination = browser_path(&destination, self.engine.volume_config())?;
+        self.change(
+            destination,
+            acyclic_fs::ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset: destination_offset,
+                length,
+            },
+        )
+        .await
     }
 
     #[wasm_bindgen(js_name = cloneFileRangeById)]
@@ -225,21 +186,17 @@ impl BrowserCheckout {
         destination_offset: u64,
         length: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
-        let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
-        let receipt = browser_call!(
-            self,
-            change_content(
-                destination_file_id,
-                acyclic_fs::ContentChange::CloneFrom {
-                    source: source_file_id,
-                    source_offset: source_offset,
-                    offset: destination_offset,
-                    length: length,
-                },
-                acyclic_fs::ContentTimes::Preserve,
-            )
-        )?;
-        mutation_value(receipt.work)
+        let source = FileId::from_bytes(fixed_16(&source_file_id)?);
+        let destination = FileId::from_bytes(fixed_16(&destination_file_id)?);
+        self.change(
+            destination,
+            acyclic_fs::ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset: destination_offset,
+                length,
+            },
+        )
+        .await
     }
 }

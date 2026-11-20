@@ -1,12 +1,8 @@
-//! Original ordinary and instrumented suites share their real root bindings.
-#[cfg(all(not(loom), feature = "test-support"))]
-use acyclic_harness_control_checks as agent_control_mapping;
-#[cfg(not(loom))]
-mod agent_model;
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod git_executor;
+//! Instrumented (loom) suites share their real root bindings.
+#![cfg(test)]
 
-pub use acyclic_harness_core::Error;
+acyclic_test_support::counting_allocator!();
+
 #[cfg(all(loom, feature = "model-checking"))]
 pub use acyclic_harness_core::{ProcessError, Result};
 #[cfg(all(loom, feature = "model-checking"))]
@@ -29,9 +25,3 @@ use sync::{
 };
 #[cfg(all(loom, feature = "model-checking"))]
 mod skill_materializer_loom;
-
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod machine_workspace;
-
-#[cfg(not(loom))]
-mod target_lifecycle;

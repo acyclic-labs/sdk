@@ -1,0 +1,499 @@
+//! Exact conversions between the public Rust types and their wire messages.
+
+use crate::Part;
+use crate::error::{invalid, unavailable};
+use crate::{
+    ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
+};
+
+use crate::{Released, Retained, Usage};
+use acyclic_stream_contract::Revision;
+use bytes::Bytes;
+use prost::Message;
+
+/// Owned decoding lets protobuf body fields retain their response allocation.
+pub(crate) fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
+    T::decode(bytes).map_err(|_| unavailable())
+}
+
+impl From<Digest> for wire::Digest {
+    fn from(digest: Digest) -> Self {
+        Self {
+            blake3: digest.as_bytes().to_vec(),
+        }
+    }
+}
+
+pub(crate) fn digest(value: Option<&wire::Digest>) -> Result<Digest, Error> {
+    optional_digest(value)?.ok_or_else(invalid)
+}
+
+pub(crate) fn optional_digest(value: Option<&wire::Digest>) -> Result<Option<Digest>, Error> {
+    value
+        .map(|value| Digest::from_slice(&value.blake3))
+        .transpose()
+}
+
+pub(crate) fn digests(values: &[wire::Digest]) -> Result<Vec<Digest>, Error> {
+    values.iter().map(|value| digest(Some(value))).collect()
+}
+
+pub(crate) fn wire_digests(values: &[Digest]) -> Vec<wire::Digest> {
+    values.iter().copied().map(Into::into).collect()
+}
+
+pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
+    wire::ByteRange {
+        start: range.start,
+        end: range.end,
+    }
+}
+
+/// Builds the same read request for every transport.
+pub fn get_request(
+    digest: Digest,
+    selection: ByteRange,
+    maximum_bytes: u64,
+) -> wire::GetBlobRequest {
+    wire::GetBlobRequest {
+        digest: Some(digest.into()),
+        range: Some(range(selection)),
+        maximum_bytes,
+    }
+}
+
+/// Builds the same head request for every transport.
+pub fn head_request(digest: Digest) -> wire::HeadBlobRequest {
+    wire::HeadBlobRequest {
+        digest: Some(digest.into()),
+    }
+}
+
+/// Builds the same delete request for every transport.
+pub fn delete_request(digest: Digest) -> wire::DeleteBlobRequest {
+    wire::DeleteBlobRequest {
+        digest: Some(digest.into()),
+    }
+}
+
+/// Builds the same page request for every transport.
+pub fn list_request(after: Option<Digest>, limit: u32) -> wire::ListBlobsRequest {
+    wire::ListBlobsRequest {
+        after: after.map(Into::into),
+        limit,
+    }
+}
+
+/// Lowers a root retention for every transport.
+pub fn retain_request(root: &crate::RootId, references: &[Digest]) -> wire::RetainRequest {
+    wire::RetainRequest {
+        root: root.as_bytes().to_vec(),
+        references: wire_digests(references),
+    }
+}
+
+/// Lowers a fenced retention through the same root and reference mapping.
+pub fn retain_fenced_request(
+    root: &crate::RootId,
+    fence: u64,
+    references: &[Digest],
+) -> wire::RetainFencedRequest {
+    let wire::RetainRequest { root, references } = retain_request(root, references);
+    wire::RetainFencedRequest {
+        root,
+        references,
+        fence,
+    }
+}
+
+/// Lowers a root release for every transport.
+pub fn release_request(root: &crate::RootId) -> wire::ReleaseRequest {
+    wire::ReleaseRequest {
+        root: root.as_bytes().to_vec(),
+    }
+}
+
+/// Lowers a terminal release through the same root mapping.
+pub fn release_terminal_request(
+    root: &crate::RootId,
+    fence: u64,
+) -> wire::ReleaseTerminalRequest {
+    let wire::ReleaseRequest { root } = release_request(root);
+    wire::ReleaseTerminalRequest { root, fence }
+}
+
+pub(crate) fn from_get(request: &wire::GetBlobRequest) -> Result<(Digest, ByteRange), Error> {
+    let range = request
+        .range
+        .as_ref()
+        .map_or(ByteRange::FULL, |range| ByteRange {
+            start: range.start,
+            end: range.end,
+        });
+    Ok((digest(request.digest.as_ref())?, range))
+}
+
+pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
+    wire::Manifest {
+        parts: manifest
+            .parts
+            .iter()
+            .map(|part| wire::Part {
+                digest: Some(part.digest.into()),
+                length: part.length,
+            })
+            .collect(),
+        edges: wire_digests(&manifest.edges),
+        sha256: manifest.sha256.map(|digest| digest.to_vec()),
+    }
+}
+
+/// Lowers a manifest and records the digest and length its receipt must prove.
+pub fn put_manifest(
+    value: &Manifest,
+) -> Result<(wire::PutManifestRequest, (Digest, u64)), Error> {
+    let expected = (Digest::of(&value.encode()?), value.length()?);
+    Ok((
+        wire::PutManifestRequest {
+            manifest: Some(manifest(value)),
+        },
+        expected,
+    ))
+}
+
+pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifest, Error> {
+    let manifest = manifest.ok_or_else(invalid)?;
+    Ok(Manifest {
+        parts: manifest
+            .parts
+            .iter()
+            .map(|part| {
+                Ok(Part {
+                    digest: digest(part.digest.as_ref())?,
+                    length: part.length,
+                })
+            })
+            .collect::<Result<_, Error>>()?,
+        edges: digests(&manifest.edges)?,
+        sha256: manifest
+            .sha256
+            .as_ref()
+            .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
+            .transpose()?,
+    })
+}
+
+fn verified(value: &wire::Verified) -> Result<Verified, Error> {
+    Ok(Verified {
+        digest: digest(value.digest.as_ref())?,
+        length: value.length,
+        revision: None,
+    })
+}
+
+impl From<&Verified> for wire::Verified {
+    fn from(value: &Verified) -> Self {
+        Self {
+            digest: Some(value.digest.into()),
+            length: value.length,
+        }
+    }
+}
+
+fn put(value: &wire::PutResponse) -> Result<Put, Error> {
+    use wire::put_response::Outcome;
+    match value.outcome.as_ref().ok_or_else(invalid)? {
+        Outcome::Created(value) => Ok(Put::Created {
+            verified: verified(value)?,
+        }),
+        Outcome::AlreadyExists(value) => Ok(Put::AlreadyExists {
+            verified: verified(value)?,
+        }),
+        Outcome::Unknown(true) => Ok(Put::Unknown),
+        Outcome::Unknown(false) => Err(invalid()),
+    }
+}
+
+/// The canonical wire reply for one put outcome.
+pub fn wire_put(value: &Put) -> wire::PutResponse {
+    use wire::put_response::Outcome;
+    wire::PutResponse {
+        outcome: Some(match value {
+            Put::Created { verified } => Outcome::Created(verified.into()),
+            Put::AlreadyExists { verified } => Outcome::AlreadyExists(verified.into()),
+            Put::Unknown => Outcome::Unknown(true),
+        }),
+    }
+}
+
+fn head(value: &wire::BlobInfo, revision: Option<Revision>) -> Result<Head, Error> {
+    if value.kind == wire::Kind::Blob as i32 && value.sha256.is_some() {
+        return Err(invalid());
+    }
+    Ok(Head {
+        digest: digest(value.digest.as_ref())?,
+        kind: match wire::Kind::try_from(value.kind).map_err(|_| invalid())? {
+            wire::Kind::Blob => Kind::Blob,
+            wire::Kind::Manifest => Kind::Manifest,
+            wire::Kind::Unspecified => return Err(invalid()),
+        },
+        length: value.length,
+        references: digests(&value.references)?,
+        sha256: value
+            .sha256
+            .as_ref()
+            .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
+            .transpose()?,
+        revision,
+    })
+}
+
+pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
+    wire::BlobInfo {
+        digest: Some(value.digest.into()),
+        kind: match value.kind {
+            Kind::Blob => wire::Kind::Blob,
+            Kind::Manifest => wire::Kind::Manifest,
+        } as i32,
+        length: value.length,
+        references: wire_digests(&value.references),
+        sha256: value.sha256.map(|digest| digest.to_vec()),
+    }
+}
+
+/// The deletion a canonical wire reply reports.
+pub fn delete(
+    value: &wire::DeleteBlobResponse,
+    revision: Option<Revision>,
+) -> Result<crate::Deletion, Error> {
+    let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| unavailable())? {
+        wire::DeleteStatus::Deleted => Delete::Deleted,
+        wire::DeleteStatus::Absent => Delete::Absent,
+        wire::DeleteStatus::Referenced => Delete::Referenced,
+        wire::DeleteStatus::Unspecified => return Err(unavailable()),
+    };
+    if outcome != Delete::Deleted && !value.references.is_empty() {
+        return Err(unavailable());
+    }
+    Ok(crate::Deletion {
+        outcome,
+        references: digests(&value.references).map_err(|_| unavailable())?,
+        revision,
+    })
+}
+
+/// The canonical wire reply for one deletion.
+pub fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
+    wire::DeleteBlobResponse {
+        status: match value.outcome {
+            Delete::Deleted => wire::DeleteStatus::Deleted,
+            Delete::Absent => wire::DeleteStatus::Absent,
+            Delete::Referenced => wire::DeleteStatus::Referenced,
+        } as i32,
+        references: value.references.into_iter().map(Into::into).collect(),
+    }
+}
+
+/// The page a canonical wire reply lists.
+pub fn page(
+    value: &wire::ListBlobsResponse,
+    revision: Option<Revision>,
+) -> Result<Page, Error> {
+    let page = Page {
+        digests: digests(&value.digests)?,
+        next: optional_digest(value.next.as_ref())?,
+        revision,
+    };
+    if page
+        .digests
+        .windows(2)
+        .any(|pair| matches!(pair, [a, b] if a >= b))
+        || page
+            .next
+            .is_some_and(|next| page.digests.last().is_some_and(|last| *last > next))
+    {
+        return Err(invalid());
+    }
+    Ok(page)
+}
+
+/// The canonical wire reply for one page.
+pub fn wire_page(value: &Page) -> wire::ListBlobsResponse {
+    wire::ListBlobsResponse {
+        digests: wire_digests(&value.digests),
+        next: value.next.map(Into::into),
+    }
+}
+
+/// The retention a canonical wire reply reports.
+pub fn retained(value: &wire::RetainResponse, revision: Option<Revision>) -> Retained {
+    Retained {
+        references: value.references,
+        revision,
+    }
+}
+
+/// The release a canonical wire reply reports.
+pub fn released(value: &wire::ReleaseResponse, revision: Option<Revision>) -> Released {
+    Released {
+        existed: value.existed,
+        revision,
+    }
+}
+
+/// The collection a canonical wire reply reports.
+pub fn collection(value: &wire::CollectResponse, revision: Option<Revision>) -> Collection {
+    Collection {
+        epoch: value.epoch,
+        marked: value.marked,
+        swept: value.swept,
+        swept_bytes: value.swept_bytes,
+        revision,
+    }
+}
+
+pub(crate) fn wire_collection(value: &Collection) -> wire::CollectResponse {
+    wire::CollectResponse {
+        epoch: value.epoch,
+        marked: value.marked,
+        swept: value.swept,
+        swept_bytes: value.swept_bytes,
+    }
+}
+
+/// The usage a canonical wire reply reports.
+pub fn usage(value: &wire::UsageResponse) -> Usage {
+    Usage {
+        blobs: value.blobs,
+        unique_bytes: value.unique_bytes,
+    }
+}
+
+/// Checks a remote read against its request before exposing it.
+pub fn object(
+    value: wire::GetBlobResponse,
+    requested: Digest,
+    selection: ByteRange,
+    maximum: u64,
+    revision: Option<Revision>,
+) -> Result<crate::Object, Error> {
+    let head =
+        head(value.info.as_ref().ok_or_else(unavailable)?, revision).map_err(|_| unavailable())?;
+    let selected = selection.resolve(head.length).map_err(|_| unavailable())?;
+    if head.digest != requested
+        || value.start != selected.start
+        || value.body.len() as u64 != selected.end - selected.start
+        || value.body.len() as u64 > maximum
+        || (head.kind == Kind::Blob
+            && selected.start == 0
+            && selected.end == head.length
+            && Digest::of(&value.body) != requested)
+    {
+        return Err(unavailable());
+    }
+    Ok(crate::Object::new(head, value.start, value.body.into()))
+}
+
+/// Checks a put acknowledgement against the bytes it was for.
+pub fn verified_put(
+    value: &wire::PutResponse,
+    requested: Digest,
+    length: u64,
+    revision: Option<Revision>,
+) -> Result<Put, Error> {
+    let put = put(value).map_err(|_| unavailable())?;
+    if put
+        .verified()
+        .is_some_and(|verified| verified.digest != requested || verified.length != length)
+    {
+        return Err(unavailable());
+    }
+    Ok(put.committed_at(revision))
+}
+
+/// Lowers a sealed body once, retaining its original bytes and expected receipt.
+pub fn put_blob(
+    body: crate::Sealed,
+    references: &[Digest],
+) -> (wire::PutBlobRequest, (Digest, u64)) {
+    let digest = Digest::sealed(&body);
+    let expected = (digest, body.bytes().len() as u64);
+    (
+        wire::PutBlobRequest {
+            digest: Some(digest.into()),
+            body: bytes::Bytes::from_owner(body.into_bytes()),
+            references: wire_digests(references),
+        },
+        expected,
+    )
+}
+
+/// One put batch's request, and the acknowledgement each member must carry.
+pub fn put_blobs(
+    requests: Vec<(crate::Sealed, Vec<Digest>)>,
+) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {
+    let (puts, expected) = requests
+        .into_iter()
+        .map(|(body, references)| put_blob(body, &references))
+        .unzip();
+    (wire::PutBlobsRequest { puts }, expected)
+}
+
+/// Checks a put batch acknowledgement member by member against the bytes
+/// each member was for, stamping each durable member with the revision
+/// covering the batch. A reply that misanswers any member answers none.
+pub fn verified_puts(
+    value: wire::PutBlobsResponse,
+    expected: &[(Digest, u64)],
+    revision: Option<&Revision>,
+) -> Result<Vec<Result<Put, Error>>, Error> {
+    if value.results.len() != expected.len() {
+        return Err(unavailable());
+    }
+    value
+        .results
+        .into_iter()
+        .zip(expected)
+        .map(|(result, &(digest, length))| match result.outcome {
+            Some(wire::put_result::Outcome::Put(put)) => {
+                Ok(Ok(verified_put(&put, digest, length, revision.cloned())?))
+            }
+            Some(wire::put_result::Outcome::Error(detail)) => {
+                Error::from_detail(detail).map(Err).ok_or_else(unavailable)
+            }
+            None => Err(unavailable()),
+        })
+        .collect()
+}
+
+/// Checks an envelope against the digest it was read for.
+pub fn headed(
+    value: &wire::BlobInfo,
+    requested: Digest,
+    revision: Option<Revision>,
+) -> Result<Head, Error> {
+    let head = head(value, revision).map_err(|_| unavailable())?;
+    if head.digest != requested {
+        return Err(unavailable());
+    }
+    Ok(head)
+}
+
+/// Checks a page against the cursor and limit it was listed for.
+pub fn listed(
+    value: &wire::ListBlobsResponse,
+    after: Option<Digest>,
+    limit: u32,
+    revision: Option<Revision>,
+) -> Result<Page, Error> {
+    let page = page(value, revision).map_err(|_| unavailable())?;
+    if page.digests.len() > limit as usize
+        || after.is_some_and(|after| {
+            page.digests.first().is_some_and(|first| *first <= after)
+                || page.next.is_some_and(|next| next <= after)
+        })
+    {
+        return Err(unavailable());
+    }
+    Ok(page)
+}

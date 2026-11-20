@@ -1,10 +1,8 @@
 //! Stock `CoreLog` projections retain physical payload custody in the original invocation.
 use super::*;
 use crate::CancellationToken;
-use crate::materializer::{
-    NativeAllocation, NativeMaterializationWork as Work,
-    NativeTreeMaterializationError as NativeError,
-};
+use crate::ledger::{NativeAllocation, NativeMaterializationWork as Work};
+use crate::materializer::NativeTreeMaterializationError as NativeError;
 use crate::workspace_context::WorkspaceContextRoot;
 
 type Error = LocalCoreStateStoreError;

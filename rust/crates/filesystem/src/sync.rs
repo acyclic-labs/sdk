@@ -7,11 +7,10 @@ pub(crate) use std::sync::*;
 // The pthread-backed standard mutex allocates separately on first acquisition.
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 pub(crate) use self::{InlineMutex as Mutex, InlineMutexGuard as MutexGuard};
-#[cfg(all(
-    not(loom),
-    not(target_arch = "wasm32"),
-    any(test, target_os = "linux", windows)
-))]
+// The ranked condition variable's raw half; every other native condition
+// variable names its own type, so this export exists exactly where the ranked
+// `lock_order::Condvar` does.
+#[cfg(all(not(loom), not(target_arch = "wasm32"), target_os = "linux"))]
 pub(crate) use acyclic_native_runtime::InlineCondvar as Condvar;
 
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]

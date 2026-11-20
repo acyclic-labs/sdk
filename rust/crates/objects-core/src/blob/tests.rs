@@ -1,0 +1,124 @@
+use super::*;
+
+#[test]
+fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = Manifest {
+        parts: vec![Part {
+            digest: Digest::from_bytes([3; 32]),
+            length: 7,
+        }],
+        edges: vec![Digest::from_bytes([4; 32])],
+        sha256: None,
+    };
+    let envelope = Envelope {
+        kind: Kind::Manifest,
+        length: 22,
+        stored: 64,
+        references: vec![Digest::of(b"persisted codec corpus")],
+        sha256: None,
+        version: [1; 16],
+        dying: None,
+        condemned: 9,
+    };
+    type Frame = (
+        &'static str,
+        Vec<u8>,
+        &'static [u8],
+        fn(&[u8]) -> Result<(), Error>,
+    );
+    let frames: [Frame; 5] = [
+        ("manifest", manifest.encode()?, MANIFEST_MAGIC, |bytes| {
+            Manifest::decode(bytes).map(|_| ())
+        }),
+        (
+            "corpus/object_persistence/head-v3-live",
+            envelope.encode()?,
+            ENVELOPE_MAGIC,
+            |bytes| Envelope::decode(bytes).map(|_| ()),
+        ),
+        (
+            "retained",
+            encode_batch(&[Digest::from_bytes([3; 32])]),
+            BATCH_MAGIC,
+            |bytes| decode_batch(bytes).map(|_| ()),
+        ),
+        (
+            "incarnation",
+            encode_incarnation(7, 9),
+            INCARNATION_MAGIC,
+            |bytes| decode_incarnation(bytes).map(|_| ()),
+        ),
+        ("epoch", encode_epoch(9), EPOCH_MAGIC, |bytes| {
+            decode_epoch(bytes).map(|_| ())
+        }),
+    ];
+    for (name, encoded, magic, decode) in frames {
+        let frame = if name.starts_with("corpus/") {
+            name.to_owned()
+        } else {
+            format!("objects.{name}")
+        };
+        let golden = acyclic_compatibility_golden::frame(&frame)?;
+        assert_eq!(encoded, golden, "{name}: persisted bytes changed");
+        decode(&golden)?;
+        for version in (*b"0129")
+            .into_iter()
+            .filter(|version| *version != magic[magic.len() - 2])
+        {
+            let mut rejected = golden.clone();
+            rejected[magic.len() - 2] = version;
+            // No body can be read: reject the version even with a missing body.
+            rejected.truncate(magic.len());
+            assert_eq!(
+                decode(&rejected).map_err(|error| error.code),
+                Err(ErrorCode::Unsupported),
+                "{name}"
+            );
+        }
+        for length in 0..golden.len() {
+            // Retained batches may be empty or contain any number of digests.
+            if name != "retained" || length < magic.len() || (length - magic.len()) % 32 != 0 {
+                assert!(
+                    decode(&golden[..length]).is_err(),
+                    "{name}: accepted truncation {length}"
+                );
+            }
+        }
+        assert_eq!(
+            decode(&golden[magic.len()..]).map_err(|error| error.code),
+            Err(ErrorCode::Unsupported),
+            "{name}: accepted a headerless record"
+        );
+        let mut trailing = golden;
+        trailing.push(0);
+        assert!(
+            decode(&trailing).is_err(),
+            "{name}: accepted trailing bytes"
+        );
+    }
+    for name in [
+        "objects.envelope",
+        "corpus/object_persistence/head-live",
+        "corpus/object_persistence/head-dying",
+    ] {
+        let historical = acyclic_compatibility_golden::frame(name)?;
+        assert_eq!(
+            Envelope::decode(&historical).map_err(|error| error.code),
+            Err(ErrorCode::Unsupported),
+            "{name}"
+        );
+    }
+    Ok(())
+}
+
+/// Persisted `e/` and `p/` keys shard on the digest's first byte. Hosted
+/// mediums validate that layout, so the shard is pinned by literal bytes.
+#[test]
+fn storage_shard_is_the_first_digest_byte() {
+    for (first, second, shard) in [(0x00, 0x00, "00"), (0xab, 0xcd, "ab"), (0xff, 0x01, "ff")] {
+        let mut bytes = [0x5a; 32];
+        bytes[0] = first;
+        bytes[1] = second;
+        assert_eq!(Digest::from_bytes(bytes).hex_prefix(), shard);
+    }
+}

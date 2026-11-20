@@ -96,6 +96,10 @@ mod recovery;
 #[path = "codex_stock_tests.rs"]
 mod stock;
 
+fn fixed_now() -> time::OffsetDateTime {
+    time::OffsetDateTime::from_unix_timestamp(1_792_150_400).expect("fixed fixture timestamp")
+}
+
 fn fixture(
     replies: Vec<(u16, String)>,
 ) -> acyclic_harness_core::Result<(tempfile::TempDir, CodexLogin, Arc<Server>, String)> {
@@ -106,7 +110,7 @@ fn fixture(
         "header.{}.signature",
         URL_SAFE_NO_PAD.encode(
             json!({
-                "exp":crate::codex::fixed_now().unix_timestamp() + 3600
+                "exp":fixed_now().unix_timestamp() + 3600
             })
             .to_string()
         )
@@ -122,7 +126,7 @@ fn fixture(
     .map_err(|error| invalid(error.to_string()))?;
     Ok((
         root,
-        CodexLogin::from_path(path).with_clock(crate::codex::fixed_now),
+        CodexLogin::from_path(path).with_clock(fixed_now),
         Arc::new(Server {
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),

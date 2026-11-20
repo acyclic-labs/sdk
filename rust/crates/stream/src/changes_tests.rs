@@ -1,0 +1,576 @@
+pub use acyclic_stream_contract::changes::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StreamCategory;
+    use crate::*;
+    use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
+    use acyclic_stream_wire::changes::{
+        RECORD_FORMAT_ATTRIBUTE as ATTRIBUTE, WRITER_FORMAT as FORMAT,
+    };
+    use futures::StreamExt;
+    use futures::TryFutureExt as _;
+
+    pub fn filter() -> FollowFilter {
+        use acyclic_auth::{contract::*, testing as signed};
+        let token = signed::root(|block| {
+            block.caveats.push(Caveat {
+                kind: CaveatKind::Filter(Filter {
+                    keys: vec![KeyRange {
+                        start: b"b".to_vec(),
+                        end: b"c".to_vec(),
+                    }],
+                    attributes: vec![],
+                }),
+            });
+        });
+        let capability =
+            acyclic_auth::verify::verify(&token, &signed::Snapshot::default(), signed::NOW)
+                .unwrap();
+        FollowFilter::authorized(Default::default(), &capability).unwrap()
+    }
+
+    pub fn changes() -> AppendRecord {
+        AppendRecord::changes(
+            b"publication-identity",
+            &["b", "z"]
+                .into_iter()
+                .map(|key| wire::ChangeEntry {
+                    key: key.into(),
+                    operation: "write".into(),
+                    metadata: key.into(),
+                })
+                .collect::<Vec<_>>(),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compact_ingress_rejects_expansion_before_allocating_keys() {
+        // A compact first key can consume the complete wire request by itself.
+        // Its repeated prefixes must never be materialized before record admission.
+        for width in [1024 * 1024, 4096] {
+            let mut value = Vec::new();
+            prost::encoding::encode_varint(0, &mut value); // context
+            prost::encoding::encode_varint(64, &mut value);
+            let key = vec![b'a'; width];
+            for index in 0..64 {
+                let next = [b'a' + index];
+                let suffix = if index == 0 { key.as_slice() } else { &next };
+                prost::encoding::encode_varint(
+                    if index == 0 {
+                        0
+                    } else {
+                        (key.len() - 1) as u64
+                    },
+                    &mut value,
+                );
+                prost::encoding::encode_varint(suffix.len() as u64, &mut value);
+                value.extend_from_slice(suffix);
+                value.extend_from_slice(&[1, b'w', 0]);
+            }
+            let attributes = vec![Attribute {
+                name: ATTRIBUTE.into(),
+                value: FORMAT.into(),
+            }];
+            let actual = acyclic_test_support::measure(|| {
+                assert_eq!(
+                    record_headers(&value, vec![], attributes).map_err(|error| error.category()),
+                    Err(StreamCategory::LimitExceeded)
+                );
+            });
+            if width > crate::MAX_RECORD_BYTES {
+                assert_eq!(actual.count_total, 0);
+            }
+            // Includes reconstruction scratch, growing owned storage and ranges.
+            assert!(actual.bytes_max <= 2 * crate::MAX_RECORD_BYTES as u64);
+        }
+    }
+
+    /// The value `changes()` would have with its first key replaced, under the
+    /// original headers: a forged index.
+    fn forged() -> AppendRecord {
+        let mut body = changes();
+        let mut value = decode(&body.value, &body.headers).unwrap();
+        value.entries.first_mut().unwrap().key = "a".into();
+        body.value = AppendRecord::changes(&value.context, &value.entries, vec![])
+            .unwrap()
+            .value;
+        body
+    }
+
+    /// No wire or persisted form carries a change record's keys: every ingress
+    /// derives them from the value, so a disagreeing copy cannot cross one.
+    #[test]
+    fn every_wire_form_stores_each_key_once_and_derives_the_index() {
+        assert!(AppendRecord::changes(&[], &[], vec![]).is_err());
+        let body = changes();
+        let wire = crate::wire_codec::append_record_wire(body.clone());
+        assert!(wire.keys.is_empty());
+        assert_eq!(crate::wire_codec::append_record(wire).unwrap(), body);
+        let forged = forged();
+        assert!(crate::request::validate_records(std::slice::from_ref(&forged)).is_err());
+        let forged =
+            crate::wire_codec::append_record(crate::wire_codec::append_record_wire(forged))
+                .unwrap();
+        assert_eq!(
+            forged
+                .headers
+                .keys()
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&[u8]>>(),
+            [b"a".as_slice(), b"z"],
+            "the index is the value's, never the forged headers'"
+        );
+        // A wire record that carries keys beside a change value is a second copy.
+        let mut doubled = crate::wire_codec::append_record_wire(body);
+        doubled.keys = vec![
+            bytes::Bytes::from_static(b"b"),
+            bytes::Bytes::from_static(b"z"),
+        ];
+        assert_eq!(
+            crate::wire_codec::append_record(doubled).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
+        );
+        // The negative control: an opaque record keeps its keys on the wire.
+        let opaque = AppendRecord {
+            value: b"opaque".as_slice().into(),
+            headers: RecordHeaders::new(vec![b"k".as_slice().into()], vec![]).unwrap(),
+        };
+        assert_eq!(crate::wire_codec::append_record_wire(opaque).keys.len(), 1);
+    }
+
+    #[test]
+    fn keys_share_their_prefixes_and_metadata_is_stored_once() {
+        let long = |suffix: &str| format!(".system/harness-uploads/{suffix}");
+        let record = AppendRecord::changes(
+            &[],
+            &[long("a.json"), long("b.json")]
+                .into_iter()
+                .map(|key| wire::ChangeEntry {
+                    key: key.into(),
+                    operation: "create".into(),
+                    metadata: bytes::Bytes::new(),
+                })
+                .collect::<Vec<_>>(),
+            vec![],
+        )
+        .unwrap();
+        // context(1) count(1); then shared(1) suffix(1+30) op(1+6) meta(1), and
+        // shared(1) suffix(1+6) op(1+6) meta(1): the second key stores 6 bytes.
+        assert_eq!(record.value.len(), 2 + 1 + 31 + 7 + 1 + 1 + 7 + 7 + 1);
+        let decoded = decode_changes(&record.value).unwrap();
+        assert_eq!(
+            decoded.entries.get(1).unwrap().key.as_ref(),
+            long("b.json").as_bytes()
+        );
+    }
+
+    #[test]
+    fn canonical_change_validation_rejects_wire_malleability() {
+        let headers = changes().headers;
+        let canonical = changes().value.to_vec();
+        assert_eq!(
+            validate(&canonical, &headers).map_err(|error| error.category()),
+            Ok(())
+        );
+        let mut cases: Vec<Vec<u8>> = Vec::new();
+        // A nonminimal context length.
+        let (first, rest) = canonical.split_first().unwrap();
+        let mut nonminimal = vec![0x80 | first, 0x00];
+        nonminimal.extend_from_slice(rest);
+        cases.push(nonminimal);
+        // Trailing bytes, and a truncated list.
+        cases.push([canonical.as_slice(), b"\0"].concat());
+        cases.push(canonical.split_last().unwrap().1.to_vec());
+        // No entries, and more entries than the value holds.
+        cases.push(b"\x00\x00".to_vec());
+        cases.push(b"\x00\x02\x00\x01b\x05write\x00".to_vec());
+        // A first entry that claims a shared prefix, a shared length shorter
+        // than the true common prefix, keys out of order, an equal key, and an
+        // empty or control-character operation.
+        for value in [
+            b"\x00\x01\x01\x01b\x05write\x00".as_slice(),
+            b"\x00\x02\x00\x02ab\x05write\x00\x00\x02ac\x05write\x00",
+            b"\x00\x02\x00\x01b\x05write\x00\x00\x01a\x05write\x00",
+            b"\x00\x02\x00\x01b\x05write\x00\x01\x00\x05write\x00",
+            b"\x00\x01\x00\x01b\x00\x00",
+            b"\x00\x01\x00\x01b\x02w\n\x00",
+        ] {
+            cases.push(value.to_vec());
+        }
+        for bytes in cases {
+            assert!(decode_changes(&bytes).is_err(), "{bytes:?}");
+            assert_eq!(
+                validate(&bytes, &headers).map_err(|error| error.category()),
+                Err(StreamCategory::InvalidArgument),
+                "{bytes:?}"
+            );
+        }
+        // The negative control: the same shapes written canonically decode.
+        for value in [
+            b"\x00\x01\x00\x01b\x05write\x00".as_slice(),
+            b"\x00\x02\x00\x02ab\x05write\x00\x01\x01c\x05write\x00",
+        ] {
+            assert!(decode_changes(value).is_ok(), "{value:?}");
+        }
+        let empty_key = AppendRecord::changes(
+            &[],
+            &[wire::ChangeEntry {
+                key: bytes::Bytes::new(),
+                operation: "write".into(),
+                metadata: bytes::Bytes::new(),
+            }],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            validate(&empty_key.value, &empty_key.headers).map_err(|error| error.category()),
+            Ok(())
+        );
+        // A claimed change format must contain a valid value, never opaque bytes.
+        let stale = RecordHeaders::new(
+            vec![],
+            vec![Attribute {
+                name: ATTRIBUTE.into(),
+                value: b"changes/v1".as_slice().into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            validate(b"", &stale).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys() {
+        use prost::Message as _;
+
+        fn measure<T>(run: impl FnOnce() -> T) -> (T, acyclic_test_support::AllocationInfo, usize) {
+            take_parsed_bytes();
+            let mut result = None;
+            let allocations = acyclic_test_support::measure(|| result = Some(run()));
+            (result.unwrap(), allocations, take_parsed_bytes())
+        }
+
+        fn compare(body: &AppendRecord, expected: &wire::ChangeRecord, typed: bool) {
+            let (decoded, allocations, parsed) = measure(|| decode(&body.value, &body.headers));
+            assert_eq!(decoded.unwrap(), *expected);
+            assert_eq!(parsed, body.value.len() * if typed { 2 } else { 1 });
+            if typed {
+                assert_eq!(
+                    i128::from(allocations.bytes_total),
+                    i128::from(allocations.bytes_current),
+                    "validated decode must not allocate discarded storage"
+                );
+            } else {
+                let (without_index, baseline, parsed) =
+                    measure(|| decode(&body.value, &RecordHeaders::default()));
+                assert_eq!(without_index.unwrap(), *expected);
+                assert_eq!(parsed, body.value.len());
+                assert_eq!(
+                    allocations, baseline,
+                    "opaque headers do not establish a body count"
+                );
+            }
+        }
+
+        // The retained reader uses the original compatibility corpus, unchanged.
+        let golden = acyclic_compatibility_golden::frame("stream.changes-v1").unwrap();
+        let retained = wire::Record::decode(golden.as_slice()).unwrap();
+        let expected = wire::ChangeRecord::decode(retained.value.clone()).unwrap();
+        let retained = crate::wire_codec::append_record(wire::AppendRecord {
+            value: retained.value,
+            keys: retained.keys,
+            attributes: retained.attributes,
+        })
+        .unwrap();
+        compare(&retained, &expected, true);
+        // Extra opaque keys cannot cause an allocation sized by an unrelated index.
+        let keys = (0..128)
+            .map(|index| format!("key-{index:03}").into())
+            .collect::<Vec<OwnedBytes>>();
+        let opaque = AppendRecord {
+            value: retained.value.clone(),
+            headers: RecordHeaders::new(keys.clone(), vec![]).unwrap(),
+        };
+        compare(&opaque, &expected, false);
+
+        for count in [1, 2, 4, 5, 128] {
+            // Generated by the SDK's current canonical producer, not a hand-coded body.
+            let entries = keys
+                .iter()
+                .take(count)
+                .map(|key| wire::ChangeEntry {
+                    key: bytes::Bytes::copy_from_slice(key),
+                    operation: "write".into(),
+                    metadata: b"metadata".as_slice().into(),
+                })
+                .collect::<Vec<_>>();
+            let body = AppendRecord::changes(b"publication", &entries, vec![]).unwrap();
+            let expected = wire::ChangeRecord {
+                context: b"publication".as_slice().into(),
+                entries,
+            };
+            compare(&body, &expected, true);
+            let (raw, _, parsed) = measure(|| decode_changes(&body.value));
+            assert_eq!(raw.unwrap(), expected);
+            assert_eq!(parsed, body.value.len());
+            if count == 1 {
+                let forged =
+                    RecordHeaders::new(keys.clone(), body.headers.attributes().to_vec()).unwrap();
+                let unknown = RecordHeaders::new(
+                    keys.clone(),
+                    vec![Attribute {
+                        name: ATTRIBUTE.into(),
+                        value: b"changes/v3".as_slice().into(),
+                    }],
+                )
+                .unwrap();
+                for (bytes, headers) in [
+                    (body.value.as_ref(), &forged),
+                    (body.value.as_ref(), &unknown),
+                    (b"".as_slice(), &body.headers),
+                    (b"".as_slice(), &retained.headers),
+                ] {
+                    let (validation, validation_cost, validation_parsed) =
+                        measure(|| validate(bytes, headers));
+                    let (refused, decode_cost, decode_parsed) = measure(|| decode(bytes, headers));
+                    assert_eq!(
+                        validation.map_err(|error| error.category()),
+                        Err(StreamCategory::InvalidArgument)
+                    );
+                    assert_eq!(
+                        refused.map_err(|error| error.category()),
+                        Err(StreamCategory::InvalidArgument)
+                    );
+                    assert_eq!(
+                        decode_cost, validation_cost,
+                        "capacity admission must add no allocation before validation"
+                    );
+                    assert_eq!(decode_parsed, validation_parsed);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
+        use crate::{CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey};
+        let owner = StreamPath::new("changes-owner").unwrap();
+        let target = StreamPath::new("changes-target").unwrap();
+        for path in [&owner, &target] {
+            provider
+                .append(crate::AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"seed".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+        }
+        let meter = std::sync::Arc::new(crate::test_meter::Meter::local());
+        let body = forged();
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![
+                    CommitCondition::Tail {
+                        path: owner,
+                        expected: 1,
+                    },
+                    CommitCondition::Tail {
+                        path: target.clone(),
+                        expected: 1,
+                    },
+                ],
+                vec![CommitMutation::Append {
+                    path: target.clone(),
+                    records: vec![crate::OwnedBytes::default().into()],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::new("changes-invalid").unwrap(),
+        };
+        let (prepared, _guard) = provider
+            .native_prepare_commit(
+                request.clone(),
+                crate::PreparedRecordCapacity {
+                    payload_bytes: crate::MAX_RECORD_BYTES,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .into_parts();
+        assert!(matches!(
+            prepared.finish(body).await.unwrap(),
+            Err(error) if error.category() == StreamCategory::InvalidArgument
+        ));
+        assert_eq!(provider.tail(target.clone()).await.unwrap(), 1);
+        assert!(
+            provider
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (prepared, _guard) = provider
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: crate::MAX_RECORD_BYTES,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .into_parts();
+        assert!(matches!(
+            prepared.finish(changes()).await.unwrap().unwrap().value(),
+            crate::CommitOutcome::Committed(_)
+        ));
+        assert_eq!(provider.tail(target).await.unwrap(), 2);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn memory_prepared_commit_rejects_a_forged_change_index_before_publication() {
+        prepared_ingress(&MemoryStream::default()).await;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn local_prepared_commit_rejects_a_forged_change_index_before_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider =
+            crate::LocalStream::open(directory.path(), crate::LocalStreamLimits::default())
+                .await
+                .unwrap();
+        prepared_ingress(&provider).await;
+        drop(provider);
+        let reopened =
+            crate::LocalStream::open(directory.path(), crate::LocalStreamLimits::default())
+                .await
+                .unwrap();
+        assert_eq!(
+            reopened
+                .tail(StreamPath::new("changes-target").unwrap())
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    async fn qualify(provider: &impl StreamProvider) {
+        let path = StreamPath::new("changes").unwrap();
+        let body = changes();
+        provider
+            .append(crate::AppendRequest {
+                path: path.clone(),
+                records: vec![body.clone()],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        let mut history = provider
+            .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
+                when_absent: Default::default(),
+                path: path.clone(),
+                from: 0,
+                preceding: None,
+                filter: filter(),
+                progress: false,
+                at_least: Default::default(),
+            })
+            .map_ok(crate::records_only)
+            .await
+            .unwrap();
+        let first = history.next().await.unwrap().unwrap();
+        assert_eq!(
+            decode(&first.value, &first.headers).unwrap().entries.len(),
+            1
+        );
+        let mut live = provider
+            .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
+                when_absent: Default::default(),
+                path: path.clone(),
+                from: 1,
+                preceding: Some(first.commit_id),
+                filter: filter(),
+                progress: false,
+                at_least: Default::default(),
+            })
+            .map_ok(crate::records_only)
+            .await
+            .unwrap();
+        assert!(futures::poll!(live.next()).is_pending());
+        provider
+            .append(crate::AppendRequest {
+                path: path.clone(),
+                records: vec![body],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        let second = live.next().await.unwrap().unwrap();
+        assert_eq!(
+            decode(&second.value, &second.headers)
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+        assert_eq!(second.sequence, 1);
+        let mut resumed = provider
+            .follow(crate::FollowRequest {
+                bootstrap_head: false,
+                until: None,
+                when_absent: Default::default(),
+                path,
+                from: 1,
+                preceding: Some(first.commit_id),
+                filter: filter(),
+                progress: false,
+                at_least: Default::default(),
+            })
+            .map_ok(crate::records_only)
+            .await
+            .unwrap();
+        assert_eq!(resumed.next().await.unwrap().unwrap(), second);
+    }
+
+    #[tokio::test]
+    async fn memory_projects_both_history_and_live_checked_follows() {
+        qualify(&MemoryStream::default()).await;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn local_projects_both_history_and_live_checked_follows() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider =
+            crate::LocalStream::open(directory.path(), crate::LocalStreamLimits::default())
+                .await
+                .unwrap();
+        qualify(&provider).await;
+    }
+}

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,5 +46,36 @@ test("built namespace bundle loads through manifest, onRecord and acceptsInterru
     // The actual built entry reaches the shared Rust strict-wire decoder.
     await expect(module.onRecord(Uint8Array.of(0), new AbortController().signal)).rejects.toThrow("non-canonical guest delivery");
     await expect(module.acceptsInterrupt(Uint8Array.of(0), new AbortController().signal)).rejects.toThrow("non-canonical guest interrupt");
+  } finally { owner.free(); }
+});
+
+test("the deployed scripted configuration opens without a model credential or egress binding", async () => {
+  const fixture = new URL("../../../../rust/crates/conformance/fixtures/", import.meta.url);
+  const config = fileURLToPath(new URL("owner.scripted.json", fixture));
+  const content = readFileSync(new URL("scripted-swarm.v1.json", fixture));
+  expect(JSON.parse(readFileSync(config, "utf8")).model.spec.script.sha256)
+    .toBe(createHash("sha256").update(content).digest("hex"));
+  const artifact = join(directory, "swarm-harness");
+  await bundleHarnessActor(config, artifact);
+  const deployment = JSON.parse(readFileSync(join(artifact, "agent-deploy.json"), "utf8"));
+  const environment = deployment.environments[0];
+  const entry = environment.entries[0];
+  expect(entry.fetch).toBeNull();
+  expect(entry.secrets).toEqual([]);
+  expect(environment.secrets).toEqual([]);
+  const files = new Map(entry.assets.map(asset => [asset.path, readFileSync(join(artifact, asset.path))]));
+  const module = await loadHostedArtifact(join(artifact, HARNESS_MODULE.file), entry.assets, files);
+  await initializeFixtureAuthority();
+  const owner = fixtureAuthority("00112233-4455-6677-8899-aabbccddeeff");
+  const unexpected = () => { throw new Error("readiness performed a delivery operation"); };
+  try {
+    const readiness = await module.manifest({ env: {
+      [HARNESS_BINDINGS.authority]: owner.capability,
+      [HARNESS_BINDINGS.objects]: { open: unexpected },
+      [HARNESS_BINDINGS.streams]: { dispatch: unexpected, open: unexpected },
+      [HARNESS_BINDINGS.workspace]: { admit: unexpected },
+      get [MODEL_FETCH]() { return unexpected(); },
+    } });
+    expect(readiness.byteLength).toBeGreaterThan(0);
   } finally { owner.free(); }
 });

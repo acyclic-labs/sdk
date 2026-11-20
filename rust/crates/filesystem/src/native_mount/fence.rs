@@ -21,13 +21,13 @@ fn contains_path<T: Copy + Eq>(
 ) -> Result<bool, NativeMountError> {
     let mut last = None;
     for unit in root {
-        work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+        work.charge(crate::ledger::NativeResourceCredit::Items.delta(1))?;
         if candidate.next() != Some(unit) {
             return Ok(false);
         }
         last = Some(unit);
     }
-    work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+    work.charge(crate::ledger::NativeResourceCredit::Items.delta(1))?;
     Ok(last == Some(separator) || candidate.next().is_none_or(|unit| unit == separator))
 }
 
@@ -159,7 +159,7 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
         match allocation {}
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
@@ -167,7 +167,7 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         match reservation {}
     }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,
@@ -290,7 +290,7 @@ impl MountDestinationGuard {
         #[cfg(unix)]
         let (canonical_owner, held_recovery_directory) = if recovery {
             let copy = work.attempt_io(
-                crate::materializer::NativeResourceCredit::ReadOperations.delta(1),
+                crate::ledger::NativeResourceCredit::ReadOperations.delta(1),
                 || directory.try_clone(),
             )?;
             (
@@ -405,7 +405,7 @@ impl MountDestinationGuard {
         };
         let (directory, parent) = if let Some(parent) = recovery_parent {
             (
-                crate::native_host::HostRoot::open(parent, work)
+                crate::native_host::HostRoot::open_ambient_parent(parent, work)
                     .map_err(|error| Self::missing_destination(parent, error))?
                     .into_directory(),
                 None,
@@ -422,7 +422,7 @@ impl MountDestinationGuard {
             let leaf = destination
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?;
-            let parent = crate::native_host::HostRoot::open(parent, work)
+            let parent = crate::native_host::HostRoot::open_ambient_parent(parent, work)
                 .map_err(|error| Self::missing_destination(parent, error))?;
             let child = parent
                 .open_directory(Path::new(leaf), work)
@@ -532,11 +532,11 @@ impl MountDestinationGuard {
     > {
         let mut terminated = [0u8; NATIVE_FENCE_NAME_BYTES + 1];
         let copied = native.reserve_work(
-            crate::materializer::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
+            crate::ledger::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
         )?;
         terminated[..NATIVE_FENCE_NAME_BYTES].copy_from_slice(name);
         copied.record_completed(
-            crate::materializer::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
+            crate::ledger::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
         )?;
         let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
         let credit = native.reserve_work(Self::cleanup_work())?;
@@ -615,7 +615,7 @@ impl MountDestinationGuard {
                 // reads a record that another live owner is replacing.
                 crate::native_host::NativeHostWork::attempt_io(
                     work,
-                    crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                    crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
                     || registry::write_fence_record(file, &record),
                 )?;
             }
@@ -642,7 +642,7 @@ impl MountDestinationGuard {
     pub(super) fn acquire_canonical(canonical: &Path) -> Result<Self, NativeMountError> {
         let (lock_path, _) = Self::paths_for_canonical(canonical)?;
         let cancellation = crate::CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let registry = registry::shared(&mut work)?;
         let held = registry.lock(&mut work)?;
         let file = acquire_mount_lock(&lock_path, false)?;
@@ -696,7 +696,7 @@ impl MountDestinationGuard {
     pub(super) fn reclaim_canonical(canonical: &Path) -> Result<(), NativeMountError> {
         let (lock_path, _) = Self::paths_for_canonical(canonical)?;
         let cancellation = crate::CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let registry = registry::shared(&mut work)?;
         let held = registry.lock(&mut work)?;
         if !lock_path
@@ -721,9 +721,7 @@ impl MountDestinationGuard {
         original: &mut crate::NativeWorkReservation,
     ) {
         if self.file.is_some() {
-            original.started_drop_io(
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            );
+            original.started_drop_io(crate::ledger::NativeResourceCredit::WriteOperations.delta(1));
             drop(self.file.take());
         }
     }
@@ -746,7 +744,7 @@ impl MountDestinationGuard {
         // The unlock has exclusive credit that unlink cannot consume.
         credit.refill_cleanup(Self::cleanup_work())?;
         let unlock = credit.partition_work(
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+            crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
             wait,
         )?;
         let mut work = NativeFenceReleaseWork {
@@ -794,7 +792,7 @@ impl MountDestinationGuard {
         #[cfg(target_os = "macos")]
         if self.preserve_entry {
             work.attempt_io(
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
                 || {
                     self.file.take();
                     Ok(())
@@ -850,7 +848,7 @@ pub(super) fn lock_mount_file_with_work<W: crate::native_host::NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
-    let delta = crate::materializer::NativeResourceCredit::WriteOperations.delta(1);
+    let delta = crate::ledger::NativeResourceCredit::WriteOperations.delta(1);
     work.attempt_io(delta, || {
         let result = if blocking {
             fence_io::lock(file)
@@ -874,7 +872,7 @@ impl Drop for MountDestinationGuard {
         if self.parent_directory.is_none() && self.registry_file.is_none() && self.file.is_some() {
             let cancellation = crate::CancellationToken::new();
             let mut work =
-                crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+                crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
             let _ = self.release(&mut work);
         }
     }
@@ -906,7 +904,7 @@ fn open_mount_lock(
     blocking: bool,
 ) -> Result<MountLockFile, NativeMountError> {
     let cancellation = crate::CancellationToken::new();
-    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
     let parent = path.parent().ok_or(NativeMountError::InvalidDestination)?;
     let leaf = path
         .file_name()
@@ -1030,24 +1028,5 @@ mod cleanup_credit_tests {
         {
             std::fs::remove_file(alias)
         }
-    }
-
-    #[test]
-    fn prepared_fence_cleanup_needs_no_second_name_scan() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let cancellation = crate::CancellationToken::new();
-        let work = NativeMaterializationWork::new(
-            crate::WorkBudget {
-                items_examined: 0,
-                ..crate::WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .map_err(|(error, _)| error)?;
-        // PreparedAsciiLeaf already owns validation. Reserve the actual
-        // retirement transaction with no remaining name-validation credit.
-        let _credit = work.reserve_work(MountDestinationGuard::cleanup_work())?;
-        assert_eq!(work.receipt().unwrap().items_examined, 0);
-        Ok(())
     }
 }

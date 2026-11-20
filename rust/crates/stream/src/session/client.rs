@@ -3,6 +3,14 @@ use super::*;
 use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
 use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
+
+pub(super) fn queue_error<T>(error: &mpsc::error::TrySendError<T>) -> StreamError {
+    match error {
+        mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
+        mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(all(test, not(loom)))]
@@ -515,10 +523,7 @@ impl Client {
         self.pool
             .commands
             .try_send(Command::Credential { slot, credential })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-            })
+            .map_err(|error| queue_error(&error))
     }
     /// Observes successful handshakes without depending on further task records.
     #[must_use]

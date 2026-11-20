@@ -42,8 +42,12 @@ mod original_namespace_controls {
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
         let controller_operations = {
-            let probe = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(error, _)| error)?;
+            let probe = crate::NativeMaterializationWork::root(
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             probe.receipt().unwrap().allocation_operations
         };
         let budget = WorkBudget {
@@ -52,8 +56,12 @@ mod original_namespace_controls {
                 .ok_or("allocation quota overflow")?,
             ..WorkBudget::UNBOUNDED
         };
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            budget,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (paid_path, paid_guard) = NamespacePath::parse_in_profile(
@@ -103,8 +111,12 @@ mod original_namespace_controls {
             VolumeLimits::default(),
         )?;
         let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let before = original.receipt().unwrap();
         cancellation.cancel();

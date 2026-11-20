@@ -9,7 +9,7 @@ pub(super) struct Ancestor {
 
 impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
     pub(in crate::filesystem::execution_journal) fn new(
-        provider: &'a Arc<P>,
+        provider: &'a acyclic_stream::ProviderOwner<P>,
         path: &'a StreamPath,
         base: u64,
         io: Option<&PreparationIo>,
@@ -61,8 +61,8 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
         self.cache.bind(self.content.io.as_ref())?;
         // Retire committed pages before admitting their replacements. Staged
         // intermediate roots are filtered below and never enter the cache.
-        for reference in &self.scratch.retired.values {
-            self.cache.remove(*reference)?;
+        for sequence in &self.scratch.retired.values {
+            self.cache.remove(*sequence)?;
         }
         for (index, bytes) in self.scratch.records.values.iter().enumerate() {
             let sequence = self.base + index as u64;
@@ -81,11 +81,7 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
             {
                 continue;
             }
-            let reference = NodeRef {
-                sequence,
-                digest: crate::model::hash_bytes(bytes, self.content.io.as_ref())?,
-            };
-            self.cache.insert(reference, bytes)?;
+            self.cache.insert(sequence, bytes)?;
         }
         Ok(std::mem::take(&mut self.cache))
     }
@@ -142,9 +138,9 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
         path.values.clear();
         let old_key;
         let mut minimum_bit = 0;
+        let reader = self.reader();
+        let mut read = reader.read(current).await?;
         loop {
-            let reader = self.reader();
-            let read = reader.read(current).await?;
             match read.node(reader.io)? {
                 Node::Leaf { key, .. } => {
                     old_key = key;
@@ -168,9 +164,11 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
                     current = *children
                         .get(side)
                         .ok_or_else(|| invalid(reader.io, "execution index child is missing"))?;
+                    read = reader.follow(read, current).await?;
                 }
             }
         }
+        drop(read);
         let difference = old_key
             .iter()
             .zip(key)
@@ -185,12 +183,12 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
                 .position(|ancestor| usize::from(ancestor.bit) >= difference)
                 .unwrap_or(path.values.len())
         });
-        let mut replacement = self.stage(Node::Leaf {
+        let leaf = Node::Leaf {
             key,
             value,
             segmented,
-        })?;
-        if let Some(difference) = difference {
+        };
+        let split = if let Some(difference) = difference {
             let bit = u16::try_from(difference).map_err(|_| {
                 invalid(
                     self.content.io.as_ref(),
@@ -201,37 +199,69 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Writer<'a, P> {
                 .values
                 .get(prefix)
                 .map_or(current, |ancestor| ancestor.reference);
-            let mut children = [old; 2];
-            *children
-                .get_mut(direction(&key, bit, self.content.io.as_ref())?)
-                .ok_or_else(|| {
-                    invalid(self.content.io.as_ref(), "execution index child is missing")
-                })? = replacement;
-            replacement = self.stage(Node::Branch { bit, children })?;
-        }
-        for ancestor in path.values.iter().take(prefix).rev() {
-            let mut children = ancestor.children;
-            *children.get_mut(ancestor.side).ok_or_else(|| {
-                invalid(self.content.io.as_ref(), "execution index child is missing")
-            })? = replacement;
-            replacement = self.stage(Node::Branch {
-                bit: ancestor.bit,
-                children,
-            })?;
-            self.retire(ancestor.reference)?;
+            Some((
+                bit,
+                direction(&key, bit, self.content.io.as_ref())?,
+                [old; 2],
+            ))
+        } else {
+            None
+        };
+        let branch_count = prefix + usize::from(split.is_some());
+        let replacement = if branch_count == 0 {
+            self.stage(leaf)?
+        } else {
+            let leaf = if node::fits_bundle(branch_count, value) {
+                node::BundleLeaf::Inline {
+                    key,
+                    value,
+                    segmented,
+                }
+            } else {
+                node::BundleLeaf::Separate(self.stage(leaf)?)
+            };
+            self.scratch.records.reserve_slot()?;
+            self.scratch.live.reserve_slot()?;
+            let branches = split.into_iter().chain(
+                path.values
+                    .iter()
+                    .take(prefix)
+                    .rev()
+                    .map(|ancestor| (ancestor.bit, ancestor.side, ancestor.children)),
+            );
+            let (bytes, root) = node::encode_branch_bundle(
+                self.tail()?,
+                &leaf,
+                branches,
+                self.content.io.as_ref(),
+            )?;
+            self.scratch.records.values.push(bytes);
+            self.scratch.live.values.push(true);
+            root
+        };
+        for ancestor in path.values.iter().take(prefix) {
+            // A bundle stays reachable until its deepest branch is replaced.
+            // Copying a prefix can leave its same-record child in the tree.
+            if ancestor
+                .children
+                .iter()
+                .all(|child| child.sequence != ancestor.reference.sequence)
+            {
+                self.retire(ancestor.reference.sequence)?;
+            }
         }
         if difference.is_none() {
-            self.retire(current)?;
+            self.retire(current.sequence)?;
         }
         self.scratch.path = path;
         Ok(replacement)
     }
 
-    fn retire(&mut self, reference: NodeRef) -> Result<()> {
-        if reference.sequence < self.base {
-            return self.scratch.retired.push(reference);
+    fn retire(&mut self, sequence: u64) -> Result<()> {
+        if sequence < self.base {
+            return self.scratch.retired.push(sequence);
         }
-        let position = usize::try_from(reference.sequence - self.base).map_err(|_| {
+        let position = usize::try_from(sequence - self.base).map_err(|_| {
             invalid(
                 self.content.io.as_ref(),
                 "retired execution page offset overflows",

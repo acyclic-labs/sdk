@@ -114,7 +114,7 @@ test("the source guard ignores untracked local reports and checks tracked dist f
 });
 
 test("the repository boundary check rejects manual caller-array copies in nested wasm hosts", t => {
-  const path = "rust/crates/harness/src/wasm/agents/actor_host/failures.rs";
+  const path = "rust/crates/harness-browser/src/wasm/agents/actor_host/failures.rs";
   const source = readFileSync(join(root, path), "utf8");
   assert.equal(scan(t, { [path]: source }).status, 0);
   const files = {};

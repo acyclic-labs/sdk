@@ -49,7 +49,7 @@ impl SourceWatchStartupFailure {
     /// Quiesces the retained owner using the current cleanup invocation.
     pub fn stop_with_native_work(
         &self,
-        work: &crate::materializer::NativeMaterializationWork,
+        work: &crate::ledger::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
         self.stop_retained_with_work(&mut crate::NativeMaterializationWork::clone(work), true)
     }

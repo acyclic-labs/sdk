@@ -1,4 +1,4 @@
 // The reference fixture uses the original configuration and journal decoding.
-include!("../../harness/tests/e2e/execution.rs");
+include!("../../harness-e2e/tests/e2e/execution.rs");
 
 pub mod observation;

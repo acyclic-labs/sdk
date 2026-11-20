@@ -273,7 +273,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &CancellationToken::new(),
     )));
@@ -311,7 +311,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     assert_eq!(original.lock().receipt().unwrap(), owner_before);
 
     // Neither incoming ledger contains the watch owner's custody gauge.
-    let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let incoming = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &CancellationToken::new(),
     )));
@@ -413,7 +413,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &CancellationToken::new(),
     )));
@@ -426,7 +426,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
     watch.shared.reading().blocked = true;
     let owner_before = original.lock().receipt().unwrap();
     std::fs::rename(root.path().join("before"), root.path().join("after"))?;
-    let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let incoming = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &CancellationToken::new(),
     )));
@@ -587,7 +587,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
     let cancellation = CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         WorkBudget {
             items_returned: 0,
             ..ORIGINAL_BUDGET
@@ -690,7 +690,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         WorkBudget {
             items_returned: 0,
             ..ORIGINAL_BUDGET
@@ -829,7 +829,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         )
         .map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
-        let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
             ORIGINAL_BUDGET,
             &cancellation,
         )));
@@ -925,7 +925,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
 fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiescence()
 -> Result<(), Box<dyn std::error::Error>> {
     struct Cancels {
-        original: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
+        original: std::sync::Weak<crate::ledger::NativeDemandReadMeter>,
         cancellation: CancellationToken,
         invoked: AtomicBool,
     }
@@ -962,7 +962,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
     let cancellation = CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &cancellation,
     )));
@@ -1034,7 +1034,7 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
 -> Result<(), Box<dyn std::error::Error>> {
     struct Retires {
         watch: Mutex<Option<NativeSourceWatch>>,
-        original: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
+        original: std::sync::Weak<crate::ledger::NativeDemandReadMeter>,
         invoked: Arc<AtomicBool>,
         drop_pause: Mutex<Option<DropPause>>,
     }
@@ -1075,7 +1075,7 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &CancellationToken::new(),
     )));
@@ -1335,7 +1335,7 @@ fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_onc
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
     let cancellation = CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
         &cancellation,
     )));

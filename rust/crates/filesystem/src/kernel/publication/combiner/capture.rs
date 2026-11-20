@@ -91,6 +91,15 @@ impl ProposalCore {
 }
 
 impl Ticket {
+    /// The quote already owns the canonical commit for this exact candidate.
+    pub(in crate::kernel::publication) fn original_commit(
+        &self,
+        root: ObjectId,
+    ) -> Option<ProposedCommit> {
+        (root == self.proposal.core.request.generation_root)
+            .then(|| self.proposal.core.quote.commit.clone())
+    }
+
     pub(in crate::kernel::publication) fn changes(
         &self,
         root: ObjectId,

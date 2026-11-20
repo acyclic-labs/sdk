@@ -36,14 +36,6 @@ pub(super) fn build_data_inner(
             stable_version(&input.version)?;
         }
     }
-    if input.revision.len() < 40
-        || input.revision.len() > 64
-        || !input.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(Error::Invalid(
-            "revision must be a 40- to 64-character hexadecimal source identity".into(),
-        ));
-    }
     if input.rustdoc_files.is_empty() {
         return Err(Error::Invalid(
             "at least one rustdoc JSON file is required".into(),
@@ -58,28 +50,6 @@ pub(super) fn build_data_inner(
     }
     if input.mark_latest && input.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
-    }
-    if !matches!(
-        input.source_state.as_str(),
-        "captured-snapshot" | "working-tree" | "release-tag"
-    ) && !(input.source_state == "registry-archives"
-        && historical.is_some_and(|scope| {
-            matches!(
-                &scope.captured_source,
-                Some(historical::CapturedSource::RegistryArchives { .. })
-            )
-        }))
-    {
-        return Err(Error::Invalid(
-            "source state must be captured-snapshot, working-tree, or release-tag".into(),
-        ));
-    }
-    if let Some(source_sha256) = &input.source_sha256 {
-        validate_source_digest(source_sha256)?;
-    } else if input.source_state != "working-tree" {
-        return Err(Error::Invalid(
-            "captured snapshots and release tags require a trusted source manifest digest".into(),
-        ));
     }
     let repository_root = canonical_repository_root(&input.repository_root)?;
     let generated_sources = attest_generated_sources(&repository_root, &input.generated_sources)?;

@@ -142,15 +142,13 @@ impl Api {
             ..WorkCounters::default()
         })?;
         work.with_original_leaf(|work| {
-            work.reserve(crate::materializer::NativeResourceCredit::Items.delta(cleanup_records))
+            work.reserve(crate::ledger::NativeResourceCredit::Items.delta(cleanup_records))
         })?;
         let mut slot_allocation = match work.claim(slots) {
             Ok(allocation) => allocation,
             Err(error) => {
                 work.with_original_leaf(|work| {
-                    work.refund(
-                        crate::materializer::NativeResourceCredit::Items.delta(cleanup_records),
-                    )
+                    work.refund(crate::ledger::NativeResourceCredit::Items.delta(cleanup_records))
                 })?;
                 return Err(error);
             }
@@ -165,7 +163,7 @@ impl Api {
             drop(strings);
             work.release(slot_allocation)?;
             work.with_original_leaf(|work| {
-                work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_records))
+                work.refund(crate::ledger::NativeResourceCredit::Items.delta(cleanup_records))
             })?;
             return Err(error);
         }
@@ -354,8 +352,8 @@ impl Api {
             });
             let visited = work.with_original_leaf(|work| {
                 work.complete(
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
+                    crate::ledger::NativeResourceCredit::Items.delta(1),
+                    crate::ledger::NativeResourceCredit::Items.delta(1),
                 )
             });
             if let Err(error) = retired.and(visited) {
@@ -363,7 +361,7 @@ impl Api {
             }
         }
         let refunded = work.with_original_leaf(|work| {
-            work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_remaining))
+            work.refund(crate::ledger::NativeResourceCredit::Items.delta(cleanup_remaining))
         });
         if let Err(error) = refunded {
             result = Err(error);

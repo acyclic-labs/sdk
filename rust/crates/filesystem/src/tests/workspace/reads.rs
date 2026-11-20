@@ -142,7 +142,10 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
     use crate::kernel::allocation::retained::RetainedAllocation;
     let cancel = CancellationToken::new();
     let mut counts = Vec::new();
-    for population in [1_u64, 100_000] {
+    // The budget is linear (860 examinations per insertion), so a population this
+    // size already fails on any superlinear cost; a larger one only pays millions
+    // of accounted examinations to restate the same bound.
+    for population in [1_u64, 10_000] {
         let bound = acyclic_collections::FixedIndex::<(), RetainedAllocation, 16>::insertion_bound(
             population,
         )
@@ -183,7 +186,7 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
         assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(prior);
     }
-    eprintln!("reverse identity input=[1,100000] examinations/copy-bytes={counts:?}");
+    eprintln!("reverse identity input=[1,10000] examinations/copy-bytes={counts:?}");
 
     // Every bit participates in the original full-key order, including zero.
     let mut input: Vec<_> = (0..128)
@@ -257,7 +260,8 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
 async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
 -> Result<(), Box<dyn Error>> {
     use crate::access::{Action, INITIAL_POLICY, fixtures};
-    use crate::workspace::accounting_tests::{Observation, ObservedAuthority, Prefunded};
+    use crate::workspace::Prefunded;
+    use crate::workspace::accounting_tests::{Observation, ObservedAuthority};
     use std::sync::{Arc, Mutex};
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -410,7 +414,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
     }
 
     // An old generation cannot bypass a later policy revocation.
-    fixtures::publish_policy(&workspace, &fixtures::denied(Action::Read, "present")).await?;
+    fixtures::publish_policy(&workspace, &fixtures::denied(Action::Read, "present")?).await?;
     let source = Prefunded {
         budget,
         held: Mutex::new(None),

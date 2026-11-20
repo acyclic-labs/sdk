@@ -25,8 +25,11 @@ use std::{
 pub mod agent_conversation;
 mod agent_settings;
 mod agents;
-#[cfg(any(test, not(target_arch = "wasm32")))]
-mod checkout_tools;
+#[cfg(not(target_arch = "wasm32"))]
+pub use acyclic_harness_workspace::host_workspace;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_harness_workspace::{checkout_tools, workspace};
+pub use agents::home;
 mod config;
 pub(crate) mod context;
 pub mod continuation;
@@ -38,8 +41,6 @@ pub mod host_files;
 pub mod host_owner;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_process;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod host_workspace;
 #[cfg(not(target_arch = "wasm32"))]
 mod programs;
 pub use endpoint::Connection;
@@ -56,18 +57,19 @@ pub mod sessions;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod settings;
 pub mod study;
-#[cfg(test)]
-mod tests;
-#[cfg(any(test, not(target_arch = "wasm32")))]
-mod tool_metadata;
 mod tool_output;
 mod verifier;
 pub use verifier::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(test)]
-mod web;
-#[cfg(any(test, not(target_arch = "wasm32")))]
-mod workspace;
+#[cfg(any(test, feature = "test-support"))]
+pub use agent_settings::{Tree, Volumes, admit, plugins};
+#[cfg(any(test, feature = "test-support"))]
+pub use config::TEMPORARY_STATES;
+#[cfg(any(test, feature = "test-support"))]
+pub use context::{copy_name, host_hooks_publication, publication_operation};
+#[cfg(any(test, feature = "test-support"))]
+pub use open::open as open_harness;
+#[cfg(any(test, feature = "test-support"))]
+pub use owner::RECORD;
 pub use agents::{LocalAgents, LocalTurns};
 use config::LocalProject;
 
@@ -80,7 +82,7 @@ pub use open::{PreparedLocalHarness, Readiness};
 
 pub use observer::{Event, Observer};
 pub use tool_output::LiveKind;
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use workspace::LocalWorkspace;
 
 /// Local durable filesystem host.
@@ -161,8 +163,8 @@ impl LocalHarness {
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<PreparedLocalHarness>> {
         Box::pin(open::prepare(config))
     }
-    #[cfg(test)]
-    fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {
             Error::Unsupported("native hosts own their agent loop and tool execution".into())
         })
@@ -185,8 +187,33 @@ impl LocalHarness {
 
     /// Durable content and project host.
     #[must_use]
-    pub const fn filesystem(&self) -> &Arc<LocalFilesystem> {
+    pub const fn files(&self) -> &Arc<LocalFilesystem> {
         &self.files
+    }
+    /// The session volume shared by the root and its descendants.
+    #[must_use]
+    pub const fn shared(&self) -> &VolumeRef {
+        &self.shared
+    }
+    /// The root's signed authority scope.
+    #[must_use]
+    pub const fn signed(&self) -> &Scope {
+        &self.signed
+    }
+    /// The root's authority verifier.
+    #[must_use]
+    pub const fn verifier(&self) -> &AuthorityVerifier {
+        &self.verifier
+    }
+    /// The host clock every agent turn observes.
+    #[must_use]
+    pub const fn clock(&self) -> &Arc<dyn acyclic_actors::local::Clock> {
+        &self.clock
+    }
+    /// The content limits every agent turn observes.
+    #[must_use]
+    pub const fn limits(&self) -> &Limits {
+        &self.limits
     }
     /// Selected project view.
     #[must_use]
@@ -236,15 +263,12 @@ impl LocalHarness {
     /// Consuming the host excludes live borrows; callers must first join
     /// active agent turns and drop their observations.
     pub async fn disconnect(self) -> Result<()> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
         let retired = if let Some(workspace) = &self.workspace {
             workspace.shutdown.cancel();
             workspace::volumes::retire(&workspace.mounts).await
         } else {
             Ok(())
         };
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let retired = Ok(());
         // Native view destructors join callbacks. They must not occupy the
         // coordination thread that those callbacks may still need to finish.
         acyclic_native_runtime::spawn_blocking(move || drop(self))
@@ -254,6 +278,6 @@ impl LocalHarness {
     }
 }
 
-fn storage(error: impl std::fmt::Display) -> Error {
+pub fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }

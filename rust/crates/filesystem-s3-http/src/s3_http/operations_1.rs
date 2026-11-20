@@ -11,39 +11,8 @@ where
         let principal = self
             .scoped_principal(&request, &request.input.bucket, false)
             .await?;
-        if request
-            .input
-            .encoding_type
-            .as_ref()
-            .is_some_and(|value| value.as_str() != "url")
-            || request.input.fetch_owner == Some(true)
-        {
-            return Err(s3s::s3_error!(NotImplemented));
-        }
-        let encode = request.input.encoding_type.is_some();
-        let maximum_keys = request.input.max_keys.unwrap_or(1_000);
-        let maximum_keys = u32::try_from(maximum_keys)
-            .map_err(|_| s3s::s3_error!(InvalidArgument))?
-            .min(self.limits.maximum_list_keys);
-        let delimiter = match request.input.delimiter.as_deref() {
-            None | Some("") => None,
-            Some("/") => Some('/'),
-            Some(_) => return Err(s3s::s3_error!(NotImplemented)),
-        };
-        let continuation = request
-            .input
-            .continuation_token
-            .as_deref()
-            .map(S3ListCursor::decode)
-            .transpose()
-            .map_err(|error| s3_error(&error))?;
-        let options = S3ListOptions {
-            prefix: request.input.prefix.clone().unwrap_or_default(),
-            delimiter,
-            start_after: request.input.start_after.clone(),
-            continuation,
-            maximum_keys,
-        };
+        let (options, encode, maximum_keys) =
+            list_objects_v2_request(&request.input, &self.limits)?;
         let view = principal.workspace.s3();
         let page = match principal.generation {
             Some(id) => {
@@ -58,66 +27,12 @@ where
             None => view.list_objects(options).await,
         }
         .map_err(|error| s3_error(&error))?;
-        let key_count = page
-            .objects
-            .len()
-            .saturating_add(page.common_prefixes.len());
-        let contents = page
-            .objects
-            .into_iter()
-            .map(|value| {
-                Ok(Object {
-                    e_tag: Some(etag(&value.etag)?),
-                    key: Some(if encode {
-                        encode_s3_key(&value.key)
-                    } else {
-                        value.key
-                    }),
-                    size: Some(
-                        i64::try_from(value.content_length)
-                            .map_err(|_| s3s::s3_error!(InternalError))?,
-                    ),
-                    ..Object::default()
-                })
-            })
-            .collect::<S3Result<Vec<_>>>()?;
-        let common_prefixes = page
-            .common_prefixes
-            .into_iter()
-            .map(|prefix| CommonPrefix {
-                prefix: Some(if encode {
-                    encode_s3_key(&prefix)
-                } else {
-                    prefix
-                }),
-            })
-            .collect::<Vec<_>>();
-        let next = page.next_continuation.map(|cursor| cursor.encode());
-        Ok(S3Response::new(ListObjectsV2Output {
-            common_prefixes: (!common_prefixes.is_empty()).then_some(common_prefixes),
-            contents: (!contents.is_empty()).then_some(contents),
-            continuation_token: request.input.continuation_token,
-            delimiter: request
-                .input
-                .delimiter
-                .map(|value| if encode { encode_s3_key(&value) } else { value }),
-            encoding_type: request.input.encoding_type,
-            is_truncated: Some(next.is_some()),
-            key_count: Some(i32::try_from(key_count).map_err(|_| s3s::s3_error!(InternalError))?),
-            max_keys: Some(i32::try_from(maximum_keys).map_err(|_| s3s::s3_error!(InternalError))?),
-            name: Some(request.input.bucket),
-            next_continuation_token: next,
-            prefix: request.input.prefix.map(
-                |value| {
-                    if encode { encode_s3_key(&value) } else { value }
-                },
-            ),
-            start_after: request
-                .input
-                .start_after
-                .map(|value| if encode { encode_s3_key(&value) } else { value }),
-            ..ListObjectsV2Output::default()
-        }))
+        Ok(S3Response::new(list_objects_v2_response(
+            request.input,
+            page,
+            encode,
+            maximum_keys,
+        )?))
     }
 
     async fn s3_list_object_versions(
@@ -127,34 +42,8 @@ where
         let principal = self
             .scoped_principal(&request, &request.input.bucket, false)
             .await?;
-        if request.input.delimiter.is_some()
-            || request
-                .input
-                .encoding_type
-                .as_ref()
-                .is_some_and(|value| value.as_str() != "url")
-            || request.input.expected_bucket_owner.is_some()
-            || request.input.optional_object_attributes.is_some()
-            || request.input.request_payer.is_some()
-            || request
-                .input
-                .version_id_marker
-                .as_deref()
-                .is_some_and(|id| id != "null")
-        {
-            return Err(s3s::s3_error!(NotImplemented));
-        }
-        let encode = request.input.encoding_type.is_some();
-        let maximum_keys = u32::try_from(request.input.max_keys.unwrap_or(1_000))
-            .map_err(|_| s3s::s3_error!(InvalidArgument))?
-            .min(self.limits.maximum_list_keys);
-        let options = S3ListOptions {
-            prefix: request.input.prefix.clone().unwrap_or_default(),
-            delimiter: None,
-            start_after: request.input.key_marker.clone(),
-            maximum_keys,
-            ..S3ListOptions::default()
-        };
+        let (options, encode, maximum_keys) =
+            list_object_versions_request(&request.input, &self.limits)?;
         let view = principal.workspace.s3();
         let page = match principal.generation {
             Some(id) => {
@@ -169,50 +58,12 @@ where
             None => view.list_objects(options).await,
         }
         .map_err(|error| s3_error(&error))?;
-        let truncated = page.next_continuation.is_some();
-        let next_key_marker = truncated
-            .then(|| page.objects.last().map(|item| item.key.clone()))
-            .flatten()
-            .map(|key| if encode { encode_s3_key(&key) } else { key });
-        let versions = page
-            .objects
-            .into_iter()
-            .map(|item| {
-                Ok(ObjectVersion {
-                    e_tag: Some(etag(&item.etag)?),
-                    is_latest: Some(true),
-                    key: Some(if encode {
-                        encode_s3_key(&item.key)
-                    } else {
-                        item.key
-                    }),
-                    size: Some(
-                        i64::try_from(item.content_length)
-                            .map_err(|_| s3s::s3_error!(InternalError))?,
-                    ),
-                    version_id: Some("null".to_owned()),
-                    ..ObjectVersion::default()
-                })
-            })
-            .collect::<S3Result<Vec<_>>>()?;
-        Ok(S3Response::new(ListObjectVersionsOutput {
-            is_truncated: Some(truncated),
-            encoding_type: request.input.encoding_type,
-            key_marker: request
-                .input
-                .key_marker
-                .map(|value| if encode { encode_s3_key(&value) } else { value }),
-            max_keys: Some(i32::try_from(maximum_keys).map_err(|_| s3s::s3_error!(InternalError))?),
-            name: Some(request.input.bucket),
-            next_key_marker,
-            next_version_id_marker: truncated.then(|| "null".to_owned()),
-            prefix: request
-                .input
-                .prefix
-                .map(|value| if encode { encode_s3_key(&value) } else { value }),
-            versions: Some(versions),
-            ..ListObjectVersionsOutput::default()
-        }))
+        Ok(S3Response::new(list_object_versions_response(
+            request.input,
+            page,
+            encode,
+            maximum_keys,
+        )?))
     }
 
     async fn s3_head_object(
@@ -244,21 +95,11 @@ where
             None => view.head_object(&request.input.key).await,
         }
         .map_err(|error| s3_error(&error))?;
-        check_conditions(
+        Ok(S3Response::new(head_object_response(
+            &request.input,
             &head.etag,
-            request.input.if_match.as_ref(),
-            request.input.if_none_match.as_ref(),
-        )?;
-        let selected = select_range(head.content_length, request.input.range.as_ref())?;
-        Ok(S3Response::new(HeadObjectOutput {
-            accept_ranges: Some("bytes".to_owned()),
-            content_length: Some(
-                i64::try_from(selected.length).map_err(|_| s3s::s3_error!(InternalError))?,
-            ),
-            content_range: selected.content_range,
-            e_tag: Some(etag(&head.etag)?),
-            ..HeadObjectOutput::default()
-        }))
+            head.content_length,
+        )?))
     }
 
     async fn s3_get_object(
@@ -402,12 +243,10 @@ where
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        },
-                    )
+                    Ok::<_, OperationFailure<acyclic_fs::WorkspaceError>>(OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    })
                 },
             )
             .await
@@ -471,40 +310,13 @@ where
             .scoped_principal(&request, &request.input.bucket, true)
             .await?
             .workspace;
-        let keys = request
-            .input
-            .delete
-            .objects
-            .iter()
-            .map(|object| {
-                if object.version_id.as_deref().is_some_and(|id| id != "null") {
-                    return Err(s3s::s3_error!(NoSuchVersion));
-                }
-                Ok(object.key.clone())
-            })
-            .collect::<S3Result<Vec<_>>>()?;
+        let keys = delete_objects_keys(&request.input)?;
         workspace
             .s3()
             .delete_objects(&keys, request_operation(&request)?)
             .await
             .map_err(|error| s3_error(&error))?;
-        let deleted = (!request.input.delete.quiet.unwrap_or(false)).then(|| {
-            request
-                .input
-                .delete
-                .objects
-                .iter()
-                .map(|object| DeletedObject {
-                    key: Some(object.key.clone()),
-                    version_id: object.version_id.clone(),
-                    ..DeletedObject::default()
-                })
-                .collect()
-        });
-        Ok(S3Response::new(DeleteObjectsOutput {
-            deleted,
-            ..DeleteObjectsOutput::default()
-        }))
+        Ok(S3Response::new(delete_objects_response(&request.input)))
     }
 
     async fn s3_copy_object(
@@ -515,21 +327,7 @@ where
             .scoped_principal(&request, &request.input.bucket, true)
             .await?
             .workspace;
-        let (source_bucket, source_key) = match &request.input.copy_source {
-            s3s::dto::CopySource::Bucket {
-                bucket,
-                key,
-                version_id: None,
-            } => (bucket.as_ref(), key.as_ref()),
-            s3s::dto::CopySource::Bucket {
-                version_id: Some(_),
-                ..
-            }
-            | s3s::dto::CopySource::AccessPoint { .. }
-            | s3s::dto::CopySource::Outpost { .. } => {
-                return Err(s3s::s3_error!(NotImplemented));
-            }
-        };
+        let (source_bucket, source_key) = copy_object_source(&request.input)?;
         if source_bucket != request.input.bucket {
             return Err(s3s::s3_error!(NotImplemented));
         }
@@ -539,12 +337,9 @@ where
             .await
             .map_err(|error| s3_error(&error))?;
         let generation = committed_generation(commit)?;
-        Ok(S3Response::new(CopyObjectOutput {
-            copy_object_result: Some(CopyObjectResult {
-                e_tag: Some(etag_for_generation(generation.id(), &request.input.key)?),
-                ..CopyObjectResult::default()
-            }),
-            ..CopyObjectOutput::default()
-        }))
+        Ok(S3Response::new(copy_object_response(
+            &request.input,
+            generation.id(),
+        )?))
     }
 }

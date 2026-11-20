@@ -57,13 +57,12 @@
 //! let oracle: Oracle<u8, (), u8> = Oracle { invariants: Vec::new() };
 //! ```
 use std::{
-    cell::Cell,
     collections::BTreeSet,
     fmt::Debug,
     marker::PhantomData,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, OnceLock,
+        OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -166,41 +165,7 @@ pub struct Oracle<I, F, E> {
     healthy: AtomicUsize,
 }
 
-/// One caller's healthy-case ownership when an immutable oracle is shared.
-/// Dropping a group with no successful checks fails even if another group ran.
-pub struct OracleGroup<I, F, E> {
-    oracle: Arc<Oracle<I, F, E>>,
-    healthy: Cell<usize>,
-}
-
-impl<I: Debug, F: Debug, E: Debug> OracleGroup<I, F, E> {
-    /// Checks a case against the shared controls and records this caller's work.
-    pub fn check(&self, input: &I) {
-        self.oracle.check(input);
-        self.healthy.set(self.healthy.get() + 1);
-    }
-}
-
-impl<I, F, E> Drop for OracleGroup<I, F, E> {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            assert!(
-                self.healthy.get() > 0,
-                "oracle group selected zero healthy cases"
-            );
-        }
-    }
-}
-
 impl<I: Debug, F: Debug, E: Debug> Oracle<I, F, E> {
-    /// Gives a caller its own nonempty-case guard while sharing qualification.
-    pub fn group(self: &Arc<Self>) -> OracleGroup<I, F, E> {
-        OracleGroup {
-            oracle: self.clone(),
-            healthy: Cell::new(0),
-        }
-    }
-
     /// `run` builds its own fixture from the input, applies the fault (if any)
     /// and records every observation in order.
     pub fn declare(

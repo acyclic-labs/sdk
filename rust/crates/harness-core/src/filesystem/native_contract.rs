@@ -58,66 +58,7 @@ pub enum NativeVolumeNamespace {
     },
 }
 
-impl NativeViewOptions {
-    pub(crate) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
-        use crate::Error;
-        let budget = self.work_per_volume;
-        if !budget.has_finite_allowances() || count == 0 {
-            return Err(Error::Invalid(
-                "native work requires finite nonempty allowances".into(),
-            ));
-        }
-        let count = u64::try_from(count).map_err(|error| Error::Storage(error.to_string()))?;
-        macro_rules! scale {
-            ($($field:ident),* $(,)?) => {
-                WorkBudget {
-                    $($field: budget.$field.checked_mul(count)
-                        .ok_or_else(|| Error::Storage("native total allowance overflow".into()))?,)*
-                    peak_allocation_bytes: budget.peak_allocation_bytes,
-                }
-            };
-        }
-        let scaled = scale!(
-            authority_records_read,
-            authority_records_appended,
-            authority_bytes_read,
-            authority_bytes_written,
-            object_probes,
-            backend_read_operations,
-            backend_write_operations,
-            durability_operations,
-            page_reads,
-            page_writes,
-            object_bytes_read,
-            object_bytes_written,
-            bytes_hashed,
-            bytes_copied,
-            bytes_encoded,
-            source_bytes_read,
-            source_path_components,
-            source_entries_visited,
-            output_bytes,
-            items_examined,
-            items_returned,
-            allocation_operations,
-            materializations,
-        );
-        if !scaled.has_finite_allowances() {
-            return Err(Error::Invalid(
-                "native total allowances must remain finite".into(),
-            ));
-        }
-        Ok(scaled)
-    }
-}
-
 impl NativeViewManifest {
-    /// One finite validation span for the actual original selection.
-    pub fn validation_budget(&self) -> Result<WorkBudget> {
-        self.validate(None)?;
-        self.options.budget_for_volume_count(self.volumes.len())
-    }
-
     /// Validates selection shape and finite bounds on the optional ledger.
     pub fn validate(&self, io: Option<&super::PreparationIo>) -> Result<()> {
         use std::path::Component;
@@ -274,16 +215,6 @@ impl NativeProcessRequest {
         )?)
     }
 
-    /// Checks only capture/control/result arithmetic, without consulting the OS.
-    pub const fn has_valid_capture_allowances(&self) -> bool {
-        super::native_capture_bounds::capture_allowances_valid(
-            self.timeout_ms,
-            self.control_timeout_ms,
-            self.maximum_output_bytes,
-            self.maximum_result_bytes,
-        )
-    }
-
     /// Binds approval to the task, command and exact request.
     pub fn approval_digest(
         &self,
@@ -316,17 +247,6 @@ impl NativeProcessRequest {
         drop(encoded);
         drop(guard);
         Ok(digest)
-    }
-
-    /// Decodes a pinned complete MCP process receipt, with no process or network I/O.
-    pub fn mcp_response(&self, result: &NativeProcessResult) -> Result<serde_json::Value> {
-        let exchange = self.mcp_stdio.as_ref().ok_or_else(|| {
-            crate::Error::Unsupported("native request has no MCP exchange".into())
-        })?;
-        if result.stop.is_some() {
-            return Err(crate::Error::Indeterminate(exchange.operation));
-        }
-        exchange.decode_response(&result.stdout)
     }
 }
 

@@ -1,5 +1,12 @@
+mod archive_codec;
+mod archives;
 #[path = "../../tests/support/compiler.rs"]
 mod compiler;
+mod dependency;
+#[path = "../../tests/support/archive.rs"]
+mod fixture_archive;
+
+use super::*;
 
 // Controlled protocol bytes exercise the production reader; this is not a parser model.
 fn registry_owner_source_inner(
@@ -544,53 +551,42 @@ fn registry_frontier_rejects_missing_or_nonimmutable_history_before_git() {
     .unwrap_err()
     .contains("declared original history"));
 }
-use super::*;
 
-#[test]
-fn windows_discovery_environment_rejects_conflicting_case_aliases() {
-    let values = [
-        ("PATH".into(), "first-toolchain".into()),
-        ("Path".into(), "second-toolchain".into()),
-    ];
-    for inputs in [values.clone(), [values[1].clone(), values[0].clone()]] {
-        let error = discovery_environment_inputs(inputs, true).unwrap_err();
-        assert!(error.contains("conflicting case aliases"));
+proptest::proptest! {
+    // The host decides whether two spellings name one discovery input. The
+    // model groups by the host-normalized name and requires one digest per
+    // group, so a conflict is any group with two distinct values.
+    #[test]
+    fn discovery_environment_digests_only_discovery_inputs_and_rejects_case_conflicts(
+        entries in proptest::collection::vec(
+            (proptest::sample::select(vec![
+                "PATH", "Path", "path", "CARGO_HOME", "cargo_home",
+                "GIT_DIR", "RUSTUP_HOME", "HOME", "USERPROFILE", "OTHER",
+            ]), "[a-z]{0,8}"),
+            0..12,
+        ),
+        windows in proptest::prelude::any::<bool>(),
+    ) {
+        let inputs = entries.iter().map(|(key, value)| ((*key).into(), value.as_str().into()));
+        let result = discovery_environment_inputs(inputs, windows);
+        let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (key, value) in &entries {
+            let mut key = (*key).to_owned();
+            if windows { key.make_ascii_uppercase(); }
+            if key == "PATH" || key.starts_with("GIT_") || key.starts_with("CARGO_")
+                || key.starts_with("RUSTUP_") || key == "HOME" || key == "USERPROFILE" {
+                groups.entry(key).or_default().insert((*value).to_owned());
+            }
+        }
+        if groups.values().any(|values| values.len() > 1) {
+            proptest::prop_assert_eq!(result.unwrap_err(), "conflicting case aliases in Cargo discovery environment");
+        } else {
+            let expected = groups.into_iter().map(|(key, values)| {
+                (key, crate::sha256_bytes(values.into_iter().next().unwrap().as_bytes()))
+            }).collect::<BTreeMap<_, _>>();
+            proptest::prop_assert_eq!(result.unwrap(), expected);
+        }
     }
-}
-
-#[test]
-fn windows_discovery_environment_retains_equal_path_aliases() {
-    let inputs = [
-        ("Path".into(), "same-toolchain".into()),
-        ("PATH".into(), "same-toolchain".into()),
-    ];
-    let retained = discovery_environment_inputs(inputs, true).unwrap();
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained["PATH"], crate::sha256_bytes(b"same-toolchain"));
-}
-
-#[test]
-fn posix_discovery_environment_keeps_distinct_case_sensitive_names() {
-    let inputs = [
-        ("CARGO_TEST_VALUE".into(), "upper".into()),
-        ("CARGO_test_value".into(), "lower".into()),
-    ];
-    let retained = discovery_environment_inputs(inputs, false).unwrap();
-    assert_eq!(retained.len(), 2);
-    assert_ne!(retained["CARGO_TEST_VALUE"], retained["CARGO_test_value"]);
-}
-
-#[test]
-fn crates_io_publish_eligibility_respects_the_registry_allowlist() {
-    assert!(crates_io_eligible(None));
-    assert!(!crates_io_eligible(Some(&[])));
-    assert!(crates_io_eligible(Some(&["crates-io".into()])));
-    assert!(!crates_io_eligible(Some(&["private".into()])));
-    assert!(crates_io_eligible(Some(&[
-        "private".into(),
-        "crates-io".into()
-    ])));
-    assert!(!crates_io_eligible(Some(&["crates-io-mirror".into()])));
 }
 
 #[test]
@@ -773,11 +769,3 @@ fn dependency_archive_initial_import_uses_verified_registry_facts() {
         .unwrap();
     }
 }
-
-mod archives;
-mod dependency;
-
-mod archive_codec;
-
-#[path = "../../tests/support/archive.rs"]
-mod fixture_archive;

@@ -43,8 +43,9 @@ pub use records::UploadRecord;
 use records::decode_allowance_error;
 pub(crate) use sdk::generation_ref;
 pub(in crate::filesystem) use sdk::{
-    PRIVATE_CUT_FORMAT, content_workspace, file_version, operation_key, retain, version_generation,
+    FileVersion, PRIVATE_CUT_FORMAT, operation_key, parse_file_version, retain, version_generation,
 };
+pub use sdk::{content_workspace, file_version};
 use standalone_custody::{StandaloneCustody, StandaloneLedger};
 
 /// Retained storage transferred from the original preparation ledger.
@@ -277,7 +278,7 @@ impl PreparationIo {
     }
 
     /// Updates invocation work without moving retained allocation ownership.
-    pub(in crate::filesystem) fn use_current_context(&mut self, current: &Self) {
+    pub(in crate::filesystem) fn use_current_context(&mut self, current: &Self) -> Result<()> {
         match (self, current) {
             (
                 Self::Owned {
@@ -299,8 +300,9 @@ impl PreparationIo {
                 *work = current.clone();
             }
             #[cfg(not(target_arch = "wasm32"))]
-            _ => unreachable!("retained pool was checked against the current ledger"),
+            _ => return Err(current.invalid("retained pool uses another ledger")),
         }
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -510,21 +512,20 @@ impl PreparationIo {
         &self,
         mut next: WorkCounters,
     ) -> std::result::Result<(), acyclic_fs::FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::Native { work, .. } = self {
+            return work.spent(next).map_err(Into::into);
+        }
         self.account(|accounting| {
-            if let Some((allocations, work, _, _)) = accounting.standalone_parts() {
-                next.peak_allocation_bytes = next
-                    .peak_allocation_bytes
-                    .checked_add(allocations.live_bytes())
-                    .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
-                *work = work.checked_add(next)?;
-                Ok(())
-            } else {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Self::Native { work, .. } = self {
-                    return work.spent(next).map_err(Into::into);
-                }
-                unreachable!()
-            }
+            let (allocations, work, _, _) = accounting
+                .standalone_parts()
+                .ok_or(acyclic_fs::FsError::AccountingHandoffActive)?;
+            next.peak_allocation_bytes = next
+                .peak_allocation_bytes
+                .checked_add(allocations.live_bytes())
+                .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
+            *work = work.checked_add(next)?;
+            Ok(())
         })
     }
     pub(crate) fn charge(
@@ -570,7 +571,7 @@ impl PreparationIo {
         #[cfg(not(target_arch = "wasm32"))]
         if let KernelOwnedAllocation::NativeOriginal(mut claim) = claim {
             let Self::Native { custody, .. } = self else {
-                unreachable!()
+                return Err(acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into());
             };
             custody
                 .lock()

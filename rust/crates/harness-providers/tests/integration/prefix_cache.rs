@@ -299,7 +299,7 @@ fn executors(
         |_| false,
         extra
             .iter()
-            .map(|name| crate::integration_helpers::echo_tool(name))
+            .map(|name| crate::prefix_cache_cases::integration_helpers::echo_tool(name))
             .collect(),
     )?;
     let limits = Limits::default();
@@ -1056,8 +1056,6 @@ mod binding_facts;
 mod feature_guards;
 #[path = "prefix_cache/mixed_catalog.rs"]
 mod mixed_catalog;
-#[path = "prefix_cache/optional_sources.rs"]
-mod optional_sources;
 #[path = "prefix_cache/role_models.rs"]
 mod role_models;
 

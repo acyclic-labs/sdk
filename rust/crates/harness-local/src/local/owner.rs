@@ -33,19 +33,12 @@ thread_local! {
     /// exercise it without touching real per-user state.
     pub(super) static STATE_ROOT: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
-    /// Restores the duplicate-capture defect: owner validation captures the
-    /// root again instead of sharing state selection's capture.
-    pub(super) static RECAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // Negative control for accidentally rekeying configured volumes.
     static REKEY_VOLUMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Replaces a capture's object id and generation, as a filesystem that
     /// reissues ids or renumbers them across remounts.
     pub(crate) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs_native_contract::NativeRootGeneration)>> =
         const { std::cell::Cell::new(None) };
-    /// Negative control: a root without stable ids is keyed on its id.
-    pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Negative control: discard the volume component of a strong witness.
-    pub(super) static DISCARD_VOLUME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -135,16 +128,8 @@ pub(super) struct Checkout {
     pub(super) root: acyclic_fs::HeldRoot,
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Root captures on this thread, for exact-count guards.
-    pub(super) static CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 impl Checkout {
     pub(super) fn capture(path: &Path) -> Result<Self> {
-        #[cfg(test)]
-        CAPTURES.with(|captures| captures.set(captures.get() + 1));
         #[cfg(any(test, not(target_arch = "wasm32")))]
         {
             let path = fs::canonicalize(path).map_err(storage)?;
@@ -185,22 +170,19 @@ fn incarnation_of(
 ) -> Result<[u8; 16]> {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.workspace-incarnation/v6");
     hash.update(&object);
-    match generation {
-        acyclic_fs_native_contract::NativeRootGeneration::FileHandle(handle) => {
-            hash.update(&handle);
-        }
-        _ => {
-            let created = root.creation_time().map_err(storage)?.ok_or_else(|| {
-                Error::Unsupported(
-                    "workspace state requires a native root generation or creation time".into(),
-                )
-            })?;
-            let created = created
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(storage)?;
-            hash.update(&created.as_secs().to_le_bytes());
-            hash.update(&created.subsec_nanos().to_le_bytes());
-        }
+    if let acyclic_fs_native_contract::NativeRootGeneration::FileHandle(handle) = generation {
+        hash.update(&handle);
+    } else {
+        let created = root.creation_time().map_err(storage)?.ok_or_else(|| {
+            Error::Unsupported(
+                "workspace state requires a native root generation or creation time".into(),
+            )
+        })?;
+        let created = created
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(storage)?;
+        hash.update(&created.as_secs().to_le_bytes());
+        hash.update(&created.subsec_nanos().to_le_bytes());
     }
 
     let mut identity = [0; 16];
@@ -215,24 +197,10 @@ impl RootWitness {
         generation: acyclic_fs_native_contract::NativeRootGeneration,
     ) -> Self {
         use acyclic_fs_native_contract::NativeRootGeneration;
-        #[cfg(test)]
-        let object = if DISCARD_VOLUME.get() {
-            let mut object = object;
-            object[..8].fill(0);
-            object
-        } else {
-            object
-        };
         match generation {
             NativeRootGeneration::FileHandle(handle) => Self::FileHandle { object, handle },
             NativeRootGeneration::StableObjectId => Self::StableObjectId(object),
-            NativeRootGeneration::Unstable => {
-                #[cfg(test)]
-                if UNSTABLE_KEYED.get() {
-                    return Self::StableObjectId(object);
-                }
-                Self::Unstable
-            }
+            NativeRootGeneration::Unstable => Self::Unstable,
         }
     }
 
@@ -269,7 +237,7 @@ impl RootWitness {
 /// or physical views aliasing the checkout's own entries; refuse them before
 /// record decoding, credential access or filesystem attachment, without
 /// importing their state.
-pub(super) const RECORD: &str = "owner.v15";
+pub const RECORD: &str = "owner.v15";
 const OLDER_RECORDS: [&str; 14] = [
     "owner.json",
     "owner.v2",

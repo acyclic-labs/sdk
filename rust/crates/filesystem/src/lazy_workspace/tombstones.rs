@@ -81,18 +81,6 @@ impl<
         }
         Ok(output)
     }
-    /// Reads the current source version without consulting authored state.
-    pub async fn current_source_version(
-        &self,
-        path: &str,
-        ctx: &mut KernelAccounting<'_>,
-    ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
-        Ok(self
-            .current_source_node(path, ctx)
-            .await?
-            .map(|node| node.version))
-    }
-
     /// Observes the current source node without consulting authored state or
     /// retaining a new observation. Uncaptured host edits remain visible here.
     pub async fn current_source_node(

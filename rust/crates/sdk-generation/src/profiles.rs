@@ -627,7 +627,7 @@ fn local_feature_configuration(
 
 // Feature identities stay complete in receipt metadata, while physical path
 // components have a fixed size on every supported filesystem.
-pub(super) fn profile_receipt_filename(profile: &ProfileSpec, prefix: &str) -> String {
+fn profile_receipt_filename(profile: &ProfileSpec, prefix: &str) -> String {
     format_digest(
         &[prefix, "profile-"],
         ring::digest::digest(&ring::digest::SHA256, profile.id().0.as_bytes()).as_ref(),
@@ -635,10 +635,7 @@ pub(super) fn profile_receipt_filename(profile: &ProfileSpec, prefix: &str) -> S
     )
 }
 
-pub(super) fn retain_profile_generated_sources(
-    root: &Path,
-    receipt: &Path,
-) -> Result<(), CliError> {
+fn retain_profile_generated_sources(root: &Path, receipt: &Path) -> Result<(), CliError> {
     let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
     let mut filenames = BTreeSet::new();
     collect_span_filenames(&value, &mut filenames);

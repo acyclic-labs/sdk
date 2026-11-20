@@ -148,10 +148,6 @@ fn generation_bytes(
     value.to_bytes().to_vec().into()
 }
 
-fn generation(value: &[u8]) -> Result<acyclic_fs_format::object_reference::GenerationId, JsValue> {
-    decode_generation_id(value)
-}
-
 #[wasm_bindgen]
 impl BrowserFs {
     #[wasm_bindgen(js_name = operationWindows)]
@@ -184,7 +180,7 @@ impl BrowserOperationWindowCoordinator {
         self.inner
             .begin_with_lease_id(
                 WorkspaceId::from_bytes(fixed_16(workspace_id)?),
-                generation(parent)?,
+                decode_generation_id(parent)?,
                 owner,
                 now_millis,
                 expires_at_millis,
@@ -226,7 +222,7 @@ impl BrowserOperationWindowCoordinator {
         self.inner
             .observe_parent(
                 WorkspaceId::from_bytes(fixed_16(workspace_id)?),
-                generation(parent)?,
+                decode_generation_id(parent)?,
             )
             .await
             .map_err(js_error)

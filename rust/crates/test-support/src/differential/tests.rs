@@ -1,4 +1,4 @@
-use super::{Operation, observe, pair, pair_of, record};
+use super::{observe, pair, record};
 use proptest::prelude::*;
 use std::{
     cell::Cell,
@@ -6,30 +6,6 @@ use std::{
 };
 
 proptest! {
-    // Any subscription retains exactly its events, including repeated names
-    // and arbitrary payloads, in recorded order on both independent runs.
-    #[test]
-    fn named_subscriptions_preserve_exact_order_and_payloads(
-        events in prop::collection::vec((0usize..4, any::<u64>()), 0..64),
-        selection in 0u8..16,
-    ) {
-        let names = ["read", "verify", "retain", "foreign"];
-        let kinds: Vec<_> = names.iter().enumerate()
-            .filter(|(index, _)| selection & (1 << index) != 0)
-            .map(|(_, name)| *name).collect();
-        let expected: Vec<_> = events.iter()
-            .filter(|(index, _)| selection & (1 << index) != 0)
-            .map(|(index, amount)| (names[*index], *amount)).collect();
-        let captures = pair_of(&kinds, || record(("read", u64::MAX)), |(), old| {
-            for (index, amount) in &events {
-                record((names[*index], *amount));
-                record(1u8); // A foreign type cannot enter a named capture.
-            }
-            old
-        });
-        assert_named_captures(captures, &expected);
-    }
-
     #[test]
     fn independent_states_and_ordered_generic_events(events in prop::collection::vec(any::<u16>(), 0..64)) {
         let initializations = Cell::new(0);
@@ -58,32 +34,6 @@ proptest! {
         prop_assert_eq!(&before.0, &broken.0);
         prop_assert_ne!(before, broken); // Missing preflight violates the same equality.
     }
-}
-
-fn assert_named_captures(captures: [(bool, Vec<Operation>); 2], expected: &[Operation]) {
-    for ((result, trace), old) in captures.into_iter().zip([true, false]) {
-        assert_eq!(result, old);
-        assert_eq!(trace, expected, "named subscription leaked or lost events");
-    }
-}
-
-#[test]
-fn negative_control_detects_missing_kind_subscription() {
-    // The former type-only capture goes through the property's same oracle.
-    let captures = pair::<_, _, Operation>(
-        || (),
-        |(), old| {
-            record(("read", 1u64));
-            record(("foreign", 2u64));
-            old
-        },
-    );
-    // The control must capture the foreign kind, or its rejection is vacuous.
-    for (_, trace) in &captures {
-        assert_eq!(trace, &[("read", 1), ("foreign", 2)]);
-    }
-    catch_unwind(|| assert_named_captures(captures, &[("read", 1)]))
-        .expect_err("the oracle accepted an unfiltered capture");
 }
 
 #[test]
@@ -125,29 +75,6 @@ fn capture_resets_after_panic_and_rejects_nesting() {
         .is_err()
     );
     record(1u32); // Capture is inactive again.
-}
-
-// Observation points of one event type are kept apart by name.
-#[test]
-fn named_captures_keep_only_their_kinds() {
-    let run = |(), _: bool| {
-        record(("read", 1u64));
-        record(("decode", 2u64));
-        record(1u8);
-        record(("verify", 3u64));
-        record(("read", 4u64));
-    };
-    assert_eq!(
-        pair_of(&["read", "verify"], || (), run),
-        [
-            ((), vec![("read", 1), ("verify", 3), ("read", 4)]),
-            ((), vec![("read", 1), ("verify", 3), ("read", 4)]),
-        ]
-    );
-    assert_eq!(
-        pair_of(&["absent"], || (), run),
-        [((), vec![]), ((), vec![])]
-    );
 }
 
 #[test]

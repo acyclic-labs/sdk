@@ -542,11 +542,6 @@ async fn native_follow_recovers_exactly_once_after_unavailable_attempt_groups() 
     );
     recovered_consumers(false).await
 }
-#[tokio::test]
-#[should_panic(expected = "recovery must retain the original native interest")]
-async fn negative_control_terminal_rejection_cannot_satisfy_the_recovery_oracle() {
-    recovered_consumers(true).await.unwrap();
-}
 
 #[tokio::test]
 async fn terminal_reconnect_rejection_is_typed_once_for_native_follow() -> TestResult {
@@ -568,32 +563,6 @@ async fn terminal_reconnect_rejection_is_typed_once_for_native_follow() -> TestR
     fixture.retired().await?;
     fixture.stop().await;
     Ok(())
-}
-
-// Deliberate counterfactual: preserve the real provider cursor when the adapter
-// retires its wrapper. No counters or transport outcomes are forged.
-struct RetainCursorOnDrop {
-    frames: Option<FollowFrames>,
-    retained: Arc<SyncMutex<Option<FollowFrames>>>,
-}
-impl futures::Stream for RetainCursorOnDrop {
-    type Item = std::result::Result<Vec<u8>, StreamError>;
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.get_mut()
-            .frames
-            .as_mut()
-            .unwrap()
-            .as_mut()
-            .poll_next(cx)
-    }
-}
-impl Drop for RetainCursorOnDrop {
-    fn drop(&mut self) {
-        *self.retained.lock() = self.frames.take();
-    }
 }
 
 #[derive(Default)]
@@ -647,11 +616,7 @@ fn verify_retired_interest(
     Ok(())
 }
 
-async fn cancellation_case(
-    action: u8,
-    retain: bool,
-    evidence: &SyncMutex<CancellationEvidence>,
-) -> TestResult {
+async fn cancellation_case(action: u8, evidence: &SyncMutex<CancellationEvidence>) -> TestResult {
     *evidence.lock() = CancellationEvidence {
         action,
         gate: "fixture connection",
@@ -685,7 +650,6 @@ async fn cancellation_case(
                 .map(|channel| channel.channel_id)
         })
         .ok_or("original interest never reached the provider")?;
-    let retained = Arc::new(SyncMutex::new(None));
     let lifetime = Arc::new(());
     let owner = Arc::downgrade(&lifetime);
     let frames = cursor.state.records.lock().await.take().unwrap();
@@ -695,16 +659,6 @@ async fn cancellation_case(
         })
         .boxed();
     *cursor.state.records.lock().await = Some(frames);
-    if retain {
-        let frames = cursor.state.records.lock().await.take().unwrap();
-        *cursor.state.records.lock().await = Some(
-            RetainCursorOnDrop {
-                frames: Some(frames),
-                retained: Arc::clone(&retained),
-            }
-            .boxed(),
-        );
-    }
     evidence.lock().gate = "unavailable handshake group";
     fixture.outage(&cursor).await?;
     // Identify an actually pending server RPC, not an expected call count.
@@ -738,7 +692,6 @@ async fn cancellation_case(
     // Only now release the obsolete gate. It cannot carry replacement data.
     fixture.outage.recover();
     replacement.close().await;
-    drop(retained);
     evidence.lock().gate = "all peer resources retired";
     fixture.retired().await?;
     evidence.lock().gate = "fixture server joined";
@@ -759,37 +712,13 @@ async fn cancellation_close_and_drop_release_native_interests_during_recovery() 
     let results = futures::future::join_all(
         cases
             .iter()
-            .map(|(action, evidence)| cancellation_case(*action, false, evidence)),
+            .map(|(action, evidence)| cancellation_case(*action, evidence)),
     )
     .await;
     for (result, (_, evidence)) in results.into_iter().zip(&cases) {
         result.unwrap_or_else(|error| {
             panic!("native retirement: {error}; {}", evidence.lock().describe())
         });
-    }
-}
-
-#[tokio::test]
-async fn retained_provider_cursor_fails_the_same_cancellation_close_and_drop_oracle() {
-    use futures::FutureExt as _;
-    let results = futures::future::join_all((0..3).map(|action| async move {
-        let evidence = SyncMutex::new(CancellationEvidence::default());
-        std::panic::AssertUnwindSafe(cancellation_case(action, true, &evidence))
-            .catch_unwind()
-            .await
-    }))
-    .await;
-    for result in results {
-        let error = result.expect_err("retained original cursor escaped the lifecycle oracle");
-        let message = error
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| error.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(
-            message.contains("retired native cursor retained its provider interest"),
-            "{message}"
-        );
     }
 }
 

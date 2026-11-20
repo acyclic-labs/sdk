@@ -97,7 +97,7 @@ Area cleanup replaces overflow-prone bookkeeping in both original domains and
 extends their existing controls without adding a parallel state machine.
 
 
-The existing dedicated `device_flush_loom` target includes this same production
+The integration binary’s `device_flush_loom` module includes this same production
 coalescer with Loom locks. Its two existing properties now start two drain generations
 before exhaustion, so the same four concurrent
 requests reach both a representable covering ticket and exhaustion. This
@@ -110,7 +110,7 @@ joins. Exploration retains the existing bound of three preemptions; it does not
 prove arbitrary schedules, native Apple I/O or cross-process locking.
 
 Run the dedicated integration target from the repository root with
-`ACYCLIC_LOOM=1 cargo test --locked -p acyclic-native-runtime --test device_flush_loom --features model-checking`,
+`ACYCLIC_LOOM=1 cargo test --locked -p acyclic-native-runtime --test main --features model-checking device_flush_loom::`,
 which runs its two `device_flush::model` properties.
 With `exhausted-ticket.patch` applied alone, the successful-request property
 must fail at `acknowledged before a covering drain`, then both properties must

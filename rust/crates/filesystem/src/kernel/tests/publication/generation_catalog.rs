@@ -253,9 +253,12 @@ async fn fixture_with_fence(
     )
     .await?;
     if let Some(native) = fence {
-        let original =
-            crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let mut work = measured(native, &original, &cancel);
         let crate::FenceOutcome::Advanced(head) =
             store.fence(authority, expected, &mut work).await?
@@ -301,7 +304,7 @@ async fn fixture_with_fence(
             PublicationChanges::proposed(
                 objects,
                 (&base, creation.initial_generation_root),
-                &candidate,
+                (&candidate, &[]),
                 request,
                 config,
                 &mut accounting,
@@ -359,9 +362,10 @@ async fn generation_catalog_single_group_and_quote_use_receipts_without_prefligh
                 let provider = store.provider();
                 let (reads, appends) = provider.requests();
                 let cancel = CancellationToken::new();
-                let original = crate::NativeMaterializationWork::new(
+                let original = crate::NativeMaterializationWork::root(
                     crate::performance::BOUNDARY_BUDGET,
                     &cancel,
+                    &crate::services::ServicesInitialized::for_kernel_tests(),
                 )
                 .map_err(|(error, _)| error)?;
                 let mut quote = measured(native, &original, &cancel);
@@ -493,9 +497,12 @@ async fn epoch_fence_uses_one_provider_request_without_a_head_probe() -> TestRes
         let provider = store.provider();
         let (reads, appends) = provider.requests();
         let cancel = CancellationToken::new();
-        let original =
-            crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let mut work = measured(native, &original, &cancel);
         let crate::FenceOutcome::Advanced(head) = store
             .fence(first.authority_id, first.expected, &mut work)
@@ -534,9 +541,12 @@ async fn epoch_fence_recovers_only_the_actual_conflict_tail_across_writer_owners
         // Separate process-local claim registries share the actual durable
         // provider; the second actor cannot update the first actor's journal.
         let cancel = CancellationToken::new();
-        let original =
-            crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let mut setup = measured(native, &original, &cancel);
         let mut actual = first.expected;
         for _ in 0..2 {
@@ -571,9 +581,12 @@ async fn epoch_fence_revalidates_cached_mismatches_before_conflict_or_takeover()
             let (store, members) = fixture(1, false).await?;
             let first = members.first().ok_or("no member")?;
             let cancel = CancellationToken::new();
-            let original =
-                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                    .map_err(|(error, _)| error)?;
+            let original = crate::NativeMaterializationWork::root(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancel,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             let mut work = measured(native, &original, &cancel);
             let crate::FenceOutcome::Advanced(owned) = store
                 .fence(first.authority_id, first.expected, &mut work)
@@ -621,9 +634,10 @@ async fn epoch_fence_preserves_generation_facts_and_the_authority_record_identit
                 let first = members.first().ok_or("no member")?;
                 let provider = store.provider();
                 let cancel = CancellationToken::new();
-                let original = crate::NativeMaterializationWork::new(
+                let original = crate::NativeMaterializationWork::root(
                     crate::performance::BOUNDARY_BUDGET,
                     &cancel,
+                    &crate::services::ServicesInitialized::for_kernel_tests(),
                 )
                 .map_err(|(error, _)| error)?;
                 let mut stale = measured(native, &original, &cancel);
@@ -694,12 +708,18 @@ async fn in_flight_publication_quotes_reuse_only_the_last_durable_projection() -
             let provider = store.provider();
             let gate = provider.hold_next_commit();
             let cancel = CancellationToken::new();
-            let original =
-                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                    .map_err(|(error, _)| error)?;
-            let quote_owner =
-                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                    .map_err(|(error, _)| error)?;
+            let original = crate::NativeMaterializationWork::root(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancel,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
+            let quote_owner = crate::NativeMaterializationWork::root(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancel,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             let mut pending_work = measured(native, &original, &cancel);
             let publication = async {
                 if count == 1 {
@@ -789,9 +809,10 @@ async fn rejected_preparation_preserves_the_receipt_owned_frontier() -> TestResu
                 let mut rejected = members.clone();
                 rejected[rejected_index].expected = Head::genesis(first.epoch);
                 let cancel = CancellationToken::new();
-                let original = crate::NativeMaterializationWork::new(
+                let original = crate::NativeMaterializationWork::root(
                     crate::performance::BOUNDARY_BUDGET,
                     &cancel,
+                    &crate::services::ServicesInitialized::for_kernel_tests(),
                 )
                 .map_err(|(error, _)| error)?;
                 let mut work = measured(native, &original, &cancel);
@@ -861,9 +882,12 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
             let (store, members) = fixture(count, true).await?;
             let first = members.first().ok_or("no member")?;
             let cancel = CancellationToken::new();
-            let original =
-                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                    .map_err(|(error, _)| error)?;
+            let original = crate::NativeMaterializationWork::root(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancel,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             let mut setup = measured(native, &original, &cancel);
             let generation = decode_published_generation(&first.commit.payload, u64::MAX, accept)?
                 .generation_root;
@@ -900,8 +924,14 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
             let mut work = measured(native, &original, &cancel);
             if count == 1 {
                 assert!(
-                    matches!(store.compare_and_append(first.clone(), &mut work, None::<&mut ()>).await?,
-                    crate::AppendOutcome::Conflict { actual } if actual == first.expected),
+                    matches!(
+                        store
+                            .compare_and_append(first.clone(), &mut work, None::<&mut ()>)
+                            .await,
+                        Err(crate::AuthorityError::Authority(
+                            crate::AuthorityStoreError::PublicationConditionFailed
+                        ))
+                    ),
                     "cached locator bypassed its atomic identity fence"
                 );
             } else {
@@ -939,9 +969,12 @@ async fn group_capacity_quote_covers_reused_to_composed_generation_shape() -> Te
         let (store, members) = fixture(1, false).await?;
         let fresh = members.first().ok_or("missing fresh proposal")?;
         let cancel = CancellationToken::new();
-        let original =
-            crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let mut work = measured(native, &original, &cancel);
         let ((head, payload), _) = store
             .head_payload(fresh.authority_id, u64::MAX, &mut work)

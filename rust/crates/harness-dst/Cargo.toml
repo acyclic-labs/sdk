@@ -1,0 +1,42 @@
+[package]
+name = "acyclic-harness-dst"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Deterministic simulation tests for the Acyclic harness"
+
+[package.metadata.bazel]
+integration-test-shards = 12
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support"] }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-test-support = { path = "../test-support" }
+blake3.workspace = true
+futures.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+sha2.workspace = true
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

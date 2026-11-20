@@ -1,8 +1,10 @@
 use super::*;
+use crate::access::AccessView;
 use crate::access::{
-    AccessView, Action, Capability, Conditions, Context, Effect, Generations, Grant,
-    POLICY_SCHEMA_VERSION, PathTrie, Policy, PrincipalPattern, Resource, ResourcePattern, Rule,
+    Action, Capability, Conditions, Context, Effect, Generations, Grant, POLICY_SCHEMA_VERSION,
+    PathTrie, Policy, PrincipalPattern, Resource, ResourcePattern, Rule,
 };
+use crate::model::{CheckoutMode, GenerationSelector};
 
 fn pattern(path: &str) -> ResourcePattern {
     ResourcePattern {
@@ -17,13 +19,26 @@ fn pattern(path: &str) -> ResourcePattern {
 fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::actions::require_projfs_mode;
     let source = source(FilesystemProfile::Portable)?;
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let path = |name| {
+        crate::kernel::NamespacePath::from_text_in_profile(
+            name,
+            FilesystemProfile::Portable,
+            source.config.limits,
+        )
+    };
+    let root = path("/")?;
+    let sibling = path("/unrestricted")?;
+    let protected = path("/protected")?;
     let time = || {
         crate::native_mount::adapter::access::access_time(
             &crate::native_mount::clock::Clock::capture(),
         )
     };
     let unrestricted = compiled(&source, 1, vec![], None)?;
-    require_projfs_mode(&unrestricted, true, time()?)?;
+    require_projfs_mode(&unrestricted, &root, true, time()?, &work)?;
     for action in Action::ALL {
         let view = compiled(
             &source,
@@ -32,7 +47,7 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             None,
         )?;
         assert_eq!(
-            require_projfs_mode(&view, true, time()?).is_err(),
+            require_projfs_mode(&view, &root, true, time()?, &work).is_err(),
             matches!(
                 action,
                 Action::Create | Action::Write | Action::Append | Action::ReadHistory
@@ -40,12 +55,28 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             "unsupported writable mode for {action:?}",
         );
         assert!(matches!(
-            require_projfs_mode(&view, false, time()?),
-            Err(crate::native_mount::MountLifecycleError::NativePolicy(
+            require_projfs_mode(&view, &root, false, time()?, &work),
+            Err(crate::native_mount::NativeMountError::Lifecycle(
                 "ProjFS cannot prevent host mutations on read-only mounts"
             )),
         ));
     }
+    let view = compiled(
+        &source,
+        2,
+        vec![deny("restricted", &[Action::Write], "protected/**")],
+        None,
+    )?;
+    require_projfs_mode(&view, &sibling, true, time()?, &work)?;
+    assert!(require_projfs_mode(&view, &protected, true, time()?, &work).is_err());
+    let subtree = Capability::subtree(
+        None,
+        "unrestricted",
+        crate::access::ActionSet::MountWrite.actions(),
+    )?;
+    let view = compiled(&source, 3, Vec::new(), Some(subtree))?;
+    assert!(require_projfs_mode(&view, &root, true, time()?, &work).is_err());
+    require_projfs_mode(&view, &sibling, true, time()?, &work)?;
     Ok(())
 }
 
@@ -482,7 +513,7 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
             }
             _ => unreachable!(),
         }
-        let policy = crate::access::fixtures::denied(action, "**");
+        let policy = crate::access::fixtures::denied(action, "**")?;
         super::policy_refresh::publish(&source, &policy)?;
         assert!(
             source.sync().is_err(),
@@ -819,7 +850,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // A published denial never probes storage or the native filesystem, for
     // every action and arbitrary bounded component spelling.
-    #[test]
+#[test]
     fn native_access_denials_do_no_backend_io(
         action in 0..Action::ALL.len(), path in "[a-z]{1,20}(/[a-z]{1,20})?",
     ) {
@@ -835,7 +866,7 @@ fn projection_admission_holds_policy_publication_until_retirement()
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     assert!(source.projection_policy_lease(false, &work).is_err());
     let lease = source.projection_policy_lease(true, &work)?;
-    let mut denied = crate::access::fixtures::denied(Action::Write, "**");
+    let mut denied = crate::access::fixtures::denied(Action::Write, "**")?;
     denied.layers[0][1].actions = [Action::Write, Action::Append, Action::Create]
         .into_iter()
         .collect();

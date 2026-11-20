@@ -1,5 +1,5 @@
 #![no_main]
-use acyclic_auth_wasm::block_ids;
+use acyclic_auth::trust::block_ids;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {

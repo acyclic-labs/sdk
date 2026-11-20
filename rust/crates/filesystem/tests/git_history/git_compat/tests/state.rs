@@ -6,7 +6,7 @@ use acyclic_fs::git_compat::{
 };
 use std::collections::BTreeSet;
 
-use crate::fixtures::{TestExecutor, generation, tree, workspace};
+use crate::git_history::fixtures::{TestExecutor, generation, tree, workspace};
 
 #[tokio::test]
 async fn foreign_workspace_tree_is_rejected_before_executor_side_effects()

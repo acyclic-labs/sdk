@@ -1,8 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-/// Portable public `AgentHost` vectors, also built independently for browser wasm.
-pub use acyclic_agent_host_conformance as agent_host;
-
 /// Production actor-client cases shared by local and hosted session adapters.
 #[cfg(all(feature = "client-session", not(target_arch = "wasm32")))]
 pub mod client;
@@ -18,18 +15,12 @@ use acyclic_objects::Blobs;
 #[cfg(test)]
 use acyclic_stream::StreamProviderExt as _;
 
-/// Canonical language-neutral Objects conformance inventory.
-pub const OBJECTS_SUITE: &[u8] = acyclic_objects::conformance::SUITE;
-
 /// Canonical language-neutral harness conformance inventory.
 pub const HARNESS_SUITE: &[u8] = acyclic_harness::conformance::LEGACY_MARKER_INVENTORY;
 
 /// Canonical language-neutral Machines conformance inventory.
 pub use acyclic_machines_conformance::SUITE as MACHINES_SUITE;
 const _: () = assert!(!MACHINES_SUITE.is_empty(), "conformance inventory is empty");
-
-/// Canonical language-neutral Stream conformance inventory.
-pub const STREAM_SUITE: &[u8] = acyclic_stream::conformance::SUITE;
 
 /// Exercises the minimum customer-level filesystem semantics.
 pub async fn filesystem_smoke<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(

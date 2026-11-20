@@ -127,10 +127,10 @@ impl ProjFsSession {
         let (original_work, callback_guard) =
             crate::native_mount::shared::metering::install(source.as_ref(), work)?;
         let physical = work.allocation_work();
-        let stop = physical
-            .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
-        let worker_close = physical
-            .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
+        let stop =
+            physical.reserve_work(crate::ledger::NativeResourceCredit::WriteOperations.delta(1))?;
+        let worker_close =
+            physical.reserve_work(crate::ledger::NativeResourceCredit::WriteOperations.delta(1))?;
         // A shared view is a directory of the shared instance at its
         // parent; it takes no destination fence, the instance owns the root.
         let mut shared = if request.shared {
@@ -172,7 +172,7 @@ impl ProjFsSession {
             source,
             work: Mutex::new(work.clone()),
             active_work: Mutex::new(Default::default()),
-            active_work_idle: crate::sync::Condvar::new(),
+            active_work_idle: acyclic_native_runtime::InlineCondvar::new(),
             original_work: Mutex::new(original_work),
             callback_guard,
             root,
@@ -373,7 +373,7 @@ impl ProjFsSession {
                 .as_mut()
                 .ok_or(NativeMountError::ControlPending)?;
             credit.started_io(
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
                 None,
             )?;
             // A shared view's instance stops with its last view.
@@ -391,13 +391,13 @@ impl ProjFsSession {
                     let result = delete_through(&directory, || {
                         credit
                             .started_io(
-                                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                                crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
                                 None,
                             )
                             .map_err(NativeMountError::from)
                     });
                     credit.started_drop_io(
-                        crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                        crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
                     );
                     drop(directory);
                     result.err()

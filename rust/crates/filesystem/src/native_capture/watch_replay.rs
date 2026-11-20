@@ -87,10 +87,7 @@ pub async fn capture_watch_batch<
             let destination = destination
                 .map(|to| clone_capture_path(to, meter))
                 .transpose()?;
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(1),
-            )?;
+            capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
             let excluded = capture_excludes(policy, &path, meter)?;
             let (path, intent) = if let Some(to) = destination {
                 match (excluded, capture_excludes(policy, &to, meter)?) {
@@ -207,10 +204,7 @@ pub async fn capture_watch_batch<
         let maximum_paths = options.maximum_paths.map(|maximum| maximum as usize);
         let mut renamed_paths = 0;
         for (_, record) in &rename_records {
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(1),
-            )?;
+            capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
             renamed_paths += usize::from(record.is_some());
         }
         let ancestors = watch_ancestor_candidates(
@@ -331,7 +325,7 @@ pub async fn capture_watch_batch<
         {
             capture_charge(
                 meter,
-                crate::materializer::NativeResourceCredit::Copy.delta(
+                crate::ledger::NativeResourceCredit::Copy.delta(
                     rename_mutations.len() as u64 * std::mem::size_of::<AuthoredMutation>() as u64,
                 ),
             )

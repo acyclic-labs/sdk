@@ -1,0 +1,534 @@
+//! The physical key/value medium beneath the one blob engine.
+use crate::{
+    Digest, Error, Observation, ObservationSource, Observed, ObservedVersion, wire::ErrorCode,
+};
+use acyclic_stream_contract::OwnedBytes;
+use std::collections::BTreeMap;
+use std::ops::Range;
+use std::sync::{Arc, PoisonError, RwLock};
+
+/// One page of an index's keys under `prefix`, after `after`, with their sizes.
+pub fn list_index<V>(
+    index: &BTreeMap<String, V>,
+    prefix: &str,
+    after: Option<&str>,
+    limit: usize,
+    size: impl Fn(&V) -> u64,
+) -> Vec<(String, u64)> {
+    use std::ops::Bound;
+    let start = after
+        .filter(|&key| key >= prefix)
+        .map_or(Bound::Included(prefix), Bound::Excluded);
+    index
+        .range::<str, _>((start, Bound::Unbounded))
+        .take_while(|(key, _)| key.starts_with(prefix))
+        .take(limit)
+        .map(|(key, value)| (key.clone(), size(value)))
+        .collect()
+}
+
+/// The SDK-owned meaning of an account-relative medium key.
+///
+/// Adapters can select physical payload I/O without maintaining a second
+/// parser for the Objects engine's persisted key format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediumKey {
+    /// An object envelope.
+    Envelope(Digest),
+    /// One immutable payload generation.
+    Payload {
+        /// The content identity.
+        digest: Digest,
+        /// The generation chosen by the Objects engine.
+        version: [u8; 16],
+    },
+    /// The conditional terminal state for a retained intent.
+    Terminal(Digest),
+    /// An engine-owned retention, reference, epoch, or incarnation record.
+    Control,
+}
+
+impl MediumKey {
+    /// Classifies an account-relative key. Control-record suffixes are opaque;
+    /// blob shards, digests, payload generations and terminal identities are validated.
+    ///
+    /// # Errors
+    /// Returns `InvalidArgument` when the key is outside the engine format.
+    pub fn parse(key: &str) -> Result<Self, Error> {
+        fn fixed_hex<const N: usize>(text: &str) -> Result<[u8; N], Error> {
+            let mut bytes = [0; N];
+            if hex::decode_to_slice(text, &mut bytes).is_err()
+                || text.as_bytes().iter().any(u8::is_ascii_uppercase)
+            {
+                return Err(ErrorCode::InvalidArgument.into());
+            }
+            Ok(bytes)
+        }
+        fn sharded(text: &str) -> Result<Digest, Error> {
+            let (shard, digest) = text.split_once('/').ok_or(ErrorCode::InvalidArgument)?;
+            if shard.len() != 2 || !digest.starts_with(shard) {
+                return Err(ErrorCode::InvalidArgument.into());
+            }
+            Ok(Digest::from_bytes(fixed_hex(digest)?))
+        }
+        if matches!(key, "epoch" | "incarnation") {
+            return Ok(Self::Control);
+        }
+        let (kind, rest) = key.split_once('/').ok_or(ErrorCode::InvalidArgument)?;
+        match kind {
+            "e" => Ok(Self::Envelope(sharded(rest)?)),
+            "p" => {
+                let (path, version) = rest.rsplit_once('.').ok_or(ErrorCode::InvalidArgument)?;
+                Ok(Self::Payload {
+                    version: fixed_hex(version)?,
+                    digest: sharded(path)?,
+                })
+            }
+            "t" => Ok(Self::Terminal(Digest::from_bytes(fixed_hex(rest)?))),
+            "r" | "i" | "f" if !rest.is_empty() => Ok(Self::Control),
+            _ => Err(ErrorCode::InvalidArgument.into()),
+        }
+    }
+}
+
+/// A physical failure. `Ambiguous` means a write may or may not have landed.
+#[derive(Debug, thiserror::Error)]
+pub enum MediumError {
+    /// The write's outcome is unknown; repeating the same create is safe.
+    #[error("medium write outcome unknown: {0}")]
+    Ambiguous(#[source] std::io::Error),
+    /// The operation failed without effect.
+    #[error("medium failure: {0}")]
+    Failed(#[source] std::io::Error),
+}
+
+/// Immutable keys under one namespace. Every engine invariant is built from
+/// create-if-absent, ranged reads, removal and lexical listing, so one
+/// implementation of blob semantics serves memory, local disk and S3 alike.
+/// Writes are atomic and immediately visible; [`Medium::flush`] makes them
+/// durable, so a caller pays for durability once, where it commits.
+/// A medium may borrow invocation-local state for the lifetime of its calls.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Medium: acyclic_stream_contract::ProviderPlatform {
+    /// Creates `key` with `bytes` unless it exists. `Ok(false)` leaves the existing
+    /// value untouched. A visible key always holds complete bytes.
+    async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError>;
+    /// Reads `range` of `key`, or `None` when it does not exist. A range past the
+    /// end is an error; `None` for `range` reads everything.
+    async fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<OwnedBytes>, MediumError>;
+    /// New backing allocated by a read, excluding an alias of storage the
+    /// medium already owns. Aliases retain that original storage owner.
+    /// Allocating adapters report the full backing capacity, including bytes
+    /// outside a visible slice; adapters returning resident aliases report zero.
+    fn read_allocation_bytes(&self, bytes: &OwnedBytes) -> usize {
+        bytes.retained_capacity().unwrap_or(bytes.len())
+    }
+    /// Removes `key`, reporting whether it existed.
+    async fn remove(&self, key: &str) -> Result<bool, MediumError>;
+    /// Reads complete bytes and their original key-bound provider version.
+    /// Absence supplies no conditional fact.
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError>;
+    /// Replaces the observed key only while its provider version still matches,
+    /// atomically against every other write and removal. A successful write
+    /// returns its own successor fact without another read. No durability
+    /// barrier is added; a crash before flush leaves the old or new value whole.
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
+        bytes: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError>;
+    /// Removes only the original observed key while its provider version matches.
+    /// A stale version returns false; another source is refused before effect.
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError>;
+    /// Lists up to `limit` keys under `prefix` strictly after `after`, in
+    /// ascending byte order, with their stored sizes. A short page means the
+    /// matching range is exhausted.
+    async fn list(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, MediumError>;
+    /// Makes the current state of each of `keys`, present or removed, survive
+    /// a crash, with the directory entries naming them. Until then a write is
+    /// only visible. A medium durable on every write does nothing.
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError>;
+    /// Whether a write survives a crash only once flushed.
+    fn volatile(&self) -> bool;
+    /// Whether this medium opened over writes an owner that crashed may have
+    /// left unflushed, and has not settled since: such a key can read at full
+    /// length with damaged bytes. A recovered medium has made every key that
+    /// survived durable, and stays recovered across clean closes until
+    /// [`Medium::settle`].
+    fn recovered(&self) -> bool;
+    /// Records that the engine repaired what the crash left, every repair
+    /// flushed: the next open trusts the medium, unless this owner crashes.
+    fn settle(&self);
+    /// Accounts for a `bytes` buffer the engine allocates on this medium's
+    /// behalf; free unless the medium meters its caller.
+    fn allocate(&self, _bytes: u64) -> Result<(), MediumError> {
+        Ok(())
+    }
+    /// Reconciles admitted engine storage with the allocator's actual capacity.
+    /// This records no second allocation attempt. On refusal the engine drops
+    /// its buffer before the medium's original custody retires.
+    fn allocation_capacity(&self, _admitted: usize, _actual: usize) -> Result<(), MediumError> {
+        Ok(())
+    }
+    /// Transfers an engine buffer admitted by [`Medium::allocate`] into
+    /// immutable bytes, retaining its original allocation custody.
+    fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
+        Ok(bytes.into())
+    }
+    /// Transfers admitted decoded metadata with a completed object. Payload
+    /// backing already carries its own owner, independently of this metadata.
+    fn finish_object(&self, object: crate::Object) -> Result<crate::Object, MediumError> {
+        Ok(object)
+    }
+    /// Withholds `operations` physical write attempts from the
+    /// caller's budget, so the writes after it are never refused for budget;
+    /// free unless the medium meters its caller.
+    fn reserve_writes(&self, _operations: u64) -> Result<(), MediumError> {
+        Ok(())
+    }
+}
+
+/// The deterministic in-process medium, optionally bounded to a caller's
+/// total byte budget.
+#[derive(Clone, Default)]
+pub struct MemoryMedium {
+    shared: Arc<Shared>,
+    budget: Option<u64>,
+}
+
+#[derive(Default)]
+struct Shared {
+    keys: RwLock<Keys>,
+    source: ObservationSource,
+    #[cfg(any(test, feature = "test-support"))]
+    faults: std::sync::Mutex<Vec<Armed>>,
+}
+
+/// A read failure a test injects into [`MemoryMedium`], typed by how a
+/// correct caller must treat it.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// A transport failure a retry can clear: the read fails without effect,
+    /// which the engine reports as `Unavailable`.
+    Transient,
+    /// Bytes damaged at rest: the read returns them with one byte changed, so
+    /// a verified read reports `Corrupt` and a retry reads the same damage.
+    Corrupt,
+}
+
+/// Counts the reads one [`MemoryMedium::inject`] call has affected, so a test
+/// proves its fault reached the medium rather than a cache above it.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug)]
+pub struct Injected {
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Injected {
+    /// The reads this fault has failed so far.
+    #[must_use]
+    pub fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type Matcher = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+#[cfg(any(test, feature = "test-support"))]
+struct Armed {
+    fault: Fault,
+    matches: Matcher,
+    /// Calls left, never zero: a spent fault is removed.
+    remaining: Option<usize>,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Default)]
+struct Keys {
+    keys: BTreeMap<String, Value>,
+    sequence: u64,
+    bytes: u64,
+}
+
+struct Value {
+    bytes: OwnedBytes,
+    sequence: u64,
+}
+
+impl Keys {
+    fn next(&mut self) -> Result<u64, MediumError> {
+        self.sequence = self.sequence.checked_add(1).ok_or_else(|| {
+            MediumError::Failed(std::io::Error::other(
+                "medium mutation sequence exhausted; recovery: open a new medium",
+            ))
+        })?;
+        Ok(self.sequence)
+    }
+}
+
+impl MemoryMedium {
+    /// A medium that refuses writes taking its stored bytes past `budget`.
+    #[must_use]
+    pub fn bounded(budget: u64) -> Self {
+        Self {
+            shared: Arc::default(),
+            budget: Some(budget),
+        }
+    }
+
+    /// Arms `fault` for [`Medium::read`] calls whose stored value `matching`
+    /// accepts: the next `calls` of them, or every one when `calls` is `None`.
+    /// A matching read takes the earliest armed fault; one whose calls are
+    /// spent is disarmed, and its handle keeps counting what it hit. Reads no
+    /// fault matches are untouched. Every adapter's failures reach the engine
+    /// as these two classes, so any crate's test can prove its caller retries
+    /// the one and surfaces the other.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn inject(
+        &self,
+        fault: Fault,
+        calls: Option<std::num::NonZeroUsize>,
+        matching: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
+    ) -> Injected {
+        let hits = Arc::default();
+        self.shared
+            .faults
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Armed {
+                fault,
+                matches: Box::new(matching),
+                remaining: calls.map(std::num::NonZeroUsize::get),
+                hits: Arc::clone(&hits),
+            });
+        Injected { hits }
+    }
+
+    /// `stored` as this read observes it under the armed faults.
+    #[cfg(any(test, feature = "test-support"))]
+    fn injected(&self, stored: &OwnedBytes) -> Result<OwnedBytes, MediumError> {
+        let mut faults = self
+            .shared
+            .faults
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(index) = faults.iter().position(|armed| (armed.matches)(&stored[..])) else {
+            return Ok(stored.clone());
+        };
+        let Some(armed) = faults.get_mut(index) else {
+            unreachable!("the armed fault was just found")
+        };
+        armed.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let fault = armed.fault;
+        let spent = armed.remaining.as_mut().is_some_and(|remaining| {
+            *remaining -= 1;
+            *remaining == 0
+        });
+        if spent {
+            faults.remove(index);
+        }
+        match fault {
+            Fault::Transient => Err(MediumError::Failed(std::io::Error::other(
+                "injected transient read fault",
+            ))),
+            Fault::Corrupt => {
+                let mut damaged = stored.to_vec();
+                match damaged.first_mut() {
+                    Some(first) => *first ^= 0xff,
+                    None => damaged.push(0),
+                }
+                Ok(damaged.into())
+            }
+        }
+    }
+
+    fn keys(&self) -> std::sync::RwLockReadGuard<'_, Keys> {
+        self.shared
+            .keys
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Keys> {
+        self.shared
+            .keys
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The stored total after `added` bytes replace `freed` ones, or the
+    /// quota refusal; checked under the write lock so it is exact.
+    fn admit(&self, stored: u64, added: usize, freed: usize) -> Result<u64, MediumError> {
+        let total = stored - freed as u64 + added as u64;
+        if self.budget.is_some_and(|budget| total > budget) {
+            return Err(MediumError::Failed(
+                std::io::ErrorKind::QuotaExceeded.into(),
+            ));
+        }
+        Ok(total)
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Medium for MemoryMedium {
+    fn read_allocation_bytes(&self, _: &OwnedBytes) -> usize {
+        // Reads clone or slice the immutable owner already held by the key.
+        0
+    }
+
+    async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        let mut keys = self.write();
+        if keys.keys.contains_key(key) {
+            return Ok(false);
+        }
+        let total = self.admit(keys.bytes, bytes.len(), 0)?;
+        let sequence = keys.next()?;
+        keys.bytes = total;
+        keys.keys.insert(key.to_owned(), Value { bytes, sequence });
+        Ok(true)
+    }
+
+    async fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<OwnedBytes>, MediumError> {
+        let keys = self.keys();
+        let Some(value) = keys.keys.get(key) else {
+            return Ok(None);
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        let bytes = &self.injected(&value.bytes)?;
+        #[cfg(not(any(test, feature = "test-support")))]
+        let bytes = &value.bytes;
+        let Some(range) = range else {
+            return Ok(Some(bytes.clone()));
+        };
+        let start = usize::try_from(range.start).ok();
+        let end = usize::try_from(range.end).ok();
+        match (start, end) {
+            (Some(start), Some(end)) if start <= end && end <= bytes.len() => {
+                Ok(Some(bytes.slice(start..end)))
+            }
+            _ => Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into())),
+        }
+    }
+
+    async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        let mut keys = self.write();
+        let Some(bytes) = keys.keys.remove(key) else {
+            return Ok(false);
+        };
+        keys.bytes -= bytes.bytes.len() as u64;
+        Ok(true)
+    }
+
+    async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+        let keys = self.keys();
+        Ok(keys.keys.get(&key).map(|value| Observed {
+            bytes: value.bytes.clone(),
+            observation: self
+                .shared
+                .source
+                .issue(key, ObservedVersion::Sequence(value.sequence)),
+        }))
+    }
+
+    async fn replace<'a>(
+        &'a self,
+        observed: Observation<'a>,
+        bytes: OwnedBytes,
+    ) -> Result<Option<Observation<'a>>, MediumError> {
+        let ObservedVersion::Sequence(sequence) = self.shared.source.version(&observed)? else {
+            return Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into()));
+        };
+        let mut locked = self.write();
+        let Keys {
+            keys,
+            bytes: stored,
+            sequence: counter,
+        } = &mut *locked;
+        let Some(current) = keys
+            .get_mut(observed.key())
+            .filter(|value| value.sequence == *sequence)
+        else {
+            return Ok(None);
+        };
+        let total = self.admit(*stored, bytes.len(), current.bytes.len())?;
+        let sequence = counter.checked_add(1).ok_or_else(|| {
+            MediumError::Failed(std::io::Error::other(
+                "medium mutation sequence exhausted; recovery: open a new medium",
+            ))
+        })?;
+        *counter = sequence;
+        *stored = total;
+        *current = Value { bytes, sequence };
+        let key = observed.into_key();
+        Ok(Some(
+            self.shared
+                .source
+                .issue(key, ObservedVersion::Sequence(sequence)),
+        ))
+    }
+
+    async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError> {
+        let ObservedVersion::Sequence(sequence) = self.shared.source.version(&observed)? else {
+            return Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into()));
+        };
+        let mut keys = self.write();
+        let Some(value) = keys
+            .keys
+            .get(observed.key())
+            .filter(|value| value.sequence == *sequence)
+        else {
+            return Ok(false);
+        };
+        let length = value.bytes.len() as u64;
+        keys.bytes -= length;
+        keys.keys.remove(observed.key());
+        Ok(true)
+    }
+
+    async fn list(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, MediumError> {
+        Ok(list_index(
+            &self.keys().keys,
+            prefix,
+            after,
+            limit,
+            |value| value.bytes.len() as u64,
+        ))
+    }
+
+    async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
+        Ok(())
+    }
+
+    fn volatile(&self) -> bool {
+        false
+    }
+
+    fn recovered(&self) -> bool {
+        false
+    }
+
+    fn settle(&self) {}
+}

@@ -103,15 +103,7 @@ pub(super) fn validate_latest_release(index: &VersionIndex) -> Result<(), Error>
                 && !entry.released_packages.is_empty()
                 && !entry.released_packages.iter().any(|package| package.yanked)
         })
-        .max_by(|left, right| {
-            match (
-                stable_version(&left.version),
-                stable_version(&right.version),
-            ) {
-                (Ok(left), Ok(right)) => left.cmp(&right),
-                _ => left.version.cmp(&right.version),
-            }
-        })
+        .max_by(|left, right| compare_versions(&left.version, &right.version))
     else {
         if index.latest.is_some() {
             return Err(Error::Invalid(
@@ -187,12 +179,13 @@ fn validate_version_entry(
         Channel::Release => "releases",
         Channel::Preview => "preview",
     };
-    let schema = data_schema_for_file(&entry.data_file).ok_or_else(|| {
-        Error::Invalid(format!(
+    if !entry.data_file.ends_with("/sdk-docs-data.v1.json") {
+        return Err(Error::Invalid(format!(
             "version index entry {} has an unsupported data file {}",
             entry.version, entry.data_file
-        ))
-    })?;
+        )));
+    }
+    let schema = DATA_SCHEMA_VERSION;
     let expected_data_file = format!(
         "{channel_dir}/{}/{}.json",
         safe_version(&entry.version)?,
@@ -324,14 +317,6 @@ fn validate_schema_sidecar(
     Ok(())
 }
 
-pub(super) fn data_schema_for_file(data_file: &str) -> Option<&'static str> {
-    if data_file.ends_with("/sdk-docs-data.v1.json") {
-        Some(DATA_SCHEMA_VERSION)
-    } else {
-        None
-    }
-}
-
 pub(super) fn merge_version_index(
     mut index: VersionIndex,
     entry: &VersionEntry,
@@ -346,26 +331,12 @@ pub(super) fn merge_version_index(
                 "release candidate cannot claim stable latest".into(),
             ));
         }
-        if let Some(existing) = index
-            .release_candidates
-            .iter()
-            .find(|item| item.version == entry.version)
-        {
-            if existing != entry {
-                return Err(Error::Invalid(format!(
-                    "refusing to rewrite release candidate {}",
-                    entry.version
-                )));
-            }
-        } else {
-            index.release_candidates.push(entry.clone());
-            index.release_candidates.sort_by(|a, b| {
-                match (stable_version(&a.version), stable_version(&b.version)) {
-                    (Ok(a), Ok(b)) => a.cmp(&b),
-                    _ => a.version.cmp(&b.version),
-                }
-            });
-        }
+        insert_entry(
+            &mut index.release_candidates,
+            entry,
+            || format!("refusing to rewrite release candidate {}", entry.version),
+            compare_versions,
+        )?;
         return Ok(index);
     }
     if entry.channel == Channel::Release
@@ -379,45 +350,26 @@ pub(super) fn merge_version_index(
                 "historical prereleases cannot be stable latest".into(),
             ));
         }
-        if let Some(existing) = index
-            .historical_prereleases
-            .iter()
-            .find(|item| item.version == entry.version)
-        {
-            if existing != entry {
-                return Err(Error::Invalid(
-                    "refusing to rewrite historical prerelease identity or digest".into(),
-                ));
-            }
-        } else {
-            index.historical_prereleases.push(entry.clone());
-            index
-                .historical_prereleases
-                .sort_by(|a, b| a.version.cmp(&b.version));
-        }
+        insert_entry(
+            &mut index.historical_prereleases,
+            entry,
+            || "refusing to rewrite historical prerelease identity or digest".to_owned(),
+            |left, right| left.cmp(right),
+        )?;
         return Ok(index);
     }
     if entry.channel == Channel::Release {
-        if let Some(existing) = index
-            .releases
-            .iter()
-            .find(|item| item.version == entry.version)
-        {
-            if existing != entry {
-                return Err(Error::Invalid(format!(
+        insert_entry(
+            &mut index.releases,
+            entry,
+            || {
+                format!(
                     "refusing to rewrite release {} with a different revision or digest",
                     entry.version
-                )));
-            }
-        } else {
-            index.releases.push(entry.clone());
-            index.releases.sort_by(|a, b| {
-                match (stable_version(&a.version), stable_version(&b.version)) {
-                    (Ok(a), Ok(b)) => a.cmp(&b),
-                    _ => a.version.cmp(&b.version),
-                }
-            });
-        }
+                )
+            },
+            compare_versions,
+        )?;
         if mark_latest {
             let should_advance = match index.latest.as_ref() {
                 None => true,
@@ -445,4 +397,33 @@ pub(super) fn merge_version_index(
         index.preview = Some(entry.clone());
     }
     Ok(index)
+}
+
+/// Order catalog versions by their stable identity, falling back to the raw
+/// string for versions that are not stable. Every catalog ordering uses this
+/// one rule.
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    match (stable_version(left), stable_version(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ => left.cmp(right),
+    }
+}
+
+/// Insert a new entry, or verify that the existing entry with the same version
+/// is identical. A published identity or digest is never rewritten.
+fn insert_entry(
+    entries: &mut Vec<VersionEntry>,
+    entry: &VersionEntry,
+    conflict: impl FnOnce() -> String,
+    order: impl Fn(&str, &str) -> std::cmp::Ordering,
+) -> Result<(), Error> {
+    if let Some(existing) = entries.iter().find(|item| item.version == entry.version) {
+        if existing != entry {
+            return Err(Error::Invalid(conflict()));
+        }
+    } else {
+        entries.push(entry.clone());
+        entries.sort_by(|left, right| order(&left.version, &right.version));
+    }
+    Ok(())
 }

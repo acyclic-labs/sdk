@@ -3,13 +3,16 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"sdk-generation-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"sdk-generation-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_binary(
     name = "archive_members",
     crate_root = "fuzz_targets/archive_members.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "archive_members.rs",
+        "fuzz_targets/archive_members.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -21,6 +24,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -39,11 +43,14 @@ rust_binary(
 rust_binary(
     name = "fixture_replay",
     crate_root = "fuzz_targets/fixture_replay.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/sdk-docs/fuzz:path_identity.rs",
+        "fuzz_targets/fixture_replay.rs",
+        "git_layout.rs",
+        "source_identities.rs",
         "//rust/crates/sdk-generation:src/source_selection.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -55,6 +62,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -73,8 +81,11 @@ rust_binary(
 rust_binary(
     name = "identity_record",
     crate_root = "fuzz_targets/identity_record.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/identity_record.rs",
+        "identity_record.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -86,6 +97,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [

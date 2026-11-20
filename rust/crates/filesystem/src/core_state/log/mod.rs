@@ -15,8 +15,8 @@ pub(super) struct CoreLog {
     pub(super) dirty: Vec<RecordKey>,
     /// Refuse further use when a frame or durability outcome is unknown.
     pub(super) broken: bool,
-    pub(super) slots: Option<crate::materializer::NativeAllocation>,
-    pub(super) residents_control: Option<crate::materializer::NativeAllocation>,
+    pub(super) slots: Option<crate::ledger::NativeAllocation>,
+    pub(super) residents_control: Option<crate::ledger::NativeAllocation>,
 }
 
 impl CoreLog {
@@ -24,9 +24,9 @@ impl CoreLog {
     /// when it was closed, charging a reopen to the native work.
     pub(in crate::core_state) fn lease(
         &self,
-        work: Option<&crate::materializer::NativeMaterializationWork>,
+        work: Option<&crate::ledger::NativeMaterializationWork>,
     ) -> std::io::Result<acyclic_native_runtime::FileLease> {
-        let meter = work.map(crate::materializer::NativeMaterializationWork::runtime_meter);
+        let meter = work.map(crate::ledger::NativeMaterializationWork::runtime_meter);
         self.file.lease_metered(meter.as_deref())
     }
 

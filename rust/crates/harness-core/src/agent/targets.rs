@@ -54,10 +54,10 @@ impl RosterPositions {
             match binary_key(text.as_bytes(), work) {
                 Ok(key) => index.get(key, work).map(|position| position.copied()),
                 Err(acyclic_collections::BinaryKeyError::Work(error)) => Err(error),
-                Err(acyclic_collections::BinaryKeyError::TooLong { .. }) => Ok(None),
-                Err(acyclic_collections::BinaryKeyError::Width(_)) => {
-                    unreachable!("roster widths include the original complete length")
-                }
+                Err(
+                    acyclic_collections::BinaryKeyError::TooLong { .. }
+                    | acyclic_collections::BinaryKeyError::Width(_),
+                ) => Ok(None),
             }
         }
         match named.strip_prefix(USER_PREFIX) {

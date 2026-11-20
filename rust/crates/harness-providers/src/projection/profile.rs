@@ -73,7 +73,8 @@ pub(super) fn project(adapter: Adapter, binding: &ModelProfileBinding, fields: &
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use acyclic_harness_core::{

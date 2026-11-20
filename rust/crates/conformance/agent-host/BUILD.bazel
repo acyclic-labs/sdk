@@ -8,15 +8,14 @@ FEATURES = [
         "local",
     ]
 
-WASM_FEATURES = []
-
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-agent-host-conformance","CARGO_PKG_DESCRIPTION":"Portable black-box AgentHost conformance vectors","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-agent-host-conformance","CARGO_PKG_DESCRIPTION":"Portable black-box AgentHost conformance vectors","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 rust_library(
     name = "acyclic_agent_host_conformance",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/bin/oidc_qualify.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -28,6 +27,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -48,8 +48,10 @@ rust_library(
 rust_binary(
     name = "oidc-qualify",
     crate_root = "src/bin/oidc_qualify.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/bin/oidc_qualify.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -61,6 +63,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -99,6 +102,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -116,8 +120,15 @@ rust_test(
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        ":oidc-qualify",
+    ],
+    env = {"CARGO_BIN_EXE_oidc-qualify":"$(rootpath :oidc-qualify)"},
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -140,38 +151,6 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
     tags = ["manual","no-sandbox"],
-)
-
-rust_library(
-    name = "acyclic_agent_host_conformance_wasm",
-    crate_name = "acyclic_agent_host_conformance",
-    crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = WASM_FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"backend-tests\", \"browser\", \"local\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = "//:workspace_lints",
-    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
-    deps = [
-        "//rust/crates/actors:acyclic_actors_wasm",
-        "//rust/crates/harness-core:acyclic_harness_core_wasm",
-        "//rust/crates/harness:acyclic_harness_wasm",
-        "//rust/crates/stream:acyclic_stream_wasm",
-        "@wasm_crates//hex-0.4.3",
-        "@wasm_crates//serde_json-1.0.154",
-        "@wasm_crates//sha2-0.11.1",
-    ],
-    visibility = ["//visibility:public"],
 )
 
 filegroup(

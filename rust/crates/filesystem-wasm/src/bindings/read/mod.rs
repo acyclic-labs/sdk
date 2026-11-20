@@ -1,13 +1,5 @@
 use super::*;
 
-#[derive(Deserialize, Serialize, Tsify)]
-#[serde(transparent)]
-#[allow(
-    dead_code,
-    reason = "exists only to emit the BrowserPathBatch TypeScript type named by unchecked_param_type"
-)]
-pub struct BrowserPathBatch(pub(in crate::bindings) Vec<String>);
-
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
@@ -72,7 +64,7 @@ impl BrowserCheckout {
     #[wasm_bindgen(js_name = lookupBatchNoFollow)]
     pub async fn lookup_batch_no_follow(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "string[]")] paths: JsValue,
     ) -> Result<Ts<BrowserBatchLookupResult>, JsValue> {
         let decoded: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
         if decoded.is_empty() {
@@ -144,7 +136,7 @@ impl BrowserCheckout {
     #[wasm_bindgen(js_name = resolveFiles)]
     pub async fn resolve_files(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "string[]")] paths: JsValue,
     ) -> Result<BrowserResolvedFiles, JsValue> {
         let paths: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
         let mut parsed = Vec::new();
@@ -187,10 +179,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, read_file_range(&path, ByteRange { offset, length },))?;
-        ts(BrowserFileReadResult {
-            bytes: receipt.value.bytes.to_vec(),
-            work: browser_work(receipt.work),
-        })
+        file_read_result(receipt.value.bytes.to_vec(), receipt.work)
     }
 
     #[wasm_bindgen(js_name = readFileRangeById)]
@@ -205,10 +194,7 @@ impl BrowserCheckout {
             self,
             read_file_range(file_id, ByteRange { offset, length },)
         )?;
-        ts(BrowserFileReadResult {
-            bytes: receipt.value.bytes.to_vec(),
-            work: browser_work(receipt.work),
-        })
+        file_read_result(receipt.value.bytes.to_vec(), receipt.work)
     }
 
     #[wasm_bindgen(js_name = readSymbolicLink)]
@@ -218,10 +204,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, read_symbolic_link(&path,))?;
-        ts(BrowserFileReadResult {
-            bytes: receipt.value.bytes.to_vec(),
-            work: browser_work(receipt.work),
-        })
+        file_read_result(receipt.value.bytes.to_vec(), receipt.work)
     }
 
     #[wasm_bindgen(js_name = readReparsePoint)]
@@ -236,4 +219,14 @@ impl BrowserCheckout {
             work: browser_work(receipt.work),
         })
     }
+}
+
+pub(in crate::bindings) fn file_read_result(
+    bytes: Vec<u8>,
+    work: acyclic_fs_work::performance::WorkCounters,
+) -> Result<Ts<BrowserFileReadResult>, JsValue> {
+    ts(BrowserFileReadResult {
+        bytes,
+        work: browser_work(work),
+    })
 }

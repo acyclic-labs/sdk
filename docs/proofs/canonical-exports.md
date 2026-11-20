@@ -1,6 +1,6 @@
 # Canonical public export join
 
-This is a source-reviewed integration contract, not a generated export inventory or proof. Exact source captures are in `../../scripts/tests/fixtures/proof-policy/source-review-20261026/sources.json`; no compiler output or rustdoc fixture was fabricated.
+This is a source-reviewed integration contract, not a generated export inventory or proof. The historical source captures are not retained; `../../scripts/tests/fixtures/proof-policy/source-review-synthetic-v1/sources.json` is a synthetic input that exercises the source-registration policy only. No compiler output or rustdoc fixture was fabricated.
 
 ## Decisions
 

@@ -203,36 +203,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         self.inner.lock().await.state
     }
 
-    /// Re-establishes a clean source baseline after the core materializer has installed a published workspace generation into the attached root.
-    pub async fn acknowledge_materialization(
-        &self,
-        key: IdempotencyKey,
-    ) -> Result<ReconcileOutcome<A, O>, SourceError> {
-        let mut session = self.inner.lock().await;
-        refresh_source_authority(&mut session).await?;
-        session.checkout = session
-            .workspace
-            .volume
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(engine)?
-            .value;
-        session.state = SourceState::NeedsRescan(WatchInvalidationReason::InitialSnapshotRequired);
-        begin_source_operation(&mut session, key, SourceOperation::Rescan).await?;
-        rescan_session(
-            &mut session,
-            key,
-            SourceOperation::Rescan,
-            SourceState::Clean,
-        )
-        .await
-    }
-
     /// Captures one bounded contiguous watcher interval and publishes it.
     pub async fn reconcile(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.reconcile_with_key(IdempotencyKey::new()).await

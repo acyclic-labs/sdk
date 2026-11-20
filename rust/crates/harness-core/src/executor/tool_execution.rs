@@ -162,6 +162,7 @@ impl StockExecutor {
             execution
                 .retain_host_selection(journal, parent, &call.0, &call.1, metadata)
                 .await?;
+            execution.ensure_host_started(journal, parent.0).await?;
             let outcome = execution
                 .settle_invocation(
                     journal,
@@ -530,11 +531,6 @@ impl<'io> StockExecution<'io> {
             self.selected_tools().refresh().await?;
             self.selected_tools().resolve(&invocation.name, self.io)?
         };
-        // A host call may be the first observation in its journal. Start it
-        // before any refusal or dispatch record; a turn-started journal keeps
-        // its original request binding.
-        self.ensure_host_started(journal, operation_id, &invocation)
-            .await?;
         let admitted = match selected {
             Some(tool) => self
                 .authorize_tool_invocation(

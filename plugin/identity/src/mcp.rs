@@ -657,12 +657,19 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = std::sync::Arc::new(AtomicUsize::new(0));
         let second_poll = std::sync::Arc::new(tokio::sync::Notify::new());
+        let polls = std::sync::Arc::new(Mutex::new(Vec::new()));
         let calls = count.clone();
         let notified = second_poll.clone();
+        let observed = polls.clone();
         let router = axum::Router::new().fallback(move || {
             let calls = calls.clone();
             let notified = notified.clone();
+            let observed = observed.clone();
             async move {
+                observed
+                    .lock()
+                    .expect("poll instants")
+                    .push(tokio::time::Instant::now());
                 match calls.fetch_add(1, Ordering::SeqCst) {
                     0 => (
                         StatusCode::BAD_REQUEST,
@@ -701,8 +708,18 @@ mod tests {
                 () = second_poll.notified() => {}
             }
         }
-        assert_eq!(server.pending.as_ref().expect("pending").0.interval, 6);
-        let retry = tokio::time::Instant::now();
+        let (interval, last_poll) = {
+            let pending = &server.pending.as_ref().expect("pending").0;
+            (
+                pending.interval,
+                pending.polled_at.expect("the cancelled completion polled"),
+            )
+        };
+        assert_eq!(interval, 6);
+        // The widened interval bounds the gap from the last poll, so the retry
+        // must not reach the endpoint before it has elapsed. A cancelled
+        // completion may already have advanced the clock across that gap, so
+        // the gap is measured from the last poll, not from the retry's start.
         assert_eq!(
             server
                 .call("identity_login_complete")
@@ -711,7 +728,12 @@ mod tests {
                 .get("authenticated"),
             Some(&json!(true))
         );
-        assert!(retry.elapsed() >= Duration::from_secs(6));
+        let polls = polls.lock().expect("poll instants");
+        assert_eq!(polls.len(), 3);
+        assert!(
+            polls[2].duration_since(last_poll) >= Duration::from_secs(6),
+            "the retry polls only after the widened interval since the last poll"
+        );
         assert_eq!(count.load(Ordering::SeqCst), 3);
         task.abort();
     }

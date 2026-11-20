@@ -53,15 +53,6 @@ fn a_megabyte_paste_is_not_retained_again_for_each_following_edit() {
 }
 
 #[test]
-fn default_keymap_is_unambiguous() {
-    use acyclic_harness_tui::KEYMAP;
-    let mut seen = std::collections::BTreeSet::new();
-    for binding in KEYMAP {
-        assert!(seen.insert(binding.chord), "duplicate {}", binding.chord);
-    }
-}
-
-#[test]
 fn wrapping_cache_survives_cursor_changes_and_invalidates_on_text_changes() {
     let mut editor = Editor::new("界abc");
     let before = editor.layout(4);

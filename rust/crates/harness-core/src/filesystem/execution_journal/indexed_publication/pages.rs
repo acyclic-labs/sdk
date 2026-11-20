@@ -297,7 +297,7 @@ impl Cut<'_> {
 
     async fn stage<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         offset: usize,
         records: &[OwnedBytes],
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -350,7 +350,7 @@ impl Cut<'_> {
 
     pub(super) async fn publish<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
@@ -412,23 +412,13 @@ impl Cut<'_> {
                     )
                     .await?;
                     let held = crate::wire_codec::CodecQuota::from_retained(work, retained);
-                    let result = self
-                        .confirm(&outcome, expected, pending, observation, checkpoint)
-                        .map(|commit| {
-                            commit.map(|commit| {
-                                (
-                                    commit,
-                                    match &outcome {
-                                        CommitOutcome::Committed(receipt) => {
-                                            receipt.committed_at_micros
-                                        }
-                                        CommitOutcome::Conflict(_) => {
-                                            unreachable!("confirmed commit")
-                                        }
-                                    },
-                                )
-                            })
-                        });
+                    let result = self.confirm_publication(
+                        &outcome,
+                        expected,
+                        pending,
+                        observation,
+                        checkpoint,
+                    );
                     drop(outcome);
                     drop(held);
                     return result;
@@ -442,6 +432,19 @@ impl Cut<'_> {
         }
     }
 
+    fn confirm_publication(
+        &self,
+        outcome: &CommitOutcome,
+        pages_tail: u64,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+    ) -> Result<Option<(acyclic_stream::CommitId, u64)>> {
+        self.confirm_members(outcome, pages_tail, records, observation, checkpoint, false)
+            .map(|receipt| receipt.map(|receipt| (receipt.commit_id, receipt.committed_at_micros)))
+    }
+
+    #[cfg(test)]
     pub(super) fn confirm(
         &self,
         outcome: &CommitOutcome,
@@ -450,7 +453,8 @@ impl Cut<'_> {
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
     ) -> Result<Option<acyclic_stream::CommitId>> {
-        self.confirm_members(outcome, pages_tail, records, observation, checkpoint, false)
+        self.confirm_publication(outcome, pages_tail, records, observation, checkpoint)
+            .map(|confirmed| confirmed.map(|(commit, _)| commit))
     }
 
     /// The original filesystem owner has already authenticated every canonical
@@ -472,17 +476,18 @@ impl Cut<'_> {
             checkpoint,
             true,
         )
+        .map(|receipt| receipt.map(|receipt| receipt.commit_id))
     }
 
-    fn confirm_members(
+    fn confirm_members<'a>(
         &self,
-        outcome: &CommitOutcome,
+        outcome: &'a CommitOutcome,
         pages_tail: u64,
         records: &[OwnedBytes],
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
         composed: bool,
-    ) -> Result<Option<acyclic_stream::CommitId>> {
+    ) -> Result<Option<&'a acyclic_stream::CommitReceipt>> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(None),
             CommitOutcome::Committed(receipt) => self
@@ -494,7 +499,7 @@ impl Cut<'_> {
                     checkpoint,
                     composed,
                 )
-                .map(Some),
+                .map(|_| Some(receipt)),
         }
     }
 

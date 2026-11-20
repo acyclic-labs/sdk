@@ -184,14 +184,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .await?;
         let capacity = read.logical_owned_bytes();
-        #[cfg(not(target_arch = "wasm32"))]
-        let chunk = if accounting.native_work().is_some() {
-            crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
-        } else {
-            crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity)
-        };
-        #[cfg(target_arch = "wasm32")]
-        let chunk = crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity);
+        let chunk =
+            crate::kernel::OwnedSourceChunk::from_accounted_read(read.bytes, capacity, accounting);
         let bytes = chunk.retain_bytes(accounting)?;
         crate::kernel::verify_original_publication_evidence(reference, &bytes, accounting)?;
         Ok(bytes)

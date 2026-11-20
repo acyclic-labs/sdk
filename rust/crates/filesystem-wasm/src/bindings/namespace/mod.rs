@@ -8,18 +8,11 @@ impl BrowserCheckout {
         path: String,
         bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let bytes = bytes::Bytes::from(bytes);
-        let receipt = browser_call!(
-            self,
-            create(acyclic_fs::AuthoredMutation::CreateFile {
-                file_id: None,
-                path: path,
-                bytes: (bytes).into(),
-                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
-            },)
-        )?;
-        mutation_created(&receipt)
+        self.create_operation(TransactionOperation::CreateFile {
+            path,
+            bytes: bytes.into(),
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = createDirectory)]
@@ -27,16 +20,8 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let receipt = browser_call!(
-            self,
-            create(acyclic_fs::AuthoredMutation::CreateDirectory {
-                file_id: None,
-                path: path,
-                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
-            },)
-        )?;
-        mutation_created(&receipt)
+        self.create_operation(TransactionOperation::CreateDirectory { path })
+            .await
     }
 
     #[wasm_bindgen(js_name = createSymbolicLink)]
@@ -45,18 +30,11 @@ impl BrowserCheckout {
         path: String,
         target: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let target = bytes::Bytes::from(target);
-        let receipt = browser_call!(
-            self,
-            create(acyclic_fs::AuthoredMutation::CreateSymbolicLink {
-                file_id: None,
-                path: path,
-                target: (target).into(),
-                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
-            },)
-        )?;
-        mutation_created(&receipt)
+        self.create_operation(TransactionOperation::CreateSymbolicLink {
+            path,
+            target: target.into(),
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = createSpecial)]
@@ -65,18 +43,11 @@ impl BrowserCheckout {
         path: String,
         kind: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let kind = empty_special_kind(&kind)?;
-        let receipt = browser_call!(
-            self,
-            create(acyclic_fs::AuthoredMutation::CreateEmptySpecial {
-                file_id: None,
-                path: path,
-                kind: kind,
-                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
-            },)
-        )?;
-        mutation_created(&receipt)
+        self.create_operation(TransactionOperation::CreateSpecial {
+            path,
+            file_kind: kind,
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = createDevice)]
@@ -90,20 +61,13 @@ impl BrowserCheckout {
         let major = wasm_u32(&major)?;
         let minor = wasm_u32(&minor)?;
 
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let kind = device_kind(&kind)?;
-        let receipt = browser_call!(
-            self,
-            create(acyclic_fs::AuthoredMutation::CreateDevice {
-                file_id: None,
-                path: path,
-                kind: kind,
-                major: major,
-                minor: minor,
-                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
-            },)
-        )?;
-        mutation_created(&receipt)
+        self.create_operation(TransactionOperation::CreateDevice {
+            path,
+            file_kind: kind,
+            major,
+            minor,
+        })
+        .await
     }
 
     #[wasm_bindgen(js_name = createReparsePoint)]
@@ -112,17 +76,11 @@ impl BrowserCheckout {
         path: String,
         payload: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let receipt = browser_call!(
-            self,
-            create(acyclic_fs::AuthoredMutation::CreateReparsePoint {
-                file_id: None,
-                path: path,
-                payload: (bytes::Bytes::from(payload)).into(),
-                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
-            },)
-        )?;
-        mutation_created(&receipt)
+        self.create_operation(TransactionOperation::CreateReparsePoint {
+            path,
+            payload: payload.into(),
+        })
+        .await
     }
 
     pub async fn remove(
@@ -184,5 +142,16 @@ impl BrowserCheckout {
             }],)
         )?;
         mutation_value(receipt.work)
+    }
+}
+
+impl BrowserCheckout {
+    async fn create_operation(
+        &mut self,
+        operation: TransactionOperation,
+    ) -> Result<Ts<BrowserMutationResult>, JsValue> {
+        let mutation = authored_transaction(operation, self.engine.volume_config())?;
+        let receipt = browser_call!(self, create(mutation,))?;
+        mutation_created(&receipt)
     }
 }

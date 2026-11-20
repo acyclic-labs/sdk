@@ -1,6 +1,6 @@
 # A6 proof contract adopted by rb-identity
 
-The sole SDK AUTH/SECRETS and Cloud Trust/Edge owner is **rb-identity**. b-authority is retired. The actual handover and current API sketch are captured with exact hashes in `../../scripts/tests/fixtures/proof-policy/source-review-20261026/sources.json`. The predecessor proof contract remains historical. P1 security fixes, the owner's reported 104 auth regression tests, and a signed source head do not qualify A6. No complete A6 public suite or arbitrary-endpoint runner is admitted.
+The sole SDK AUTH/SECRETS and Cloud Trust/Edge owner is **rb-identity**. b-authority is retired. The historical handover and API sketch captures are not retained; `../../scripts/tests/fixtures/proof-policy/source-review-synthetic-v1/sources.json` is a synthetic input that exercises the source-registration policy only. The predecessor proof contract remains historical. P1 security fixes, the owner's reported 104 auth regression tests, and a signed source head do not qualify A6. No complete A6 public suite or arbitrary-endpoint runner is admitted.
 
 ## Decisions
 

@@ -22,7 +22,8 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
     let workspace = crate::Fs::local(crate::LocalOptions::new(state.path()))
         .await?
         .create_workspace("materialized-view", budget, &cancellation)
-        .await?
+        .await
+        .map_err(|failure| format!("creating materialization workspace: {failure:?}"))?
         .value;
     for index in 0..8 {
         workspace
@@ -41,7 +42,9 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
     let metadata = crate::LocalCoreStateStore::new(state.path().join("metadata"));
     let mut materialization = crate::MaterializeOptions::native(host.path());
     materialization.materialized_view = Some(NativeViewBaseline::recording(&metadata));
-    crate::materialize_checkout(&mut reader, &materialization, budget, &cancellation).await?;
+    crate::materialize_checkout(&mut reader, &materialization, budget, &cancellation)
+        .await
+        .map_err(|failure| format!("materializing checkout: {failure:?}"))?;
     let identity = capture_root_identity(host.path())?;
     let mut options = CaptureOptions {
         materialized_view: None,
@@ -70,7 +73,10 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
             budget,
             &cancellation,
         )
-        .await?
+        .await
+        .map_err(|failure| {
+            format!("capturing baseline with normalization={normalized}: {failure:?}")
+        })?
         .value;
         if normalized {
             assert_eq!(receipt.changed_paths, 0);
@@ -178,6 +184,17 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
     let previous_entries = std::fs::read_dir(host.path())?
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    #[cfg(unix)]
+    {
+        let parent = host.path().parent().ok_or("temporary root has no parent")?;
+        let name = host
+            .path()
+            .file_name()
+            .ok_or("temporary root has no name")?;
+        let alias = state.path().join("restore-parent");
+        std::os::unix::fs::symlink(parent, &alias)?;
+        materialization.destination = alias.join(name);
+    }
     crate::restore_checkout_host_path(
         &mut reader,
         Path::new("file-3"),
@@ -186,7 +203,8 @@ async fn check_materialized_metadata() -> Result<(), Box<dyn std::error::Error>>
         crate::performance::work_budget(100_000, 64 * 1024 * 1024),
         &cancellation,
     )
-    .await?;
+    .await
+    .map_err(|failure| format!("restoring through the destination parent: {failure:?}"))?;
     let mut restored = workspace
         .checkout(
             crate::model::GenerationSelector::Head,

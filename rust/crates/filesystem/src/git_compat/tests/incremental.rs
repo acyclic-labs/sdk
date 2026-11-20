@@ -1,7 +1,3 @@
-#[macro_use]
-#[path = "../../../tests/support/unbounded.rs"]
-mod unbounded;
-
 use super::*;
 
 use crate as acyclic_fs;

@@ -1,0 +1,229 @@
+//! Original native provider work, shared by memory and durable adapters.
+use crate::{StreamError, query_sync::SyncMutex as Mutex};
+use acyclic_native_runtime::{
+    NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
+    ReadAllocation,
+};
+use std::sync::Arc;
+
+type WriteReservation = (
+    NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    NativeByteReservation<Arc<dyn NativeReadMeter>>,
+);
+
+pub struct Work {
+    pub meter: Arc<dyn NativeReadMeter>,
+    error: Mutex<Option<Failure>>,
+    write: Mutex<Option<WriteReservation>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    durability: Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
+    _allocation: ReadAllocation,
+}
+
+enum Failure {
+    Recorded(std::io::Error),
+    Delivered,
+}
+
+impl Work {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn failure(&self, operation: &'static str) -> Option<crate::LocalStreamFailure> {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|failure| match failure {
+                Failure::Recorded(error) => Some(error),
+                Failure::Delivered => None,
+            })
+            .map(|error| crate::LocalStreamFailure {
+                operation,
+                cause: "io",
+                io_kind: Some(error.kind()),
+                raw_os_error: error.raw_os_error(),
+            })
+    }
+
+    pub fn start<'a, T, E, F>(
+        meter: Arc<dyn NativeReadMeter>,
+        span: &acyclic_native_runtime::obs::OperationSpan,
+        operation: impl FnOnce(Arc<Self>, acyclic_observability::Completion) -> F,
+    ) -> crate::NativeProviderFuture<'a, T, E>
+    where
+        F: std::future::Future<Output = crate::NativeStreamResult<T, E>> + Send + 'a,
+    {
+        let work = match Self::new(meter) {
+            Ok(work) => work,
+            Err(error) => {
+                acyclic_observability::record_outcome(span, Some(super::io_kind(&error)));
+                return crate::NativeProviderFuture::ready(Err(error));
+            }
+        };
+        let meter = Arc::clone(&work.meter);
+        match crate::NativeProviderFuture::try_build(&meter, || {
+            span.scope(operation(
+                work,
+                acyclic_observability::Completion::new(span),
+            ))
+        }) {
+            Ok(future) => future,
+            Err(error) => {
+                acyclic_observability::record_outcome(span, Some(super::io_kind(&error)));
+                crate::NativeProviderFuture::ready(Err(error))
+            }
+        }
+    }
+
+    pub fn new(meter: Arc<dyn NativeReadMeter>) -> std::io::Result<Arc<Self>> {
+        let allocation = ReadAllocation::new(
+            &meter,
+            acyclic_native_runtime::arc_allocation_bytes::<Self>(),
+        )?;
+        Ok(Arc::new(Self::with_allocation(meter, allocation)))
+    }
+
+    /// Read-only work stays in its already funded provider frame. Only work
+    /// shared with a detached producer needs the separately admitted Arc.
+    pub fn inline(meter: Arc<dyn NativeReadMeter>) -> Self {
+        let allocation = ReadAllocation::empty(&meter);
+        Self::with_allocation(meter, allocation)
+    }
+
+    fn with_allocation(meter: Arc<dyn NativeReadMeter>, allocation: ReadAllocation) -> Self {
+        Self {
+            meter,
+            error: Mutex::new(None),
+            write: Mutex::new(None),
+            #[cfg(not(target_arch = "wasm32"))]
+            durability: Mutex::new(None),
+            _allocation: allocation,
+        }
+    }
+
+    pub fn record<T>(&self, result: std::io::Result<T>) -> Result<T, StreamError> {
+        result.map_err(|error| {
+            self.error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert(Failure::Recorded(error));
+            StreamError::Unavailable
+        })
+    }
+
+    // Remains true after finish moves the original error into its worker's
+    // output, before the task handle publishes that output to its observer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn has_failed(&self) -> bool {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    pub fn reserve_write(&self, bytes: usize) -> Result<(), StreamError> {
+        let operation = self.record(NativeOperationReservation::new(
+            Arc::clone(&self.meter),
+            NativeOperationKind::Write,
+            1,
+        ))?;
+        let bytes = self.record(NativeByteReservation::new(
+            Arc::clone(&self.meter),
+            NativeOperationKind::Write,
+            bytes,
+        ))?;
+        *self
+            .write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((operation, bytes));
+        Ok(())
+    }
+
+    /// Releases an unspent write reservation without publishing.
+    pub fn release_write(&self) {
+        self.write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    pub fn publish<T>(
+        &self,
+        bytes: usize,
+        operation: impl FnOnce() -> Result<T, StreamError>,
+    ) -> Result<T, StreamError> {
+        let mut allowance = self
+            .write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let (result, observed) = match &mut allowance {
+            Some((write, _)) => write.attempt(operation),
+            None => (operation(), Ok(())),
+        };
+        let transferred = match &mut allowance {
+            Some((_, transfer)) if result.is_ok() && bytes != 0 => transfer.record(bytes),
+            _ => Ok(()),
+        };
+        self.record(observed)?;
+        self.record(transferred)?;
+        result
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reserve_durability(&self, count: u64) -> Result<(), StreamError> {
+        self.record(self.prepare_durability(count))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prepare_durability(&self, count: u64) -> std::io::Result<()> {
+        let ticket = NativeOperationReservation::new(
+            Arc::clone(&self.meter),
+            NativeOperationKind::Durability,
+            count,
+        )?;
+        *self
+            .durability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync<T>(&self, operation: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+        let mut ticket = self
+            .durability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (physical, observed) = ticket
+            .as_mut()
+            .ok_or(std::io::ErrorKind::InvalidInput)?
+            .attempt(operation);
+        let _ = self.record(observed);
+        match physical {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let _ = self.record::<()>(Err(error));
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+    }
+
+    pub fn finish<T, E>(
+        &self,
+        result: Result<(T, Option<ReadAllocation>), E>,
+    ) -> crate::NativeStreamResult<T, E> {
+        if let Some(Failure::Recorded(error)) = self
+            .error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .map(|failure| std::mem::replace(failure, Failure::Delivered))
+        {
+            return Err(error);
+        }
+        Ok(result.map(|(value, allocation)| {
+            crate::NativeStreamOutput::new(
+                value,
+                allocation.unwrap_or_else(|| ReadAllocation::empty(&self.meter)),
+            )
+        }))
+    }
+}

@@ -121,7 +121,7 @@ async fn create_filesystem_root(
     intent: &IntentId,
     adoption: ForkAdopted,
 ) -> Result<AgentPath> {
-    use acyclic_harness_core::filesystem::hosting::{Prepared, RootSubmission};
+    use acyclic_harness_hosting::{Prepared, RootSubmission};
     let spawn = agents.prepare_root(intent, adoption, false)?;
     let prepared = Prepared::prepare(files, spawn, &[], None, None).await?;
     match prepared.submit(files, agents).await? {
@@ -145,6 +145,25 @@ async fn deliver(
     Ok(host.state(path).await?)
 }
 
+/// Commit the driver checkpoint that pins the original announcement selection.
+/// Its due alarm, driven by the caller, is the first step that can dispatch.
+async fn commit_turn_open(stream: &MemoryStream, opened: Step, cursor: u64) -> Result<AgentState> {
+    assert_eq!(opened.alarm, Alarm::At(CONTINUE_NOW));
+    assert!(turn_announcements(&opened.state)?.is_some());
+    assert!(
+        !opened
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Conversation(_)))
+    );
+    let key = delivery_key(&opened.state, "open-turn")?;
+    assert!(matches!(
+        stream.commit(lower(&opened, cursor, key)?).await?,
+        CommitOutcome::Committed(_)
+    ));
+    Ok(opened.state)
+}
+
 /// Commits root `adoption` the way production creates it, so a turn host
 /// stepped directly reads the agent's real inbox. Returns its adopted state.
 async fn created_root(stream: &MemoryStream, adoption: ForkAdopted) -> Result<AgentState> {
@@ -154,6 +173,41 @@ async fn created_root(stream: &MemoryStream, adoption: ForkAdopted) -> Result<Ag
         Submitted::Committed(_)
     ));
     Ok(AgentState::adopted(created.child, &adoption)?)
+}
+
+async fn created_child(
+    stream: &MemoryStream,
+    parent: &AgentPath,
+    spawn_intent: &IntentId,
+    adoption: ForkAdopted,
+) -> Result<AgentState> {
+    super::create(stream, parent.id()).await?;
+    let created = spawn(parent, spawn_intent, 0, adoption.clone())?;
+    assert!(matches!(
+        submit(stream, created.request).await?,
+        Submitted::Committed(_)
+    ));
+    Ok(AgentState::adopted(created.child, &adoption)?)
+}
+
+async fn published_wake(stream: &MemoryStream, path: &AgentPath, wake: Wake) -> Result<Wake> {
+    let Wake::Inbox { record, .. } = wake else {
+        return Err("publication requires an inbox record".into());
+    };
+    let request = send(path, &super::user(), &record)?;
+    let Submitted::Committed(receipt) = submit(stream, request).await? else {
+        return Err("test input publication did not commit".into());
+    };
+    let inbox = path.inbox()?;
+    let assigned = receipt
+        .appends
+        .iter()
+        .find(|append| append.path == inbox)
+        .ok_or("test input publication omitted the inbox")?;
+    Ok(Wake::Inbox {
+        sequence: assigned.start,
+        record,
+    })
 }
 
 async fn private_on(
@@ -352,8 +406,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             issuer,
             TurnAdmission::LocalRoot,
             executors(model.clone())?,
-            LIMITS,
-            ApprovalPolicy::accept_all("preset"),
+            (LIMITS, ApprovalPolicy::accept_all("preset")),
         );
         let open = host
             .open(
@@ -410,13 +463,15 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
     for matching_limits in [false, true] {
         let parent = AgentPath::root(&id(1));
-        let path = parent.child(&id(2))?;
+        let spawn_intent = intent("child");
+        let path = parent.child(&AgentId::derive(&parent.id(), spawn_intent.as_str()))?;
         let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
             "done".into(),
         )]));
         let (host, binding) = private(&path).await?;
+        let stream = Arc::new(MemoryStream::default());
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-            Arc::new(MemoryStream::default()),
+            stream.clone(),
             within(),
             host,
             AuthorityRoot::new(
@@ -429,14 +484,13 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             ),
             TurnAdmission::LocalRoot,
             executors_with_scope(model.clone(), matching_limits)?,
-            LIMITS,
-            Default::default(),
+            (LIMITS, Default::default()),
         ));
-        let mut adoption = adopted(id(2));
+        let mut adoption = adopted(path.id());
         adoption.parent = Some(parent.clone());
         adoption.volumes = vec![binding];
-        let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
-        let wake = || requested("r1", &parent);
+        let state = created_child(&stream, &parent, &spawn_intent, adoption).await?;
+        let wake = || published_wake(&stream, &path, requested("r1", &parent));
         if !matching_limits {
             let refused = driver
                 .step(
@@ -450,8 +504,12 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
                     acyclic_actors::guest::CancellationToken::new(),
                 )
                 .await;
-            assert!(matches!(&refused, Err(Error::Turn(error))
-                if matches!(**error, acyclic_harness_core::Error::Unauthorized(_))));
+            assert!(
+                matches!(&refused, Err(Error::Turn(error))
+                    if error.code() == acyclic_harness_core::wire::ErrorCode::Unauthorized),
+                "the executor must refuse wider task limits: {:?}",
+                refused.as_ref().err()
+            );
             assert!(model.requests().is_empty());
         }
         let first = step(
@@ -459,7 +517,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             &path,
             Some(state.clone()),
             (2, 0),
-            wake(),
+            wake().await?,
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await;
@@ -482,7 +540,17 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             assert!(model.requests().is_empty());
             continue;
         }
-        let first = first?;
+        let opened = commit_turn_open(&stream, first?, 2).await?;
+        assert!(model.requests().is_empty());
+        let first = step(
+            &driver,
+            &path,
+            Some(opened.clone()),
+            (2, 0),
+            Wake::Alarm,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
         assert_eq!(first.state.phase, Phase::Idle);
         let entries: Vec<_> = first
             .outs
@@ -498,9 +566,9 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let again = step(
             &driver,
             &path,
-            Some(state),
+            Some(opened),
             (2, 0),
-            wake(),
+            Wake::Alarm,
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
@@ -533,8 +601,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         issuer.clone(),
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
-        LIMITS,
-        Default::default(),
+        (LIMITS, Default::default()),
     );
     let own = binding.volume()?.clone();
     let journal = acyclic_harness_core::conversation::journal_volume(
@@ -953,8 +1020,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             scope,
         },
         executors(model.clone())?,
-        LIMITS,
-        Default::default(),
+        (LIMITS, Default::default()),
     );
     let next_open = next_host
         .open(
@@ -1147,8 +1213,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             issuer.clone(),
             admission,
             captured.clone(),
-            LIMITS,
-            Default::default(),
+            (LIMITS, Default::default()),
         );
         let operation = OperationId::from_bytes([225; 16]);
         let input = ModelContent::Text("initial".into());
@@ -1161,9 +1226,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             )
             .await?;
         let boundary = open.journal.model_boundary().ok_or("no boundary")?;
-        assert!(boundary.messages(operation, 0, None).await?.is_empty());
-        boundary.admitted(operation, 0).await?;
-        let messages = boundary.messages(operation, 1, None).await;
+        let messages = boundary.messages(operation, 0, None).await;
         if allowed == Some(false) {
             assert!(matches!(
                 messages,
@@ -1207,6 +1270,8 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             .read(files[0], files[0].descriptor().byte_length(), None, None)?
             .await?;
         assert_eq!(bytes.as_ref(), b"peer attachment");
+        boundary.admitted(operation, 0).await?;
+        assert!(boundary.messages(operation, 1, None).await?.is_empty());
     }
     assert!(model.requests().is_empty(), "selection does not dispatch");
     Ok(())
@@ -1221,11 +1286,14 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         domain::ActorLimits,
         local::{Clock, ClockError},
     };
-    use std::sync::atomic::{AtomicU64, Ordering};
-    struct EventClock(AtomicU64);
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    struct EventClock {
+        time: AtomicU64,
+        armed: AtomicBool,
+    }
     impl acyclic_stream::UnixMillisClock for EventClock {
         fn now_unix_millis(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
+            self.time.load(Ordering::SeqCst)
         }
     }
     impl Clock for EventClock {
@@ -1233,7 +1301,12 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             &self,
             _: u64,
         ) -> BoxProviderFuture<'static, std::result::Result<(), ClockError>> {
-            panic!("finite actor drain must not start a timer")
+            self.armed.store(true, Ordering::SeqCst);
+            Box::pin(async {
+                Err(ClockError::Native(Arc::new(std::io::Error::other(
+                    "finite actor drain must not start a timer",
+                ))))
+            })
         }
     }
     let path = AgentPath::root(&id(217));
@@ -1277,7 +1350,10 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         None,
     )?;
     drop(notice_authority);
-    let clock = Arc::new(EventClock(AtomicU64::new(0)));
+    let clock = Arc::new(EventClock {
+        time: AtomicU64::new(0),
+        armed: AtomicBool::new(false),
+    });
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
@@ -1293,8 +1369,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             ),
             TurnAdmission::LocalRoot,
             executors_with_render_bytes(model.clone(), true, None, Some(4096))?,
-            LIMITS,
-            Default::default(),
+            (LIMITS, Default::default()),
         ));
         Ok(AgentHost::with_spawn_volumes(
             stream.clone(),
@@ -1382,7 +1457,11 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         }
     };
     let waking = stage_waking("run").await?;
-    host.send(&path, &super::user(), &waking).await?;
+    let Delivered::Committed { inbox: first_input } =
+        host.send(&path, &super::user(), &waking).await?
+    else {
+        return Err("the waking notice did not publish".into());
+    };
     host.drain(&path).await.expect("waking notice freezes");
     let frozen = host.state(&path).await?;
     assert!(
@@ -1415,7 +1494,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     // Restore the actual actor checkpoint, including the original due alarm.
     drop(host);
     let host = reopen()?;
-    clock.0.store(CONTINUE_NOW, Ordering::SeqCst);
+    clock.time.store(CONTINUE_NOW, Ordering::SeqCst);
     host.drain(&path)
         .await
         .expect("recovered frozen turn settles");
@@ -1426,7 +1505,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         "restored turn: {settled:?}; requests: {:?}",
         model.requests()
     );
-    assert_eq!(settled.pending_notices, Some(5..7));
+    assert_eq!(settled.pending_notices, None);
     let mut entries = stream
         .read(ReadRequest {
             key: None,
@@ -1475,8 +1554,12 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     );
     let first = batches(&requests[0]);
     let second = batches(&requests[1]);
-    assert_eq!(first.len(), 2, "parts share the original finite allowance");
-    let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        first.len(),
+        3,
+        "the boundary adds a separate steering block"
+    );
+    let flattened = first[..2].iter().flatten().cloned().collect::<Vec<_>>();
     let limits = acyclic_harness_core::conversation::Limits {
         render_bytes: Some(4096),
         ..Default::default()
@@ -1506,13 +1589,14 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         flattened[2].body,
         serde_json::json!({"paths": ["alpha", "beta"], "revision": "beta"})
     );
-    assert_eq!(second.len(), 3);
+    assert_eq!(first[2][0].body["paths"], serde_json::json!(["gamma"]));
+    assert_eq!(second.len(), 4);
     assert_eq!(
-        &second[..2],
+        &second[..first.len()],
         first.as_slice(),
         "rendered history is immutable"
     );
-    assert_eq!(second[2][0].body["paths"], serde_json::json!(["gamma"]));
+    assert_eq!(second[3][0].body["paths"], serde_json::json!(["again"]));
     assert_eq!(
         &requests[1].messages[..requests[0].messages.len()],
         requests[0].messages.as_slice()
@@ -1520,7 +1604,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     // The former latest-batch substitution changes the already admitted prefix.
     let mut rewritten = requests[0].messages.clone();
     rewritten[1].content = ModelContent::Part(ModelContentPart::Notices {
-        notices: second[2].clone(),
+        notices: first[2].clone(),
     });
     assert_ne!(rewritten, requests[1].messages[..rewritten.len()]);
     selected.validate(&path.child(&id(218))?)?;
@@ -1537,8 +1621,8 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         &path,
         &super::user(),
         &InboxRecord::Notice {
-            id: intent("cancelled"),
-            notice: NoticePayload::Quiet(event("cancelled", false)),
+            id: intent("unrelated"),
+            notice: NoticePayload::Quiet(event("unrelated", false)),
         },
     )
     .await?;
@@ -1546,10 +1630,19 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         .await
         .expect("cancellable quiet notice drains");
     assert!(host.state(&path).await?.pending_notices.is_some());
-    host.send(&path, &super::user(), &super::cancel("drop-events"))
-        .await?;
+    host.send(
+        &path,
+        &super::user(),
+        &InboxRecord::Cancel(Cancellation {
+            conversation: 0,
+            input: first_input,
+            by: super::user(),
+            id: intent("cancel-original"),
+        }),
+    )
+    .await?;
     host.drain(&path).await.expect("cancellation drains");
-    assert_eq!(host.state(&path).await?.pending_notices, None);
+    assert!(host.state(&path).await?.pending_notices.is_some());
     host.send(&path, &super::user(), &stage_waking("after-cancel").await?)
         .await?;
     host.drain(&path)
@@ -1560,19 +1653,23 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let after_cancel = batches(&requests[2]);
     assert_eq!(
         after_cancel.len(),
-        4,
-        "three immutable prior blocks and new input"
+        5,
+        "four immutable prior blocks and the new selection"
     );
-    assert_eq!(after_cancel[3].len(), 1);
-    assert_eq!(
-        after_cancel[3][0].body["paths"],
-        serde_json::json!(["after-cancel"])
+    assert_eq!(&after_cancel[..second.len()], second.as_slice());
+    assert!(
+        after_cancel[4]
+            .iter()
+            .any(|notice| notice.body["paths"] == serde_json::json!(["unrelated"]))
     );
     assert!(
-        !after_cancel
+        after_cancel[4]
             .iter()
-            .flatten()
-            .any(|notice| notice.body["revision"] == "cancelled")
+            .any(|notice| notice.body["paths"] == serde_json::json!(["after-cancel"]))
+    );
+    assert!(
+        !clock.armed.load(Ordering::SeqCst),
+        "finite drain armed a timer"
     );
     Ok(())
 }
@@ -1600,8 +1697,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         ),
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
-        LIMITS,
-        Default::default(),
+        (LIMITS, Default::default()),
     ));
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
@@ -1670,8 +1766,7 @@ async fn root_creation_creates_the_journal_and_refuses_an_earlier_one() -> Resul
             ),
             TurnAdmission::LocalRoot,
             executors(Arc::new(ScriptedModelProvider::new([])))?,
-            LIMITS,
-            Default::default(),
+            (LIMITS, Default::default()),
         ));
         let mut adoption = adopted(id(4));
         adoption.volumes = vec![binding];
@@ -1717,8 +1812,7 @@ async fn accepted_context_request_identity_survives_settlement() -> Result {
         ),
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
-        LIMITS,
-        Default::default(),
+        (LIMITS, Default::default()),
     ));
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
@@ -1795,11 +1889,13 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             ),
             TurnAdmission::LocalRoot,
             executors_with_targets(model.clone(), true, Some(targets))?,
-            TurnLimits {
-                history_turns,
-                ..LIMITS
-            },
-            Default::default(),
+            (
+                TurnLimits {
+                    history_turns,
+                    ..LIMITS
+                },
+                Default::default(),
+            ),
         ));
         let mut adoption = adopted(id(31));
         adoption.volumes = vec![binding];
@@ -1903,8 +1999,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
             ),
             TurnAdmission::LocalRoot,
             executors(model.clone())?,
-            LIMITS,
-            Default::default(),
+            (LIMITS, Default::default()),
         )
         .with_clock(clock.clone()),
     );
@@ -2086,8 +2181,7 @@ async fn admitted_root_after_its_child(
                     scope,
                 },
                 executors(model.clone()).expect("executors"),
-                LIMITS,
-                Default::default(),
+                (LIMITS, Default::default()),
             ))
         };
         // Both agents exist as production creates them: the hosted root, and
@@ -2260,7 +2354,8 @@ async fn an_admission_without_the_childs_volume_cannot_read_its_result() -> Resu
 #[tokio::test]
 async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_write() -> Result {
     let parent = AgentPath::root(&id(4));
-    let path = parent.child(&id(5))?;
+    let spawn_intent = intent("child");
+    let path = parent.child(&AgentId::derive(&parent.id(), spawn_intent.as_str()))?;
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "workload".into(),
@@ -2269,6 +2364,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
     let run = |operations: &'static [VolumeOperation]| {
         let (parent, path, audience, root) =
             (parent.clone(), path.clone(), audience.clone(), root.clone());
+        let spawn_intent = spawn_intent.clone();
         async move {
             let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
                 "done".into(),
@@ -2281,29 +2377,45 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
             }
             let scope =
                 root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
+            let stream = Arc::new(MemoryStream::default());
             let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-                Arc::new(MemoryStream::default()),
+                stream.clone(),
                 within(),
                 host,
                 root,
                 TurnAdmission::Admitted { audience, scope },
                 executors(model.clone())?,
-                LIMITS,
-                Default::default(),
+                (LIMITS, Default::default()),
             ));
-            let mut adoption = adopted(id(5));
+            let mut adoption = adopted(path.id());
             adoption.parent = Some(parent.clone());
             adoption.volumes = vec![binding];
-            let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+            let state = created_child(&stream, &parent, &spawn_intent, adoption).await?;
             let stepped = step(
                 &driver,
                 &path,
                 Some(state),
                 (2, 0),
-                requested("r1", &parent),
+                published_wake(&stream, &path, requested("r1", &parent)).await?,
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await;
+            let stepped = match stepped {
+                Ok(opened) if opened.alarm == Alarm::At(CONTINUE_NOW) => {
+                    let state = commit_turn_open(&stream, opened, 2).await?;
+                    assert!(model.requests().is_empty());
+                    step(
+                        &driver,
+                        &path,
+                        Some(state),
+                        (2, 0),
+                        Wake::Alarm,
+                        acyclic_actors::guest::CancellationToken::new(),
+                    )
+                    .await
+                }
+                other => other,
+            };
             Ok::<_, Box<dyn std::error::Error>>((
                 stepped.map(|stepped| stepped.state.phase),
                 model.requests().len(),
@@ -2311,9 +2423,10 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
         }
     };
     let (admitted, calls) = run(&[VolumeOperation::Read, VolumeOperation::Write]).await?;
+    let admitted = admitted?;
     assert!(
-        matches!(admitted?, Phase::Idle),
-        "a read-write admission runs the turn"
+        matches!(admitted, Phase::Idle),
+        "a read-write admission runs the turn: {admitted:?}"
     );
     assert_eq!(calls, 1);
     let (read_only, calls) = run(&[VolumeOperation::Read]).await?;
@@ -2340,7 +2453,7 @@ pub(super) struct Refusing {
 impl Refusing {
     fn refuse<T>(&self) -> std::result::Result<T, StreamError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(StreamError::Unsupported)
+        Err(StreamError::Unavailable)
     }
 }
 
@@ -2478,8 +2591,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                     scope,
                 },
                 executors(model.clone())?,
-                LIMITS,
-                Default::default(),
+                (LIMITS, Default::default()),
             ));
             let mut adoption = adopted(id(7));
             adoption.parent = Some(parent.clone());
@@ -2534,7 +2646,9 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                     assert!(calls > 0, "valid admission reaches the refusing stream");
                     assert!(error.uncertain(), "storage refusal cannot settle the input");
                     assert!(matches!(&error, Error::Turn(cause)
-                        if matches!(**cause, acyclic_harness_core::Error::Storage(_))));
+                        if matches!(cause.as_ref(), acyclic_harness_core::Error::Agent(source)
+                            if matches!(source.as_ref(), Error::Stream(error)
+                                if error.category() == acyclic_stream::StreamCategory::Unavailable))));
                 }
             }
             assert_eq!(model.requests().len(), 0);
@@ -2543,20 +2657,17 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
     };
     use acyclic_fs::access::ActionSet;
     let both = Grant::Exact(&[VolumeOperation::Read, VolumeOperation::Write]);
-    // Controls: a valid exact or structured admission reaches the stream (and
-    // fails there).
-    for grant in [both, Grant::Structured(ActionSet::MountWrite)] {
+    // The native turn host holds the existing journal. Exact and structured
+    // grants both reach history once the caller has private-volume authority.
+    for grant in [
+        both,
+        Grant::PrivateOnly,
+        Grant::Structured(ActionSet::MountWrite),
+    ] {
         let reached = run(audience.clone(), audience.clone(), None, grant).await?;
         assert!(reached > 0, "a valid admission reads its history");
     }
     for (case, issued, given, agent, grant) in [
-        (
-            "missing journal",
-            audience.clone(),
-            audience.clone(),
-            None,
-            Grant::PrivateOnly,
-        ),
         (
             "read-only",
             audience.clone(),
@@ -2778,8 +2889,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 issuer,
                 TurnAdmission::LocalRoot,
                 executors(model.clone())?,
-                LIMITS,
-                Default::default(),
+                (LIMITS, Default::default()),
             )
             .with_goals(Some(GoalContinuationPolicy {
                 max_continuations: Some(0),
@@ -2795,17 +2905,33 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 volume.clone(),
             ),
         ];
-        let first = step(
+        let opened = step(
             &driver,
             &path,
             Some(AgentState::adopted(path.clone(), &adoption)?),
             (2, 0),
-            requested("goal", &path),
+            published_wake(&stream, &path, requested("goal", &path)).await?,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let state = commit_turn_open(&stream, opened, 2).await?;
+        assert!(model.requests().is_empty());
+        let first = step(
+            &driver,
+            &path,
+            Some(state),
+            (2, 0),
+            Wake::Alarm,
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
         // Restoring the read/rewrite retry settles in this first step instead.
-        assert_eq!(edit.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            edit.reads.load(Ordering::SeqCst),
+            1,
+            "goal turn phase after the original write: {:?}",
+            first.state.phase
+        );
         assert!(first.state.turn.is_some());
         assert_eq!(turn_segment(&first.state)?, 0);
         assert_eq!(first.state.conversation_tail, 0);
@@ -2817,15 +2943,13 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         );
         assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
         assert_eq!(model.requests().len(), 1);
-        let commit = lower(&first, 2, delivery_key(&first.state, "goal-changed")?)?;
-        assert!(matches!(
-            stream.commit(commit.clone()).await?,
-            CommitOutcome::Committed(_)
-        ));
-        assert!(matches!(
-            stream.commit(commit).await?,
-            CommitOutcome::Committed(_)
-        ));
+        // This continuation changes only the actor checkpoint and alarm.
+        // A direct step test passes that checkpoint to its next delivery.
+        assert!(
+            lower(&first, 2, delivery_key(&first.state, "goal-changed")?)?
+                .effects
+                .is_empty()
+        );
         let second = step(
             &driver,
             &path,

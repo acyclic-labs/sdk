@@ -177,8 +177,8 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> Result<u8, Box<dyn s
             }
         }
         let stats = store.stats()?;
-        if !(&((stats.resident_entries, stats.resident_bytes))
-            == &((lru.len() as u64, lru.len() as u64 * length)))
+        if !(&(stats.resident_entries, stats.resident_bytes)
+            == &(lru.len() as u64, lru.len() as u64 * length))
         {
             return Err("decoded cache residency".into());
         };

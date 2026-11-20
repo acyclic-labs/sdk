@@ -441,12 +441,13 @@ fn one_required_probe_is_sufficient_at_the_exact_item_limit() {
     ] {
         let cancellation = CancellationToken::new();
         #[cfg(not(target_arch = "wasm32"))]
-        let original = crate::NativeMaterializationWork::new(
+        let original = crate::NativeMaterializationWork::root(
             WorkBudget {
                 items_examined: 1,
                 ..crate::performance::BOUNDARY_BUDGET
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let mut setup = match native {

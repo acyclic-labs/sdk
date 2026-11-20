@@ -196,8 +196,12 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
     #[cfg(not(target_arch = "wasm32"))]
     for native in [false, true] {
         let budget = crate::performance::BOUNDARY_BUDGET;
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            budget,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = if native {
             KernelAccounting::native(&original, &cancellation)
@@ -878,12 +882,13 @@ async fn native_diff_denies_frontier_allocation_before_backend_work()
     let store = MemoryObjectStore::default();
     let root = put(&store, &TreePage::Leaf(vec![entry("alpha", 1)?]), 8).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();

@@ -52,7 +52,10 @@ fn run_cut(
     child
         .args([
             "--exact",
-            "core_state::tests::core_crash_child_runs_until_its_crash_point",
+            acyclic_test_support::unit_test_name!(
+                super::core_crash_child_runs_until_its_crash_point
+            )
+            .as_str(),
             "--nocapture",
         ])
         .env("ACYCLIC_CORE_STATE_CRASH_ROOT", &root)

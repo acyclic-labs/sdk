@@ -10,30 +10,35 @@ pub(super) fn order_host_checkout_union(
     let compare = |left: &(NamespacePath, Option<HostStat>),
                    right: &(NamespacePath, ())|
      -> Result<std::cmp::Ordering, CaptureError> {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
         Ok(left.0.cmp(&right.0))
     };
-    // Count before allocating: duplicate names must not reserve output credit.
-    let mut count = 0_usize;
-    acyclic_collections::page::merge::ordered(
-        observed.iter(),
-        checkout_paths.iter(),
-        |left, right| compare(left, right),
-        |_, _| {
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(1),
-            )?;
-            count = count.checked_add(1).ok_or(WorkError::Overflow)?;
-            if maximum.is_some_and(|maximum| count > maximum) {
-                return Err(CaptureError::InvalidOptions);
-            }
-            Ok(())
-        },
-    )?;
+    let count = if observed.is_empty() || checkout_paths.is_empty() {
+        // The input lengths already determine the output when there is no
+        // other side to overlap, as in the first capture of a workspace.
+        let count = observed.len().max(checkout_paths.len());
+        if maximum.is_some_and(|maximum| count > maximum) {
+            return Err(CaptureError::InvalidOptions);
+        }
+        count
+    } else {
+        // Count before allocating: duplicate names must not reserve output credit.
+        let mut count = 0_usize;
+        acyclic_collections::page::merge::ordered(
+            observed.iter(),
+            checkout_paths.iter(),
+            |left, right| compare(left, right),
+            |_, _| {
+                capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
+                count = count.checked_add(1).ok_or(WorkError::Overflow)?;
+                if maximum.is_some_and(|maximum| count > maximum) {
+                    return Err(CaptureError::InvalidOptions);
+                }
+                Ok(())
+            },
+        )?;
+        count
+    };
     let observed_bytes = vector_bytes(&observed);
     let checkout_bytes = vector_bytes(&checkout_paths);
     let mut observations = capture_vec(count, meter)?;

@@ -371,7 +371,7 @@ impl ViewLedger {
         path: &NamespacePath,
         file_id: Option<FileId>,
         stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<bool, MountSourceError> {
         work.check().map_err(MountSourceError::from)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
@@ -384,7 +384,7 @@ impl ViewLedger {
         path: &NamespacePath,
         file_id: Option<FileId>,
         stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
             let mut terminal = key_of(&());
@@ -407,7 +407,7 @@ impl ViewLedger {
         &self,
         path: &NamespacePath,
         stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
             stamp.precedes_none_of(&self.unconfirmed)
@@ -421,7 +421,7 @@ impl ViewLedger {
         &self,
         path: &NamespacePath,
         stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
             let directory = path.components().iter().fold(key_of(&()), hash_child);
@@ -436,7 +436,7 @@ impl ViewLedger {
         &self,
         file_id: FileId,
         stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
+        work: &mut crate::ledger::DemandWork,
     ) -> Result<bool, MountSourceError> {
         work.charge(scan_work(3)).map_err(MountSourceError::from)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
@@ -536,7 +536,7 @@ fn child_key(
 
 fn admitted_names<T>(
     names: &[LogicalName],
-    work: &mut crate::demand::DemandWork,
+    work: &mut crate::ledger::DemandWork,
     read: impl FnOnce() -> T,
 ) -> Result<T, MountSourceError> {
     let mut scratch = 0_u64;
@@ -576,5 +576,5 @@ fn admitted_names<T>(
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
 mod tests;

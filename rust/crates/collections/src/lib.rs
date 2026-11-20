@@ -10,7 +10,7 @@ acyclic_test_support::counting_allocator!();
 
 mod arc;
 mod compiled_prefix;
-pub mod page;
+pub use acyclic_collections_page as page;
 pub use arc::arc_allocation_bytes;
 pub use compiled_prefix::{
     CompiledPrefixError, CompiledPrefixIndex, EntryBytes, PrefixKey, PrefixMatch, PrefixMatches,

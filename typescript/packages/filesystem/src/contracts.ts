@@ -587,7 +587,7 @@ export interface NativeWorkspaceMountOptions {
 }
 export interface NativeWorkspaceMount {
   readonly path: string;
-  sync(): Promise<void>;
+  sync(): Promise<boolean>;
   unmount(): Promise<boolean>;
 }
 export interface NativeFsWorkspace extends FsWorkspace {

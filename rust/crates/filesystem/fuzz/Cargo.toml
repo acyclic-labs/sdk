@@ -6,6 +6,9 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 
+[package.metadata.bazel]
+integration-test-shards = 2
+
 [package.metadata]
 cargo-fuzz = true
 
@@ -40,13 +43,8 @@ proptest.workspace = true
 loom = "0.7.3"
 
 [[test]]
-name = "model"
-path = "tests/model.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "window_state"
-path = "tests/window_state.rs"
+name = "main"
+path = "tests/main.rs"
 
 [[bin]]
 name = "access"

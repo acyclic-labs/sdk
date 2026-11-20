@@ -23,6 +23,9 @@ mod pause;
 mod placement;
 mod state;
 mod subscriptions;
+#[cfg(test)]
+#[cfg(runtime_tests)]
+mod tests;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
@@ -816,12 +819,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Drain one tracked actor using finite reads of its committed input.
     /// Only declared interrupts retain a follow while their handler is
     /// running; no idle follow is retained.
-    pub async fn drain_actor(&self, actor: &ActorReference) -> Result<(), Error> {
-        acyclic_observability::async_operation!(
+    pub fn drain_actor<'a>(
+        &'a self,
+        actor: &'a ActorReference,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask + 'a
+    {
+        acyclic_observability::operation_future!(
             "acyclic.actors.drain_actor",
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async {
+            async move {
                 let delivery = self
                     .pin(actor)?
                     .ok_or(Error::Invalid("actor is not tracked"))?;
@@ -2401,7 +2408,7 @@ async fn submit_delivery<P: StreamProvider + ?Sized>(
 
 /// One stable key per intent at one exact cut: an uncertain acknowledgement
 /// retries the identical request, and distinct cuts never share a key.
-fn key(snapshot: &Snapshot, operation: &str) -> Result<IdempotencyKey, Error> {
+pub fn key(snapshot: &Snapshot, operation: &str) -> Result<IdempotencyKey, Error> {
     // Hashed so any valid root and path fit the bounded key; parts are
     // length-prefixed so distinct (path, tail, operation) never collide.
     let mut hash = Sha256::new();
@@ -2417,6 +2424,3 @@ fn key(snapshot: &Snapshot, operation: &str) -> Result<IdempotencyKey, Error> {
         [b"actors/v1/".as_slice(), hash.finalize().as_slice()].concat(),
     )?)
 }
-
-#[cfg(test)]
-mod tests;

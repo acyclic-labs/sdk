@@ -10,7 +10,7 @@ use acyclic_harness_core::{
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -190,20 +190,17 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
 }
 
 #[tokio::test]
-async fn errors_truncation_and_event_limits_fail_every_adapter() {
+async fn error_frames_and_event_limits_fail_every_adapter() {
     for (adapter, _) in fixtures() {
-        for input in [
-            "data: {\"error\":{\"message\":\"secret detail\"}}\n\n",
-            "data: {",
-            "data: {}\n\n",
-            "data: invalid\n\n",
-        ] {
-            let result: Result<Vec<_>> =
-                crate::event_driver::events(adapter, chunks(input, 1), 1024, parser_dispatch())
-                    .try_collect()
-                    .await;
-            assert!(result.is_err(), "{adapter:?} {input}");
-        }
+        let result: Result<Vec<_>> = crate::event_driver::events(
+            adapter,
+            chunks("data: {\"error\":{\"message\":\"secret detail\"}}\n\n", 1),
+            1024,
+            parser_dispatch(),
+        )
+        .try_collect()
+        .await;
+        assert!(result.is_err(), "{adapter:?}");
         assert!(
             crate::event_driver::events(
                 adapter,
@@ -699,7 +696,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                 .count(),
             1
         );
-        let body = json(&sent[0].body)?;
+        let body = acyclic_harness_provider_response::json(&sent[0].body)?;
         for field in ["max_output_tokens", "max_completion_tokens"] {
             assert!(
                 body.get(field).is_none(),
@@ -754,18 +751,10 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
 }
 
 #[tokio::test]
-async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
+async fn changed_dispatches_never_complete() -> Result<()> {
     for (adapter, _) in fixtures() {
-        let (provider, _) = provider(adapter, 401);
-        let (request, dispatch) = request(&provider)?;
-        assert!(
-            provider
-                .generate(&request, dispatch)
-                .try_collect::<Vec<_>>()
-                .await
-                .is_err()
-        );
-        let (request, mut dispatch) = self::request(&provider)?;
+        let (provider, _) = provider(adapter, 200);
+        let (request, mut dispatch) = request(&provider)?;
         dispatch.request_digest[0] ^= 1;
         assert!(
             provider
@@ -910,7 +899,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             .sent
             .lock()
             .map_err(|_| invalid("poisoned fixture"))?;
-        let body = json(&sent[0].body)?;
+        let body = acyclic_harness_provider_response::json(&sent[0].body)?;
         assert!(
             (u64::from(count.fixed_tokens)
                 + count

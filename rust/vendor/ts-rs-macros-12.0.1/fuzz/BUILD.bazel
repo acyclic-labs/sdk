@@ -9,7 +9,7 @@ FEATURES = [
         "serde-compat",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"ts-rs-attribute-fuzz","CARGO_PKG_LICENSE":"MIT"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"ts-rs-attribute-fuzz","CARGO_PKG_LICENSE":"MIT"}
 
 extract_cargo_lints(
     name = "lints",
@@ -19,7 +19,7 @@ extract_cargo_lints(
 rust_library(
     name = "ts_rs_attribute_fuzz",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","fuzz_targets/serde_attributes.rs"], allow_empty = True) + [
         "//rust/vendor/ts-rs-macros-12.0.1:src/attr/enum.rs",
         "//rust/vendor/ts-rs-macros-12.0.1:src/attr/field.rs",
         "//rust/vendor/ts-rs-macros-12.0.1:src/attr/mod.rs",
@@ -30,6 +30,7 @@ rust_library(
         "//rust/vendor/ts-rs-macros-12.0.1:src/utils.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -55,8 +56,10 @@ rust_library(
 rust_binary(
     name = "serde_attributes",
     crate_root = "fuzz_targets/serde_attributes.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/serde_attributes.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,

@@ -120,7 +120,7 @@ impl PendingPreservation {
 impl Drop for PendingPreservation {
     fn drop(&mut self) {
         self.close
-            .started_drop_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1));
+            .started_drop_io(crate::ledger::NativeResourceCredit::WriteOperations.delta(1));
     }
 }
 
@@ -271,7 +271,7 @@ impl NativeMountRecoveryOwner {
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| NativeMountError::from(error))?;
-        original.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
+        original.charge(crate::ledger::NativeResourceCredit::ReadOperations.delta(1))?;
         let directory = cap_std::fs::Dir::from_std_file(parent.try_clone()?.into());
         Self::acquire_bound(
             destination,
@@ -711,9 +711,8 @@ impl NativeRecoveryState {
         if self.preservation.is_none() {
             use crate::native_host::NativeHostWork as _;
             let (name, custody) = work.path(residue_name, None)?;
-            let close = work.reserve_work(
-                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            )?;
+            let close =
+                work.reserve_work(crate::ledger::NativeResourceCredit::WriteOperations.delta(1))?;
             // Pre-fund physical completion on the acquisition's original ledger.
             // Losing this action's caller or budget cannot revoke the flushes.
             let flush = self
@@ -721,7 +720,7 @@ impl NativeRecoveryState {
                 .work()
                 .reserve_work(PendingPreservation::flush_work())?;
             let parent = (&mut &*work).attempt_io(
-                crate::materializer::NativeResourceCredit::ReadOperations.delta(1),
+                crate::ledger::NativeResourceCredit::ReadOperations.delta(1),
                 || residue_parent.try_clone(),
             )?;
             self.preservation = Some(PendingPreservation {

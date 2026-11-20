@@ -156,6 +156,8 @@ pub enum Error<C = Box<PreparedPublish>> {
     AdmissionClosed(tokio::sync::AcquireError),
     /// A request contradicts the durable state machine.
     Invalid(&'static str),
+    /// The deployment's subscription manifest is invalid.
+    Contract(crate::ContractError),
 }
 
 const _: () = assert!(std::mem::size_of::<Error>() <= 24);
@@ -229,6 +231,7 @@ impl<C> std::fmt::Display for Error<C> {
                 formatter.write_str("invalid actor transition: runtime admission is closed")
             }
             Self::Invalid(reason) => write!(formatter, "invalid actor transition: {reason}"),
+            Self::Contract(error) => write!(formatter, "invalid actor contract: {error}"),
         }
     }
 }
@@ -249,6 +252,7 @@ impl<C: std::fmt::Debug> std::error::Error for Error<C> {
                 Some(source.as_ref())
             }
             Self::AdmissionClosed(error) => Some(error),
+            Self::Contract(error) => Some(error),
             _ => None,
         }
     }
@@ -281,6 +285,12 @@ impl From<StreamError> for Error {
 impl From<GuestError> for Error {
     fn from(error: GuestError) -> Self {
         Self::Handler(Box::new(error))
+    }
+}
+
+impl From<crate::ContractError> for Error {
+    fn from(error: crate::ContractError) -> Self {
+        Self::Contract(error)
     }
 }
 
@@ -327,6 +337,7 @@ impl Error {
             Self::Deleted => Error::Deleted,
             Self::AdmissionClosed(error) => Error::AdmissionClosed(error),
             Self::Invalid(reason) => Error::Invalid(reason),
+            Self::Contract(error) => Error::Contract(error),
         }
     }
 }
@@ -365,7 +376,8 @@ impl<C> Error<C> {
             | Self::UndecidedUnchanged(_)
             | Self::InvocationFailed { .. }
             | Self::Deleted
-            | Self::Invalid(_) => false,
+            | Self::Invalid(_)
+            | Self::Contract(_) => false,
         }
     }
 
@@ -394,6 +406,7 @@ impl<C> Error<C> {
             Self::AlarmNotDue { .. } => "alarm_not_due",
             Self::Deleted => "deleted",
             Self::Invalid(_) | Self::AdmissionClosed(_) => "invalid",
+            Self::Contract(_) => "contract",
         }
     }
 }
@@ -634,28 +647,7 @@ impl std::fmt::Debug for PreparedPublish {
             .finish_non_exhaustive()
     }
 }
-/// A read-only view of a prepared publication's request. It neither clones
-/// into nor dereferences to a [`CommitRequest`], so no caller can commit it:
-/// a prepared publication commits only through [`Store::submit_retained`],
-/// which settles first, or through the guarded [`PreparedPublish::into_request`].
-#[derive(Debug)]
-pub struct RequestView<'a>(&'a CommitRequest);
-impl<'a> RequestView<'a> {
-    /// Every mutation, in effect order.
-    pub fn mutations(&self) -> impl Iterator<Item = &'a CommitMutation> + 'a {
-        self.0.mutations()
-    }
-}
-impl PartialEq<CommitRequest> for RequestView<'_> {
-    fn eq(&self, other: &CommitRequest) -> bool {
-        self.0 == other
-    }
-}
 impl PreparedPublish {
-    /// The request, including the actor's own Head/Absent condition.
-    pub const fn request(&self) -> RequestView<'_> {
-        RequestView(&self.request)
-    }
     /// Join the sealed authored state with its confirmed publication range.
     fn retained(&mut self, receipt: &CommitReceipt) -> Result<Option<Snapshot>, Error> {
         let Some(path) = &self.own else {
@@ -2276,7 +2268,9 @@ fn change_alarm(alarm: &mut Alarm, change: AlarmChange) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(runtime_tests)))]
 mod model;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod oracle;
+#[cfg(all(test, not(target_arch = "wasm32"), not(runtime_tests)))]
 mod tests;

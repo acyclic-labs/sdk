@@ -1,0 +1,513 @@
+//! Session receive-credit accounting shared by transport adapters.
+
+use acyclic_stream_contract_core::{CommitId, Record, StreamError, StreamProvider};
+use acyclic_stream_wire::wire;
+use prost::Message as _;
+
+mod resource;
+pub use resource::{stream_path, stream_resource, stream_resource_matches, validate_resource};
+mod framing;
+pub use framing::{FrameDecoder, encode_grpc_frame};
+
+/// `SessionClosed.code` of a finite channel that delivered its whole range.
+/// It is the only non-error close code; any other code is a [`StreamError`].
+pub const END_CODE: &str = "end";
+
+/// Decode a channel's category together with the diagnostic its owner sent.
+/// A close without an additional message uses its canonical category text.
+#[must_use]
+pub fn closed_error(closed: &wire::SessionClosed) -> StreamError {
+    let category = StreamError::from_session_close(&closed.code);
+    let canonical = tonic::Status::from(&category);
+    if closed.message.is_empty() || closed.message == canonical.message() {
+        return category;
+    }
+    acyclic_auth::refusal::Refusal::capture(
+        canonical.code() as i32,
+        &closed.message,
+        b"",
+        &http::HeaderMap::new(),
+        super::status::canonical(category.category()),
+        None,
+    )
+    .map_or_else(
+        || category.clone(),
+        |refusal| category.clone().with_refusal(refusal),
+    )
+}
+
+/// One input frame on its original call generation. No total length or EOF
+/// is inferred from the data; only the ordered input terminal closes it.
+pub fn input_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
+    let after = data.after.as_ref().ok_or(StreamError::InvalidArgument)?;
+    let next = next.checked_add(1).ok_or(StreamError::OutOfRange)?;
+    if !after.opaque.is_empty()
+        || after.next != next
+        || data.accepted != 0
+        || data.durable != 0
+        || !matches!(&data.item, Some(wire::session_data::Item::ActorCall(bytes))
+            if !bytes.is_empty() && bytes.len() <= acyclic_stream_contract_core::MAX_RECORD_BYTES)
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(next)
+}
+
+/// One fragment of a finite one-shot reply: an Actors call or a children page.
+pub fn reply_chunk(item: Option<&wire::session_data::Item>) -> Option<&bytes::Bytes> {
+    match item {
+        Some(
+            wire::session_data::Item::ActorCall(chunk)
+            | wire::session_data::Item::ChildrenPage(chunk)
+            | wire::session_data::Item::Heads(chunk),
+        ) => Some(chunk),
+        _ => None,
+    }
+}
+
+/// Actor-call chunks carry the immutable total byte length as an eight-byte
+/// little-endian opaque cursor. The record cursor counts consecutive chunks.
+pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> {
+    let opaque = &data
+        .after
+        .as_ref()
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyCursorFailure::Missing))?
+        .opaque;
+    let bytes: [u8; 8] = opaque
+        .as_ref()
+        .try_into()
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    let total = usize::try_from(u64::from_le_bytes(bytes))
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    if total == 0 {
+        return Err(StreamError::InvalidResponse.with_source(ReplyCursorFailure::Empty));
+    }
+    Ok(total)
+}
+
+#[derive(Debug, thiserror::Error)]
+/// Why a finite reply carries no usable cursor.
+pub enum ReplyCursorFailure {
+    #[error("original finite reply has no cursor")]
+    /// The reply has no cursor.
+    Missing,
+    #[error("original finite reply advertises an empty total")]
+    /// The reply advertises an empty total.
+    Empty,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReplyFragmentFailure {
+    #[error("finite reply fragment has no reply payload")]
+    Payload,
+    #[error("finite reply position {next} is outside advertised total {total}")]
+    Position { next: u64, total: usize },
+    #[error(
+        "finite reply fragment at {next}: cursor={advertised}, bytes={bytes}, total={total}, accepted={accepted}, durable={durable}, changed={changed}"
+    )]
+    Shape {
+        next: u64,
+        advertised: u64,
+        bytes: usize,
+        total: usize,
+        accepted: u64,
+        durable: u64,
+        changed: bool,
+    },
+}
+
+/// Admit one ordered, bounded fragment without returning credit or advancing
+/// application progress. The entire response belongs to this one generation.
+pub fn actor_call_sequence(
+    next: u64,
+    previous_opaque: &[u8],
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    let after = data
+        .after
+        .as_ref()
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyCursorFailure::Missing))?;
+    let total = actor_call_total(data)?;
+    let chunk = reply_chunk(data.item.as_ref())
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Payload))?;
+    let index =
+        usize::try_from(next).map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    let start = index
+        .checked_mul(acyclic_stream_contract_core::MAX_RECORD_BYTES)
+        .filter(|start| *start < total)
+        .ok_or_else(|| {
+            StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Position { next, total })
+        })?;
+    if chunk.is_empty()
+        || chunk.len() > acyclic_stream_contract_core::MAX_RECORD_BYTES
+        || chunk.len() > total
+        || chunk.len() != (total - start).min(acyclic_stream_contract_core::MAX_RECORD_BYTES)
+        || (!previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref())
+        || after.next
+            != next.checked_add(1).ok_or_else(|| {
+                StreamError::OutOfRange.with_source(ReplyFragmentFailure::Position { next, total })
+            })?
+        || data.accepted != after.next
+        || data.durable != 0
+    {
+        return Err(
+            StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Shape {
+                next,
+                advertised: after.next,
+                bytes: chunk.len(),
+                total,
+                accepted: data.accepted,
+                durable: data.durable,
+                changed: !previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref(),
+            }),
+        );
+    }
+    Ok(next)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SocketFrameFailure {
+    #[error("actor socket frame has no cursor")]
+    MissingCursor,
+    #[error("actor socket frame sequence overflows at {next}")]
+    Overflow { next: u64 },
+    #[error(
+        "actor socket frame at {next}: cursor={advertised}, opaque bytes={opaque_bytes}, accepted={accepted}, durable={durable}, whole={whole}"
+    )]
+    Shape {
+        next: u64,
+        advertised: u64,
+        opaque_bytes: usize,
+        accepted: u64,
+        durable: u64,
+        whole: bool,
+    },
+}
+
+/// Admit one whole actor-socket frame: `after.next` counts frames from 1 on
+/// one generation, with an empty opaque cursor. Frames are never spliced
+/// across a reconnect, because a socket channel is never replayed.
+pub fn actor_socket_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
+    let after = data.after.as_ref().ok_or_else(|| {
+        StreamError::InvalidResponse.with_source(SocketFrameFailure::MissingCursor)
+    })?;
+    let whole = matches!(
+        &data.item,
+        Some(wire::session_data::Item::ActorSocket(frame))
+            if !frame.is_empty() && frame.len() <= acyclic_stream_contract_core::MAX_RECORD_BYTES
+    );
+    if !whole
+        || !after.opaque.is_empty()
+        || after.next
+            != next.checked_add(1).ok_or_else(|| {
+                StreamError::OutOfRange.with_source(SocketFrameFailure::Overflow { next })
+            })?
+        || data.accepted != after.next
+        || data.durable != 0
+    {
+        return Err(
+            StreamError::InvalidResponse.with_source(SocketFrameFailure::Shape {
+                next,
+                advertised: after.next,
+                opaque_bytes: after.opaque.len(),
+                accepted: data.accepted,
+                durable: data.durable,
+                whole,
+            }),
+        );
+    }
+    Ok(next)
+}
+
+/// Decodes a bounded peer session message; protocol validation remains in the pool.
+pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
+    if bytes.len() > acyclic_stream_contract_core::MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    wire::SessionFrame::decode(bytes)
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))
+}
+
+/// Validates a logical Streams follow without creating transport state.
+pub fn validate_follow(
+    follow: &wire::SessionFollow,
+    resume: &wire::SessionCursor,
+) -> Result<(), StreamError> {
+    validate_resource(&follow.resource)?;
+    if follow.opening_cut
+        && (follow.delivery != wire::SessionDelivery::All as i32
+            || follow.until.is_some()
+            || follow.key.is_some())
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    if let Some(key) = &follow.key {
+        acyclic_stream_contract_core::ReadKeySeek::validate_parts(
+            &key.key,
+            key.end.as_deref(),
+            acyclic_stream_contract_core::ReadOrder::from_wire(key.order)?,
+        )?;
+        acyclic_stream_contract_core::validate_limit(follow.read_limit)?;
+        if follow.delivery != wire::SessionDelivery::All as i32
+            || !tracks_revisions(follow)
+            || follow.until != Some(key.before)
+            || !follow.preceding_commit_id.is_empty()
+            || follow.bootstrap_head
+            || follow.when_absent != wire::WhenAbsent::NotFound as i32
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+    } else if follow.read_limit != 0 {
+        return Err(StreamError::InvalidArgument);
+    }
+    let when_absent = acyclic_stream_contract_core::WhenAbsent::from_wire(follow.when_absent)?;
+    if !resume.opaque.is_empty()
+        || (when_absent != acyclic_stream_contract_core::WhenAbsent::NotFound
+            && (follow.until.is_some() || !tracks_revisions(follow)))
+        || (follow.bootstrap_head && !tracks_revisions(follow))
+        || !matches!(
+            wire::SessionDelivery::try_from(follow.delivery),
+            Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
+        )
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    preceding_follow(follow, resume)?;
+    follow_bound(follow)?;
+    Ok(())
+}
+
+/// Whether a follow's source is a Streams authority, which serves and reports
+/// revisions. Product resources (such as `fs:/` watches) own their cursors and
+/// carry only the caller's explicit minimum, never the client's stream floor.
+#[must_use]
+pub fn tracks_revisions(follow: &wire::SessionFollow) -> bool {
+    follow.resource.starts_with("streams:/")
+}
+
+/// Decodes the optional exclusive end of a bounded follow (the session read).
+/// ALL stream and filesystem-change follows retain original sequence positions.
+/// LATEST conflates away the positions a bound counts. Filesystem reads keep
+/// their owning provider's cut, independently of the client's Streams floor.
+pub fn follow_bound(follow: &wire::SessionFollow) -> Result<Option<u64>, StreamError> {
+    if follow.until.is_none() && follow.key.is_none() {
+        return Ok(None);
+    }
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || !(tracks_revisions(follow) || follow.resource.starts_with("fs:/"))
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(follow.until)
+}
+
+/// Checks data on a logical follow. An indexed read's cursor counts results
+/// from its opening cursor, so it is dense in every read order; the reader
+/// checks each record's place in the read with [`acyclic_stream_contract_core::ReadKeySeek::advance`].
+pub fn follow_data_sequence(
+    follow: &wire::SessionFollow,
+    next: u64,
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    let Some(key) = &follow.key else {
+        return follow_sequence(follow.delivery, next, data);
+    };
+    let Some(wire::session_data::Item::Record(record)) = &data.item else {
+        return Err(StreamError::InvalidResponse);
+    };
+    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    if record.sequence >= key.before
+        || record.commit_id.len() != 32
+        || next.checked_add(1) != Some(after.next)
+        || !after.opaque.is_empty()
+        || data.durable > data.accepted
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok(next)
+}
+
+/// Decodes the optional atomic history guard of a full-fidelity follow.
+pub fn preceding_follow(
+    follow: &wire::SessionFollow,
+    resume: &wire::SessionCursor,
+) -> Result<Option<acyclic_stream_contract_core::CommitId>, StreamError> {
+    if follow.preceding_commit_id.is_empty() {
+        return Ok(None);
+    }
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || resume.next == 0
+        || !resume.opaque.is_empty()
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    super::commit_id(&follow.preceding_commit_id)
+        .map(Some)
+        .map_err(|_| StreamError::InvalidArgument)
+}
+
+/// Requires affirmative provider enforcement before a checked channel gets credit.
+pub fn confirm_follow(
+    preceding: Option<acyclic_stream_contract_core::CommitId>,
+    opened: &wire::SessionOpened,
+) -> Result<(), StreamError> {
+    if let Some(preceding) = preceding
+        && opened.preceding_commit_id.as_ref() != preceding.as_bytes()
+    {
+        return Err(StreamError::Unsupported);
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SnapshotCursorFailure {
+    #[error("snapshot continuation requires a nonzero cut")]
+    ZeroCut,
+    #[error("initial snapshot cursor carries {bytes} unexpected anchor bytes")]
+    InitialAnchor { bytes: usize },
+}
+
+/// Complete record continuation at a nonzero cut, including its immutable anchor.
+/// The provider-owned `opaque` field carries the 32-byte commit ID of `next - 1`.
+/// ALL-record route adapters resume this token through [`follow_records`], and
+/// retain it unchanged on placement moves. No new frame or cursor schema is used.
+pub fn record_cursor(next: u64, preceding: CommitId) -> Result<wire::SessionCursor, StreamError> {
+    if next == 0 {
+        return Err(StreamError::InvalidArgument.with_source(SnapshotCursorFailure::ZeroCut));
+    }
+    Ok(wire::SessionCursor {
+        next,
+        opaque: preceding.as_bytes().to_vec().into(),
+    })
+}
+
+/// Validates the canonical ALL-record cursor without normalizing malformed input.
+pub fn record_anchor(cursor: &wire::SessionCursor) -> Result<Option<CommitId>, StreamError> {
+    if cursor.next == 0 {
+        return if cursor.opaque.is_empty() {
+            Ok(None)
+        } else {
+            Err(
+                StreamError::InvalidArgument.with_source(SnapshotCursorFailure::InitialAnchor {
+                    bytes: cursor.opaque.len(),
+                }),
+            )
+        };
+    }
+    CommitId::try_from(cursor.opaque.as_ref())
+        .map(Some)
+        .map_err(|source| StreamError::InvalidArgument.with_source(source))
+}
+
+/// Opens the platform's ALL-record session route. Anchor checking and subscription
+/// are one provider operation, so accepted-history replacement cannot splice cuts.
+pub async fn follow_records<P: StreamProvider + ?Sized>(
+    provider: &P,
+    follow: &wire::SessionFollow,
+    cursor: &wire::SessionCursor,
+) -> Result<
+    impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + acyclic_stream_contract_core::ProviderTask + use<P>,
+    StreamError,
+> {
+    if follow.delivery != wire::SessionDelivery::All as i32 {
+        return Err(StreamError::InvalidArgument);
+    }
+    let path = stream_path(&follow.resource)?;
+    let preceding = record_anchor(cursor)?;
+    Ok(acyclic_stream_contract_core::records_only(
+        provider
+            .follow(acyclic_stream_contract_core::FollowRequest {
+                bootstrap_head: false,
+                until: None,
+                when_absent: acyclic_stream_contract_core::WhenAbsent::from_wire(follow.when_absent)?,
+                path,
+                from: if preceding.is_some() { cursor.next } else { 0 },
+                preceding,
+                filter: acyclic_stream_contract_core::FollowFilter::default(),
+                progress: false,
+                at_least: super::cut_from_wire(follow.at_least.clone())?,
+            })
+            .await?,
+    ))
+}
+
+/// Validates a peer's ALL/LATEST data against the next received cursor.
+/// LATEST can skip conflated values; ALL must remain consecutive. The caller
+/// advances application progress only when this admitted delivery is consumed.
+pub fn follow_sequence(
+    delivery: i32,
+    next: u64,
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    use wire::{SessionDelivery, session_data::Item};
+    let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+    if !after.opaque.is_empty() || data.accepted < after.next || data.durable > data.accepted {
+        return Err(StreamError::Unavailable);
+    }
+    match (SessionDelivery::try_from(delivery), &data.item) {
+        (Ok(SessionDelivery::All), Some(Item::Record(record)))
+            if record.commit_id.len() == 32 && record.sequence == next =>
+        {
+            if after.next
+                != record
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(StreamError::OutOfRange)?
+            {
+                return Err(StreamError::Unavailable);
+            }
+            Ok(record.sequence)
+        }
+        (Ok(SessionDelivery::Latest), Some(Item::LatestValue(value)))
+            if !value.key.is_empty() && after.next > next =>
+        {
+            Ok(after.next - 1)
+        }
+        _ => Err(StreamError::Unavailable),
+    }
+}
+
+/// Adds a receive-credit grant without partially applying an overflowing grant.
+pub fn grant_credit(
+    remaining: &mut wire::SessionWindow,
+    grant: &wire::SessionWindow,
+) -> Result<(), StreamError> {
+    let bytes = remaining
+        .bytes
+        .checked_add(grant.bytes)
+        .ok_or(StreamError::LimitExceeded)?;
+    let frames = remaining
+        .frames
+        .checked_add(grant.frames)
+        .ok_or(StreamError::LimitExceeded)?;
+    remaining.bytes = bytes;
+    remaining.frames = frames;
+    Ok(())
+}
+
+/// Debits one encoded data frame; control frames never consume data credit.
+pub fn consume_credit(
+    remaining: &mut wire::SessionWindow,
+    frame: &wire::SessionFrame,
+) -> Result<(), StreamError> {
+    match frame.body.as_ref() {
+        None => return Err(StreamError::InvalidArgument),
+        Some(wire::session_frame::Body::Data(_)) if frame.channel_id == 0 => {
+            return Err(StreamError::InvalidArgument);
+        }
+        Some(wire::session_frame::Body::Data(_)) => {}
+        Some(_) => return Ok(()),
+    }
+    let length = u64::try_from(frame.encoded_len()).map_err(|_| StreamError::LimitExceeded)?;
+    let bytes = remaining
+        .bytes
+        .checked_sub(length)
+        .ok_or(StreamError::Capacity)?;
+    let frames = remaining
+        .frames
+        .checked_sub(1)
+        .ok_or(StreamError::Capacity)?;
+    remaining.bytes = bytes;
+    remaining.frames = frames;
+    Ok(())
+}

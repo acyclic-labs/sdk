@@ -1,5 +1,5 @@
 {
-  "checksum": "f4e6ef21bbacc8e81e4eb873a6e71a3af0af2a88dbe16d5e90484491b59705ae",
+  "checksum": "d85053af24111c3677eac5cf1dd9b6c5d9d36cff2f516b8f93822723c6a93617",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -2742,45 +2742,6 @@
       ],
       "version": "0.8.0"
     },
-    "bit-set 0.11.1": {
-      "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
-        "deps": [
-          {
-            "id": "bit-vec 0.10.1",
-            "target": "bit_vec"
-          }
-        ],
-        "edition": "2021"
-      },
-      "library_target_name": "bit_set",
-      "license": "Apache-2.0 OR MIT",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "bit-set",
-      "package_url": "https://github.com/contain-rs/bit-vec",
-      "repository": {
-        "Http": {
-          "sha256": "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c",
-          "url": "https://static.crates.io/crates/bit-set/0.11.1/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "bit_set",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.11.1"
-    },
     "bit-set 0.8.0": {
       "common_attrs": {
         "crate_features": [
@@ -2818,39 +2779,6 @@
         }
       ],
       "version": "0.8.0"
-    },
-    "bit-vec 0.10.1": {
-      "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
-        "edition": "2021"
-      },
-      "library_target_name": "bit_vec",
-      "license": "Apache-2.0 OR MIT",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "bit-vec",
-      "package_url": "https://github.com/contain-rs/bit-vec",
-      "repository": {
-        "Http": {
-          "sha256": "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269",
-          "url": "https://static.crates.io/crates/bit-vec/0.10.1/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "bit_vec",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.10.1"
     },
     "bit-vec 0.8.0": {
       "common_attrs": {
@@ -3303,102 +3231,6 @@
         }
       ],
       "version": "0.2.4"
-    },
-    "borsh 1.8.1": {
-      "build_script_attrs": {
-        "deps": [
-          {
-            "id": "cfg_aliases 0.2.2",
-            "target": "cfg_aliases"
-          }
-        ]
-      },
-      "common_attrs": {
-        "edition": "2018",
-        "extra_deps": [
-          ":build_script_build"
-        ]
-      },
-      "library_target_name": "borsh",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "borsh",
-      "package_url": "https://github.com/near/borsh-rs",
-      "repository": {
-        "Http": {
-          "sha256": "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a",
-          "url": "https://static.crates.io/crates/borsh/1.8.1/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "borsh",
-            "crate_root": "src/lib.rs"
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs"
-          }
-        }
-      ],
-      "version": "1.8.1"
-    },
-    "borsh-derive 1.8.1": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "once_cell 1.21.4",
-            "target": "once_cell"
-          },
-          {
-            "id": "proc-macro-crate 3.5.0",
-            "target": "proc_macro_crate"
-          },
-          {
-            "id": "proc-macro2 1.0.107",
-            "target": "proc_macro2"
-          },
-          {
-            "id": "quote 1.0.47",
-            "target": "quote"
-          },
-          {
-            "id": "syn 3.0.9",
-            "target": "syn"
-          }
-        ],
-        "edition": "2018"
-      },
-      "library_target_name": "borsh_derive",
-      "license": "Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0"
-      ],
-      "name": "borsh-derive",
-      "package_url": "https://github.com/near/borsh-rs",
-      "repository": {
-        "Http": {
-          "sha256": "12cdfe656708a01f89b451a7d36466e6fe6c414de0aa18fc54f864f6f9ca9f56",
-          "url": "https://static.crates.io/crates/borsh-derive/1.8.1/download"
-        }
-      },
-      "targets": [
-        {
-          "ProcMacro": {
-            "crate_name": "borsh_derive",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "1.8.1"
     },
     "bumpalo 3.20.3": {
       "common_attrs": {
@@ -22314,24 +22146,10 @@
     "proptest 1.12.0": {
       "common_attrs": {
         "crate_features": [
-          "bit-set",
-          "default",
-          "fork",
           "regex-syntax",
-          "rusty-fork",
-          "std",
-          "tempfile",
-          "timeout"
+          "std"
         ],
         "deps": [
-          {
-            "id": "bit-set 0.11.1",
-            "target": "bit_set"
-          },
-          {
-            "id": "bit-vec 0.10.1",
-            "target": "bit_vec"
-          },
           {
             "id": "bitflags 2.13.2",
             "target": "bitflags"
@@ -22359,14 +22177,6 @@
           {
             "id": "regex-syntax 0.8.11",
             "target": "regex_syntax"
-          },
-          {
-            "id": "rusty-fork 0.3.1",
-            "target": "rusty_fork"
-          },
-          {
-            "id": "tempfile 3.27.0",
-            "target": "tempfile"
           },
           {
             "id": "unarray 0.1.4",
@@ -23064,35 +22874,6 @@
         }
       ],
       "version": "0.1.30"
-    },
-    "quick-error 1.2.3": {
-      "common_attrs": {
-        "edition": "2015"
-      },
-      "library_target_name": "quick_error",
-      "license": "MIT/Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "quick-error",
-      "package_url": "http://github.com/tailhook/quick-error",
-      "repository": {
-        "Http": {
-          "sha256": "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0",
-          "url": "https://static.crates.io/crates/quick-error/1.2.3/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "quick_error",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "1.2.3"
     },
     "quick-xml 0.41.0": {
       "common_attrs": {
@@ -26655,57 +26436,6 @@
         }
       ],
       "version": "1.0.23"
-    },
-    "rusty-fork 0.3.1": {
-      "common_attrs": {
-        "crate_features": [
-          "timeout",
-          "wait-timeout"
-        ],
-        "deps": [
-          {
-            "id": "fnv 1.0.7",
-            "target": "fnv"
-          },
-          {
-            "id": "quick-error 1.2.3",
-            "target": "quick_error"
-          },
-          {
-            "id": "tempfile 3.27.0",
-            "target": "tempfile"
-          },
-          {
-            "id": "wait-timeout 0.2.1",
-            "target": "wait_timeout"
-          }
-        ],
-        "edition": "2018"
-      },
-      "library_target_name": "rusty_fork",
-      "license": "MIT/Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "rusty-fork",
-      "package_url": "https://github.com/altsysrq/rusty-fork",
-      "repository": {
-        "Http": {
-          "sha256": "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2",
-          "url": "https://static.crates.io/crates/rusty-fork/0.3.1/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "rusty_fork",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.3.1"
     },
     "ruzstd 0.9.1": {
       "common_attrs": {
@@ -34480,46 +34210,6 @@
         }
       ],
       "version": "0.15.0"
-    },
-    "wait-timeout 0.2.1": {
-      "common_attrs": {
-        "deps": {
-          "common": [],
-          "selects": {
-            "cfg(unix)": [
-              {
-                "id": "libc 0.2.191",
-                "target": "libc"
-              }
-            ]
-          }
-        },
-        "edition": "2015"
-      },
-      "library_target_name": "wait_timeout",
-      "license": "MIT/Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "wait-timeout",
-      "package_url": "https://github.com/alexcrichton/wait-timeout",
-      "repository": {
-        "Http": {
-          "sha256": "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11",
-          "url": "https://static.crates.io/crates/wait-timeout/0.2.1/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "wait_timeout",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.2.1"
     },
     "walkdir 2.5.0": {
       "common_attrs": {

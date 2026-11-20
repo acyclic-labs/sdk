@@ -261,7 +261,7 @@ impl IdempotencyKey {
         self.0
     }
 
-    pub(crate) const fn operation_id(self) -> OperationId {
+    pub const fn operation_id(self) -> OperationId {
         OperationId::from_bytes(self.0)
     }
 }

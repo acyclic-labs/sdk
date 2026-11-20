@@ -21,7 +21,7 @@ FEATURES = [
         "tokio_rt",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"napi","CARGO_PKG_DESCRIPTION":"N-API bindings","CARGO_PKG_REPOSITORY":"https://github.com/napi-rs/napi-rs","CARGO_PKG_LICENSE":"MIT","CARGO_PKG_RUST_VERSION":"1.88"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"napi","CARGO_PKG_DESCRIPTION":"N-API bindings","CARGO_PKG_REPOSITORY":"https://github.com/napi-rs/napi-rs","CARGO_PKG_LICENSE":"MIT","CARGO_PKG_RUST_VERSION":"1.88"}
 
 extract_cargo_lints(
     name = "lints",
@@ -34,6 +34,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "napi",
@@ -57,6 +58,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:1152"],
     edition = "2021",
     version = "3.15.0",
     crate_features = FEATURES,

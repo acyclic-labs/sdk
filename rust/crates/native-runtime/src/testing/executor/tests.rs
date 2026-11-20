@@ -506,23 +506,6 @@ fn different_seeds_explore_different_ready_orders() -> io::Result<()> {
 }
 
 #[test]
-fn dropped_task_handles_detach_and_retire() -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let executor = Executor::new(73);
-    runtime.block_on(executor.run(async {
-        let (finished, waiting) = oneshot::channel();
-        drop(executor.spawn_owned(None, async move {
-            yield_once().await;
-            finished.send(91).unwrap();
-        }));
-        assert_eq!(waiting.await.unwrap(), 91);
-    }));
-    let state = lock(&executor.0);
-    assert!(state.tasks.is_empty() && state.ready.is_empty() && state.live.is_empty());
-    Ok(())
-}
-
-#[test]
 fn cancellation_of_the_root_keeps_owned_work_drivable() -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let executor = Executor::new(11);

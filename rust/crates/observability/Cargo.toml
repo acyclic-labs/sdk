@@ -9,10 +9,10 @@ repository.workspace = true
 description = "One operation span, latency distribution and outcome ledger for Acyclic primitives"
 
 [features]
-research = []
+research = ["acyclic-observability-core/research"]
 
 [dependencies]
-serde = { workspace = true, features = ["rc"] }
+acyclic-observability-core = { version = "=0.2.0", path = "../observability-core" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing.workspace = true
@@ -20,7 +20,6 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 # Native semaphore/watch locks must remain inside their admitted owner storage.
 # Tokio's std locks otherwise allocate lazily on Darwin, including permit drop.
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "io-util", "macros", "parking_lot"] }
-futures.workspace = true
 
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }

@@ -1,5 +1,5 @@
 use super::*;
-use delimiters::Candidate;
+use acyclic_markdown_delimiters::Candidate;
 use std::rc::Rc;
 
 #[derive(Default, Clone, Copy)]
@@ -16,7 +16,7 @@ pub(super) struct Checkpoint {
     mark: Mark,
     cost: usize,
     pub(super) valid: Range<usize>,
-    openers: delimiters::State,
+    openers: acyclic_markdown_delimiters::State,
     reopen: Reopen,
     // Parallel to `openers`: where each opener's run starts in the source, and
     // a checkpoint there to resume from when a later closer matches it.
@@ -139,7 +139,7 @@ impl Markdown {
             let tail = self.source.get(attempt.offset..).unwrap_or_default();
             let source = format!("{prefix}{tail}");
             #[cfg(test)]
-            work::copy(source.len() + prefix.len());
+            acyclic_markdown_work::work::copy(source.len() + prefix.len());
             let (events, calls) = events::scoped(
                 &source,
                 &self.references,
@@ -229,8 +229,8 @@ impl Markdown {
         #[cfg(test)]
         {
             let count = renderer.lines.len() + 1;
-            work::copy(count * std::mem::size_of::<Line>());
-            work::grow(count * std::mem::size_of::<Line>());
+            acyclic_markdown_work::work::copy(count * std::mem::size_of::<Line>());
+            acyclic_markdown_work::work::grow(count * std::mem::size_of::<Line>());
         }
         self.lines.reserve(renderer.lines.len() + 1);
         self.lines.append(&mut renderer.lines);
@@ -307,14 +307,7 @@ impl Markdown {
         sentinel: usize,
     ) {
         let tail = source.get(sentinel..).unwrap_or_default();
-        self.plain_links = tail.contains('[')
-            && tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
-        self.plain_entity = tail
-            .rsplit_once('&')
-            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
-        self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
+        self.settle_plain_tail(tail, tail);
         self.plain = tail.len() >= 8 && !tail.rsplit('\n').next().unwrap_or_default().trim_start_matches([' ', '\t']).starts_with('<') && !table_candidate(source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
             .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
                 && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
@@ -381,13 +374,13 @@ struct Pending {
     candidates: Vec<Candidate>,
     marked: Option<usize>,
     reopen: Reopen,
-    state: delimiters::State,
+    state: acyclic_markdown_delimiters::State,
     kept: Vec<usize>,
 }
 
 impl Pending {
     fn new(end: usize, candidates: Vec<Candidate>, marked: Option<usize>, reopen: Reopen) -> Self {
-        let (state, kept) = delimiters::State::compile(&candidates, end, marked);
+        let (state, kept) = acyclic_markdown_delimiters::State::compile(&candidates, end, marked);
         Self {
             end,
             candidates,
@@ -403,7 +396,9 @@ impl Pending {
         self.kept
             .iter()
             .filter_map(|index| self.candidates.get(*index)?.start)
-            .filter(move |start| *start >= sentinel && delimiters::safe_boundary(source, *start))
+            .filter(move |start| {
+                *start >= sentinel && acyclic_markdown_delimiters::safe_boundary(source, *start)
+            })
     }
 }
 
@@ -460,7 +455,7 @@ impl Builder<'_> {
     fn checkpoint(
         &self,
         end: usize,
-        (openers, reopen): (delimiters::State, Reopen),
+        (openers, reopen): (acyclic_markdown_delimiters::State, Reopen),
         mark: Mark,
         fallbacks: Vec<Fallback>,
         restart: Option<Rc<Checkpoint>>,
@@ -474,7 +469,7 @@ impl Builder<'_> {
                 .filter(|(position, _)| *position <= end),
         );
         #[cfg(test)]
-        work::grow(fallbacks.len() * std::mem::size_of::<Fallback>());
+        acyclic_markdown_work::work::grow(fallbacks.len() * std::mem::size_of::<Fallback>());
         Checkpoint {
             offset: self.attempt.offset + end - self.parse.sentinel,
             mark,
@@ -496,7 +491,7 @@ impl Builder<'_> {
         reopen: Reopen,
         mark: Mark,
     ) -> Rc<Checkpoint> {
-        let (state, kept) = delimiters::State::compile(candidates, end, marked);
+        let (state, kept) = acyclic_markdown_delimiters::State::compile(candidates, end, marked);
         let reopen = if state.reopen().is_some() {
             reopen
         } else {
@@ -532,7 +527,9 @@ impl Builder<'_> {
         let start = self.absolute(candidate.start);
         let checkpoint = match candidate.start {
             Some(position) if position < self.parse.sentinel => self.inherited(position, start),
-            Some(position) if delimiters::safe_boundary(self.parse.source, position) => {
+            Some(position)
+                if acyclic_markdown_delimiters::safe_boundary(self.parse.source, position) =>
+            {
                 Some(self.shallow(
                     position,
                     (&pending.candidates, pending.marked),
@@ -573,7 +570,7 @@ impl Builder<'_> {
                 .clone()
                 .or_else(|| self.resumed.restart.clone());
         }
-        if !delimiters::safe_boundary(self.parse.source, start) {
+        if !acyclic_markdown_delimiters::safe_boundary(self.parse.source, start) {
             return None;
         }
         let top = pending
@@ -736,13 +733,13 @@ fn row_prefix(source: &str) -> String {
     let row = source.rsplit('\n').next().unwrap_or_default();
     acyclic_markdown_work::record!(scan(row.len() * 2));
     #[cfg(test)]
-    work::scan(row.len() * 2);
+    acyclic_markdown_work::work::scan(row.len() * 2);
     if !row.contains('|') {
         return left_context(source);
     }
     acyclic_markdown_work::record!(scan(row.len()));
     #[cfg(test)]
-    work::scan(row.len());
+    acyclic_markdown_work::work::scan(row.len());
     let (mut escaped, mut content) = (false, false);
     let mut prefix = String::new();
     for byte in row.bytes() {
@@ -826,7 +823,7 @@ fn boundary(
     let mut scan = LimitScan::new(source);
     acyclic_markdown_work::record!(scan(source.len() * 2));
     #[cfg(test)]
-    work::scan(source.len() * 2);
+    acyclic_markdown_work::work::scan(source.len() * 2);
     for (event, range) in events {
         scan.event(event, range);
     }
@@ -972,7 +969,8 @@ impl<'a> LimitScan<'a> {
                 }
             }
             b'*' | b'_' | b'~' if offset >= self.closed_until && offset >= self.style_until => {
-                if let Some((end, opener)) = delimiters::scan(self.source, offset, self.quoted_end)
+                if let Some((end, opener)) =
+                    acyclic_markdown_delimiters::scan(self.source, offset, self.quoted_end)
                 {
                     self.style_until = end;
                     if let Some(opener) = opener {
@@ -988,7 +986,7 @@ impl<'a> LimitScan<'a> {
                 }
             }
             b'*' | b'_' | b'~' if self.depth == 1 && offset >= self.style_until => {
-                match delimiters::scan(self.source, offset, self.quoted_end) {
+                match acyclic_markdown_delimiters::scan(self.source, offset, self.quoted_end) {
                     Some((end, opener)) => {
                         self.style_until = end;
                         if let (Some(opener), Some((_, inner))) = (opener, self.inner.as_mut()) {
@@ -1051,7 +1049,7 @@ fn select_boundary(
         if depth == 0
             && range.end > sentinel
             && range.end <= limit
-            && delimiters::safe_boundary(source, range.end)
+            && acyclic_markdown_delimiters::safe_boundary(source, range.end)
         {
             // Every complete top-level event closes a checkpoint. At the input
             // edge retain its predecessor too: another byte can change delimiter
@@ -1063,10 +1061,14 @@ fn select_boundary(
             {
                 // An escaped character's text event starts after its
                 // backslash; a reparse from there would read it unescaped.
-                let cut = delimiters::text_frontier(text, range.start).max(sentinel);
+                let cut =
+                    acyclic_markdown_delimiters::text_frontier(text, range.start).max(sentinel);
                 let escaped = cut == range.start
                     && source.as_bytes().get(cut.wrapping_sub(1)) == Some(&b'\\');
-                if cut >= range.start && !escaped && delimiters::safe_boundary(source, cut) {
+                if cut >= range.start
+                    && !escaped
+                    && acyclic_markdown_delimiters::safe_boundary(source, cut)
+                {
                     provisional = Some(Cut::at(cut));
                 }
             }
@@ -1113,7 +1115,9 @@ impl Cut {
     // span's own opener follows them.
     fn candidates(&self, top: &[Candidate]) -> (Vec<Candidate>, Option<usize>) {
         #[cfg(test)]
-        work::copy((top.len() + self.openers.len()) * std::mem::size_of::<Candidate>());
+        acyclic_markdown_work::work::copy(
+            (top.len() + self.openers.len()) * std::mem::size_of::<Candidate>(),
+        );
         let marked = (!self.openers.is_empty()).then_some(top.len());
         ([top, &self.openers].concat(), marked)
     }
@@ -1142,7 +1146,7 @@ fn span_frontier(
         _ => return None,
     };
     let (start, inner) = scan.inner.as_ref()?;
-    let (end, opener) = delimiters::scan(source, range.start, scan.quoted_end)?;
+    let (end, opener) = acyclic_markdown_delimiters::scan(source, range.start, scan.quoted_end)?;
     let opener = opener?;
     let count = opener.count();
     let close = range.end.checked_sub(count)?;
@@ -1203,7 +1207,7 @@ impl render::Renderer {
                 .iter()
                 .rposition(|line| {
                     #[cfg(test)]
-                    work::visibility(1);
+                    acyclic_markdown_work::work::visibility(1);
                     !line.spans.is_empty()
                 })
                 .map_or(base.visible, |index| base.line + index + 1)

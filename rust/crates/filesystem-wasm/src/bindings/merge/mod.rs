@@ -31,7 +31,7 @@ compat_json!(
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTreeEntryResult {
-    pub(in crate::bindings) name: NameComponentResult,
+    pub(in crate::bindings) name: BrowserWorkspaceName,
     #[serde(with = "serde_bytes")]
     #[tsify(type = "Uint8Array")]
     pub(in crate::bindings) file_id: Vec<u8>,
@@ -44,7 +44,7 @@ pub struct BrowserBindingChangeResult {
     #[serde(with = "serde_bytes")]
     #[tsify(type = "Uint8Array")]
     pub(in crate::bindings) directory_id: Vec<u8>,
-    pub(in crate::bindings) name: NameComponentResult,
+    pub(in crate::bindings) name: BrowserWorkspaceName,
     pub(in crate::bindings) before: Option<BrowserTreeEntryResult>,
     pub(in crate::bindings) after: Option<BrowserTreeEntryResult>,
 }
@@ -68,7 +68,7 @@ pub struct MergeConflictResult {
     pub(in crate::bindings) file_id: Option<serde_bytes::ByteBuf>,
     #[tsify(type = "Uint8Array | undefined")]
     pub(in crate::bindings) directory_id: Option<serde_bytes::ByteBuf>,
-    pub(in crate::bindings) name: Option<NameComponentResult>,
+    pub(in crate::bindings) name: Option<BrowserWorkspaceName>,
 }
 
 #[derive(Serialize, Tsify)]
@@ -132,7 +132,7 @@ pub(in crate::bindings) fn encode_generation_diff(
             .into_iter()
             .map(|change| BrowserBindingChangeResult {
                 directory_id: change.directory_id.into_bytes().to_vec(),
-                name: encode_name_component(&change.name),
+                name: browser_workspace_name_value(&change.name),
                 before: change.before.as_ref().map(encode_tree_entry),
                 after: change.after.as_ref().map(encode_tree_entry),
             })
@@ -178,7 +178,7 @@ pub(in crate::bindings) fn encode_merge_conflict(conflict: MergeConflict) -> Mer
             directory_id: Some(serde_bytes::ByteBuf::from(
                 directory_id.into_bytes().to_vec(),
             )),
-            name: Some(encode_name_component(&name)),
+            name: Some(browser_workspace_name_value(&name)),
         },
     }
 }

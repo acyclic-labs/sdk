@@ -424,7 +424,7 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     #[cfg(test)]
-    #[cfg(all(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     stat_probe::directory_sync(directory.as_raw_fd());
     #[cfg(test)]
     #[cfg(all(target_os = "linux", loom))]

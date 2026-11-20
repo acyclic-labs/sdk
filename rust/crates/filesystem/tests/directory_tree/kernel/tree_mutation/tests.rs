@@ -8,7 +8,7 @@ use acyclic_fs_work::performance::{WorkBudget, WorkError};
 
 use std::collections::BTreeMap;
 
-use super::super::tree_entries::{entry, name, wide_entry};
+use super::super::tree_entries::{entry, flatten_tree, name, wide_entry};
 use super::super::tree_objects::put_tree_page;
 
 #[path = "../../../support/two_leaf_tree.rs"]
@@ -256,33 +256,6 @@ async fn build_tree(
         level = parent;
     }
     Ok(level.first().ok_or("missing fixture root")?.1)
-}
-
-async fn flatten_tree(
-    store: &MemoryObjectStore,
-    root: ObjectId,
-) -> Result<Vec<TreeEntry>, Box<dyn std::error::Error>> {
-    let bytes = store
-        .read(
-            root,
-            u64::MAX,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    Ok(
-        match decode_tree_page(&bytes, DecodeLimits::default(), &mut |_| {
-            Ok::<_, CanonicalDecodeError>(())
-        })? {
-            TreePage::Leaf(entries) => entries,
-            TreePage::Internal(children) => {
-                let mut entries = Vec::new();
-                for child in children {
-                    entries.extend(Box::pin(flatten_tree(store, child.page)).await?);
-                }
-                entries
-            }
-        },
-    )
 }
 
 fn next(seed: &mut u64) -> u64 {

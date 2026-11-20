@@ -1,0 +1,49 @@
+[package]
+name = "acyclic-harness-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Contract suites for the Acyclic harness: pinned-file diffs, context discovery and continuation, default tools, goal files, markdown task lists, search codecs, task views and wire decoding"
+
+[package.metadata.bazel]
+integration-test-shards = 4
+
+[features]
+test-support = ["acyclic-harness/test-support"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+required-features = ["test-support"]
+
+[dev-dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-harness = { version = "=0.2.0", path = "../harness" }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
+blake3.workspace = true
+bytes.workspace = true
+diffy.workspace = true
+futures.workspace = true
+proptest.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+tokio.workspace = true
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-async-rw", "auth", "reqwest-tls-no-provider"] }
+rustls.workspace = true
+shuttle = "=0.9.8"
+
+[lints]
+workspace = true

@@ -261,21 +261,16 @@ impl NativeCheckout {
     }
 }
 
-pub(in crate::bindings) fn native_attribute_class(value: &str) -> Result<AttributeClass> {
+fn native_attribute_class(value: &str) -> Result<AttributeClass> {
     acyclic_fs::binding_contract::attribute_class(value)
         .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 
-pub(in crate::bindings) fn native_attribute_name(
-    class: &str,
-    name: Vec<u8>,
-) -> Result<AttributeName> {
+fn native_attribute_name(class: &str, name: Vec<u8>) -> Result<AttributeName> {
     AttributeName::new(native_attribute_class(class)?, name).map_err(napi_error)
 }
 
-pub(in crate::bindings) fn native_attribute_write_mode(
-    value: &str,
-) -> Result<NamedAttributeWriteMode> {
+fn native_attribute_write_mode(value: &str) -> Result<NamedAttributeWriteMode> {
     acyclic_fs::binding_contract::attribute_write_mode(value)
         .map_err(|message| Error::new(Status::InvalidArg, message))
 }

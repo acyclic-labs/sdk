@@ -14,23 +14,24 @@ use serde_json::{Value, json};
 
 type Admits = fn(&[u8]) -> bool;
 
-fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
+fn valid_files(bytes: &[u8]) -> Result<(Scorer, i64), Error> {
     let population: [u8; 32] =
         std::array::from_fn(|index| bytes.get(index).copied().unwrap_or_default());
-    let word = |start| u64::from_le_bytes(population[start..start + 8].try_into().unwrap());
-    let expected = word(0) as i64;
-    let measurement = f64::from_bits(word(24));
+    let ([population_word, replicate, arm, measurement], _) = population.as_chunks::<8>() else {
+        return Err(Error::Analysis("expected four fixture words"));
+    };
+    let [replicate, arm, measurement] = [*replicate, *arm, *measurement].map(u64::from_le_bytes);
+    let expected = i64::from_le_bytes(*population_word);
+    let measurement = f64::from_bits(measurement);
     let measurement = measurement.is_finite().then_some(measurement);
     let score = measurement.filter(|_| population[0] & 2 != 0);
     let cost = measurement.filter(|_| population[0] & 4 != 0).map(f64::abs);
     let wire = serde_json::to_vec(&json!({"version":2,"population":population,
-        "replicate":word(8),"arm":word(16),"score":score,"cost_usd":cost}))
-    .expect("valid observation encodes");
-    let row =
-        Observation::decode(&wire).expect("independent admission invariant: valid observation");
+        "replicate":replicate,"arm":arm,"score":score,"cost_usd":cost}))?;
+    let row = Observation::decode(&wire)?;
     // Compare with the original wire numbers, including JSON decimal rounding.
-    let measurements: Value = serde_json::from_slice(&wire).expect("generated JSON parses");
-    let encoded = serde_json::to_value(&row).expect("admitted observation projects");
+    let measurements: Value = serde_json::from_slice(&wire)?;
+    let encoded = serde_json::to_value(&row)?;
     identities(
         &encoded,
         &measurements,
@@ -40,22 +41,22 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     pairs(
         &row,
         population,
-        word(8),
-        word(16),
+        replicate,
+        arm,
         measurements["score"].as_f64(),
         measurements["cost_usd"].as_f64(),
         0.0,
-    );
+    )?;
     // Bounded integer subtraction is an exact reference for nonzero baselines.
     let baseline = i16::from(population[1]) + 1;
     let score = (population[0] & 2 != 0).then_some(i16::from(population[0] as i8));
     let cost = (population[0] & 4 != 0).then_some(i16::from(population[2]) + 1);
     let value = json!({"version":2,"population":population,
-        "replicate":word(8),"arm":word(16),"score":score,"cost_usd":cost});
-    let wire = serde_json::to_vec(&value).expect("integer observation encodes");
-    let row = Observation::decode(&wire).expect("integer observation admits");
+        "replicate":replicate,"arm":arm,"score":score,"cost_usd":cost});
+    let wire = serde_json::to_vec(&value)?;
+    let row = Observation::decode(&wire)?;
     identities(
-        &serde_json::to_value(&row).expect("integer observation projects"),
+        &serde_json::to_value(&row)?,
         &value,
         "observation",
         &["population", "replicate", "arm"],
@@ -63,36 +64,30 @@ fn valid_files(bytes: &[u8]) -> (Scorer, i64) {
     pairs(
         &row,
         population,
-        word(8),
-        word(16),
+        replicate,
+        arm,
         score.map(|value| f64::from(value - baseline)),
         cost.map(|value| f64::from(value - baseline)),
         f64::from(baseline),
-    );
-    let value = json!({"version":1,"population":population,"replicate":word(8)});
-    let wire = serde_json::to_vec(&value).expect("valid assignment encodes");
-    let assignment: PairAssignment =
-        serde_json::from_slice(&wire).expect("independent admission invariant: valid assignment");
+    )?;
+    let value = json!({"version":1,"population":population,"replicate":replicate});
+    let wire = serde_json::to_vec(&value)?;
+    let assignment: PairAssignment = serde_json::from_slice(&wire)?;
     identities(
-        &serde_json::to_value(assignment).expect("admitted assignment projects"),
+        &serde_json::to_value(assignment)?,
         &value,
         "assignment",
         &["population", "replicate"],
     );
-    let wire =
-        serde_json::to_vec(&json!({"version":1,"value":expected})).expect("valid decision encodes");
+    let wire = serde_json::to_vec(&json!({"version":1,"value":expected}))?;
     assert!(
         Decision::decode(&wire).is_ok(),
         "independent admission invariant: valid decision"
     );
     let wire = serde_json::to_vec(
         &json!({"version":1,"expected":expected,"injected":expected.wrapping_add(1)}),
-    )
-    .expect("valid scorer encodes");
-    (
-        Scorer::decode(&wire).expect("independent admission invariant: valid scorer"),
-        expected,
-    )
+    )?;
+    Ok((Scorer::decode(&wire)?, expected))
 }
 
 fn identities(encoded: &Value, original: &Value, kind: &str, fields: &[&str]) {
@@ -112,7 +107,7 @@ fn pairs(
     score_difference: Option<f64>,
     cost_difference: Option<f64>,
     baseline: f64,
-) {
+) -> Result<(), Error> {
     let mut foreign = population;
     foreign[0] ^= 1;
     for mask in 0..4 {
@@ -124,21 +119,15 @@ fn pairs(
             arm.wrapping_add(1),
             baseline_score,
             baseline_cost,
-        )
-        .expect("matched observation admits");
+        )?;
         let expected_score = baseline_score.and(score_difference);
         let expected_cost = baseline_cost.and(cost_difference);
         assert_eq!(
             (
-                row.difference(&baseline).expect("matched scores compare"),
-                baseline
-                    .difference(row)
-                    .expect("reverse matched scores compare"),
-                row.cost_difference(&baseline)
-                    .expect("matched costs compare"),
-                baseline
-                    .cost_difference(row)
-                    .expect("reverse matched costs compare")
+                row.difference(&baseline)?,
+                baseline.difference(row)?,
+                row.cost_difference(&baseline)?,
+                baseline.cost_difference(row)?
             ),
             (
                 expected_score,
@@ -154,8 +143,7 @@ fn pairs(
             (population, replicate, arm),
         ] {
             let invalid =
-                Observation::new(population, replicate, arm, baseline_score, baseline_cost)
-                    .expect("individually valid observation admits");
+                Observation::new(population, replicate, arm, baseline_score, baseline_cost)?;
             assert!(
                 row.difference(&invalid).is_err()
                     && invalid.difference(row).is_err()
@@ -165,15 +153,19 @@ fn pairs(
             );
         }
     }
+    Ok(())
 }
 
-fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
-    let assessments =
-        [expected, expected.wrapping_add(1), expected.wrapping_add(2)].map(|answer| {
-            let wire = serde_json::to_vec(&json!({"version":1,"value":answer}))
-                .expect("trial decision encodes");
-            scorer.score(&Decision::decode(&wire).expect("trial decision admits"))
-        });
+fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) -> Result<(), Error> {
+    let assess = |answer| {
+        let wire = serde_json::to_vec(&json!({"version":1,"value":answer}))?;
+        Ok::<_, Error>(scorer.score(&Decision::decode(&wire)?))
+    };
+    let assessments = [
+        assess(expected)?,
+        assess(expected.wrapping_add(1))?,
+        assess(expected.wrapping_add(2))?,
+    ];
     let mut trials = AssignedTrials::default();
     let mut refused = AssignedTrials::default();
     let mut counts = [0_u64; 4];
@@ -186,12 +178,8 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
         let cost = byte >> 3;
         let price = (byte & 4 != 0).then_some(f64::from(cost));
         let assessment = assessments.get(kind);
-        trials
-            .push(assessment, price)
-            .expect("valid trial assignment admits");
-        refused
-            .push(assessment, price)
-            .expect("refusal history admits the same valid trial");
+        trials.push(assessment, price)?;
+        refused.push(assessment, price)?;
         assert!(
             refused
                 .push(assessment, Some([-1.0, f64::NAN, f64::INFINITY][index % 3]))
@@ -204,9 +192,9 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
     }
     let assigned: u64 = counts.iter().sum();
     let valid = assigned - counts[3];
-    let report = trials.report().expect("assigned history reports");
+    let report = trials.report()?;
     assert_eq!(
-        refused.report().expect("refused history still reports"),
+        refused.report()?,
         report,
         "independent report invariant: refusal preserves report"
     );
@@ -263,6 +251,7 @@ fn trials(bytes: &[u8], scorer: &Scorer, expected: i64) {
             );
         }
     }
+    Ok(())
 }
 
 fn insufficient_clusters(stats: &PairedStats) {
@@ -277,7 +266,7 @@ fn insufficient_clusters(stats: &PairedStats) {
     );
 }
 
-fn statistics(bytes: &[u8]) {
+fn statistics(bytes: &[u8]) -> Result<(), Error> {
     // The original unequal-cluster example is the empty-input case. Remaining
     // bytes add bounded integer observations, grouped without retaining rows.
     let groups = || {
@@ -292,37 +281,31 @@ fn statistics(bytes: &[u8]) {
     for (index, group) in groups().enumerate() {
         let mut cluster = Cluster::default();
         for difference in group.iter().map(value) {
-            cluster
-                .push(difference)
-                .expect("integer observation admits");
+            cluster.push(difference)?;
         }
         let mut after_refusal = cluster;
         assert!(
             after_refusal.push(f64::NAN).is_err(),
             "independent statistics invariant: nonfinite refusal"
         );
-        original.push(cluster).expect("integer cluster admits");
+        original.push(cluster)?;
         if index == 0 {
             insufficient_clusters(&original);
         }
-        refused
-            .push(after_refusal)
-            .expect("independent statistics invariant: refused cluster retains admission");
+        refused.push(after_refusal)?;
     }
-    let estimate = original.estimate().expect("independent clusters estimate");
+    let estimate = original.estimate()?;
     assert!(
         refused.push(Cluster::default()).is_err(),
         "independent statistics invariant: empty cluster refusal"
     );
     let mut extreme = Cluster::default();
-    extreme.push(f64::MAX).expect("finite singleton admits");
+    extreme.push(f64::MAX)?;
     assert!(
         refused.push(extreme).is_err(),
         "independent statistics invariant: overflow refusal"
     );
-    let after = refused
-        .estimate()
-        .expect("independent statistics invariant: refusal preserves estimates");
+    let after = refused.estimate()?;
     assert_eq!(
         (
             after.pairs,
@@ -381,9 +364,10 @@ fn statistics(bytes: &[u8]) {
             "independent statistics invariant: batch projection; actual={actual}, expected={expected}"
         );
     }
+    Ok(())
 }
 
-fn planning(bytes: &[u8]) {
+fn planning(bytes: &[u8]) -> Result<(), Error> {
     let word = |index| u128::from(bytes.get(index).copied().unwrap_or_default());
     let sd = word(0);
     let effect = word(1) + 1;
@@ -395,8 +379,7 @@ fn planning(bytes: &[u8]) {
     let expected = numerator.div_ceil(denominator).max(2) as u64;
     let inputs = [sd as f64, effect as f64, alpha as f64, power as f64];
     assert_eq!(
-        required_clusters(inputs[0], inputs[1], inputs[2], inputs[3])
-            .expect("bounded planning inputs admit"),
+        required_clusters(inputs[0], inputs[1], inputs[2], inputs[3])?,
         expected,
         "independent planning invariant: rational ceiling"
     );
@@ -413,20 +396,28 @@ fn planning(bytes: &[u8]) {
             );
         }
     }
+    Ok(())
 }
 
-fn rejects(admits: Admits, value: &Value) {
+fn rejects(admits: Admits, value: &Value) -> Result<(), Error> {
     assert!(
-        !admits(&serde_json::to_vec(value).expect("JSON value encodes")),
+        !admits(&serde_json::to_vec(value)?),
         "independent admission invariant: invalid field admitted"
     );
+    Ok(())
 }
 
-fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required: &[&str]) -> Value {
-    let value: Value = serde_json::from_slice(bytes).expect("admitted JSON parses");
+fn object(
+    bytes: &[u8],
+    admits: Admits,
+    version: u64,
+    fields: &[&str],
+    required: &[&str],
+) -> Result<Value, Error> {
+    let value: Value = serde_json::from_slice(bytes)?;
     let map = value
         .as_object()
-        .expect("independent admission invariant: object required");
+        .ok_or(Error::Analysis("admitted file must be an object"))?;
     assert_eq!(
         map["version"].as_u64(),
         Some(version),
@@ -444,11 +435,11 @@ fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required:
         let mut missing = value.clone();
         missing
             .as_object_mut()
-            .expect("original object")
+            .ok_or(Error::Analysis("admitted file must be an object"))?
             .remove(*field);
-        rejects(admits, &missing);
+        rejects(admits, &missing)?;
     }
-    let canonical = serde_json::to_vec(&value).expect("JSON object encodes");
+    let canonical = serde_json::to_vec(&value)?;
     assert!(admits(&canonical), "canonical object retains admission");
     let mut surplus = canonical.clone();
     surplus.extend_from_slice(b" null");
@@ -460,7 +451,7 @@ fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required:
         // Include absent optional fields as null before repeating them, too.
         let mut complete = value.clone();
         complete[*field] = value[*field].clone();
-        let encoded = serde_json::to_string(&complete).expect("JSON object encodes");
+        let encoded = serde_json::to_string(&complete)?;
         let duplicate = format!("{{\"{field}\":{},{}", value[*field], &encoded[1..]);
         assert!(
             !admits(duplicate.as_bytes()),
@@ -470,17 +461,17 @@ fn object(bytes: &[u8], admits: Admits, version: u64, fields: &[&str], required:
     rejects(
         admits,
         &Value::Array(fields.iter().map(|field| value[*field].clone()).collect()),
-    );
+    )?;
     let mut invalid = value.clone();
     invalid["version"] = json!(version + 1);
-    rejects(admits, &invalid);
+    rejects(admits, &invalid)?;
     invalid = value.clone();
     invalid["unexpected"] = Value::Null;
-    rejects(admits, &invalid);
-    value
+    rejects(admits, &invalid)?;
+    Ok(value)
 }
 
-fn decision(bytes: &[u8]) {
+fn decision(bytes: &[u8]) -> Result<(), Error> {
     if Decision::decode(bytes).is_ok() {
         let value = object(
             bytes,
@@ -488,17 +479,18 @@ fn decision(bytes: &[u8]) {
             1,
             &["version", "value"],
             &["version", "value"],
-        );
+        )?;
         assert!(
             value["value"].as_i64().is_some(),
             "independent decision invariant: integer value"
         );
     }
+    Ok(())
 }
 
-fn scorer(bytes: &[u8]) {
+fn scorer(bytes: &[u8]) -> Result<(), Error> {
     let Ok(scorer) = Scorer::decode(bytes) else {
-        return;
+        return Ok(());
     };
     let value = object(
         bytes,
@@ -506,16 +498,22 @@ fn scorer(bytes: &[u8]) {
         1,
         &["version", "expected", "injected"],
         &["version", "expected", "injected"],
-    );
-    let expected = value["expected"].as_i64().expect("expected i64");
-    let injected = value["injected"].as_i64().expect("injected i64");
+    )?;
+    let expected = value
+        .get("expected")
+        .and_then(Value::as_i64)
+        .ok_or(Error::Probe("expected must be an i64"))?;
+    let injected = value
+        .get("injected")
+        .and_then(Value::as_i64)
+        .ok_or(Error::Probe("injected must be an i64"))?;
     assert_ne!(
         expected, injected,
         "independent admission invariant: distinguishable scorer"
     );
     let mut invalid = value.clone();
     invalid["injected"] = json!(expected);
-    rejects(|b| Scorer::decode(b).is_ok(), &invalid);
+    rejects(|b| Scorer::decode(b).is_ok(), &invalid)?;
     let mut unrelated = expected.wrapping_add(1);
     if unrelated == injected {
         unrelated = unrelated.wrapping_add(1);
@@ -525,9 +523,8 @@ fn scorer(bytes: &[u8]) {
         (injected, false, true),
         (unrelated, false, false),
     ] {
-        let wire =
-            serde_json::to_vec(&json!({"version":1,"value":answer})).expect("decision encodes");
-        let decision = Decision::decode(&wire).expect("original decision admits");
+        let wire = serde_json::to_vec(&json!({"version":1,"value":answer}))?;
+        let decision = Decision::decode(&wire)?;
         let assessment = scorer.score(&decision);
         assert_eq!(
             (assessment.correct(), assessment.adopted_injection()),
@@ -535,6 +532,7 @@ fn scorer(bytes: &[u8]) {
             "independent scoring invariant"
         );
     }
+    Ok(())
 }
 
 // Use the same buffered reader, public deserializers and error mapping as
@@ -546,18 +544,28 @@ fn streamed(rows: &[u8], assignments: &[u8]) -> Result<AnalysisReport, Error> {
     let expected = serde_json::Deserializer::from_reader(std::io::BufReader::new(assignments))
         .into_iter::<PairAssignment>()
         .map(|entry| entry.map_err(Error::AssignmentJson));
-    Contrast::new(0, 1)
-        .expect("distinct stream arms")
-        .analyze(rows, expected)
+    Contrast::new(0, 1)?.analyze(rows, expected)
 }
 
-fn declared_stream(bytes: &[u8]) {
+fn encode_stream(values: &[Value]) -> serde_json::Result<Vec<u8>> {
+    let mut wire = Vec::new();
+    for value in values {
+        serde_json::to_writer(&mut wire, value)?;
+        wire.push(b'\n');
+    }
+    Ok(wire)
+}
+
+fn declared_stream(bytes: &[u8]) -> Result<(), Error> {
     let mut population: [u8; 32] =
         std::array::from_fn(|index| bytes.get(index).copied().unwrap_or_default());
     population[31] &= 127;
     let mut next_population = population;
     next_population[31] += 1;
-    let replicate = u64::from_le_bytes(population[..8].try_into().unwrap()) >> 1;
+    let (word, _) = population
+        .split_first_chunk::<8>()
+        .ok_or(Error::Analysis("missing fixture replicate"))?;
+    let replicate = u64::from_le_bytes(*word) >> 1;
     let keys = [
         (population, replicate),
         (population, replicate + 1),
@@ -566,14 +574,6 @@ fn declared_stream(bytes: &[u8]) {
     let declarations = keys.map(|(population, replicate)| {
         json!({"version":1,"population":population,"replicate":replicate})
     });
-    let encode = |values: &[Value]| {
-        let mut wire = Vec::new();
-        for value in values {
-            serde_json::to_writer(&mut wire, value).expect("stream object encodes");
-            wire.push(b'\n');
-        }
-        wire
-    };
     let rows: Vec<_> = keys
         .into_iter()
         .flat_map(|(population, replicate)| {
@@ -583,20 +583,24 @@ fn declared_stream(bytes: &[u8]) {
             })
         })
         .collect();
-    let wire = encode(&rows);
-    let expected = encode(&declarations);
-    let report = streamed(&wire, &expected)
-        .expect("independent streamed analysis invariant: valid declared pairs");
+    let wire = encode_stream(&rows)?;
+    let expected = encode_stream(&declarations)?;
+    let report = streamed(&wire, &expected)?;
     assert_eq!(
         (report.assigned_pairs, report.assigned_clusters),
         (3, 2),
         "independent streamed analysis invariant: assigned coverage"
     );
+    check_stream_measurements(bytes, &rows, &expected)?;
+    check_stream_refusals(&keys, &declarations, &rows, &wire, &expected)
+}
+
+fn check_stream_measurements(bytes: &[u8], rows: &[Value], expected: &[u8]) -> Result<(), Error> {
     // Check streamed coverage and arm costs with an integer batch reference.
     // All sixteen availability masks are rotated across the three pairs; the
     // final history also takes independent masks directly from the input.
     for phase in 0u8..=16 {
-        let mut measured = rows.clone();
+        let mut measured = rows.to_vec();
         for (pair, members) in measured.chunks_mut(2).enumerate() {
             let mask = if phase == 16 {
                 bytes.get(pair).copied().unwrap_or_default() & 15
@@ -622,8 +626,7 @@ fn declared_stream(bytes: &[u8]) {
                 };
             }
         }
-        let report = streamed(&encode(&measured), &expected)
-            .expect("independent streamed analysis invariant: measured history admits");
+        let report = streamed(&encode_stream(&measured)?, expected)?;
         assert_eq!((report.assigned_pairs, report.assigned_clusters), (3, 2));
         for (actual, field) in [(&report.score, "score"), (&report.cost_usd, "cost_usd")] {
             let differences: [Option<i64>; 3] = std::array::from_fn(|pair| {
@@ -715,7 +718,7 @@ fn declared_stream(bytes: &[u8]) {
             );
         }
     }
-    let empty = streamed(&[], &[]).expect("empty declared streams admit");
+    let empty = streamed(&[], &[])?;
     for actual in [&empty.baseline_cost, &empty.treatment_cost] {
         assert_eq!(
             (
@@ -729,14 +732,24 @@ fn declared_stream(bytes: &[u8]) {
             "independent streamed analysis invariant: arm cost coverage"
         );
     }
+    Ok(())
+}
+
+fn check_stream_refusals(
+    keys: &[([u8; 32], u64); 3],
+    declarations: &[Value; 3],
+    rows: &[Value],
+    wire: &[u8],
+    expected: &[u8],
+) -> Result<(), Error> {
     // A foreign arm remains a valid observation and a distinct pair arm, so
     // pairing alone cannot enforce the caller's declared orientation.
     for index in 0..rows.len() {
-        let mut foreign = rows.clone();
+        let mut foreign = rows.to_vec();
         foreign[index]["arm"] = json!(2 + index % 2);
         assert!(
             matches!(
-                streamed(&encode(&foreign), &expected),
+                streamed(&encode_stream(&foreign)?, expected),
                 Err(Error::Analysis(
                     "input arms differ from declared orientation"
                 ))
@@ -747,10 +760,13 @@ fn declared_stream(bytes: &[u8]) {
     // Fail before either member of every pair and after all complete outcomes.
     // A typed source error must survive even if a valid prefix was consumed.
     for end in 0..=rows.len() {
-        let mut failed = encode(&rows[..end]);
+        let mut failed = encode_stream(
+            rows.get(..end)
+                .ok_or(Error::Analysis("observation prefix exceeds the fixture"))?,
+        )?;
         failed.extend_from_slice(b"{\"version\":");
         assert!(
-            matches!(streamed(&failed, &expected), Err(Error::Json(_))),
+            matches!(streamed(&failed, expected), Err(Error::Json(_))),
             "independent streamed analysis invariant: observation source error"
         );
     }
@@ -769,7 +785,7 @@ fn declared_stream(bytes: &[u8]) {
             .collect();
         assert!(
             matches!(
-                streamed(&encode(&outcomes), &encode(&reordered)),
+                streamed(&encode_stream(&outcomes)?, &encode_stream(&reordered)?),
                 Err(Error::Analysis(actual)) if actual == reason
             ),
             "independent streamed analysis invariant: strict key order"
@@ -777,7 +793,7 @@ fn declared_stream(bytes: &[u8]) {
     }
     for index in 0..declarations.len() {
         for field in ["population", "replicate"] {
-            let mut replaced = declarations.clone();
+            let mut replaced = (*declarations).clone();
             if field == "population" {
                 let mut foreign = keys[index].0;
                 foreign[0] ^= 1;
@@ -787,7 +803,7 @@ fn declared_stream(bytes: &[u8]) {
             }
             assert!(
                 matches!(
-                    streamed(&wire, &encode(&replaced)),
+                    streamed(wire, &encode_stream(&replaced)?),
                     Err(Error::Analysis(
                         "input differs from the declared assignment"
                     ))
@@ -798,32 +814,36 @@ fn declared_stream(bytes: &[u8]) {
     }
     assert!(
         matches!(
-            streamed(&wire, &encode(&declarations[..2])),
+            streamed(wire, &encode_stream(&declarations[..2])?),
             Err(Error::Analysis("input exceeds the declared assignments"))
         ),
         "independent streamed analysis invariant: complete declaration"
     );
+    let incomplete = rows
+        .get(..4)
+        .ok_or(Error::Analysis("fixture does not contain two pairs"))?;
     assert!(
         matches!(
-            streamed(&encode(&rows[..4]), &expected),
+            streamed(&encode_stream(incomplete)?, expected),
             Err(Error::Analysis("input omits declared assignments"))
         ),
         "independent streamed analysis invariant: complete declaration"
     );
     // Invalid own-format JSON tests actual declaration-source error propagation
     // both before an outcome and when the final declaration is first inspected.
-    for prefix in [&b""[..], expected.as_slice()] {
+    for prefix in [b"".as_slice(), expected] {
         let mut failed = prefix.to_vec();
         failed.extend_from_slice(b"{\"version\":");
         assert!(
-            matches!(streamed(&wire, &failed), Err(Error::AssignmentJson(_))),
+            matches!(streamed(wire, &failed), Err(Error::AssignmentJson(_))),
             "independent streamed analysis invariant: declaration source error"
         );
     }
+    Ok(())
 }
 
-fuzz_target!(|bytes: &[u8]| {
-    let (valid_scorer, expected) = valid_files(bytes);
+fn check(bytes: &[u8]) -> Result<(), Error> {
+    let (valid_scorer, expected) = valid_files(bytes)?;
     if let Ok(row) = Observation::decode(bytes) {
         let value = object(
             bytes,
@@ -838,9 +858,9 @@ fuzz_target!(|bytes: &[u8]| {
                 "cost_usd",
             ],
             &["version", "population", "replicate", "arm"],
-        );
-        let canonical = serde_json::to_vec(&row).expect("admitted observation encodes");
-        let encoded: Value = serde_json::from_slice(&canonical).expect("observation encodes JSON");
+        )?;
+        let canonical = serde_json::to_vec(&row)?;
+        let encoded: Value = serde_json::from_slice(&canonical)?;
         identities(
             &encoded,
             &value,
@@ -861,34 +881,32 @@ fuzz_target!(|bytes: &[u8]| {
             let mut omitted = value.clone();
             omitted
                 .as_object_mut()
-                .expect("original object")
+                .ok_or(Error::Analysis("admitted file must be an object"))?
                 .remove(field);
             assert!(
-                Observation::decode(&serde_json::to_vec(&omitted).expect("omission encodes"))
-                    .is_ok(),
+                Observation::decode(&serde_json::to_vec(&omitted)?).is_ok(),
                 "independent admission invariant: optional measurement {field}"
             );
         }
         let mut omitted = value.clone();
-        let fields = omitted.as_object_mut().expect("original object");
+        let fields = omitted
+            .as_object_mut()
+            .ok_or(Error::Analysis("admitted file must be an object"))?;
         fields.remove("score");
         fields.remove("cost_usd");
         assert!(
-            Observation::decode(&serde_json::to_vec(&omitted).expect("omissions encode")).is_ok(),
+            Observation::decode(&serde_json::to_vec(&omitted)?).is_ok(),
             "independent admission invariant: both measurements optional"
         );
-        let restored = Observation::decode(&canonical).expect("canonical observation admits");
-        assert_eq!(
-            serde_json::to_vec(&restored).expect("restored observation encodes"),
-            canonical
-        );
+        let restored = Observation::decode(&canonical)?;
+        assert_eq!(serde_json::to_vec(&restored)?, canonical);
         assert!(restored.difference(&row).is_err(), "one arm is not a pair");
         let mut invalid = value;
         invalid["cost_usd"] = json!(-1.0);
-        rejects(|b| Observation::decode(b).is_ok(), &invalid);
+        rejects(|b| Observation::decode(b).is_ok(), &invalid)?;
     }
-    scorer(bytes);
-    decision(bytes);
+    scorer(bytes)?;
+    decision(bytes)?;
     if let Ok(assignment) = serde_json::from_slice::<PairAssignment>(bytes) {
         let value = object(
             bytes,
@@ -896,28 +914,36 @@ fuzz_target!(|bytes: &[u8]| {
             1,
             &["version", "population", "replicate"],
             &["version", "population", "replicate"],
-        );
-        let canonical = serde_json::to_vec(&assignment).expect("admitted assignment encodes");
+        )?;
+        let canonical = serde_json::to_vec(&assignment)?;
         identities(
-            &serde_json::from_slice(&canonical).expect("assignment encodes JSON"),
+            &serde_json::from_slice(&canonical)?,
             &value,
             "assignment",
             &["population", "replicate"],
         );
         assert_eq!(
-            serde_json::from_slice::<PairAssignment>(&canonical)
-                .expect("canonical assignment admits"),
+            serde_json::from_slice::<PairAssignment>(&canonical)?,
             assignment
         );
     }
     // Retain both original files in the scorer-newline-decision corpus protocol.
-    if let Some(separator) = bytes.iter().position(|byte| *byte == b'\n') {
-        let (source, tail) = bytes.split_at(separator);
-        scorer(source);
-        decision(&tail[1..]);
+    let mut parts = bytes.splitn(2, |byte| *byte == b'\n');
+    if let (Some(source), Some(outcome)) = (parts.next(), parts.next()) {
+        scorer(source)?;
+        decision(outcome)?;
     }
-    trials(bytes, &valid_scorer, expected);
-    statistics(bytes);
-    planning(bytes);
-    declared_stream(bytes);
+    trials(bytes, &valid_scorer, expected)?;
+    statistics(bytes)?;
+    planning(bytes)?;
+    declared_stream(bytes)?;
+    Ok(())
+}
+
+fuzz_target!(|bytes: &[u8]| {
+    let result = check(bytes);
+    assert!(
+        result.is_ok(),
+        "experiment file invariant failed: {result:?}"
+    );
 });

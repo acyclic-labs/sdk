@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import ts from 'typescript-parser';
-import {pollingUnit, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
+import {pollingUnit, sameRustImportLayout, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
 
 /** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean}} Dependency */
 /** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
@@ -97,6 +97,128 @@ function dependencyComponents(nodes) {
  return owner;
 }
 
+/** @param {(from: string, to: string) => void} [recordImport] */
+function scriptProgram(files, units, recordImport = () => {}) {
+ const scripts = [...units.keys()].map(file => '/' + file);
+ const options = {
+  allowJs: true, noLib: true, noResolve: false, noEmit: true,
+  target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler, moduleDetection: ts.ModuleDetectionKind.Force,
+ };
+ const moduleCache = ts.createModuleResolutionCache('/', file => file, options);
+ const resolveModule = (name, containingFile) => {
+  if (!name.startsWith('.')) return undefined;
+  const base = posix.resolve(posix.dirname(containingFile), name);
+  if (units.has(base.slice(1))) return {resolvedFileName: base};
+  const resolved = ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule;
+  return resolved && units.has(resolved.resolvedFileName.slice(1)) ? resolved : undefined;
+ };
+ /** @type {import('typescript-parser').CompilerHost} */
+ const host = {
+  getSourceFile: file => units.get(file.slice(1))?.parsed,
+  getDefaultLibFileName: () => '/__no_default_lib.d.ts',
+  writeFile() { throw new Error('source analysis must not emit files'); },
+  getCurrentDirectory: () => '/', getDirectories: () => [],
+  fileExists: file => files.has(file), readFile: file => files.get(file),
+  getCanonicalFileName: file => file, useCaseSensitiveFileNames: () => true, getNewLine: () => '\n',
+  resolveModuleNames: (names, containingFile) => names.map(name => {
+   const resolved = resolveModule(name, containingFile);
+   if (resolved) recordImport(containingFile.slice(1), resolved.resolvedFileName.slice(1));
+   return resolved;
+  }),
+ };
+ const program = ts.createProgram(scripts, options, host);
+ return {program, resolveModule};
+}
+
+/** Resolve the input closure of each source group with the same virtual
+ * compiler host as the polling graph. Group roots also include malformed and
+ * declaration-only source, so their owning check still validates them.
+ * @param {Map<string, string>} sources @param {Map<string, string[]>} partitions
+ */
+export function projectPollingInputClosures(sources, partitions) {
+ const units = new Map(), files = new Map(), manifests = [];
+ for (const [file, source] of sources) {
+  if (/(?:^|\/)package\.json$/.test(file)) {
+   manifests.push(file);
+   // An invalid manifest is still an input of the owning check. It cannot
+   // supply module resolution data to an earlier, historical snapshot.
+   try { JSON.parse(source); }
+   catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+   files.set('/' + file, source);
+  } else if (script(file)) {
+   const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
+   const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript-parser').Diagnostic[]}} */ (parsed).parseDiagnostics;
+   if (parsed.isDeclarationFile || diagnostics.length) continue;
+   units.set(file, {parsed});
+   files.set('/' + file, source);
+  }
+ }
+ const imports = new Map([...units.keys()].map(file => [file, new Set()]));
+ const recordImport = (from, to) => imports.get(from)?.add(to);
+ const {program, resolveModule} = scriptProgram(files, units, recordImport);
+ // This pinned compiler API reads the result recorded by this program,
+ // including each directive's resolution mode.
+ const compiler = /** @type {typeof program & {
+  getResolvedTypeReferenceDirectiveFromTypeReferenceDirective(reference: import('typescript-parser').FileReference,
+   source: import('typescript-parser').SourceFile): import('typescript-parser').ResolvedTypeReferenceDirectiveWithFailedLookupLocations | undefined
+ }} */ (program);
+ const augmentations = new Set();
+ let sharedScope = false;
+ for (const source of program.getSourceFiles()) {
+  const file = source.fileName.slice(1);
+  // Ambient augmentations and explicit compiler references can affect symbol
+  // resolution outside the ordinary module import graph.
+  if (source.referencedFiles.length || source.moduleName || source.typeReferenceDirectives.some(reference =>
+   compiler.getResolvedTypeReferenceDirectiveFromTypeReferenceDirective(reference, source)?.resolvedTypeReferenceDirective))
+   sharedScope = true;
+  const pending = [source];
+  while (pending.length) {
+   const node = pending.pop();
+   if (ts.isModuleDeclaration(node) &&
+    ((node.flags & ts.NodeFlags.GlobalAugmentation) || ts.isStringLiteral(node.name))) augmentations.add(file);
+   const specifier = runtimeModuleSpecifier(node);
+   const target = specifier && resolveModule(specifier.text, source.fileName);
+   if (target) recordImport(file, target.resolvedFileName.slice(1));
+   ts.forEachChild(node, child => { pending.push(child); });
+  }
+ }
+ return new Map([...partitions].map(([name, roots]) => {
+  if (sharedScope) return [name, [...sources.keys()]];
+  const selected = new Set(manifests), pending = [...roots, ...augmentations];
+  while (pending.length) {
+   const file = pending.pop();
+   if (selected.has(file)) continue;
+   selected.add(file);
+   for (const dependency of imports.get(file) ?? []) pending.push(dependency);
+  }
+  // Retain the original source order for identical analyzer inputs.
+  return [name, [...sources.keys()].filter(file => selected.has(file))];
+ }));
+}
+
+/** @param {import('typescript-parser').Node} call */
+function awaitedExportNames(call) {
+ let value = call;
+ while (ts.isParenthesizedExpression(value.parent)) value = value.parent;
+ if (!ts.isAwaitExpression(value.parent)) return undefined;
+ value = value.parent;
+ while (ts.isParenthesizedExpression(value.parent)) value = value.parent;
+ const use = value.parent;
+ if (ts.isExpressionStatement(use)) return [];
+ if (ts.isPropertyAccessExpression(use) && use.expression === value) return [use.name.text];
+ if (ts.isElementAccessExpression(use) && use.expression === value && ts.isStringLiteralLike(use.argumentExpression))
+  return [use.argumentExpression.text];
+ if (!ts.isVariableDeclaration(use) || use.initializer !== value || !ts.isObjectBindingPattern(use.name)) return undefined;
+ const names = [];
+ for (const element of use.name.elements) {
+  const name = element.propertyName ?? element.name;
+  if (element.dotDotDotToken || !(ts.isIdentifier(name) || ts.isStringLiteralLike(name))) return undefined;
+  names.push(name.text);
+ }
+ return names;
+}
+
 /** @param {Map<string, string>} sources */
 export function projectPollingSites(sources, {historical = false} = {}) {
  /** @type {Map<string, ReturnType<typeof pollingUnit>>} */
@@ -134,31 +256,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  if (errors.length === 1) throw errors[0];
  if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
  if (!units.size) return sites;
- const scripts = [...units.keys()].map(file => '/' + file);
- const options = {
-  allowJs: true, noLib: true, noResolve: false, noEmit: true,
-  target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext,
-  moduleResolution: ts.ModuleResolutionKind.Bundler, moduleDetection: ts.ModuleDetectionKind.Force,
- };
- const moduleCache = ts.createModuleResolutionCache('/', file => file, options);
- const resolveModule = (name, containingFile) => {
-  if (!name.startsWith('.')) return undefined;
-  const base = posix.resolve(posix.dirname(containingFile), name);
-  if (units.has(base.slice(1))) return {resolvedFileName: base};
-  const resolved = ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule;
-  return resolved && units.has(resolved.resolvedFileName.slice(1)) ? resolved : undefined;
- };
- /** @type {import('typescript-parser').CompilerHost} */
- const host = {
-  getSourceFile: file => units.get(file.slice(1))?.parsed,
-  getDefaultLibFileName: () => '/__no_default_lib.d.ts',
-  writeFile() { throw new Error('source analysis must not emit files'); },
-  getCurrentDirectory: () => '/', getDirectories: () => [],
-  fileExists: file => files.has(file), readFile: file => files.get(file),
-  getCanonicalFileName: file => file, useCaseSensitiveFileNames: () => true, getNewLine: () => '\n',
-  resolveModuleNames: (names, containingFile) => names.map(name => resolveModule(name, containingFile)),
- };
- const program = ts.createProgram(scripts, options, host);
+ const {program, resolveModule} = scriptProgram(files, units);
  const checker = program.getTypeChecker();
  const localModule = name => name.startsWith('.') || workspaceNames.has(name.split('/').slice(0, name.startsWith('@') ? 2 : 1).join('/'));
  /** @type {Map<string, Dependency>} */
@@ -169,10 +267,27 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  const symbols = new Map();
  const indices = new Map([...units].map(([file, unit]) => [file, new Map(unit.stream.map((token, index) => [token.start, index]))]));
 
+ /** @type {Map<string, Map<number, import('typescript-parser').Symbol>>} */
+ const moduleLoads = new Map();
+ for (const [file, unit] of units) {
+  for (const token of unit.stream) {
+   if (token.kind !== 'module-load') continue;
+   const resolved = resolveModule(token.value, '/' + file);
+   const imported = resolved && program.getSourceFile(resolved.resolvedFileName);
+   if (!imported || !/\.m[jt]s$/.test(imported.fileName)) continue;
+   const symbol = checker.getSymbolAtLocation(imported);
+   if (!symbol || !(symbol.flags & ts.SymbolFlags.Module)) continue;
+   if (!moduleLoads.has(file)) moduleLoads.set(file, new Map());
+   required(moduleLoads, file).set(token.start, symbol);
+  }
+ }
+ const modeled = site => site.kind === 'indirect-timer-or-call' && moduleLoads.get(site.file)?.has(site.start);
+
  // A top-level function owns its lexical context, including all local bindings.
  // Compute its token identity once even when many symbols refer into that scope.
- const opaqueFiles = new Set([...units].filter(([, unit]) => unit.stream.some(token =>
-  token.kind === 'indirection' || (token.kind === 'word'
+ const opaqueFiles = new Set([...units].filter(([file, unit]) => unit.stream.some(token =>
+  token.kind === 'indirection' || (token.kind === 'module-load' && !moduleLoads.get(file)?.has(token.start))
+  || (token.kind === 'word'
    && ['globalThis', 'global', 'window', 'self'].includes(token.value)))).map(([file]) => file));
  const functions = new Map();
  for (const source of program.getSourceFiles()) {
@@ -288,18 +403,33 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  for (const source of program.getSourceFiles()) {
   const file = source.fileName.slice(1);
   const unit = required(units, file);
-  const hazardPositions = new Set(unit.sites.map(site => site.start));
+  const hazardPositions = new Set(unit.sites.filter(site => !modeled(site)).map(site => site.start));
   /** @type {{node: import('typescript-parser').Node, owner: Dependency}[]} */
   const stack = [{node: source, owner: required(roots, source.fileName)}];
   while (stack.length) {
    const {node, owner: parentOwner} = /** @type {{node: import('typescript-parser').Node, owner: Dependency}} */ (stack.pop());
-   if (ts.isTypeNode(node)) continue;
+   if (node.kind >= ts.SyntaxKind.FirstTypeNode && node.kind <= ts.SyntaxKind.LastTypeNode
+    || ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) continue;
    let owner = parentOwner;
    const specifier = runtimeModuleSpecifier(node);
    if (specifier) {
     const resolved = resolveModule(specifier.text, source.fileName);
     if (resolved) initializers.push({node: specifier, owner, target: required(roots, resolved.resolvedFileName)});
     else if (localModule(specifier.text)) references.push({node: specifier, unresolved: specifier.text});
+    const namespace = moduleLoads.get(file)?.get(node.getStart(source));
+    if (namespace) {
+     // A returned namespace can escape. Only a direct selection proves which
+     // exports are used, and an exported `then` can run on promise resolution.
+     const members = checker.getExportsOfModule(namespace);
+     const names = members.some(member => member.getName() === 'then') ? undefined : awaitedExportNames(node);
+     const selected = names?.map(name => symbolDependency(members.find(member => member.getName() === name)));
+     const loaded = selected?.every(Boolean) ? selected : [symbolDependency(namespace)];
+     for (const target of loaded) {
+      if (!target) throw new Error('missing loaded module dependency: ' + specifier.text);
+      owner.edges.add(target);
+      references.push({node: specifier, target});
+     }
+    }
    }
    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) continue;
    if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)
@@ -370,16 +500,18 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   const {file, index} = nodePosition(node);
   sites.push({file, line: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1,
    kind: unresolved ? 'unresolved-local-helper' : 'polling-helper-reference',
-   fingerprint: digest([index, required(units, file).fingerprint, unresolved ?? component?.fingerprint]), start: node.getStart()});
+   fingerprint: digest([index, required(units, file).fingerprint, unresolved ?? component?.fingerprint]),
+   dependency: unresolved ?? component?.fingerprint, start: node.getStart()});
  }
  for (const {node, target} of initializers) {
   const component = required(components, target);
   if (!component.hazardous) continue;
   const {file, index} = nodePosition(node);
   sites.push({file, line: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1,
-   kind: 'polling-module-initialization', fingerprint: digest([index, required(units, file).fingerprint, component.fingerprint]), start: node.getStart()});
+   kind: 'polling-module-initialization', fingerprint: digest([index, required(units, file).fingerprint, component.fingerprint]),
+   dependency: component.fingerprint, start: node.getStart()});
  }
- return sites;
+ return sites.filter(site => !modeled(site));
 }
 
 /** @param {Map<string, string>} before @param {Map<string, string>} after */
@@ -388,7 +520,13 @@ export function newProjectPollingSites(before, after, dispositions = [], policy 
  const candidates = projectPollingSites(after);
  if (!candidates.length) return candidates;
  const retained = new Map();
- for (const site of projectPollingSites(before, {historical: true})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
+ const historical = new Map(before);
+ for (const file of new Set(candidates.map(site => site.file))) {
+  const previous = before.get(file), current = after.get(file);
+  if (previous !== undefined && current !== undefined && sameRustImportLayout(file, previous, current))
+   historical.set(file, current);
+ }
+ for (const site of projectPollingSites(historical, {historical: true})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
  for (const item of dispositions) retained.set(item.file + ':' + item.fingerprint, Math.max(1, retained.get(item.file + ':' + item.fingerprint) ?? 0));
  return candidates.filter(site => {
   const key = site.file + ':' + site.fingerprint;

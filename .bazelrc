@@ -7,8 +7,6 @@ common --experimental_convenience_symlinks=ignore
 # Module resolution is reproducible: the committed MODULE.bazel.lock is the only result, and a command
 # fails on a stale lockfile instead of rewriting it. Update it with `bazel mod deps --lockfile_mode=update`.
 common --lockfile_mode=error
-# Share action results across both repositories, worktrees and jobs on this host.
-build --disk_cache=/var/tmp/acyclic-bazel-disk
 build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures
@@ -21,12 +19,16 @@ build --features=static_link_msvcrt
 # clippy aspect type-checks the same tree again.
 build --@rules_rust//rust/settings:clippy_driver
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
-# Pipelined compilation: a dependent crate starts on its dependency's metadata, not its finished rlib.
-build --@rules_rust//rust/settings:pipelined_compilation=true
 test --test_output=errors
 # Clippy reads the workspace thresholds. Every command carries the same value, so a build, a test and a
 # clippy run on one server share its analysis cache instead of discarding it when the flag differs.
 common --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+# Cargo.toml's [profile.dev] codegen-units, as rules_rust's setting: each compile then books the CPUs it really
+# keeps busy (rules_rust-codegen-units-resources.patch), so Bazel never runs more compile threads than its budget.
+common --@rules_rust//rust/settings:codegen_units=8
+# Pipelined compilation: a dependent compiles against the dependency's .rmeta before its .rlib finishes, which
+# shortens the Rust critical path on every leg (most on macOS).
+common --@rules_rust//rust/settings:pipelined_compilation=True
 # `--config=check` is `cargo check`: each requested crate is type-checked to its metadata, with no code
 # generation or link for it. Its dependencies are their ordinary outputs, shared with every other build.
 build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_groups=rust_check
@@ -35,6 +37,54 @@ build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_grou
 # ("Operation not permitted"). Tests on macOS therefore run outside it, as under Cargo.
 common --enable_platform_specific_config
 test:macos --strategy=TestRunner=local
+# Apple targets deploy to macOS 11, the first release on Apple silicon and rustc's own minimum for it. Bazel's
+# default, 10.11, is below what rustc supports, so every macOS compile, and every Cargo a test runs, warned on stderr.
+build:macos --macos_minimum_os=11.0 --host_macos_minimum_os=11.0
+# `--config=loom` compiles the SDK's own model packages with `cfg(loom)`, as `ACYCLIC_LOOM=1` does under
+# Cargo (CONTRIBUTING.md). The flag is per crate, so a registry crate keeps its own independent
+# `cfg(loom)` mode off: Tokio's, for one, needs a `loom` dependency only its dev-dependencies carry.
+# A loom leg names one test target per invocation, because a filter selects cases inside one binary.
+# `--test_filter` carries one filter; each `--test_arg` adds another, and libtest matches any of them:
+#   bazel test --config=loom //rust/crates/harness-core:main --test_arg=mcp_loom::
+#   bazel test --config=loom //rust/crates/harness-core:main \
+#     --test_arg=skill_materializer_loom::journal_owner_serializes_first_publications \
+#     --test_arg=skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake \
+#     --test_arg=--exact
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/actors:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/actors-contract:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/filesystem:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/filesystem/fuzz:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-core:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-local:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-provider-core:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-providers:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-tui:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-tui-term:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/harness-workspace:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/mcp:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-claim:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-file:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-runtime:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream/models:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream/publication-models:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/verification/sdk-fixtures:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract-core:@--cfg=loom
+# `--config=fuzz-smoke` builds a fuzz target with libFuzzer's sanitizer coverage, as the fuzz READMEs'
+# RUSTFLAGS do under Cargo. The prefix `//` matches every crate in this repository, so the code under
+# test is instrumented, and no build script, which does not link the libFuzzer runtime. Registry crates
+# stay uninstrumented: they are not the code under test. The leg then runs the binary for a fixed number
+# of runs, never a time budget:
+#   bazel build --config=fuzz-smoke //rust/codec-fuzz:object_schedule
+#   "$(bazel cquery --config=fuzz-smoke --output=files //rust/codec-fuzz:object_schedule)" \
+#     -seed=1 -runs=4096 rust/codec-fuzz/corpus/object_schedule
+build:fuzz-smoke --@rules_rust//rust/settings:per_crate_rustc_flag=//@-Cpasses=sancov-module
+build:fuzz-smoke --@rules_rust//rust/settings:per_crate_rustc_flag=//@-Cllvm-args=-sanitizer-coverage-level=4
+build:fuzz-smoke --@rules_rust//rust/settings:per_crate_rustc_flag=//@-Cllvm-args=-sanitizer-coverage-inline-8bit-counters
+build:fuzz-smoke --@rules_rust//rust/settings:per_crate_rustc_flag=//@-Cllvm-args=-sanitizer-coverage-pc-table
+build:fuzz-smoke --@rules_rust//rust/settings:per_crate_rustc_flag=//@-Cllvm-args=-sanitizer-coverage-trace-compares
 # `--config=fmt` checks every crate's Rust sources with the toolchain's pinned rustfmt. The aspect
 # passes each crate's own edition, so a crate formats as `cargo fmt` would, and Bazel caches each
 # crate's check until one of its sources changes.

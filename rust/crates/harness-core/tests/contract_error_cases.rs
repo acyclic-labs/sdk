@@ -1,4 +1,7 @@
 //! Public-contract error and source-retention tests.
+#![cfg(test)]
+
+acyclic_test_support::counting_allocator!();
 
 mod contract_errors {
     mod cleanup_tests {
@@ -144,9 +147,6 @@ mod contract_errors {
         }
     }
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-acyclic_test_support::counting_allocator!();
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "wire_api/mod.rs"]

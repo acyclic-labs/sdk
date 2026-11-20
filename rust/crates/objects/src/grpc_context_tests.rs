@@ -185,7 +185,7 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
     #[cfg(feature = "test-support")]
     {
         let body: OwnedBytes = b"stopped-before-sealing".as_slice().into();
-        let before = acyclic_stream::hashed_on_this_thread();
+        let before = acyclic_stream_contract::hashed_on_this_thread();
         assert_eq!(
             stopped
                 .put(body.clone(), Vec::new())
@@ -194,10 +194,10 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
                 .stopped,
             Some(Stopped::Deadline)
         );
-        assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
+        assert_eq!(acyclic_stream_contract::hashed_on_this_thread(), before);
         let sealed = crate::Sealed::new(body);
-        assert!(acyclic_stream::hashed_on_this_thread() > before);
-        let before = acyclic_stream::hashed_on_this_thread();
+        assert!(acyclic_stream_contract::hashed_on_this_thread() > before);
+        let before = acyclic_stream_contract::hashed_on_this_thread();
         assert_eq!(
             stopped
                 .put_sealed(sealed, Vec::new())
@@ -206,7 +206,7 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
                 .stopped,
             Some(Stopped::Deadline)
         );
-        assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
+        assert_eq!(acyclic_stream_contract::hashed_on_this_thread(), before);
         assert_eq!(callbacks.load(Ordering::SeqCst), 0);
     }
     // A deadline beyond the wire's eight-digit-hours range refuses before

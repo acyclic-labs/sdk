@@ -37,13 +37,11 @@ fn retired_compio_proactor_cannot_drop_pending_key() -> io::Result<()> {
         return Err(io::Error::other("pending proactor drop did not abort"));
     }
     drop(driver);
-    let status = crate::process_status(
-        crate::ProcessCommand::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg("linux::retired::tests::retired_compio_proactor_cannot_drop_pending_key")
-            .env(CHILD, "1"),
-        std::time::Duration::from_secs(120),
-    )?;
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .arg("--exact")
+        .arg("linux::retired::tests::retired_compio_proactor_cannot_drop_pending_key")
+        .env(CHILD, "1")
+        .status()?;
     assert_eq!(status.signal(), Some(libc::SIGABRT));
     Ok(())
 }

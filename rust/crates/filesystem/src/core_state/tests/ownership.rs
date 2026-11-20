@@ -154,7 +154,7 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     // read, one more than an empty record's two. Its exit released its process
     // lock, so one lock probe proves it dead, at the platform's exact physical
     // read cost. Only this test's processes use this root, so the count is exact.
-    use acyclic_native_runtime::StoreClaim;
+    use acyclic_native_claim::StoreClaim;
     assert_eq!(
         probed - free,
         1 + StoreClaim::LOCK_PROBE_READ_OPERATIONS,

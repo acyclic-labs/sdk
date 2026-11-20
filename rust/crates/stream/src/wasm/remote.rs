@@ -1,6 +1,6 @@
 //! Remote provider: canonical unary RPCs for writes and point lookups; reads,
 //! children pages and follows share the native multiplexed session pool.
-use super::{socket, *};
+use super::socket;
 use crate::*;
 use async_trait::async_trait;
 

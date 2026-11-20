@@ -175,20 +175,26 @@ mod turns {
             (Adapter::Gemini, &model_first[..], "open"),
             (Adapter::Anthropic, &assistant_last[..], "close"),
         ] {
-            let healthy = replay_turns_with(adapter, messages, RULES).unwrap();
+            let healthy = replay_turns_with(adapter, messages, RULES)
+                .unwrap()
+                .unwrap();
             assert_eq!(turn_repair_violation(adapter, messages, &healthy), None);
             let never = Rules {
                 boundary: |_| true,
                 ..RULES
             };
-            let broken = replay_turns_with(adapter, messages, never).unwrap();
+            let broken = replay_turns_with(adapter, messages, never)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 turn_repair_violation(adapter, messages, &broken),
                 Some(violation)
             );
         }
         let batch = batch();
-        let healthy = replay_turns_with(Adapter::Gemini, &batch, RULES).unwrap();
+        let healthy = replay_turns_with(Adapter::Gemini, &batch, RULES)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             turn_repair_violation(Adapter::Gemini, &batch, &healthy),
             None
@@ -197,7 +203,9 @@ mod turns {
             order: |_| {},
             ..RULES
         };
-        let broken = replay_turns_with(Adapter::Gemini, &batch, unordered).unwrap();
+        let broken = replay_turns_with(Adapter::Gemini, &batch, unordered)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             turn_repair_violation(Adapter::Gemini, &batch, &broken),
             Some("unordered responses")
@@ -210,14 +218,18 @@ mod turns {
             json!({"role":"user","content":[{"type":"text","text":"also"}]}),
             json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"c","content":"ok"}]}),
         ];
-        let healthy = replay_turns_with(Adapter::Anthropic, &text_first, RULES).unwrap();
+        let healthy = replay_turns_with(Adapter::Anthropic, &text_first, RULES)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             turn_repair_violation(Adapter::Anthropic, &text_first, &healthy),
             None
         );
         assert_eq!(healthy[2]["content"][0]["type"], "tool_result");
         assert_eq!(healthy[2]["content"][1]["text"], "also");
-        let broken = replay_turns_with(Adapter::Anthropic, &text_first, unordered).unwrap();
+        let broken = replay_turns_with(Adapter::Anthropic, &text_first, unordered)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             turn_repair_violation(Adapter::Anthropic, &text_first, &broken),
             Some("interrupted results")
@@ -226,13 +238,17 @@ mod turns {
         // interrupt the exchange; production moves them to the front.
         let mut interrupted = batch.clone();
         interrupted[2]["parts"].as_array_mut().unwrap().swap(1, 2);
-        let healthy = replay_turns_with(Adapter::Gemini, &interrupted, RULES).unwrap();
+        let healthy = replay_turns_with(Adapter::Gemini, &interrupted, RULES)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             turn_repair_violation(Adapter::Gemini, &interrupted, &healthy),
             None
         );
         assert_eq!(healthy[2]["parts"][2]["text"], "interrupt");
-        let broken = replay_turns_with(Adapter::Gemini, &interrupted, unordered).unwrap();
+        let broken = replay_turns_with(Adapter::Gemini, &interrupted, unordered)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             turn_repair_violation(Adapter::Gemini, &interrupted, &broken),
             Some("unordered responses")
@@ -258,14 +274,18 @@ mod turns {
             ..RULES
         };
         for (messages, text) in [(joined, 1), (moved, 2)] {
-            let healthy = replay_turns_with(Adapter::Gemini, &messages, RULES).unwrap();
+            let healthy = replay_turns_with(Adapter::Gemini, &messages, RULES)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 turn_repair_violation(Adapter::Gemini, &messages, &healthy),
                 None
             );
             let parts = healthy[text]["parts"].as_array().unwrap();
             assert!(parts.iter().any(|part| part["text"] == " t0"));
-            let broken = replay_turns_with(Adapter::Gemini, &messages, fragmented).unwrap();
+            let broken = replay_turns_with(Adapter::Gemini, &messages, fragmented)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 turn_repair_violation(Adapter::Gemini, &messages, &broken),
                 Some("fragmented text")
@@ -316,10 +336,14 @@ mod turns {
         ] {
             // Valid canonical input passes through repair unchanged...
             assert!(canonical_turns(adapter, messages));
-            let healthy = replay_turns_with(adapter, messages, RULES).unwrap();
+            let healthy = replay_turns_with(adapter, messages, RULES)
+                .unwrap()
+                .unwrap();
             assert_eq!(healthy, messages);
             // ...and an idempotent fault that rewrites it is named.
-            let faulty = replay_turns_with(adapter, messages, broken).unwrap();
+            let faulty = replay_turns_with(adapter, messages, broken)
+                .unwrap()
+                .unwrap();
             assert_ne!(faulty, messages);
             assert_eq!(
                 turn_repair_violation(adapter, messages, &faulty),
@@ -333,7 +357,9 @@ mod turns {
             {"type":"text","text":"a b"},
             {"type":"text","text":" "}]})];
         // Healthy repair joins the blank fragment and keeps every character...
-        let healthy = replay_turns_with(Adapter::Anthropic, &messages, RULES).unwrap();
+        let healthy = replay_turns_with(Adapter::Anthropic, &messages, RULES)
+            .unwrap()
+            .unwrap();
         assert_eq!(healthy[0]["content"][0]["text"], "a b ");
         assert_eq!(
             turn_repair_violation(Adapter::Anthropic, &messages, &healthy),
@@ -357,7 +383,9 @@ mod turns {
             },
             ..RULES
         };
-        let faulty = replay_turns_with(Adapter::Anthropic, &messages, squeezed).unwrap();
+        let faulty = replay_turns_with(Adapter::Anthropic, &messages, squeezed)
+            .unwrap()
+            .unwrap();
         assert_eq!(faulty[0]["content"][0]["text"], "ab");
         assert_eq!(
             turn_repair_violation(Adapter::Anthropic, &messages, &faulty),

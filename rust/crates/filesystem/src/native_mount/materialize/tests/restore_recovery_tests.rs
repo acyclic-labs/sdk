@@ -769,8 +769,8 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     Ok(())
 }
 
-fn restoration_work() -> crate::demand::DemandWork {
-    crate::demand::DemandWork::new(
+fn restoration_work() -> crate::ledger::DemandWork {
+    crate::ledger::DemandWork::new(
         WorkBudget {
             backend_read_operations: 10_000,
             backend_write_operations: 10_000,

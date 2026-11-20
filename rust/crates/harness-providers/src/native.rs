@@ -1,9 +1,11 @@
 //! Original-ledger admission for the shared wire projections and parsers.
+use crate::allocation::{
+    diagnostic, invalid, model_diagnostic, reserve, reserve_request, retain, shape,
+};
 use crate::{Adapter, ResolvedModel, dispatch, sse};
 use acyclic_harness_core::{
     Error, Result,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
-    wire::ErrorCode,
 };
 use acyclic_harness_provider_response::stream;
 use futures::StreamExt as _;
@@ -11,10 +13,6 @@ use {
     acyclic_fs::{NativeAllocation, NativeMaterializationWork},
     acyclic_fs_work::performance::WorkCounters,
 };
-
-#[cfg(test)]
-#[path = "native_accounting_tests.rs"]
-mod accounting_tests;
 
 struct Parser<'work> {
     state: stream::State<'work>,
@@ -32,7 +30,7 @@ async fn encode(
     Option<acyclic_harness_core::executor::ModelCacheObservation>,
 )> {
     let (key, account) = auth;
-    let mut allocation = reserve_request(provider, request, auth, work)?;
+    let mut allocation = reserve_request(provider.files.maximum_bytes, request, auth, work)?;
     let io = acyclic_harness_core::filesystem::PreparationIo::from_native_work(work)?;
     let origin = provider.reasoning_origin(key, account);
     let body = diagnostic(
@@ -44,130 +42,6 @@ async fn encode(
         crate::http::owned_bytes::owned(body.bytes, allocation)?,
         body.cache,
     ))
-}
-
-fn invalid(reason: &'static str) -> Error {
-    Error::NativeBoundary {
-        code: ErrorCode::Invalid,
-        reason,
-    }
-}
-
-fn error_has_no_excerpt(error: &Error) -> bool {
-    matches!(error, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
-}
-
-pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
-    result.map_err(|error| diagnostic_error(error, allocation))
-}
-
-pub(crate) fn diagnostic_error(error: Error, allocation: &mut NativeAllocation) -> Error {
-    let (code, message, semantic) = match error {
-        Error::Invalid(message) => (ErrorCode::Invalid, message, false),
-        Error::Unauthorized(message) => (ErrorCode::Unauthorized, message, false),
-        Error::Storage(message) => (ErrorCode::Storage, message, false),
-        Error::ModelDiagnostic {
-            code,
-            message,
-            custody: None,
-        } => (code, message, true),
-        // A native transport failure carries no excerpt to fund: it keeps its class.
-        error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
-        error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string(), true),
-        error => return error,
-    };
-    match allocation.split_off(message.capacity() as u64) {
-        Ok(custody) if semantic => Error::ModelDiagnostic {
-            code,
-            message,
-            custody: Some(custody),
-        },
-        Ok(custody) => Error::NativeDiagnostic {
-            code,
-            message,
-            custody,
-        },
-        Err(cause) => {
-            drop(message);
-            cause.into()
-        }
-    }
-}
-
-/// Apply the shared remote-response classification, then retain its original ledger.
-pub(crate) fn model_diagnostic<T>(
-    result: Result<T>,
-    allocation: &mut NativeAllocation,
-) -> Result<T> {
-    diagnostic(result.map_err(crate::diagnostic::rejection), allocation)
-}
-
-// Count structural tokens without constructing a second JSON graph. Quoted
-// punctuation and escaped quotes are payload, not allocation-bearing nodes.
-pub(crate) fn shape(bytes: &[u8]) -> (u64, u64) {
-    let (bytes, nodes) = acyclic_harness_core::executor::json::encoded_json_shape(bytes);
-    (bytes, nodes as u64)
-}
-
-// Admission includes the temporary decoded graph, copies retained by the
-// protocol state, geometric buffer growth and SDK event slots. It precedes the
-// producer; only surviving capacity is transferred to the executor afterwards.
-pub(crate) fn reserve(
-    work: &NativeMaterializationWork,
-    bytes: u64,
-    nodes: u64,
-    prior: u64,
-) -> Result<NativeAllocation> {
-    let capacity = bytes
-        .checked_mul(8)
-        .and_then(|n| {
-            nodes
-                .checked_mul(1024)
-                .and_then(|slots| n.checked_add(slots))
-        })
-        .and_then(|n| prior.checked_mul(2).and_then(|prior| n.checked_add(prior)))
-        .and_then(|n| n.checked_add(8192))
-        .ok_or_else(|| invalid("provider allocation bound overflow"))?;
-    let operations = nodes
-        .checked_mul(16)
-        .and_then(|n| n.checked_add(128))
-        .ok_or_else(|| invalid("provider allocation operation bound overflow"))?;
-    Ok(work.claim(
-        capacity,
-        operations,
-        WorkCounters {
-            bytes_copied: bytes.saturating_mul(8),
-            items_examined: nodes,
-            ..Default::default()
-        },
-    )?)
-}
-
-/// Count and generation admit the same immutable request projection before
-/// resolving its files or constructing the protocol graph.
-pub(crate) fn reserve_request(
-    provider: &ResolvedModel,
-    request: &PreparedModelRequest,
-    (key, account): (Option<&str>, Option<&str>),
-    work: &NativeMaterializationWork,
-) -> Result<NativeAllocation> {
-    request.projected_file_bytes(provider.files.maximum_bytes)?;
-    let bytes = request.input_bytes()?;
-    let (_, nodes) = request.projection_shape();
-    reserve(
-        work,
-        bytes,
-        nodes,
-        key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
-    )
-}
-
-pub(crate) fn retain(allocation: &mut NativeAllocation, bytes: u64) -> Result<()> {
-    if bytes > allocation.bytes() {
-        return Err(invalid("provider exceeded admitted allocation"));
-    }
-    allocation.resize(bytes)?;
-    Ok(())
 }
 
 pub(crate) fn generate<'a>(

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
+use acyclic_stream::{ProviderOwner, StreamProviderExt as _};
 
 mod observation;
 mod request;
@@ -89,7 +89,7 @@ fn admit(
 
 pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
     (mut request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
-    client: &Arc<P>,
+    client: &ProviderOwner<P>,
     operation: Option<OperationId>,
     mut phase: Option<&mut CommitPhase>,
     deadline_unix_millis: Option<u64>,
@@ -107,7 +107,7 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
         let (pending, producer) = crate::distributed::NativeCommit::prepare(
             request,
             &mut quota,
-            Arc::clone(client),
+            ProviderOwner::clone(client),
             deadline_unix_millis,
         )?;
         if let Some(phase) = phase.as_deref_mut() {
@@ -157,7 +157,7 @@ impl Settlement {
         self,
         committed: std::result::Result<acyclic_stream::CommitOutcome, StreamError>,
         quota: &mut CodecQuota<'_, '_>,
-        client: &Arc<P>,
+        client: &ProviderOwner<P>,
         operation: Option<OperationId>,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_stream::CommitOutcome, u64)> {

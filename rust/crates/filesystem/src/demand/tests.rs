@@ -1,5 +1,6 @@
 use super::native::NativeDemandSource;
 use super::*;
+use crate::ledger::NativeDemandReadMeter;
 use crate::model::{FilesystemProfile, VolumeLimits};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -69,6 +70,56 @@ async fn native_source(
     .await
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)
+}
+
+#[cfg(all(feature = "test-support", not(loom)))]
+#[tokio::test]
+async fn native_lookup_projects_fixture_times_into_metadata_and_versions()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_native_runtime::testing::{NativeTimes, Schedule, drive};
+
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join("file"), b"body")?;
+    let source = native_source(directory.path()).await?;
+    let reference = source_reference(&source).await?;
+    let name = path("/file")?;
+    let cancellation = CancellationToken::new();
+    let physical = lookup_node(&source, reference.clone(), &name, &cancellation).await?;
+    let mut previous = physical.version;
+
+    for timestamp in [17, 19] {
+        let (schedule, mut events) = Schedule::seeded(71);
+        schedule.set_native_times_provider(move |_| NativeTimes {
+            created_ns: Some(timestamp),
+            modified_ns: Some(timestamp),
+            accessed_ns: None,
+            changed_ns: Some(timestamp),
+        });
+        let node = drive(
+            &schedule,
+            &mut events,
+            |_| {},
+            lookup_node(&source, reference.clone(), &name, &cancellation),
+        )
+        .await?;
+        assert_eq!(node.file_identity, physical.file_identity);
+        assert_eq!(
+            node.metadata,
+            SourceMetadata {
+                created_ns: Some(i128::from(timestamp)),
+                modified_ns: Some(i128::from(timestamp)),
+                accessed_ns: None,
+                changed_ns: Some(i128::from(timestamp)),
+                ..physical.metadata
+            }
+        );
+        assert_ne!(node.version, previous);
+        previous = node.version;
+    }
+    let after = lookup_node(&source, reference, &name, &cancellation).await?;
+    assert_eq!(after.version, physical.version);
+    assert_eq!(after.metadata.modified_ns, physical.metadata.modified_ns);
+    Ok(())
 }
 
 #[tokio::test]

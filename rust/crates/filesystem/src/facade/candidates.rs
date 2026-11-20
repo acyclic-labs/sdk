@@ -341,7 +341,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(super) fn prepare_root_working_control_with_native_work(
         &self,
         working: &GenerationRoot,
-        guard: &mut crate::materializer::NativeAllocation,
+        guard: &mut crate::ledger::NativeAllocation,
         prepared: &mut PreparedCheckoutRoots,
         original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,

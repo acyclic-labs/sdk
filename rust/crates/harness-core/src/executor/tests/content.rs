@@ -15,7 +15,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
     let contents = [first.clone(), second.clone()].map(|file| {
         ModelContent::Part(ModelContentPart::File {
             file,
-            policy: crate::model::FileProjectionPolicy::Reference,
+            policy: crate::model::FileProjectionPolicy::BoundedFull,
         })
     });
     let first_only = RuntimeScope::new(

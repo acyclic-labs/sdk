@@ -44,7 +44,7 @@ pub(in crate::native_mount) fn mount_wait_error(
 }
 
 pub(in crate::native_mount) fn mount_items(
-    work: &mut crate::demand::DemandWork,
+    work: &mut crate::ledger::DemandWork,
     count: usize,
 ) -> Result<(), MountSourceError> {
     work.charge(crate::WorkCounters {

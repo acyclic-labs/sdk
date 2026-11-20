@@ -25,7 +25,7 @@ async fn restrictive_policy_blocks_wire_reads_and_both_credential_issuers()
         .value;
     crate::access::fixtures::publish_policy(
         &owner,
-        &crate::access::fixtures::denied(crate::access::Action::Read, "secrets/**"),
+        &crate::access::fixtures::denied(crate::access::Action::Read, "secrets/**")?,
     )
     .await?;
     assert_eq!(
@@ -215,7 +215,7 @@ async fn export_revocation_cut(
     }
     crate::access::fixtures::publish_policy(
         &owner,
-        &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
+        &crate::access::fixtures::denied(crate::access::Action::Read, "**")?,
     )
     .await?;
     OMIT_EXPORT_FENCE.set(omitted);
@@ -244,7 +244,8 @@ async fn removed_export_fence_negative_control() {
 }
 
 thread_local! {
-    static REVOKE_DURING_FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static REVOKE_DURING_FORK: std::cell::Cell<Option<crate::access::Policy>> =
+        const { std::cell::Cell::new(None) };
 }
 
 pub(super) async fn fork_policy_cut<
@@ -253,10 +254,9 @@ pub(super) async fn fork_policy_cut<
 >(
     source: &Workspace<A, O>,
 ) {
-    if !REVOKE_DURING_FORK.replace(false) {
+    let Some(policy) = REVOKE_DURING_FORK.take() else {
         return;
-    }
-    let policy = crate::access::fixtures::denied(crate::access::Action::Read, "**");
+    };
     assert!(
         crate::access::fixtures::publish_policy(source, &policy)
             .await
@@ -279,7 +279,10 @@ async fn wire_fork_freezes_source_policy_through_publication()
         .into_inner()
         .workspace
         .ok_or("workspace")?;
-    REVOKE_DURING_FORK.set(true);
+    REVOKE_DURING_FORK.set(Some(crate::access::fixtures::denied(
+        crate::access::Action::Read,
+        "**",
+    )?));
     let forked = service
         .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
             source: created.head.clone(),
@@ -306,7 +309,7 @@ async fn wire_fork_freezes_source_policy_through_publication()
         .value;
     crate::access::fixtures::publish_policy(
         &owner,
-        &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
+        &crate::access::fixtures::denied(crate::access::Action::Read, "**")?,
     )
     .await?;
     let denied = service

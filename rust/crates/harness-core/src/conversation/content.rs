@@ -686,6 +686,8 @@ impl ContentChangeResult {
 /// Serialization projects its resulting files without copying the retained members.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ContentChanges {
+    /// The original filesystem operation that published this cut.
+    pub operation: acyclic_fs::IdempotencyKey,
     /// Exact committed generation; never inferred from a later head.
     pub generation: GenerationRef,
     /// Original actions and paths, in request order.

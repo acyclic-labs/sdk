@@ -1,0 +1,414 @@
+use super::*;
+use acyclic_fs::kernel::{GenerationProof, HistoricalGenerationEvidence, PublishGenerationRequest};
+use acyclic_fs::storage::{ObjectRead, ObjectReadRequest, ObjectStoreError};
+
+pub(super) fn limits(config: acyclic_fs::model::VolumeConfig) -> acyclic_fs::kernel::ClosureLimits {
+    acyclic_fs::kernel::ClosureLimits {
+        decode: acyclic_fs::kernel::DecodeLimits::default(),
+        profile: config.profile,
+        symbolic_links: config.symbolic_links,
+        hard_links: config.hard_links,
+        sparse_files: config.sparse_files,
+    }
+}
+
+pub(super) async fn prove(
+    objects: &MemoryObjectBackend,
+    root: ObjectId,
+    config: acyclic_fs::model::VolumeConfig,
+) -> Result<GenerationProof, Box<dyn Error>> {
+    Ok(acyclic_fs::kernel::prove_generation_closure(
+        objects,
+        root,
+        acyclic_fs::kernel::ClosureLimits {
+            decode: acyclic_fs::kernel::DecodeLimits::default(),
+            profile: config.profile,
+            symbolic_links: config.symbolic_links,
+            hard_links: config.hard_links,
+            sparse_files: config.sparse_files,
+        },
+        BUDGET,
+        &CancellationToken::new(),
+    )
+    .await?)
+}
+
+pub(super) async fn copy_generation(
+    objects: &MemoryObjectBackend,
+    target: &MemoryObjectBackend,
+    volume: acyclic_fs::VolumeId,
+    config: acyclic_fs::model::VolumeConfig,
+    root: ObjectId,
+    cancel: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
+    let manifest = acyclic_fs::kernel::build_generation_export_manifest_async(
+        objects,
+        volume,
+        config,
+        root,
+        limits(config),
+        BUDGET,
+        cancel,
+    )
+    .await?
+    .value;
+    // Transfer order admits every child before its parent names that reference.
+    // A proof's identity-sorted object list is not a publication order.
+    for object in manifest.objects {
+        let bytes = objects
+            .read(
+                object,
+                16 * 1024 * 1024,
+                &mut AuthorityWork::new(BUDGET, cancel),
+            )
+            .await?
+            .bytes;
+        target
+            .put(object, bytes, &mut AuthorityWork::new(BUDGET, cancel))
+            .await?;
+    }
+    Ok(())
+}
+
+async fn evidence(
+    objects: &MemoryObjectBackend,
+    id: AuthorityId,
+    record: &DurableCommit,
+    root: ObjectId,
+    config: acyclic_fs::model::VolumeConfig,
+) -> Result<HistoricalGenerationEvidence, Box<dyn Error>> {
+    let proof = prove(objects, root, config).await?;
+    let append = acyclic_fs::GuardedAppend {
+        authority_id: id,
+        epoch: record.epoch,
+        expected: Head {
+            epoch: record.epoch,
+            sequence: Sequence::new(record.sequence.get() - 1),
+            digest: record.previous_digest,
+        },
+        commit: ProposedCommit {
+            publication: None,
+            operation_id: record.operation_id,
+            fingerprint: record.fingerprint,
+            payload: record.payload.clone(),
+        },
+        permit: acyclic_fs::PublicationPermit::Unrestricted,
+    };
+    Ok(
+        if acyclic_fs::kernel::decode_published_generation::<acyclic_fs::kernel::CanonicalDecodeError>(
+            &record.payload,
+            4096,
+            |_| Ok(()),
+        )
+        .is_ok()
+        {
+            acyclic_fs::kernel::encode_generation_publication_evidence(
+                &PublishGenerationRequest {
+                    authority_id: id,
+                    volume_id: proof.root.volume_id,
+                    epoch: record.epoch,
+                    expected: append.expected,
+                    operation_id: record.operation_id,
+                    generation_root: root,
+                },
+                &proof,
+                &append,
+                config,
+                64 * 1024,
+            )?
+            .into()
+        } else {
+            acyclic_fs::kernel::encode_original_generation_evidence(&proof, &append, config, 64 * 1024)?
+        },
+    )
+}
+
+struct Archive {
+    empty: MemoryObjectBackend,
+    authority: AuthorityId,
+    digest: Digest,
+    evidence: HistoricalGenerationEvidence,
+    decode_hash_start: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decoder_custody(
+    evidence: &HistoricalGenerationEvidence,
+    authority: AuthorityId,
+    record: &DurableCommit,
+) -> Result<(), Box<dyn Error>> {
+    for native in [false, true] {
+        let mut required_peak = 0;
+        for refusal in 0..4 {
+            let mut budget = BUDGET;
+            match refusal {
+                1 => budget.bytes_hashed = 0,
+                2 => budget.bytes_copied = 0,
+                3 => budget.peak_allocation_bytes = required_peak - 1,
+                _ => {}
+            }
+            let cancel = CancellationToken::new();
+            let original = if native {
+                Some(
+                    acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+                        .map_err(|(error, _)| error)?,
+                )
+            } else {
+                None
+            };
+            let mut work = if let Some(original) = &original {
+                AuthorityWork::native(original, &cancel)
+            } else {
+                AuthorityWork::new(budget, &cancel)
+            };
+            let mut independent =
+                acyclic_fs::kernel::Owned::<Vec<u8>>::allocate(73, &mut work.accounting())?;
+            independent.value.resize(73, 0xa5);
+            let live = |work: &AuthorityWork<'_>| -> Result<u64, AuthorityStoreError> {
+                if let Some(original) = &original {
+                    Ok(original.live_allocation_bytes()?)
+                } else {
+                    Ok(work.allocations.live_bytes())
+                }
+            };
+            let baseline = live(&work)?;
+            let mut accounting = work.accounting();
+            let mut observed = acyclic_fs::kernel::OriginalReadAccounting::new(&mut accounting)?;
+            let decoded = acyclic_fs::kernel::decode_historical_generation_evidence_observed(
+                evidence,
+                authority,
+                record,
+                evidence.bytes.len() as u64,
+                u64::MAX,
+                &mut |step| observed.observe(step).map_err(AccountingError::from),
+            );
+            if refusal == 0 {
+                let decoded = decoded?;
+                let minimum = (decoded.manifest.objects.capacity() * size_of::<ObjectId>()
+                    + decoded.root.parents.capacity()
+                        * size_of::<acyclic_fs_format::object_reference::GenerationId>()
+                    + decoded.append.commit.payload.len()) as u64;
+                assert!(minimum > 0);
+                let (mut allocation, owned_bytes) = observed.into_parts();
+                drop(accounting);
+                assert!(
+                    owned_bytes >= minimum,
+                    "historical decoder omitted actual backing"
+                );
+                assert_eq!(
+                    live(&work)?,
+                    baseline + owned_bytes,
+                    "decoded backing retired before projection"
+                );
+                required_peak = baseline + owned_bytes;
+                drop(decoded);
+                work.accounting()
+                    .release_owned(&mut allocation, owned_bytes)?;
+            } else {
+                assert!(
+                    matches!(
+                        decoded,
+                        Err(AccountingError::Work(
+                            acyclic_fs::WorkError::BudgetExceeded { .. }
+                        ))
+                    ),
+                    "original decoder allowance was bypassed"
+                );
+                drop(decoded);
+                observed.retire()?;
+                drop(accounting);
+            }
+            assert_eq!(
+                live(&work)?,
+                baseline,
+                "decoder retirement changed independent backing"
+            );
+            assert!(independent.value.iter().all(|byte| *byte == 0xa5));
+            let independent_bytes = independent.value.capacity() as u64;
+            independent.retire(&mut work.accounting())?;
+            assert_eq!(live(&work)?, baseline - independent_bytes);
+        }
+    }
+    Ok(())
+}
+
+impl AsyncObjectStore for Archive {
+    async fn put(
+        &self,
+        id: ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.empty.put(id, bytes, work).await
+    }
+    async fn read(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        self.empty.read(id, maximum, work).await
+    }
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), ObjectStoreError> {
+        self.empty.read_many(requests, work).await
+    }
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        self.empty.contains(id, work).await
+    }
+    async fn historical_generation_evidence(
+        &self,
+        id: AuthorityId,
+        record: &DurableCommit,
+        maximum: u64,
+        _: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<HistoricalGenerationEvidence>, ObjectStoreError> {
+        work.cancellation
+            .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
+        if self.evidence.bytes.len() as u64 > maximum {
+            return Err(ObjectStoreError::TooLarge {
+                observed: self.evidence.bytes.len() as u64,
+                maximum,
+            });
+        }
+        let value =
+            (id == self.authority && record.digest == self.digest).then(|| self.evidence.clone());
+        if value.is_some() {
+            self.decode_hash_start.store(
+                work.spent()?.bytes_hashed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        work.accept(Ok(acyclic_fs::OperationReceipt {
+            work: acyclic_fs::WorkCounters {
+                items_examined: 1,
+                items_returned: u64::from(value.is_some()),
+                ..acyclic_fs::WorkCounters::UNCHARGED
+            },
+            value,
+        }))
+    }
+}
+
+#[tokio::test]
+async fn archives_bind_original_publication_creation_and_retention_and_reject_forgery()
+-> Result<(), Box<dyn Error>> {
+    let (fs, authority, objects) = fixture();
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("archived-accounting", B, &cancel)
+        .await?
+        .value;
+    let config = workspace.volume_config();
+    let id = volume_authority_id(workspace.id().volume_id());
+    let initial = records(&authority, id).await?.remove(0);
+    let initial_root = root(workspace.head(B, &cancel).await?.value.id());
+    workspace.write_text("/file", "original").await?;
+    let original = records(&authority, id).await?.remove(1);
+    let original_root = root(workspace.head(B, &cancel).await?.value.id());
+    workspace.checkpoint("original").await?;
+    let retention_id = retention_authority_id(
+        workspace.id().volume_id(),
+        RetentionKind::Checkpoint,
+        "original",
+    );
+    let retention = records(&authority, retention_id).await?.remove(0);
+    workspace
+        .write_text("/file", "a much larger current generation")
+        .await?;
+    let current = records(&authority, id)
+        .await?
+        .pop()
+        .ok_or("current record missing")?;
+    let current_root = root(workspace.head(B, &cancel).await?.value.id());
+    let current_evidence = evidence(&objects, id, &current, current_root, config).await?;
+    for (authority_id, record, original_root, position, size) in [
+        (id, &initial, initial_root, AccountingCursor::genesis(), 0),
+        (id, &original, original_root, cursor(&initial)?, 8),
+        (
+            retention_id,
+            &retention,
+            original_root,
+            AccountingCursor::genesis(),
+            8,
+        ),
+    ] {
+        let empty = acyclic_objects::MemoryObjects::memory();
+        let genuine = evidence(&objects, authority_id, record, original_root, config).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        decoder_custody(&genuine, authority_id, record)?;
+        let mut archive = Archive {
+            empty: acyclic_fs::LogicalObjectStore::new(Arc::new(empty)),
+            authority: authority_id,
+            digest: record.digest,
+            evidence: genuine.clone(),
+            decode_hash_start: std::sync::atomic::AtomicU64::new(0),
+        };
+        assert!(
+            !archive
+                .contains(original_root, &mut AuthorityWork::new(BUDGET, &cancel))
+                .await?
+        );
+        assert!(
+            !archive
+                .contains(current_root, &mut AuthorityWork::new(BUDGET, &cancel))
+                .await?
+        );
+        let actual = page(&authority, &archive, authority_id, position, 1).await?;
+        let before_decode = archive
+            .decode_hash_start
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            actual.work.bytes_hashed >= before_decode + genuine.bytes.len() as u64,
+            "historical decoder omitted original evidence hashing"
+        );
+        assert_eq!(actual.facts().len(), 1);
+        assert_eq!(actual.facts()[0].operation_id, record.operation_id);
+        assert_eq!(
+            Some(actual.facts()[0].settled_at_micros),
+            record.settled_at_micros
+        );
+        match actual.facts()[0].transition {
+            AccountingTransition::Published {
+                generation_root,
+                logical_regular_file_bytes,
+                ..
+            }
+            | AccountingTransition::Retained {
+                generation_root,
+                logical_regular_file_bytes,
+                ..
+            } => {
+                assert_eq!(generation_root, original_root);
+                assert_eq!(logical_regular_file_bytes, size);
+            }
+            _ => return Err("unexpected archived transition".into()),
+        }
+        for tamper in 0..3 {
+            archive.evidence = genuine.clone();
+            match tamper {
+                0 => archive.evidence.sha256[0] ^= 1,
+                1 => {
+                    let mut bytes = archive.evidence.bytes.to_vec();
+                    *bytes.last_mut().ok_or("empty evidence")? ^= 1;
+                    archive.evidence.bytes = bytes::Bytes::from(bytes);
+                }
+                _ => archive.evidence = current_evidence.clone(),
+            }
+            assert!(matches!(
+                page(&authority, &archive, authority_id, position, 1).await,
+                Err(AccountingError::Proof(_))
+            ));
+        }
+    }
+    Ok(())
+}

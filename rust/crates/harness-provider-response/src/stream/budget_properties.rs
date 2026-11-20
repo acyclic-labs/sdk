@@ -72,7 +72,7 @@ fn native_growth_charges_only_prefix_relocations() -> Result<()> {
         if text.capacity() != before.1 {
             copied += before.0;
         }
-        assert_eq!(work.receipt().bytes_copied, copied as u64);
+        assert_eq!(work.receipt()?.bytes_copied, copied as u64);
     }
     assert!(copied < 2 * text.len());
     let before = (text.len(), text.capacity(), budget.used());

@@ -23,15 +23,17 @@ fuzz_target!(|bytes: &[u8]| {
     if let Ok(request) = wire::CommitRequest::decode(bytes)
         && let Ok(request) = wire_codec::commit_from_wire(request)
     {
-        assert_eq!(
-            wire_codec::commit_from_wire(wire_codec::commit_to_wire(&request)),
-            Ok(request)
+        let restored = wire_codec::commit_from_wire(wire_codec::commit_to_wire(&request));
+        assert!(
+            matches!(&restored, Ok(restored) if restored == &request),
+            "commit request round trip failed: original={request:?}; restored={restored:?}"
         );
     }
     if let Ok(observation) = acyclic_stream::persistence::decode_observation(bytes, 4096) {
-        assert_eq!(
-            acyclic_stream::persistence::encode_observation(&observation, 4096).as_deref(),
-            Ok(bytes)
+        let encoded = acyclic_stream::persistence::encode_observation(&observation, 4096);
+        assert!(
+            matches!(encoded.as_deref(), Ok(encoded) if encoded == bytes),
+            "observation did not re-encode canonically: {encoded:?}"
         );
     }
 });

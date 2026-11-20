@@ -21,13 +21,15 @@ pub(super) type Resolve<'a> = Option<&'a (dyn Fn(&str) -> Result<Arc<ResolvedMod
 
 /// What a session's settings are read from and recorded in.
 #[derive(Clone)]
-pub(super) struct Volumes<'a> {
+pub struct Volumes<'a> {
     pub(super) files: &'a Arc<LocalFilesystem>,
     pub(super) verifier: &'a AuthorityVerifier,
     pub(super) signed: &'a Scope,
     pub(super) home: &'a VolumeRef,
     pub(super) seed: (&'a VolumeRef, &'a crate::resources::GenerationRef),
     pub(super) configuration: &'a [Option<crate::layers::PinnedLayer>; 4],
+    /// The host's original issuer read authority when the home scope is narrower.
+    pub(super) issuer_access: Option<(&'a AuthorityVerifier, &'a Scope)>,
     pub(super) decisions: crate::config::SettingsAdmissions<'a, acyclic_stream::LocalStream>,
 
     pub(super) maximum_bytes: Option<u64>,
@@ -35,7 +37,7 @@ pub(super) struct Volumes<'a> {
 
 /// One session admission's pinned home and issuer sources; `sys/` only in the seed.
 /// Every settings entry point borrows this tree and its original read grant.
-pub(super) struct Tree<'a> {
+pub struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
@@ -91,14 +93,12 @@ impl Tree<'_> {
         layer: &crate::layers::PinnedLayer,
         path: &str,
     ) -> Result<Option<(crate::conversation::FileRef, crate::conversation::Custody)>> {
+        let (verifier, scope) = self
+            .volumes
+            .issuer_access
+            .unwrap_or((self.volumes.verifier, self.volumes.signed));
         let read = crate::executor::with_history_io(self.io, |work| {
-            ContentGrant::verify_directory_read(
-                self.volumes.verifier,
-                self.volumes.signed,
-                &layer.volume,
-                "",
-                work,
-            )
+            ContentGrant::verify_directory_read(verifier, scope, &layer.volume, "", work)
         })?;
         Ok(self
             .volumes
@@ -225,7 +225,7 @@ impl config::Tree for Tree<'_> {
 /// The six-source settings fold selects over `started`, recording admission
 /// under the original complete cut. Invalid or rejected content refuses the
 /// selection; operational source errors cannot select a lower layer.
-pub(super) async fn admit(
+pub async fn admit(
     tree: &Tree<'_>,
     agent: AgentId,
     started: Option<Arc<ResolvedModel>>,
@@ -379,7 +379,7 @@ async fn record(
 /// session starts, recording the home module's admission. Invalid enforcement
 /// manifests refuse the session rather than remove its guards.
 #[cfg(any(test, not(target_arch = "wasm32")))]
-pub(super) async fn plugins(
+pub async fn plugins(
     question: bool,
     feedback: Option<bool>,
     tree: &Tree<'_>,
@@ -709,6 +709,7 @@ mod tests {
             home: &harness.scratch,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            issuer_access: None,
             maximum_bytes: None,
         };
         let refused = Tree::new(&volumes, crate::config::AGENT, None)
@@ -734,7 +735,7 @@ mod tests {
         drop(loaded);
         let mut allowance = budget;
         allowance.output_bytes = control
-            .receipt()
+            .receipt()?
             .output_bytes
             .checked_sub(1)
             .ok_or_else(|| Error::Invalid("program reads produced no accounting".into()))?;
@@ -752,7 +753,7 @@ mod tests {
             refused.is_err(),
             "a source must not reopen an unmeasured ledger for its imports"
         );
-        assert!(limited.receipt().output_bytes <= allowance.output_bytes);
+        assert!(limited.receipt()?.output_bytes <= allowance.output_bytes);
         let native = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes:
@@ -763,13 +764,13 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::executor::PreparationIo::from_native_work(&native)?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes()?;
         match source.load("budget", Some(&io)) {
             Err(Error::NativeWork { .. }) => {}
             Err(error) => return Err(error),
             Ok(_) => panic!("program source future allocated before original admission"),
         }
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
         Ok(())
     }
 
@@ -797,6 +798,7 @@ mod tests {
             home: &harness.scratch,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            issuer_access: None,
             maximum_bytes: None,
         };
         async fn observed(
@@ -834,19 +836,19 @@ mod tests {
                 Tree::new(&volumes, config::AGENT, Some(&io)).await?
             };
             drop(warm);
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let tree = if pinned {
                 Tree::pinned(&volumes, generation.clone(), Some(&io))?
             } else {
                 Tree::new(&volumes, config::AGENT, Some(&io)).await?
             };
             assert!(
-                work.live_allocation_bytes() > baseline,
+                work.live_allocation_bytes()? > baseline,
                 "a live settings tree must retain its original grant storage"
             );
             drop(tree);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 baseline,
                 "dropping a settings tree must retire its original preparation metadata"
             );
@@ -898,8 +900,8 @@ mod tests {
         assert_eq!(outcome.error.as_deref(), Some(reason.to_string().as_str()));
         assert_eq!(outcome.path, config::AGENT);
         assert_eq!(outcome.version, "original");
-        assert!(work.receipt().allocation_operations > 0);
-        let retained = work.live_allocation_bytes();
+        assert!(work.receipt()?.allocation_operations > 0);
+        let retained = work.live_allocation_bytes()?;
         record(
             &volumes,
             Some(&io),
@@ -909,7 +911,7 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             retained,
             "replaying the same record must retire temporary publication storage"
         );
@@ -988,6 +990,7 @@ mod tests {
             home: &harness.scratch,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            issuer_access: None,
             decisions: crate::config::SettingsAdmissions::new(
                 harness.agent_stream.as_ref().expect("fixture owner stream"),
             ),
@@ -1086,6 +1089,7 @@ mod tests {
             home: &harness.scratch,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            issuer_access: None,
             decisions: crate::config::SettingsAdmissions::new(
                 harness.agent_stream.as_ref().expect("fixture owner stream"),
             ),
@@ -1166,6 +1170,7 @@ mod tests {
             });
             let selected = Volumes {
                 configuration: &configuration,
+                issuer_access: None,
                 ..volumes.clone()
             };
             let operation = crate::OperationId::new();
@@ -1178,6 +1183,7 @@ mod tests {
             });
             let rebound = Volumes {
                 configuration: &advanced,
+                issuer_access: None,
                 ..selected.clone()
             };
             let replayed = Tree::for_step(&rebound, journal.as_ref(), operation, 0, None).await?;

@@ -4,7 +4,6 @@ use crate::kernel::decode_tree_page;
 use crate::kernel::{FileKind, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 
-use crate::kernel::Child;
 #[path = "tree_mutation/canonical_history.rs"]
 mod canonical_history;
 #[cfg(not(target_arch = "wasm32"))]
@@ -19,12 +18,13 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
         entry: original,
     }];
     let cancellation = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(
+    let work = crate::NativeMaterializationWork::root(
         WorkBudget {
             bytes_copied: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let before = work.receipt().unwrap();
@@ -73,12 +73,13 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
         },
     ];
     let cancellation = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(
+    let work = crate::NativeMaterializationWork::root(
         WorkBudget {
             page_writes: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);

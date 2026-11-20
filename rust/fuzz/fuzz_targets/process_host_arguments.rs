@@ -47,7 +47,11 @@ fn check(input: Vec<OsString>) -> bool {
     }
     canonical.extend(["--".into(), parsed.executable.clone()]);
     canonical.extend(parsed.arguments.iter().cloned());
-    assert_eq!(Invocation::parse(canonical.clone()).unwrap(), parsed);
+    let restored = Invocation::parse(canonical.clone());
+    assert!(
+        matches!(&restored, Ok(restored) if restored == &parsed),
+        "canonical argv changed admission: original={parsed:?}; restored={restored:?}"
+    );
     // Round trips alone cannot detect a discarded duplicate. Apply the
     // refusal relation to every singleton in any admitted arbitrary input,
     // including records whose metadata is not a trusted executable oracle.
@@ -89,22 +93,23 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 );
     if let Ok(records) = serde_json::from_slice::<Vec<serde_json::Value>>(data) {
         for record in records {
-            if let (Some(input), Some(code)) =
-                (record["arguments"].as_array(), record["code"].as_u64())
+            if let (Some(input), Some(code)) = (
+                record
+                    .get("arguments")
+                    .and_then(serde_json::Value::as_array),
+                record.get("code").and_then(serde_json::Value::as_u64),
+            ) && let Some(input) = input
+                .iter()
+                .map(|argument| argument.as_str().map(OsString::from))
+                .collect::<Option<Vec<_>>>()
             {
-                if let Some(input) = input
-                    .iter()
-                    .map(|argument| argument.as_str().map(OsString::from))
-                    .collect::<Option<Vec<_>>>()
-                {
-                    let admitted = check(input);
-                    if original {
-                        assert_eq!(
-                            admitted,
-                            code == 17,
-                            "original executable admission changed"
-                        );
-                    }
+                let admitted = check(input);
+                if original {
+                    assert_eq!(
+                        admitted,
+                        code == 17,
+                        "original executable admission changed"
+                    );
                 }
             }
         }
@@ -122,7 +127,11 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 use std::os::windows::ffi::OsStringExt as _;
                 let wide: Vec<_> = bytes
                     .chunks(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+                    .filter_map(|pair| match pair {
+                        &[low, high] => Some(u16::from_le_bytes([low, high])),
+                        &[low] => Some(u16::from(low)),
+                        _ => None,
+                    })
                     .collect();
                 OsString::from_wide(&wide)
             }

@@ -1,16 +1,13 @@
 use std::io;
 
-/// The managed copy belongs to the original caller's guarded SDK producer.
+/// Unix protection is identity: the caller's own copy is the only copy.
 #[cfg(unix)]
 pub fn unprotect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
     maximum: u64,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
-    if bytes.len() as u64 > maximum {
-        return Err(io::Error::from(io::ErrorKind::InvalidData).into());
-    }
-    copy(bytes)
+    protect_with_copy(bytes, maximum, copy)
 }
 
 #[cfg(unix)]

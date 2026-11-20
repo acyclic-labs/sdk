@@ -213,7 +213,7 @@ impl LocalUser {
         let project = WorkspaceTable::primary_in(&state.volumes)
             .filter(|binding| binding.role == WorkspaceRole::User)
             .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
-        let operation = crate::filesystem::spawned_operation(agent, project.id);
+        let operation = crate::hosting::spawned_operation(agent, project.id);
         let base = local
             .files
             .creation_generation(project.volume()?, operation)
@@ -276,10 +276,7 @@ impl TurnContext for LocalContext {
                 .0
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            #[cfg(any(test, not(target_arch = "wasm32")))]
             local.merge_completed_workspace(agent, turn).await?;
-            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-            let _ = (local, agent, turn);
             Ok(())
         })
     }
@@ -367,8 +364,6 @@ impl TurnContext for LocalContext {
                     &local.plugin_set,
                 )
                 .await?;
-            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-            let _ = (context, input);
             Ok(executor)
         })
     }
@@ -402,15 +397,12 @@ impl TurnContext for LocalContext {
                 .iter()
                 .filter(|entry| entry.role != WorkspaceRole::Internal)
                 .map(|entry| {
-                    #[cfg(any(test, not(target_arch = "wasm32")))]
                     let path = bindings
                         .context
                         .workspace
                         .as_ref()
-                        .and_then(|workspace| workspace.mounts.native_root_for_entry(entry.id))
+                        .and_then(|workspace| workspace.announced_path(entry.id))
                         .map(|path| path.to_string_lossy().into_owned());
-                    #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-                    let path: Option<String> = None;
                     crate::agent::WorkspaceExposure {
                         entry: entry.id,
                         paths: roster
@@ -478,7 +470,7 @@ struct CompletionTarget {
     verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
     owner: super::workspace::owner::AgentOwner,
-    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     capture: (acyclic_fs::CaptureOptions, acyclic_fs::CapturePolicy),
     turn: OperationId,
 }
@@ -550,6 +542,15 @@ impl LocalHarness {
     /// is idle, else before the parent's next command reads it.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
+        // A continuation's parent identifies the historical source of the
+        // experiment. Publishing back to it would change the original run.
+        if agent
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.continuation.is_some())
+        {
+            return Ok(());
+        }
         let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
             return Ok(());
         };
@@ -836,7 +837,7 @@ impl LocalHarness {
 
 /// The tree's one execution target: this host's checkout, run by `tools`
 /// and guarded by its one human. Every agent's fork view runs on it.
-pub(super) fn home(
+pub fn home(
     tools: Arc<dyn crate::tool::ToolExecutor>,
 ) -> Result<Arc<dyn crate::runtime::TargetResolver>> {
     let record = crate::runtime::InProcessTargets::local_record(
@@ -907,10 +908,10 @@ impl LocalHarness {
     #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     pub(super) async fn guest_session(
         self: &Arc<Self>,
-        enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
+        enrollment: crate::hosting::LocalGuestEnrollment,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_fs::native_mount::GuestSessionAdmission> {
-        use crate::filesystem::hosting::{Bound, Placement, Turns};
+        use crate::hosting::{Bound, Placement, Turns};
         let issuer = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("local guest enrollment requires signing custody".into())
         })?;
@@ -992,6 +993,7 @@ impl LocalHarness {
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
+        let clock = acyclic_actors::local::SystemClock::bind(self.clock.clone());
         let turns = Turns {
             executors: self.executors(),
             limits: TurnLimits {
@@ -999,7 +1001,7 @@ impl LocalHarness {
                 history_turns: HISTORY_TURNS,
             },
             actors: ActorLimits::default(),
-            clock: self.clock.clone(),
+            clock,
             approval_policy: self.preset.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {
@@ -1014,14 +1016,11 @@ impl LocalHarness {
         // A checkout's spawned children fork its retained lazy cut, so each
         // child's project is a related fork the parent can diff and merge.
         // Only native execution has checkouts; a configured volume has none.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
         let cuts = self.workspace().map(|workspace| {
             Arc::new(crate::local::workspace::LocalVolumeResources(Arc::clone(
                 workspace,
             ))) as Arc<dyn crate::filesystem::VolumeResources>
         });
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
         let caller = self.admission.caller(
             &super::Custody {
                 issuer: &authority,

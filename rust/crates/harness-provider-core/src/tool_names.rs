@@ -1,0 +1,541 @@
+use acyclic_harness_core::{
+    Result,
+    model::{ModelContentPart, ModelRequest},
+};
+use std::borrow::Cow;
+
+// N-05, ANT-TOOL-01, OAR-TOOL-01, OAC-TOOL-03, GEM-TOOL-01.
+// A provider-invalid canonical name gets an alias derived from the name alone,
+// so it never depends on its position among the request's tools: `.` becomes
+// `__` (`mcp.server.tool` -> `mcp__server__tool`) and any other unsupported
+// byte becomes `_`. An alias that is too long, or that is already taken,
+// instead keeps a readable prefix and appends a salted digest of the
+// canonical name. Every retained alias is allocated at its exact size.
+const DIGEST_HEX: usize = 16;
+const MAXIMUM: usize = acyclic_harness_provider_protocol::name::TOOL.maximum;
+const DIGEST_DOMAIN: &[u8] = b"acyclic:tool-name:v1\0";
+
+struct Binding<'a> {
+    canonical: &'a str,
+    wire: Cow<'a, str>,
+}
+
+/// An alias whose first candidate was taken, and its latest salt.
+struct Resalted {
+    index: usize,
+    salt: u32,
+    alias: String,
+}
+
+/// Work done while building a table, compared exactly with its native claim.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Built {
+    /// Heap allocations, retained and temporary.
+    pub allocations: u64,
+    /// Heap capacity allocated, retained and temporary.
+    pub bytes: u64,
+    /// Candidate names checked against occupied names.
+    pub probes: u64,
+    /// Bytes fed to the digest.
+    pub hashed: u64,
+    /// Sorts of the wire index.
+    pub wire_sorts: u64,
+    /// Comparisons made by those sorts.
+    pub wire_comparisons: u64,
+}
+
+impl Built {
+    /// Whether this work stays inside CLAIM.
+    pub fn within(&self, claim: &Self) -> bool {
+        self.allocations <= claim.allocations
+            && self.bytes <= claim.bytes
+            && self.probes <= claim.probes
+    }
+}
+
+/// Bindings sorted by canonical name, plus their indices sorted by wire name.
+pub struct Names<'a> {
+    bindings: Vec<Binding<'a>>,
+    by_wire: Vec<usize>,
+}
+
+fn names(request: &ModelRequest) -> impl Iterator<Item = &str> {
+    request.model_tools().map(|tool| tool.name.as_str()).chain(
+        request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                ModelContentPart::ToolCall(call) => Some(call.name.as_str()),
+                ModelContentPart::ToolResult { name, .. } => Some(name.as_str()),
+                _ => None,
+            }),
+    )
+}
+
+fn unchanged(name: &str) -> bool {
+    acyclic_harness_provider_protocol::name::TOOL.accepts(name)
+}
+
+fn needs_prefix(name: &str) -> bool {
+    !name
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+}
+
+/// The untruncated readable alias length, saturating just past the maximum.
+fn readable_len(name: &str) -> usize {
+    let mut length = usize::from(needs_prefix(name));
+    for byte in name.bytes() {
+        if length > MAXIMUM {
+            break;
+        }
+        length += if byte == b'.' { 2 } else { 1 };
+    }
+    length
+}
+
+/// Appends the readable alias, cut at `length` bytes; never reallocates when
+/// `alias` has room for `length` more bytes.
+fn push_readable(alias: &mut String, name: &str, length: usize) {
+    let end = alias.len() + length;
+    let mut push = |character: char| {
+        if alias.len() < end {
+            alias.push(character);
+        }
+    };
+    if needs_prefix(name) {
+        push('_');
+    }
+    for byte in name.bytes() {
+        match byte {
+            b'.' => {
+                push('_');
+                push('_');
+            }
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-') => {
+                push(char::from(byte));
+            }
+            _ => push('_'),
+        }
+    }
+}
+
+/// The readable alias at its exact size, if it fits the provider maximum.
+fn readable(name: &str) -> Option<String> {
+    let length = readable_len(name);
+    (length <= MAXIMUM).then(|| {
+        let mut alias = String::with_capacity(length);
+        push_readable(&mut alias, name, length);
+        alias
+    })
+}
+
+/// Writes the salted digest alias into `buffer`, which holds `MAXIMUM` bytes.
+fn digest_into<E>(
+    buffer: &mut String,
+    name: &str,
+    salt: u32,
+    built: &mut Built,
+    fund: &mut impl FnMut(u64) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
+    let hashed = (DIGEST_DOMAIN.len() + size_of::<u32>() + name.len()) as u64;
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let skip = tests::SKIP_HASH_ADMISSION.with(std::cell::Cell::get);
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    let skip = false;
+    if !skip {
+        fund(hashed)?;
+    }
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    tests::ACTUAL_HASHED.with(|counter| counter.set(counter.get() + hashed));
+    built.hashed += hashed;
+    buffer.clear();
+    push_readable(
+        buffer,
+        name,
+        readable_len(name).min(MAXIMUM - DIGEST_HEX - 1),
+    );
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DIGEST_DOMAIN);
+    hasher.update(&salt.to_le_bytes());
+    hasher.update(name.as_bytes());
+    buffer.push('_');
+    let digest = hasher.finalize().to_hex();
+    buffer.push_str(digest.get(..DIGEST_HEX).unwrap_or(digest.as_str()));
+    Ok(())
+}
+
+/// An exactly sized copy, so retained capacity equals the alias length.
+fn exact(alias: &str) -> String {
+    let mut owned = String::with_capacity(alias.len());
+    owned.push_str(alias);
+    owned
+}
+
+impl<'a> Names<'a> {
+    /// Asserts that REQUEST's table round-trips every declared name.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a name does not round-trip, or when two distinct canonical
+    /// names collide on one wire name.
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+    pub fn assert_round_trip(request: &'a ModelRequest) {
+        let result = Self::check_round_trip(request);
+        assert!(result.is_ok(), "tool name round trip failed: {result:?}");
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+    fn check_round_trip(request: &'a ModelRequest) -> Result<()> {
+        let table = Self::new(request);
+        let mut seen = std::collections::BTreeSet::new();
+        for name in table.bindings.iter().map(|binding| binding.canonical) {
+            let wire = table.wire(name)?;
+            assert!(!wire.is_empty() && wire.len() <= 64);
+            assert!(
+                wire.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                    || wire.starts_with('_')
+            );
+            assert!(
+                wire.bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            );
+            assert!(
+                seen.insert(wire.to_string()),
+                "distinct canonical names collided"
+            );
+            let mut event = acyclic_harness_core::model::ModelEvent::ToolCall(
+                acyclic_harness_core::model::ToolCall::new(
+                    "call".into(),
+                    wire.into_owned(),
+                    serde_json::json!({}),
+                ),
+            );
+            table.restore(&mut event)?;
+            let acyclic_harness_core::model::ModelEvent::ToolCall(call) = event else {
+                unreachable!()
+            };
+            assert_eq!(call.name, name);
+            let _ = table.canonical(name); // Also exercise malformed/untrusted alias strings.
+        }
+        Ok(())
+    }
+
+    /// The table for REQUEST, discarding its work counters.
+    pub fn new(request: &'a ModelRequest) -> Self {
+        Self::built(request).0
+    }
+
+    /// The table for REQUEST and the work building it did.
+    pub fn built(request: &'a ModelRequest) -> (Self, Built) {
+        match Self::build(request, names(request).count(), &mut |_| {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(result) => result,
+            Err(never) => match never {},
+        }
+    }
+
+    /// The native claim for a table over `count` names. Bytes: every binding,
+    /// the wire index, the re-salt list, the candidate buffer, and two
+    /// exactly sized aliases per name (a first alias and its replacement).
+    /// Probes: one per re-salted name plus one per declared name equal to one
+    /// of its candidates, so at most twice the name count.
+    pub fn claim(count: u64) -> Option<Built> {
+        if count == 0 {
+            return Some(Built::default());
+        }
+        let per_name = (std::mem::size_of::<Binding<'_>>()
+            + std::mem::size_of::<usize>()
+            + std::mem::size_of::<Resalted>()
+            + 2 * MAXIMUM) as u64;
+        Some(Built {
+            allocations: count.checked_mul(2)?.checked_add(4)?,
+            bytes: count.checked_mul(per_name)?.checked_add(MAXIMUM as u64)?,
+            probes: count.checked_mul(2)?,
+            ..Built::default()
+        })
+    }
+
+    /// Each retained alias's length and capacity.
+    #[cfg(test)]
+    pub fn aliases(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.bindings
+            .iter()
+            .filter_map(|binding| match &binding.wire {
+                Cow::Owned(alias) => Some((alias.len(), alias.capacity())),
+                Cow::Borrowed(_) => None,
+            })
+    }
+
+    /// The digest candidate for `name` at `salt`.
+    pub fn candidate(name: &str, salt: u32) -> String {
+        let mut buffer = String::with_capacity(MAXIMUM);
+        let result = digest_into(&mut buffer, name, salt, &mut Built::default(), &mut |_| {
+            Ok::<(), std::convert::Infallible>(())
+        });
+        if let Err(never) = result {
+            match never {}
+        }
+        buffer
+    }
+
+    fn build<E>(
+        request: &'a ModelRequest,
+        count: usize,
+        fund: &mut impl FnMut(u64) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(Self, Built), E> {
+        let mut built = Built::default();
+        if count == 0 {
+            return Ok((
+                Self {
+                    bindings: Vec::new(),
+                    by_wire: Vec::new(),
+                },
+                built,
+            ));
+        }
+        fn charge(built: &mut Built, bytes: usize) {
+            built.allocations += 1;
+            built.bytes += bytes as u64;
+        }
+        let mut bindings = Vec::with_capacity(count);
+        charge(&mut built, count * std::mem::size_of::<Binding<'_>>());
+        bindings.extend(names(request).map(|canonical| Binding {
+            canonical,
+            wire: Cow::Borrowed(canonical),
+        }));
+        bindings.sort_unstable_by(|a, b| a.canonical.cmp(b.canonical));
+        bindings.dedup_by(|a, b| a.canonical == b.canonical);
+        let mut buffer = String::new();
+        for binding in &mut bindings {
+            if !unchanged(binding.canonical) {
+                let alias = if let Some(alias) = readable(binding.canonical) {
+                    alias
+                } else {
+                    if buffer.capacity() == 0 {
+                        buffer.reserve_exact(MAXIMUM);
+                        charge(&mut built, MAXIMUM);
+                    }
+                    digest_into(&mut buffer, binding.canonical, 0, &mut built, fund)?;
+                    exact(&buffer)
+                };
+                charge(&mut built, alias.capacity());
+                binding.wire = Cow::Owned(alias);
+            }
+        }
+        // One sort by wire: a declared name sorts ahead of an equal alias, and
+        // the first alias in canonical order keeps a shared candidate.
+        let order =
+            |bindings: &[Binding<'_>], a: usize, b: usize| match (bindings.get(a), bindings.get(b))
+            {
+                (Some(a), Some(b)) => a
+                    .wire
+                    .cmp(&b.wire)
+                    .then_with(|| unchanged(b.canonical).cmp(&unchanged(a.canonical)))
+                    .then(a.canonical.cmp(b.canonical)),
+                _ => std::cmp::Ordering::Equal,
+            };
+        let mut by_wire = Vec::with_capacity(bindings.len());
+        charge(&mut built, bindings.len() * std::mem::size_of::<usize>());
+        by_wire.extend(0..bindings.len());
+        sort_wire(&mut by_wire, &bindings, &mut built, order);
+        let mut resalted: Vec<Resalted> = Vec::new();
+        for pair in by_wire.windows(2) {
+            let [first, second] = pair else { continue };
+            let (Some(a), Some(b)) = (bindings.get(*first), bindings.get(*second)) else {
+                continue;
+            };
+            if a.wire == b.wire {
+                if resalted.capacity() == 0 {
+                    resalted.reserve_exact(bindings.len());
+                    charge(&mut built, bindings.len() * std::mem::size_of::<Resalted>());
+                }
+                resalted.push(Resalted {
+                    index: *second,
+                    salt: 0,
+                    alias: String::new(),
+                });
+            }
+        }
+        if !resalted.is_empty() && buffer.capacity() == 0 {
+            buffer.reserve_exact(MAXIMUM);
+            charge(&mut built, MAXIMUM);
+        }
+        // A candidate is taken only by an original wire equal to it: an
+        // unchanged declared name, a kept alias, or a first alias still
+        // awaiting replacement. Distinct names' digests differ unless the
+        // digest itself collides, which the repeat pass below repairs.
+        loop {
+            for entry in resalted.iter_mut().filter(|entry| entry.alias.is_empty()) {
+                let Some(binding) = bindings.get(entry.index) else {
+                    continue;
+                };
+                let canonical = binding.canonical;
+                loop {
+                    entry.salt += 1;
+                    digest_into(&mut buffer, canonical, entry.salt, &mut built, fund)?;
+                    built.probes += 1;
+                    let taken = by_wire
+                        .binary_search_by(|&index| {
+                            bindings
+                                .get(index)
+                                .map(|binding| binding.wire.as_ref())
+                                .unwrap_or_default()
+                                .cmp(buffer.as_str())
+                        })
+                        .is_ok();
+                    if !taken {
+                        entry.alias = exact(&buffer);
+                        charge(&mut built, entry.alias.capacity());
+                        break;
+                    }
+                }
+            }
+            resalted.sort_unstable_by(|a, b| a.alias.cmp(&b.alias));
+            let mut repeated = false;
+            for index in 1..resalted.len() {
+                let (before, after) = resalted.split_at_mut(index);
+                if let (Some(previous), Some(current)) = (before.last(), after.first_mut())
+                    && current.alias == previous.alias
+                {
+                    current.alias = String::new();
+                    repeated = true;
+                }
+            }
+            if !repeated {
+                break;
+            }
+        }
+        let changed = !resalted.is_empty();
+        for entry in resalted {
+            if let Some(binding) = bindings.get_mut(entry.index) {
+                binding.wire = Cow::Owned(entry.alias);
+            }
+        }
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let changed = changed || tests::REDUNDANT_WIRE_SORT.with(std::cell::Cell::get);
+        if changed {
+            sort_wire(&mut by_wire, &bindings, &mut built, order);
+        }
+        let table = Self { bindings, by_wire };
+        debug_assert!(
+            Self::claim(count as u64).is_some_and(|claim| built.within(&claim)),
+            "tool name table exceeded its claim: {built:?}"
+        );
+        Ok((table, built))
+    }
+
+    /// The provider name for `name`, borrowed from the table or from `name`.
+    pub fn wire<'s>(&'s self, name: &'s str) -> Result<Cow<'s, str>> {
+        if unchanged(name) {
+            return Ok(Cow::Borrowed(name));
+        }
+        let index = self
+            .bindings
+            .binary_search_by(|binding| binding.canonical.cmp(name))
+            .map_err(|_| crate::invalid("missing tool name binding"))?;
+        self.bindings
+            .get(index)
+            .map(|binding| Cow::Borrowed(binding.wire.as_ref()))
+            .ok_or_else(|| crate::invalid("missing tool name binding"))
+    }
+
+    /// The canonical name behind a provider alias; `None` for a wire name
+    /// that is itself canonical or undeclared, which tool admission validates.
+    /// A name outside the provider grammar was never declared, so it rejects
+    /// the response.
+    pub fn canonical(&self, wire: &str) -> Result<Option<&'a str>> {
+        match self.by_wire.binary_search_by(|&index| {
+            self.bindings
+                .get(index)
+                .map(|binding| binding.wire.as_ref())
+                .unwrap_or_default()
+                .cmp(wire)
+        }) {
+            Ok(found) => {
+                let binding = self
+                    .by_wire
+                    .get(found)
+                    .and_then(|&index| self.bindings.get(index))
+                    .ok_or_else(|| crate::invalid("tool name index out of range"))?;
+                Ok((binding.canonical != wire).then_some(binding.canonical))
+            }
+            Err(_) if unchanged(wire) => Ok(None),
+            Err(_) => Err(crate::diagnostic::rejection(crate::invalid(
+                "provider named an undeclared tool alias",
+            ))),
+        }
+    }
+
+    /// Restores EVENT's tool call to its canonical name, when it names an alias.
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+    pub fn restore(&self, event: &mut acyclic_harness_core::model::ModelEvent) -> Result<()> {
+        if let acyclic_harness_core::model::ModelEvent::ToolCall(call) = event
+            && let Some(name) = self.canonical(&call.name)?
+        {
+            call.name = name.into();
+        }
+        Ok(())
+    }
+
+    /// The table for REQUEST, admitted on WORK's ledger when it has one.
+    pub fn funded(
+        request: &'a ModelRequest,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Self, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            let capacity = names(request).count();
+            let count = capacity as u64;
+            let claim = Self::claim(count)
+                .ok_or_else(|| crate::invalid("tool name binding size overflow"))?;
+            let custody = work.claim(
+                claim.bytes,
+                claim.allocations,
+                acyclic_fs_work::performance::WorkCounters {
+                    bytes_copied: claim.bytes,
+                    items_examined: count
+                        .checked_add(claim.probes)
+                        .ok_or_else(|| crate::invalid("tool name binding size overflow"))?,
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
+                },
+            )?;
+            let (table, built) =
+                Self::build(request, capacity, &mut |bytes_hashed| -> Result<()> {
+                    work.charge(acyclic_fs_work::performance::WorkCounters {
+                        bytes_hashed,
+                        ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
+                    })?;
+                    Ok(())
+                })?;
+            // The claim is a bound the build must respect, not an estimate.
+            if !built.within(&claim) {
+                return Err(crate::invalid("tool name table exceeded its native claim"));
+            }
+            return Ok((table, Some(custody)));
+        }
+        let _ = work;
+        Ok((Self::new(request), None))
+    }
+}
+
+fn sort_wire<'a>(
+    indices: &mut [usize],
+    bindings: &[Binding<'a>],
+    built: &mut Built,
+    order: impl Fn(&[Binding<'a>], usize, usize) -> std::cmp::Ordering,
+) {
+    built.wire_sorts += 1;
+    indices.sort_unstable_by(|&a, &b| {
+        built.wire_comparisons += 1;
+        order(bindings, a, b)
+    });
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "tool_names_budget_tests.rs"]
+mod tests;

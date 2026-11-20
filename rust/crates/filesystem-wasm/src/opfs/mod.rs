@@ -230,7 +230,8 @@ fn fold_unit_results(
             }
         }
     }
-    total = combine_sequential(total, window)
+    total = total
+        .checked_add(window)
         .map_err(|error| ObjectFailure::new(error.into(), total))?;
     total
         .verify(budget)
@@ -254,13 +255,6 @@ fn combine_parallel_window(
     let mut combined = left.checked_add(right)?;
     combined.peak_allocation_bytes = peak;
     Ok(combined)
-}
-
-fn combine_sequential(
-    left: WorkCounters,
-    right: WorkCounters,
-) -> Result<WorkCounters, acyclic_fs_work::performance::WorkError> {
-    left.checked_add(right)
 }
 
 fn allocation_bytes<T>(count: usize) -> Result<u64, acyclic_fs_work::performance::WorkError> {

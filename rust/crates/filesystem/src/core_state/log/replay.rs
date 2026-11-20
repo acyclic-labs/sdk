@@ -63,7 +63,7 @@ impl CoreLog {
         } else {
             residents
         };
-        let meter = work.map(crate::materializer::NativeMaterializationWork::runtime_meter);
+        let meter = work.map(crate::ledger::NativeMaterializationWork::runtime_meter);
         let file = acyclic_native_runtime::CachedFile::new_metered(
             file,
             &paths.current,

@@ -8,7 +8,7 @@ pub const ENDPOINT_ENV: &str = "ACYCLIC_ENDPOINT";
 pub const CREDENTIAL_ENV: &str = "ACYCLIC_API_KEY";
 /// Path of a PEM CA bundle a TLS endpoint is verified against instead of the
 /// platform roots, for a private or self-hosted endpoint.
-pub const CA_FILE_ENV: &str = "ACYCLIC_CA_FILE";
+const CA_FILE_ENV: &str = "ACYCLIC_CA_FILE";
 
 /// Configuration refusal before a transport is constructed. Diagnostics never
 /// contain endpoint input or credentials.

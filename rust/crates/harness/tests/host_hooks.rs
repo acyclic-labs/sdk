@@ -46,15 +46,14 @@ fn codex_minimum_version_is_enforced_without_compatibility_fallback() {
     }
 }
 
-fn packaged_manifest() -> serde_json::Value {
+fn packaged_manifest() -> serde_json::Result<serde_json::Value> {
     serde_json::from_str(include_str!(
         "../../../../plugin/claude/.claude-plugin/plugin.json"
     ))
-    .unwrap()
 }
 
 #[test]
-fn installed_permission_selector_matches_only_the_registered_spawn() {
+fn installed_permission_selector_matches_only_the_registered_spawn() -> serde_json::Result<()> {
     // Original native init output and its source/digest are retained in this capture.
     let capture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../plugin/tests/hosts/fixtures/native-pair-initialization.json"
@@ -83,7 +82,7 @@ fn installed_permission_selector_matches_only_the_registered_spawn() {
     let hooks = claude_hooks("/owned/acyclic");
     let selector = hooks["PermissionRequest"][0]["matcher"].as_str().unwrap();
     assert_eq!(
-        packaged_manifest()["hooks"]["PermissionRequest"][0]["matcher"],
+        packaged_manifest()?["hooks"]["PermissionRequest"][0]["matcher"],
         selector
     );
     let pattern = regex_lite::Regex::new(selector).unwrap();
@@ -111,6 +110,7 @@ fn installed_permission_selector_matches_only_the_registered_spawn() {
             .count()
             > selected.len()
     );
+    Ok(())
 }
 
 proptest! {
@@ -194,7 +194,7 @@ fn ownership_rejects_split_arguments_foreign_hooks_and_changed_lifecycle() {
 
 #[cfg(unix)]
 #[test]
-fn native_shell_receives_arguments_from_both_manifest_and_installer() {
+fn native_shell_receives_arguments_from_both_manifest_and_installer() -> serde_json::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let temporary = tempfile::tempdir().unwrap();
     let package = temporary.path().join("package with spaces and 'quotes'");
@@ -204,7 +204,7 @@ fn native_shell_receives_arguments_from_both_manifest_and_installer() {
     let executable = bin.join("acyclic");
     std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let manifest = packaged_manifest();
+    let manifest = packaged_manifest()?;
     let installed = claude_hooks(executable.to_str().unwrap());
     for event in CLAUDE_EVENTS {
         for hook in [
@@ -232,4 +232,5 @@ fn native_shell_receives_arguments_from_both_manifest_and_installer() {
             );
         }
     }
+    Ok(())
 }

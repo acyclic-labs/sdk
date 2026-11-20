@@ -44,6 +44,7 @@ pub(in crate::kernel::publication) async fn prepare<P: PublicationOwner>(
     else {
         return Ok(candidate);
     };
+    let mut certified = None;
     let (root, predecessor) = loop {
         if let Some(prefix) = ticket
             .prepare_prefix(owner.clone(), limits, accounting, cancellation)
@@ -51,7 +52,7 @@ pub(in crate::kernel::publication) async fn prepare<P: PublicationOwner>(
         {
             break prefix;
         }
-        let certified = ticket.certificate(accounting)?;
+        certified = ticket.certificate(certified, accounting)?;
         let core = Arc::clone(&ticket.proposal.core);
         drop(ticket);
         let Some(next) =

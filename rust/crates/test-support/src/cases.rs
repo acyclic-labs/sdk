@@ -110,14 +110,8 @@ mod tests {
 
     crate::cases! {
         module = evens,
-        values: u64,
         runner = super::even,
         cases = [zero => 0, two => 2, four => 4],
-    }
-
-    #[test]
-    fn values_list_the_cases_in_order() {
-        assert_eq!(evens::VALUES, [0, 2, 4]);
     }
 
     #[test]

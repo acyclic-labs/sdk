@@ -36,7 +36,7 @@ fn select_cargo(root: &Path, declaration: &Path, source: &str) -> Result<PathBuf
             sdk_docs::command_environment().into_iter()
         )
     );
-    let path = crate::file_cache::get(&declaration, &context, || {
+    let path = crate::file_cache::get(declaration, &context, || {
         let output = sdk_docs::command("rustup")
             .args(["which", "cargo", "--toolchain", &toolchain])
             .run_output()
@@ -62,15 +62,7 @@ fn select_cargo(root: &Path, declaration: &Path, source: &str) -> Result<PathBuf
 }
 
 pub(super) fn toolchain_identity(cargo: &Path) -> Result<String, CliError> {
-    Ok(cargo_version(
-        cargo,
-        &sdk_docs::command_directory()
-            .map(Ok)
-            .unwrap_or_else(std::env::current_dir)
-            .map_err(io_error)?,
-    )?
-    .trim()
-    .to_owned())
+    Ok(cargo_version(cargo, &command_root()?)?.trim().to_owned())
 }
 
 pub(super) fn cargo_version(cargo: &Path, root: &Path) -> Result<String, CliError> {

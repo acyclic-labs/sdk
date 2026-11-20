@@ -41,14 +41,13 @@ pub async fn verify(
             (alpha.clone(), Vec::new()),
         ])
         .await;
-    assert_eq!(results.len(), 4);
-    assert!(matches!(results[0], Ok(Put::Created { .. })));
-    assert_eq!(
-        results[1].as_ref().unwrap_err().code,
-        wire::ErrorCode::MissingReference
-    );
-    assert!(matches!(results[2], Ok(Put::Created { .. })));
-    assert!(matches!(results[3], Ok(Put::AlreadyExists { .. })));
+    let [first, refused, second, replay] = results.as_slice() else {
+        return Err("batch returned the wrong number of results".into());
+    };
+    assert!(matches!(first, Ok(Put::Created { .. })));
+    assert!(matches!(refused, Err(error) if error.code == wire::ErrorCode::MissingReference));
+    assert!(matches!(second, Ok(Put::Created { .. })));
+    assert!(matches!(replay, Ok(Put::AlreadyExists { .. })));
     assert_eq!(
         observed.envelope_creates.load(Ordering::Relaxed),
         2,

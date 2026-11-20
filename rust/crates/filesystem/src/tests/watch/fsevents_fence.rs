@@ -64,13 +64,19 @@ fn a_quiet_fence_confirms_delivery_without_a_rescan() -> Result<(), Box<dyn std:
         .count();
     assert_eq!(leftovers, 0, "fence cookies are removed");
     // A change to the captured tree is still reported.
-    std::fs::write(directory.path().join("authored.txt"), b"x")?;
+    let authored = directory.path().join("authored.txt");
+    std::fs::write(&authored, b"x")?;
+    let authored = relative_namespace_path(
+        directory.path(),
+        &authored,
+        native_filesystem_profile(),
+        VolumeLimits::default(),
+    )?;
     assert!(matches!(
         fenced_batch(&mut watch)?,
-        WatchBatch::RescanRequired {
-            reason: WatchInvalidationReason::NativeRescanRequired,
-            ..
-        }
+        WatchBatch::Changes { changes, .. } if changes.iter().any(|change| {
+            matches!(change, WatchChange::Arrived(path) | WatchChange::Modified(path) if *path == authored)
+        })
     ));
     Ok(())
 }

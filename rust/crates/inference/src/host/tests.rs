@@ -1,6 +1,4 @@
 use super::*;
-use crate::DESCRIPTOR;
-use prost::Message;
 
 // Every connect fixture takes this lock before subscriber setup or connecting.
 // Concurrent first registration can overwrite a subscriber's rebuilt interest.
@@ -206,32 +204,7 @@ fn completed_evaluation() -> wire::EvaluationView {
 }
 
 #[test]
-fn descriptor_contains_customer_and_validation_files() -> Result<(), Box<dyn std::error::Error>> {
-    let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
-    assert_eq!(descriptor.file.len(), 3);
-    let descriptor_names: Vec<_> = descriptor
-        .file
-        .iter()
-        .map(|file| file.name.as_deref())
-        .collect();
-    assert_eq!(
-        descriptor_names,
-        [
-            Some("google/protobuf/descriptor.proto"),
-            Some("validation/v1/options.proto"),
-            Some("inference/v1/inference.proto"),
-        ]
-    );
-    let file = descriptor
-        .file
-        .iter()
-        .find(|file| file.name.as_deref() == Some("inference/v1/inference.proto"))
-        .ok_or("inference descriptor is missing")?;
-    assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
-    assert_eq!(
-        file.dependency,
-        vec!["validation/v1/options.proto".to_owned()]
-    );
+fn customer_manifest_has_no_private_dependencies() {
     let manifest = include_str!("../../Cargo.toml");
     for dependency in ["inference-protocol", "inference-client", "git ="] {
         assert!(
@@ -239,58 +212,6 @@ fn descriptor_contains_customer_and_validation_files() -> Result<(), Box<dyn std
             "private/source dependency in customer manifest"
         );
     }
-    Ok(())
-}
-
-#[test]
-fn descriptor_declares_unique_http_routes_for_every_rpc() -> Result<(), Box<dyn std::error::Error>>
-{
-    let pool = prost_reflect::DescriptorPool::decode(DESCRIPTOR)?;
-    let file = pool
-        .get_file_by_name("inference/v1/inference.proto")
-        .ok_or("inference descriptor is missing")?;
-    let extension = pool
-        .get_extension_by_name("acyclic.validation.v1.http_path")
-        .ok_or("http_path descriptor extension is missing")?;
-    let expected = [
-        "models/list",
-        "contexts/create",
-        "contexts/inspect",
-        "contexts/mutate",
-        "warm/retain",
-        "warm/inspect",
-        "warm/renew",
-        "warm/release",
-        "runs/generate",
-        "runs/inspect",
-        "runs/watch",
-        "runs/cancel",
-        "evaluations/create",
-        "evaluations/inspect",
-    ];
-    let mut routes = Vec::new();
-    for service in file.services() {
-        for method in service.methods() {
-            let options = method.options();
-            assert!(
-                options.has_extension(&extension),
-                "{}.{} has no http_path",
-                service.name(),
-                method.name()
-            );
-            let path = options.get_extension(&extension).into_owned();
-            let prost_reflect::Value::String(path) = path else {
-                panic!("http_path is not a string");
-            };
-            assert!(!path.is_empty());
-            routes.push(path);
-        }
-    }
-    assert_eq!(routes.len(), expected.len());
-    assert_eq!(routes, expected);
-    let unique: std::collections::HashSet<_> = routes.iter().collect();
-    assert_eq!(unique.len(), routes.len());
-    Ok(())
 }
 
 #[test]

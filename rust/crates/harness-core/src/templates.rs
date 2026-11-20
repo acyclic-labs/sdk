@@ -48,22 +48,6 @@ fn model_for_role(
     Ok(selection.to_owned())
 }
 
-/// The model the root role selects, at `revision`: the binding of a provider
-/// that serves any model, so its composition is never refused by
-/// [`root_model`].
-///
-/// # Errors
-/// When the root role selects no model.
-pub fn root_role_model(revision: &str) -> Result<crate::model::Model> {
-    let role = root()?
-        .model
-        .ok_or_else(|| Error::Invalid("the root role selects no model".into()))?;
-    let (provider, name) = role
-        .split_once('/')
-        .ok_or_else(|| Error::Invalid("expected provider/model".into()))?;
-    crate::model::Model::new(provider.into(), name.into(), revision.into())
-}
-
 /// The model the shipped `name` role template selects, if any.
 ///
 /// # Errors

@@ -97,7 +97,7 @@ impl NativeSourceWatch {
 
     /// Injects a terminal failure into this actual producer's original delivery.
     #[cfg(test)]
-    #[cfg(all(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn inject_delivery_failure(&self, error: DemandError) {
         let mut work = self.delivery().callback_work();
         self.delivery().failed_with_work(error, &mut work);

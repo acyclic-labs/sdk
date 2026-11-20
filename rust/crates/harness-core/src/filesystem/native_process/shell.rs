@@ -171,41 +171,44 @@ pub fn workspace_environment<T>(
         .map(|(_, root, _)| root);
     // `held` is the root the no-follow walk creates `tmp` under; `home` is
     // the value the process sees.
-    let (held, relative, home) = match projected {
+    let (held, relative, home) = if let Some(home) = projected {
         // The admitted binding may be an owner-maintained alias. Resolve
         // that root before the no-follow walk of authored descendants.
-        Some(home) => (
-            std::fs::canonicalize(home).map_err(Error::process_io)?,
+        (
+            std::fs::canonicalize(home).map_err(|error| {
+                Error::process_io(std::io::Error::new(
+                    error.kind(),
+                    format!("cannot resolve the admitted home directory: {error}"),
+                ))
+            })?,
             std::path::PathBuf::new(),
             home.to_path_buf(),
-        ),
-        None => {
-            let scratch = mounts.scratch_root.as_deref().ok_or_else(|| {
-                Error::Invalid(
-                    "shell requires a private home or host scratch outside the project".into(),
-                )
-            })?;
-            // Only the owning agent may write an agent-owned volume, so the
-            // owner of any writable one is this table's agent. Principal
-            // labels are not identities: one host may label every agent alike.
-            let agent = mounts
-                .mounts()
-                .filter(|(_, mount)| !mount.mode.read_only())
-                .find_map(|(_, mount)| match mount.view.volume.owner() {
-                    crate::conversation::VolumeOwner::Agent(agent) => Some(agent.to_string()),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    Error::Invalid("shell requires the agent's own writable volume".into())
-                })?;
-            let relative =
-                Path::new("homes").join(blake3::hash(agent.as_bytes()).to_hex().as_str());
-            (
-                scratch.to_path_buf(),
-                relative.clone(),
-                scratch.join(relative),
+        )
+    } else {
+        let scratch = mounts.scratch_root.as_deref().ok_or_else(|| {
+            Error::Invalid(
+                "shell requires a private home or host scratch outside the project".into(),
             )
-        }
+        })?;
+        // Only the owning agent may write an agent-owned volume, so the
+        // owner of any writable one is this table's agent. Principal
+        // labels are not identities: one host may label every agent alike.
+        let agent = mounts
+            .mounts()
+            .filter(|(_, mount)| !mount.mode.read_only())
+            .find_map(|(_, mount)| match mount.view.volume.owner() {
+                crate::conversation::VolumeOwner::Agent(agent) => Some(agent.to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                Error::Invalid("shell requires the agent's own writable volume".into())
+            })?;
+        let relative = Path::new("homes").join(blake3::hash(agent.as_bytes()).to_hex().as_str());
+        (
+            scratch.to_path_buf(),
+            relative.clone(),
+            scratch.join(relative),
+        )
     };
     acyclic_fs::hold_root(&held)
         .and_then(|root| {
@@ -296,5 +299,6 @@ pub fn workspace_grant<T>(
     }
 }
 
-#[cfg(all(test, any(unix, windows)))]
+#[cfg(test)]
+#[cfg(any(unix, windows))]
 mod tests;

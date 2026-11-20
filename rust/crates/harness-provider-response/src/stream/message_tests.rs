@@ -25,8 +25,8 @@ fn completed(values: impl IntoIterator<Item = Value>) -> crate::Result<Vec<Model
     events.extend(finish(
         state,
         Adapter::Responses,
-        acyclic_harness::model::ModelDispatch {
-            operation_id: acyclic_harness::OperationId::new(),
+        acyclic_harness_core::model::ModelDispatch {
+            operation_id: acyclic_harness_core::OperationId::new(),
             step: 0,
             request_digest: [0; 32],
         },

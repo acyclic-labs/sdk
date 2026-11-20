@@ -62,13 +62,14 @@ fn funded_output_survives_finish_and_panic_returns_only_unperformed_credit() {
                 bytes_encoded: 15,
                 ..WorkBudget::UNBOUNDED
             };
-            let root = crate::NativeMaterializationWork::new(
+            let root = crate::NativeMaterializationWork::root(
                 if resource {
                     WorkBudget::UNBOUNDED
                 } else {
                     budget
                 },
                 &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
             )
             .unwrap();
             let work = if resource {

@@ -81,3 +81,6 @@ pub(crate) async fn legacy_folded_checkout(
     }
     Ok((checkout, ids))
 }
+
+#[path = "../tests/facade/profiles.rs"]
+mod profiles;

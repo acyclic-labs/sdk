@@ -21,17 +21,19 @@ impl Visibility {
                     .is_some_and(|word| *word != 0);
                 self.levels.push(vec![u64::from(inherited)]);
                 #[cfg(test)]
-                crate::work::copy(std::mem::size_of::<u64>());
+                acyclic_markdown_work::work::copy(std::mem::size_of::<u64>());
             }
             let Some(words) = self.levels.get_mut(level) else {
                 break;
             };
             #[cfg(test)]
-            crate::work::visibility(1);
+            acyclic_markdown_work::work::visibility(1);
             let position = bit / 64;
             if words.len() <= position {
                 #[cfg(test)]
-                crate::work::grow((position + 1 - words.len()) * std::mem::size_of::<u64>());
+                acyclic_markdown_work::work::grow(
+                    (position + 1 - words.len()) * std::mem::size_of::<u64>(),
+                );
                 words.resize(position + 1, 0);
             }
             if let Some(word) = words.get_mut(position) {
@@ -68,7 +70,7 @@ impl Visibility {
         let mut position = 0;
         for words in self.levels.iter().rev() {
             #[cfg(test)]
-            crate::work::visibility(1);
+            acyclic_markdown_work::work::visibility(1);
             let word = words.get(position).copied().unwrap_or_default();
             if word == 0 {
                 return 0;

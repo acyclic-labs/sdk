@@ -11,7 +11,9 @@ pub(crate) mod result;
 mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
-use crate::{Adapter, ResolvedModel, files::FileText, invalid, registry::validate_url};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use crate::ResolvedModel;
+use crate::{Adapter, files::FileText, invalid, spec::validate_url};
 use acyclic_harness_core::{
     Result,
     context::ModelTokenCount,
@@ -25,8 +27,76 @@ pub(crate) use profile::validate as validate_profile;
 use serde_json::{Value, json};
 use wire::{Item, Message, Request};
 
-pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
-    endpoint_for(&provider.config, &provider.model.name)
+/// The fields that select wire projection, borrowed from the resolved provider.
+/// Credential resolution, admission and dispatch stay in the provider; the
+/// projection layer sees only this view.
+#[derive(Clone, Copy)]
+pub(crate) struct ProjectionInput<'a> {
+    pub(crate) config: &'a crate::ProviderSpec,
+    pub(crate) model: &'a str,
+    pub(crate) profile: Option<&'a acyclic_harness_core::model::ModelProfileBinding>,
+    pub(crate) conversation: acyclic_harness_core::OperationId,
+    pub(crate) capacity: acyclic_harness_core::context::ModelContextCapacity,
+    pub(crate) files_maximum_bytes: Option<u64>,
+    pub(crate) estimator: &'a crate::accounting::TokenEstimator,
+    pub(crate) codex_login: bool,
+    pub(crate) credential_scope: Option<[u8; 32]>,
+}
+
+impl ProjectionInput<'_> {
+    /// Native continuity belongs to whoever authenticates the request. An
+    /// anonymous route sends no credential of ours: the endpoint and its
+    /// configured headers (a gateway or proxy that injects credentials)
+    /// are that owner, so the route itself scopes the bytes it signed.
+    pub(crate) fn reasoning_origin(
+        &self,
+        key: Option<&str>,
+        account: Option<&str>,
+    ) -> acyclic_harness_core::model::ReasoningOrigin {
+        let family = acyclic_harness_provider_response::stream::family(self.config.adapter);
+        // (ownership marker, credential bytes, whether the route headers
+        // identify the owner)
+        let owner: Option<(&[u8], &[u8], bool)> = match (
+            self.credential_scope.as_ref(),
+            account.or(key).filter(|value| !value.is_empty()),
+        ) {
+            (Some(scope), _) => Some((&b"protected-account\0"[..], &scope[..], false)),
+            (None, Some(credential)) => Some((&b""[..], credential.as_bytes(), false)),
+            (None, None) if self.config.authentication == crate::Authentication::Optional => {
+                Some((&b"anonymous-route\0"[..], &b""[..], true))
+            }
+            (None, None) => None,
+        };
+        let credential_scope = owner.map(|(kind, credential, route)| {
+            let mut scope = blake3::Hasher::new();
+            scope.update(b"harness-reasoning-scope-v1\0");
+            scope.update(kind);
+            let mut field = |value: &[u8]| {
+                scope.update(&(value.len() as u64).to_be_bytes());
+                scope.update(value);
+            };
+            field(family.as_bytes());
+            field(self.config.base_url.as_bytes());
+            field(credential);
+            if route {
+                for (name, value) in &self.config.headers {
+                    field(name.as_bytes());
+                    field(value.as_bytes());
+                }
+            }
+            *scope.finalize().as_bytes()
+        });
+        acyclic_harness_core::model::ReasoningOrigin {
+            provider: family.into(),
+            model: self.model.to_owned(),
+            credential_scope,
+        }
+    }
+}
+
+pub(crate) fn endpoint<'p>(provider: impl Into<ProjectionInput<'p>>) -> Result<String> {
+    let provider = provider.into();
+    endpoint_for(provider.config, provider.model)
 }
 
 pub(crate) fn endpoint_for(config: &crate::ProviderSpec, model: &str) -> Result<String> {
@@ -59,16 +129,16 @@ pub(crate) fn endpoint_for(config: &crate::ProviderSpec, model: &str) -> Result<
         .map_err(|_| invalid("invalid model endpoint"))
 }
 
-pub(crate) fn plan(
-    provider: &ResolvedModel,
+pub(crate) fn plan<'p>(
+    provider: impl Into<ProjectionInput<'p>>,
     prepared: &PreparedModelRequest,
     input_tokens: u64,
 ) -> Result<ModelTokenCount> {
+    let provider = provider.into();
     // These weights only choose a compaction cut. Admission always uses the
     // independently verified total, never a usage-calibrated ratio.
     let tokens = |bytes| {
         provider
-            .accounting
             .estimator
             .tokens(bytes)
             .ok_or_else(|| invalid("token planning weight exceeds u32"))
@@ -82,7 +152,7 @@ pub(crate) fn plan(
             let bytes = acyclic_harness_provider_response::encoded_json_len(message)?
                 .checked_add(crate::files::extra_bytes(
                     &message.content,
-                    provider.files.maximum_bytes,
+                    provider.files_maximum_bytes,
                 )?)
                 .ok_or_else(|| invalid("token planning size overflow"))?;
             message_bytes = message_bytes
@@ -123,13 +193,14 @@ pub(crate) fn body_with_files(
     serde_json::from_slice(&bytes).map_err(|_| invalid("cannot decode projected request"))
 }
 
-pub(crate) fn body_named<'a>(
-    provider: &ResolvedModel,
+pub(crate) fn body_named<'a, 'p>(
+    provider: impl Into<ProjectionInput<'p>>,
     request: &'a ModelRequest,
     names: &'a crate::tool_names::Names<'_>,
     target: &acyclic_harness_core::model::ReasoningOrigin,
     files: &mut FileText,
 ) -> Result<Request<'a>> {
+    let provider = provider.into();
     let adapter = provider.config.adapter;
     // A route's prompt layout is fixed before credential discovery. A login
     // appearing later may change authentication, never the cached system span.
@@ -145,7 +216,6 @@ pub(crate) fn body_named<'a>(
     };
     if provider
         .profile
-        .as_ref()
         .is_some_and(|profile| profile.sampling() != request.sampling)
     {
         return Err(invalid(
@@ -164,7 +234,6 @@ pub(crate) fn body_named<'a>(
     let mut system = Vec::new();
     let mut effective_effort = provider
         .profile
-        .as_ref()
         .and_then(|profile| profile.baseline_effort());
     for message in conversation {
         // Chat and Responses put native result media in user input items.
@@ -200,7 +269,7 @@ pub(crate) fn body_named<'a>(
         if let ModelContent::Part(ModelContentPart::Configuration { prefix, effort }) =
             &message.content
         {
-            let profile = provider.profile.as_ref().ok_or_else(|| {
+            let profile = provider.profile.ok_or_else(|| {
                 invalid("configuration update requires an admitted model profile")
             })?;
             if prefix != &profile.prefix_digest() {
@@ -263,7 +332,7 @@ pub(crate) fn body_named<'a>(
             content => text_content(content, files).map(std::borrow::Cow::Owned),
         })
         .transpose()?;
-    if let Some(profile) = &provider.profile {
+    if let Some(profile) = provider.profile {
         let desired = profile.fixed_effort().or(profile.baseline_effort());
         if effective_effort != desired {
             return Err(invalid(
@@ -296,62 +365,8 @@ pub(crate) fn body_named<'a>(
     if adapter != Adapter::Gemini {
         fields.insert(Field::Model, json!(model));
     }
-    match adapter {
-        Adapter::Chat => {
-            fields.insert(Field::Stream, json!(true));
-            fields.insert(Field::StreamOptions, json!({"include_usage":true}));
-        }
-        Adapter::Responses => {
-            fields.insert(Field::Include, json!(["reasoning.encrypted_content"]));
-            fields.insert(Field::Stream, json!(true));
-            fields.insert(Field::Store, json!(false));
-            if login_route {
-                fields.insert(
-                    Field::Instructions,
-                    serde_json::Value::String(text::join(system, "\n\n")),
-                );
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if provider.codex_login.is_some() {
-                fields.insert(Field::ToolChoice, json!("auto"));
-                fields.insert(Field::ParallelToolCalls, json!(true));
-            }
-        }
-        Adapter::Anthropic => {
-            fields.insert(Field::Stream, json!(true));
-            // Messages requires the published model maximum, independent of roles
-            // and context admission. Optional protocols send no output bound.
-            let maximum = provider.capacity.output_tokens.filter(|maximum| *maximum > 0)
-                .ok_or_else(|| invalid("Anthropic Messages requires the model's published maximum output tokens in the catalog"))?;
-            fields.insert(Field::MaxTokens, json!(maximum));
-            if !system.is_empty() {
-                // Built in place: `json!` would copy the joined text again.
-                // The shared cache projector owns any prefix breakpoint.
-                let block = [
-                    ("text".to_owned(), Value::String(text::join(system, "\n\n"))),
-                    ("type".to_owned(), Value::String("text".into())),
-                ];
-                fields.insert(
-                    Field::System,
-                    Value::Array(vec![Value::Object(block.into_iter().collect())]),
-                );
-            }
-        }
-        Adapter::Gemini => {
-            fields.insert(Field::GenerationConfig, json!({}));
-            if !system.is_empty() {
-                // Built in place: `json!` would copy the joined text again.
-                let text = Value::String(text::join(system, "\n\n"));
-                let part = Value::Object([("text".to_owned(), text)].into_iter().collect());
-                let parts = Value::Array(vec![part]);
-                fields.insert(
-                    Field::SystemInstruction,
-                    Value::Object([("parts".to_owned(), parts)].into_iter().collect()),
-                );
-            }
-        }
-    }
-    if let Some(profile) = &provider.profile {
+    protocol_fields(provider, adapter, login_route, system, &mut fields)?;
+    if let Some(profile) = provider.profile {
         profile::project(adapter, profile, &mut fields);
     }
     cache::project(provider, &mut fields);
@@ -390,6 +405,72 @@ pub(crate) fn body_named<'a>(
         fields,
         messages,
     })
+}
+
+/// The protocol-specific top-level fields, after the shared model and tools.
+fn protocol_fields(
+    provider: ProjectionInput<'_>,
+    adapter: Adapter,
+    login_route: bool,
+    system: Vec<String>,
+    fields: &mut Fields,
+) -> Result<()> {
+    match adapter {
+        Adapter::Chat => {
+            fields.insert(Field::Stream, json!(true));
+            fields.insert(Field::StreamOptions, json!({"include_usage":true}));
+        }
+        Adapter::Responses => {
+            fields.insert(Field::Include, json!(["reasoning.encrypted_content"]));
+            fields.insert(Field::Stream, json!(true));
+            fields.insert(Field::Store, json!(false));
+            if login_route {
+                fields.insert(
+                    Field::Instructions,
+                    serde_json::Value::String(text::join(system, "\n\n")),
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if provider.codex_login {
+                fields.insert(Field::ToolChoice, json!("auto"));
+                fields.insert(Field::ParallelToolCalls, json!(true));
+            }
+        }
+        Adapter::Anthropic => {
+            fields.insert(Field::Stream, json!(true));
+            // Messages requires the published model maximum, independent of roles
+            // and context admission. Optional protocols send no output bound.
+            let maximum = provider.capacity.output_tokens.filter(|maximum| *maximum > 0)
+                .ok_or_else(|| invalid("Anthropic Messages requires the model's published maximum output tokens in the catalog"))?;
+            fields.insert(Field::MaxTokens, json!(maximum));
+            if !system.is_empty() {
+                // Built in place: `json!` would copy the joined text again.
+                // The shared cache projector owns any prefix breakpoint.
+                let block = [
+                    ("text".to_owned(), Value::String(text::join(system, "\n\n"))),
+                    ("type".to_owned(), Value::String("text".into())),
+                ];
+                fields.insert(
+                    Field::System,
+                    Value::Array(vec![Value::Object(block.into_iter().collect())]),
+                );
+            }
+        }
+        Adapter::Gemini => {
+            fields.insert(Field::GenerationConfig, json!({}));
+            if !system.is_empty() {
+                // Built in place: `json!` would copy the joined text again.
+                let text = Value::String(text::join(system, "\n\n"));
+                let part = Value::Object([("text".to_owned(), text)].into_iter().collect());
+                let parts = Value::Array(vec![part]);
+                fields.insert(
+                    Field::SystemInstruction,
+                    Value::Object([("parts".to_owned(), parts)].into_iter().collect()),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn wire_role(role: ModelRole) -> &'static str {

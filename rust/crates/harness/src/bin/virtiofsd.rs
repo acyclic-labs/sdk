@@ -3,7 +3,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use acyclic_harness::{
-        LocalHarness, LocalHarnessConfig, filesystem::hosting::LocalGuestEnrollment,
+        LocalHarness, LocalHarnessConfig, hosting::LocalGuestEnrollment,
         local::host_owner::HostWorkspaceOwner,
     };
     use serde::Deserialize;

@@ -135,15 +135,9 @@ fn retire_hydrated(
             return false;
         }
         let result = (|| {
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(1),
-            )?;
+            capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
             while next < missing.len() && missing[next].0 < *path {
-                capture_charge(
-                    meter,
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
-                )?;
+                capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
                 next += 1;
             }
             if missing.get(next).is_some_and(|(parent, _)| parent == path) {
@@ -160,7 +154,7 @@ fn retire_hydrated(
                 // retain_mut moves each survivor into the first gap once.
                 capture_charge(
                     meter,
-                    crate::materializer::NativeResourceCredit::Copy.delta(std::mem::size_of::<(
+                    crate::ledger::NativeResourceCredit::Copy.delta(std::mem::size_of::<(
                         NamespacePath,
                         (CurrentRecord, CaptureIntent),
                     )>()

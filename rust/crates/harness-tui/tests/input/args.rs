@@ -3,33 +3,7 @@ use proptest::prelude::*;
 use std::ffi::OsString;
 
 #[test]
-fn windows_paths_backslashes_and_native_quotes_are_preserved()
--> Result<(), Box<dyn std::error::Error>> {
-    for (command, program, arguments) in [
-        (
-            r#"C:\Windows\System32\notepad.exe"#,
-            r#"C:\Windows\System32\notepad.exe"#,
-            vec![],
-        ),
-        (
-            r#""C:\Program Files\Editor\edit.exe" --wait "C:\tmp\a b.txt" "" "a\"b" "tail\\""#,
-            r#"C:\Program Files\Editor\edit.exe"#,
-            vec!["--wait", r#"C:\tmp\a b.txt"#, "", "a\"b", "tail\\"],
-        ),
-        (
-            r#"\\server\share\edit.exe O'Brien"#,
-            r#"\\server\share\edit.exe"#,
-            vec!["O'Brien"],
-        ),
-    ] {
-        assert_eq!(
-            windows_editor_command(command)?,
-            (
-                OsString::from(program),
-                arguments.into_iter().map(OsString::from).collect()
-            )
-        );
-    }
+fn windows_command_errors_and_platform_dispatch() -> Result<(), Box<dyn std::error::Error>> {
     assert!(windows_editor_command(r#""C:\Program Files\Editor\edit.exe"#).is_err());
     assert!(windows_editor_command(r#""" --wait"#).is_err());
     // Platform dispatch, without launching an editor or creating a console.

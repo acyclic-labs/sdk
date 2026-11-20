@@ -1,5 +1,7 @@
 """Credential-free benchmark inputs, content identity and shell argument framing."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import re

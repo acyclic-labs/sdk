@@ -314,7 +314,8 @@ impl futures::stream::FusedStream for NativeModelStream<'_> {
         self.terminated
     }
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "provider_tests.rs"]
 mod tests;
 impl ModelEvent {
@@ -425,6 +426,17 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         _: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
         _: Option<u64>,
     ) -> Option<std::sync::Arc<dyn ModelProvider>> {
+        None
+    }
+    /// Binds a provider's filesystem inputs under the executing agent's
+    /// existing workspace authority, before an attempt can be admitted.
+    fn bind_workspace<'a>(
+        &'a self,
+        _: &'a crate::agent::AgentState,
+        _: &'a ModelContent,
+        _: &'a crate::runtime::ContentBindings,
+        _: Option<u64>,
+    ) -> Option<BoxFuture<'a, Result<std::sync::Arc<dyn ModelProvider>>>> {
         None
     }
     /// Sealed profile admitted with the exact immutable model selection.

@@ -176,7 +176,12 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         );
         let mut before = current(&workspace, false).await?;
         assert_eq!(recorded(&mut before).await?, previous);
-        head_sequence += u64::from(publish(&mut writer).await?);
+        let changed = previous.as_deref() != Some(revision.as_slice());
+        assert_eq!(writer.has_pending_mutations(), changed);
+        if changed {
+            assert!(publish(&mut writer).await?);
+            head_sequence += 1;
+        }
         let mut after = current(&workspace, false).await?;
         assert_eq!(
             recorded(&mut after).await?.as_deref(),

@@ -31,7 +31,7 @@ fn destination(url: &str, id: &str, references: Option<&crate::References>) -> A
         return destination.clone();
     }
     #[cfg(test)]
-    crate::work::copy(url.len());
+    acyclic_markdown_work::work::copy(url.len());
     Arc::from(url)
 }
 
@@ -75,7 +75,9 @@ impl Renderer {
     pub(super) fn reuse_line(&mut self, mut line: Line) {
         line.spans.clear();
         #[cfg(test)]
-        crate::work::copy(self.line.spans.len() * std::mem::size_of::<crate::Span>());
+        acyclic_markdown_work::work::copy(
+            self.line.spans.len() * std::mem::size_of::<crate::Span>(),
+        );
         line.spans.append(&mut self.line.spans);
         self.line = line;
     }
@@ -89,7 +91,7 @@ impl Renderer {
 
     pub(crate) fn checkpoint(&self) -> Self {
         #[cfg(test)]
-        crate::work::copy(
+        acyclic_markdown_work::work::copy(
             self.line
                 .spans
                 .iter()
@@ -126,7 +128,7 @@ impl Renderer {
             let text = part.trim_end_matches(['\r', '\n']);
             if self.new_link && self.link.is_some() && !text.is_empty() {
                 #[cfg(test)]
-                crate::work::copy(text.len());
+                acyclic_markdown_work::work::copy(text.len());
                 self.line.push_new(text, self.style, self.link.as_ref());
                 self.new_link = false;
             } else {

@@ -26,7 +26,7 @@ async fn native_write_count(image: Vec<u8>) -> u64 {
         .unwrap(),
     );
     let store = LocalCoreStateStore::new(directory.path()).materialization(work.clone());
-    work.state.lock().write_probe = Some(crate::demand::WriteProbe {
+    work.state.lock().write_probe = Some(crate::ledger::WriteProbe {
         writes: 0,
         stop_before: None,
     });
@@ -346,9 +346,8 @@ fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths() {
         Some(RecordValue::LazyWorkspace(lazy_state(workspace(), 1))),
     ];
     let cxl = crate::CancellationToken::new();
-    let work =
-        crate::materializer::NativeMaterializationWork::new(super::native::finite_budget(), &cxl)
-            .unwrap();
+    let work = crate::ledger::NativeMaterializationWork::new(super::native::finite_budget(), &cxl)
+        .unwrap();
     for native in [false, true] {
         for value in &values {
             let mut expected = Vec::new();
@@ -389,9 +388,8 @@ fn checkpoint_record_buffer_failures_are_reported_before_the_barrier() {
         }
     }
     let cxl = crate::CancellationToken::new();
-    let work =
-        crate::materializer::NativeMaterializationWork::new(super::native::finite_budget(), &cxl)
-            .unwrap();
+    let work = crate::ledger::NativeMaterializationWork::new(super::native::finite_budget(), &cxl)
+        .unwrap();
     for native in [false, true] {
         let error =
             RecordValue::write_checkpoint(None, &mut Fail, native.then_some(&work)).unwrap_err();

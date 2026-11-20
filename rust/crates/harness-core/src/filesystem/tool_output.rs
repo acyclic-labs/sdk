@@ -2,6 +2,7 @@
 //! pages and tool output, `tools/` on its host-selected output volume.
 use super::*;
 use crate::core::AuthorityRoot;
+use acyclic_actors::local::Clock;
 use acyclic_auth::{
     trust::{ChangeSource, Follower, SourceClosed},
     verify::VerifyError,
@@ -42,7 +43,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         authority: &AgentAuthority<'_>,
         agent: &crate::agent::AgentPath,
         volume: &VolumeRef,
-        clock: Arc<dyn UnixMillisClock>,
+        clock: Arc<dyn Clock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
         self.client_observation(
@@ -66,7 +67,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         (authority, parent): (&AgentAuthority<'_>, &Scope),
         agent: &crate::agent::AgentPath,
         volume: &VolumeRef,
-        clock: Arc<dyn UnixMillisClock>,
+        clock: Arc<dyn Clock>,
         calls: &[&str],
         directory: Option<(&str, &acyclic_stream::StreamPath)>,
     ) -> Result<AgentObservation> {
@@ -193,15 +194,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let observe: &[&str] = &["streams/list", "streams/read", "streams/follow"];
             let read: &[&str] = &["fs/list", "fs/read"];
             let invoke: &[&str] = &["actors/invoke"];
-            let mut grants = if !calls.is_empty() {
-                vec![
-                    (observed.as_str(), true, observe),
-                    (status.as_str(), true, observe),
-                    (children.as_str(), true, observe),
-                    (membership.as_str(), tree, observe),
-                    (resource.as_str(), true, read),
-                ]
-            } else {
+            let mut grants = if calls.is_empty() {
                 // A selected view pages its own children like any tree reader:
                 // discovery is `children_page` over the selection, never a
                 // second listing path, and never beyond what its selector holds.
@@ -213,12 +206,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     (membership.as_str(), tree, follow),
                     (resource.as_str(), true, read),
                 ]
+            } else {
+                vec![
+                    (observed.as_str(), true, observe),
+                    (inbox.as_str(), false, &["streams/tail"]),
+                    (status.as_str(), true, observe),
+                    (children.as_str(), true, observe),
+                    (membership.as_str(), tree, observe),
+                    (resource.as_str(), true, read),
+                ]
             };
             grants.push((diagnostics.as_str(), true, &["streams/read"]));
             grants.push((
                 supervision.as_str(),
                 false,
-                &["streams/read", "streams/follow"],
+                &["streams/read", "streams/follow", "streams/tail"],
             ));
             grants.extend(calls.iter().map(|calls| (*calls, false, invoke)));
             let directory_streams = [
@@ -256,11 +258,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 /// When `issuer`'s runtime trust is unavailable.
 pub fn session_trust(
     issuer: &AuthorityRoot,
-    clock: Arc<dyn UnixMillisClock>,
+    clock: Arc<dyn Clock>,
 ) -> Result<Arc<dyn AuthorityState>> {
     Ok(Arc::new(LocalTrust {
         trust: issuer.public_workload_trust()?,
-        clock,
+        clock: acyclic_actors::local::SystemClock::bind(clock),
     }))
 }
 
@@ -271,10 +273,7 @@ pub fn session_trust(
 /// # Errors
 /// When `issuer`'s runtime trust is unavailable or its audience is not a
 /// session resource.
-pub fn session_authority(
-    issuer: &AuthorityRoot,
-    clock: Arc<dyn UnixMillisClock>,
-) -> Result<Authority> {
+pub fn session_authority(issuer: &AuthorityRoot, clock: Arc<dyn Clock>) -> Result<Authority> {
     Authority::new(
         session_trust(issuer, clock)?,
         issuer.audience_resource()?,
@@ -287,7 +286,7 @@ pub fn session_authority(
 /// the harness's clock.
 struct LocalTrust {
     trust: Arc<Follower>,
-    clock: Arc<dyn UnixMillisClock>,
+    clock: Arc<dyn Clock>,
 }
 
 fn seconds(clock: &dyn UnixMillisClock) -> u64 {
@@ -306,36 +305,12 @@ impl AuthorityState for LocalTrust {
         &*self.trust
     }
 
-    /// Completes once the harness's clock reaches `unix_seconds`. The wait is
-    /// the process's one wall-clock alarm, re-armed only while the harness's
-    /// clock still runs behind when it fires.
+    /// Completes on the original clock's deadline or producer loss.
     fn expires_at(
         &self,
         unix_seconds: u64,
     ) -> acyclic_stream::BoxProviderFuture<'_, std::result::Result<(), SourceClosed>> {
-        Box::pin(async move {
-            let deadline = unix_seconds.saturating_mul(1000);
-            loop {
-                let remaining = deadline.saturating_sub(self.clock.now_unix_millis());
-                if remaining == 0 {
-                    return Ok(());
-                }
-                let wall = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
-                let (fired, wake) = tokio::sync::oneshot::channel();
-                let fired = std::sync::Mutex::new(Some(fired));
-                let alarm = acyclic_native_runtime::WallAlarm::register(
-                    wall.saturating_add(remaining),
-                    Arc::new(move |outcome| {
-                        if let Some(fired) = fired.lock().ok().and_then(|mut fired| fired.take()) {
-                            let _ = fired.send(outcome);
-                        }
-                    }),
-                );
-                let _alarm = alarm.map_err(|_| SourceClosed)?;
-                wake.await
-                    .map_err(|_| SourceClosed)?
-                    .map_err(|_| SourceClosed)?;
-            }
-        })
+        let expiry = self.clock.sleep_until(unix_seconds.saturating_mul(1000));
+        Box::pin(async move { expiry.await.map_err(|_| SourceClosed) })
     }
 }

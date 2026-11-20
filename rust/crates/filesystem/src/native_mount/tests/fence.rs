@@ -59,15 +59,23 @@ fn destination_fences_survive_ancestor_relocation_and_retire_through_original_pa
     let destination = ancestor.join("mount");
     std::fs::create_dir(&destination)?;
     std::fs::write(ancestor.join("authored"), b"preserve")?;
+    #[cfg(unix)]
+    let requested = {
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&ancestor, &alias)?;
+        alias.join("mount")
+    };
+    #[cfg(windows)]
+    let requested = &destination;
     let canonical = destination.canonicalize()?;
     let (fence, _) = MountDestinationGuard::paths_for_canonical(&canonical)?;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let mut guard = None;
-    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+    MountDestinationGuard::acquire_with_work(requested.as_ref(), false, &work, &mut guard, false)?;
     let mut guard = guard.unwrap();
-    guard.prepare_destination_cleanup(&destination, &work)?;
+    guard.prepare_destination_cleanup(requested.as_ref(), &work)?;
     std::fs::rename(&ancestor, &moved)?;
     assert!(!ancestor.exists());
     assert!(
@@ -477,7 +485,10 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
             acyclic_native_runtime::ProcessCommand::new(&executable)
                 .args([
                     "--exact",
-                    "native_mount::tests::fence::independent_supervisors_concurrently_reclaim_one_crash_left_fence",
+                    acyclic_test_support::unit_test_name!(
+                        independent_supervisors_concurrently_reclaim_one_crash_left_fence
+                    )
+                    .as_str(),
                     "--nocapture",
                 ])
                 .stdin(acyclic_native_runtime::ProcessStdio::piped())
@@ -532,8 +543,8 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
     let cancellation = crate::CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(
-        crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
+    let original = Arc::new(crate::ledger::NativeDemandReadMeter::new(
+        crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
     ));
     let meter = NativeMaterializationWork::from_meter(Arc::clone(&original));
     let mut guard = None;
@@ -660,7 +671,7 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
     std::fs::remove_file(&guard.lock_path)?;
     std::fs::create_dir(&guard.lock_path)?;
     let cancellation = crate::CancellationToken::new();
-    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
     let error = guard
         .release(&mut work)
         .expect_err("native file deletion cannot remove a directory");
@@ -689,7 +700,7 @@ fn measured_fence_cancellation_never_starts_a_native_leaf() -> Result<(), Box<dy
     )?;
     let cancellation = crate::CancellationToken::new();
     cancellation.cancel();
-    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
     let error = guard
         .release(&mut work)
         .expect_err("original cancellation must win before native work");

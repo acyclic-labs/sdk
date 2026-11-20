@@ -1,5 +1,5 @@
 use super::*;
-use crate::demand::DemandWork;
+use crate::ledger::DemandWork;
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 
 fn measured_read(

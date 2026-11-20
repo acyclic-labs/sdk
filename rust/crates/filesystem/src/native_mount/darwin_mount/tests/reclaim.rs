@@ -20,7 +20,7 @@ fn request(
 fn crashed_owner(root: PathBuf) -> TestResult {
     let began = Instant::now();
     let (source, _, work) = checkout_context(MountPublication::Manual)?;
-    let _owned = crate::mount_native(request(&root.join("owned"), &source)?, source.clone())?;
+    let owned = crate::mount_native(request(&root.join("owned"), &source)?, source.clone())?;
     phase(began, "child-owned-mounted");
     // The ordinary case leaves a dead foreign transport too. The forced
     // retirement case keeps that independent transport alive in the parent,
@@ -39,6 +39,11 @@ fn crashed_owner(root: PathBuf) -> TestResult {
         )?;
     }
     phase(began, "child-foreign-ready");
+    // Exercise startup recovery when the cleanup process itself was killed.
+    kill_mount_custodian(owned.driver.as_ref().ok_or("missing mount driver")?)?;
+    if let Some(foreign) = &foreign_session {
+        kill_mount_custodian(foreign)?;
+    }
     acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "RECLAIM_READY")?;
     // Only the parent owns this pipe; its loss returns UnexpectedEof.
     std::io::stdin().read_exact(&mut [0])?;
@@ -46,6 +51,25 @@ fn crashed_owner(root: PathBuf) -> TestResult {
         std::io::ErrorKind::InvalidData,
         "step=await crash fixture kill; recovery: cargo test --locked -p acyclic-fs --all-features --lib native_mount::darwin_mount::tests::reclaim::startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts -- --exact --nocapture",
     ).into())
+}
+
+fn kill_mount_custodian(session: &DarwinMountSession) -> TestResult {
+    let native = session.unmount.native();
+    // SAFETY: the native session is retained under this mutex.
+    let owner = unsafe { acyclic_fs_darwin_mount_owner_pid(native.value as *mut c_void) };
+    assert!(owner > 0, "a mounted server must have a custodian");
+    // SAFETY: this unreaped child is named by the mounted fixture.
+    if unsafe { libc::kill(owner, libc::SIGKILL) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+fn mounted(path: &Path) -> Result<bool, NativeMountError> {
+    Ok(super::super::reclaim::mount_table()?.iter().any(|mount| {
+        super::super::reclaim::field(&mount.f_mntonname)
+            .is_ok_and(|name| name.to_bytes() == path.as_os_str().as_bytes())
+    }))
 }
 
 struct CrashRoots(Option<tempfile::TempDir>);
@@ -102,7 +126,9 @@ fn negative_control_direct_only_startup_cannot_retire_after_eperm() -> TestResul
         attempted.get(),
         "fixture failed before exercising retirement"
     );
-    let error = result.expect_err("direct-only startup unexpectedly recovered after EPERM");
+    let Err(error) = result else {
+        return Err("direct-only startup unexpectedly recovered after EPERM".into());
+    };
     assert!(matches!(
         error.downcast_ref::<NativeMountError>(),
         Some(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EPERM)
@@ -149,13 +175,8 @@ fn check_startup_recovery(
     acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "RECLAIM_READY")?;
     child.terminate(None)?;
     phase(began, "crash-witness-ready");
-    // Negative witness: SIGKILL itself leaves both kernel mounts behind.
-    let mounted = |path: &Path| -> Result<bool, NativeMountError> {
-        Ok(super::super::reclaim::mount_table()?.iter().any(|mount| {
-            super::super::reclaim::field(&mount.f_mntonname)
-                .is_ok_and(|name| name.to_bytes() == path.as_os_str().as_bytes())
-        }))
-    };
+    // With the custodian also killed, the kernel mount is available for the
+    // startup recovery proof.
     assert!(mounted(&canonical.join("owned"))?);
     assert!(mounted(&canonical.join("foreign"))?);
     println!("RECLAIM_CRASH_WITNESS owned=attached foreign=attached");

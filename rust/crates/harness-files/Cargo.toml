@@ -1,0 +1,44 @@
+[package]
+name = "acyclic-harness-files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Filesystem access and file tool tests for the Acyclic harness"
+
+[package.metadata.bazel]
+integration-test-shards = 4
+
+[features]
+test-support = ["acyclic-harness/test-support"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+required-features = ["test-support"]
+
+[dev-dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-harness = { version = "=0.2.0", path = "../harness" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-test-support = { path = "../test-support" }
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+proptest.workspace = true
+schemars = "=1.2.3"
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

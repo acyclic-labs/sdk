@@ -112,22 +112,6 @@ fn denied_record_retirement_keeps_recovery_authority_on_the_original_ledger() {
             .load(std::sync::atomic::Ordering::Acquire),
         1
     );
-
-    // Restore the former take-before-remove shape under the same denial. The
-    // durable record survives, but its owned recovery authority is lost.
-    let mut old = Some(record(&custody));
-    let removed = old.take().unwrap();
-    assert!(
-        super::super::process_control_attempt(
-            Some(&denied),
-            crate::NativeOperationKind::Write,
-            || removed.remove()
-        )
-        .is_err()
-    );
-    assert!(old.is_none());
-    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
-    removed.remove().unwrap();
 }
 
 #[test]

@@ -4,7 +4,7 @@ use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::performance::{MeasuredResult, OperationFailure};
-pub(crate) use acyclic_fs_format::object_reference::{
+pub use acyclic_fs_format::object_reference::{
     ObjectId, ObjectIdBytes, ObjectIdError, ObjectIdRead, ObjectKind, ObjectKindError,
     ObjectStorage,
 };
@@ -174,6 +174,9 @@ pub enum AuthorityStoreError {
     /// Fixed canonical rejection reason needs no owned diagnostic buffer.
     #[error("authority backend rejected operation: {0}")]
     RejectedStatic(&'static str),
+    /// A required publication condition failed without changing the head.
+    #[error("publication condition failed without advancing the authority")]
+    PublicationConditionFailed,
     /// The authority does not exist.
     #[error("authority does not exist")]
     Missing,
@@ -315,7 +318,7 @@ impl HashedObject {
     pub fn new_with_native_work(
         kind: ObjectKind,
         bytes: acyclic_stream::OwnedBytes,
-        work: &crate::materializer::NativeMaterializationWork,
+        work: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
         cancellation
@@ -344,8 +347,8 @@ impl HashedObject {
     pub fn from_native_vec(
         kind: ObjectKind,
         bytes: &mut Vec<u8>,
-        allocation: &mut crate::materializer::NativeAllocation,
-        work: &crate::materializer::NativeMaterializationWork,
+        allocation: &mut crate::ledger::NativeAllocation,
+        work: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
         cancellation

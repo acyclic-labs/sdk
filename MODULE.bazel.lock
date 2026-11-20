@@ -230,7 +230,7 @@
   "moduleExtensions": {
     "//:bun_repo.bzl%bun": {
       "general": {
-        "bzlTransitiveDigest": "qkf+U4Cju5AbD9e8aUJZ8Sxju8JveZW2AksBzF5ySz0=",
+        "bzlTransitiveDigest": "uFQCAS0UaZCG2MrkjkVncWNrLN6SFs5+Lzb9Ig8361E=",
         "usagesDigest": "sHdR1MR3ZsEDIcKZVBm2clqzax6StY4bMjycRmaIQQg=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
@@ -322,12 +322,30 @@
     },
     "//toolchains/sdk:repositories.bzl%sdk_compilers": {
       "general": {
-        "bzlTransitiveDigest": "hzvGId40hAG25CKj3bcSYxvoS2TS2ZT/k6VppML4oe4=",
+        "bzlTransitiveDigest": "nc3sRmkk6VZGy8HXplWlJdhc9PyHnsQjMAVeuMgcMgk=",
         "usagesDigest": "saK+vZQyqbDzS2yL3uzpNA50t3QJU5VvkgO4C00xFx0=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
-          "sdk_compilers": {
+          "sdk_compilers_linux_x86_64": {
             "repoRuleId": "@@//toolchains/sdk:repositories.bzl%_repository",
+            "attributes": {
+              "platform": "linux-x86_64"
+            }
+          },
+          "sdk_compilers_macos_aarch64": {
+            "repoRuleId": "@@//toolchains/sdk:repositories.bzl%_repository",
+            "attributes": {
+              "platform": "macos-aarch64"
+            }
+          },
+          "sdk_compilers_windows_x86_64": {
+            "repoRuleId": "@@//toolchains/sdk:repositories.bzl%_repository",
+            "attributes": {
+              "platform": "windows-x86_64"
+            }
+          },
+          "sdk_compilers": {
+            "repoRuleId": "@@//toolchains/sdk:repositories.bzl%_hub",
             "attributes": {}
           }
         }
@@ -612,7 +630,7 @@
     },
     "@@rules_rust+//crate_universe/private:internal_extensions.bzl%cu_nr": {
       "general": {
-        "bzlTransitiveDigest": "XLcyoX/vPHtONvyrR+CHn5/GnVg/1oStlBk/SsHQaw0=",
+        "bzlTransitiveDigest": "1jGqOeLGkYcjEiSlZm7YbXexDK9gqhwx9NL51cH4sTE=",
         "usagesDigest": "iAlgqWkqGEYgZXT70xCEYNNlc6zWLu7Ll4Kv/g2xyzI=",
         "recordedInputs": [
           "REPO_MAPPING:apple_support+,bazel_skylib bazel_skylib+",

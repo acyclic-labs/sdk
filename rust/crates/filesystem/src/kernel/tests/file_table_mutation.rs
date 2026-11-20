@@ -18,12 +18,13 @@ async fn original_table_encoding_denial_precedes_native_payload_and_backend_writ
         replacement: record(1, 2),
     }];
     let cancellation = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(
+    let work = crate::NativeMaterializationWork::root(
         WorkBudget {
             bytes_encoded: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let live = work.live_allocation_bytes().unwrap();

@@ -123,7 +123,7 @@ fn run_client(
             "::external_metadata_only_change_survives_remount"
         )
         .split_once("::")
-        .expect("metadata belongs to a test crate")
+        .ok_or("metadata test has no crate-relative name")?
         .1,
         mode,
         path,

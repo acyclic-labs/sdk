@@ -4,7 +4,7 @@
 use acyclic_harness_tui::term::Multiplexer;
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../tests/support/negotiation.rs"]
+#[path = "../../../harness-tui-term/tests/support/negotiation.rs"]
 mod negotiation;
 
 fuzz_target!(|data: &[u8]| {

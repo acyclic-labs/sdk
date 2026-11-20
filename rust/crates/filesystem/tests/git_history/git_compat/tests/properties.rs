@@ -8,7 +8,7 @@ use acyclic_fs::git_compat::{
 use acyclic_fs_format::identity::{FileId, OperationId};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::fixtures::{TestExecutor, generation};
+use crate::git_history::fixtures::{TestExecutor, generation};
 use proptest::prelude::*;
 
 fn test_error(error: impl std::fmt::Display) -> TestCaseError {

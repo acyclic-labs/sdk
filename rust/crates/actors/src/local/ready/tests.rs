@@ -8,6 +8,50 @@ mod reads;
 #[cfg(not(loom))]
 mod scaling;
 
+/// One bounded exhaustive driver over a simulation's enabled operations. Each
+/// simulation supplies its own world, operations and depth; the driver owns the
+/// prefix replay, the enabled set and the recursion, so every model explores
+/// schedules the same way.
+#[cfg(not(loom))]
+trait Simulation: Sized {
+    type Op: Copy + std::fmt::Debug;
+    const DEPTH: usize;
+    fn new() -> Result<Self, String>;
+    fn enabled(&self, op: Self::Op) -> bool;
+    fn apply(&mut self, op: Self::Op) -> Result<(), String>;
+    fn check(&self) -> Result<(), String>;
+    fn finish(self) -> Result<(), String>;
+}
+
+#[cfg(not(loom))]
+fn explore<S: Simulation>(
+    prefix: &mut Vec<S::Op>,
+    ops: &[S::Op],
+    runs: &mut usize,
+) -> Result<(), String> {
+    let mut world = S::new()?;
+    for &op in prefix.iter() {
+        world.apply(op)?;
+        world.check()?;
+    }
+    *runs += 1;
+    let enabled: Vec<S::Op> = ops
+        .iter()
+        .copied()
+        .filter(|&op| world.enabled(op))
+        .collect();
+    world.finish()?;
+    if prefix.len() == S::DEPTH {
+        return Ok(());
+    }
+    for op in enabled {
+        prefix.push(op);
+        explore::<S>(prefix, ops, runs)?;
+        prefix.pop();
+    }
+    Ok(())
+}
+
 fn alarm(
     generation: u64,
     deadline_unix_ms: Option<u64>,

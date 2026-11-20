@@ -11,5 +11,5 @@ test("the full-cloud wrapper refuses an absent producer before executing a case"
   assert.ifError(result.error);
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /STEP_FAILED admit-full-cloud: CLOUD_SOURCE must name an absolute path; recovery:/);
-  assert.match(result.stderr, /bazel test .*:acyclic_fs_test_full-cloud/);
+  assert.match(result.stderr, /bazel test .*\/\/rust\/crates\/filesystem:main_full-cloud/);
 });

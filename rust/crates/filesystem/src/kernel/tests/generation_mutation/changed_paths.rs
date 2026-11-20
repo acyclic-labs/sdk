@@ -121,7 +121,7 @@ async fn verify(
         })
     });
     let collection =
-        crate::workspace::complete_changed_paths(views, Some(u32::MAX), &mut work, &cancel);
+        crate::workspace::complete_changed_paths(views, None, Some(u32::MAX), &mut work, &cancel);
     let collection_bytes = std::mem::size_of_val(&collection);
     // The caller retains endpoints and the funded owner, never the traversal.
     assert!(
@@ -130,7 +130,14 @@ async fn verify(
     );
     eprintln!("complete changed-path caller: {collection_bytes} bytes");
     let rows = collection.await?;
-    assert_eq!(rows.value, expected.values().cloned().collect::<Vec<_>>());
+    assert_eq!(rows.value.len(), expected.len());
+    assert_eq!(
+        rows.value
+            .iter()
+            .map(|row| (&row.path, row))
+            .collect::<BTreeMap<_, _>>(),
+        expected.iter().collect::<BTreeMap<_, _>>()
+    );
     rows.retire(&mut work)?;
     work.standalone_parts()
         .unwrap()

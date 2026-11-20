@@ -14,7 +14,7 @@ the actor pin comes from `ActorReference::encode`. The future-version and
 trailing-whitespace inputs are derived from the original Selection writer and
 are refusal inputs, not additional producer captures. `corpus/SOURCES.tsv`
 records each input's original size, SHA256 and producer; the matching writer
-outputs remain in `compatibility/frames/golden.hex`.
+outputs remain in `rust/crates/compatibility-golden/frames/golden.hex`.
 
 These are public codec inputs. They do not qualify deployed membership,
 handoff, rollback, recovery or complete source branch coverage.

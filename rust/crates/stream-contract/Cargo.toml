@@ -1,0 +1,127 @@
+[package]
+autotests = false
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "build/**", "vendor/**"]
+name = "acyclic-stream-contract"
+version = "0.2.0"
+edition.workspace = true
+rust-version = "1.92"
+license.workspace = true
+repository.workspace = true
+description = "Hierarchical append-only Streams contract: domain types, wire codecs, and provider traits"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-stream-contract"
+keywords = ["streams", "events", "grpc"]
+categories = ["api-bindings", "data-structures"]
+build = "build.rs"
+
+[package.metadata.bazel]
+build-script-inputs = []
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+conformance = ["acyclic-stream-contract-core/conformance", "acyclic-stream-contract-engine/conformance"]
+model-checking = ["conformance", "acyclic-stream-contract-core/model-checking", "acyclic-stream-contract-engine/model-checking", "dep:loom", "dep:tempfile"]
+test-support = ["conformance", "acyclic-stream-contract-core/test-support", "acyclic-stream-contract-engine/test-support", "acyclic-stream-contract-wire/test-support", "acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
+# Shared byte-array encoding; decoding alone never authenticates native custody.
+serde = ["dep:serde", "acyclic-stream-contract-core/serde", "acyclic-stream-contract-engine/serde", "acyclic-stream-contract-wire/serde"]
+# Admitted JavaScript byte ownership without a provider or transport.
+js-bytes = ["dep:wasm-bindgen", "acyclic-stream-contract-core/js-bytes", "acyclic-stream-contract-engine/js-bytes", "acyclic-stream-contract-wire/js-bytes"]
+wasm-journal = ["dep:wasm-bindgen", "acyclic-stream-contract-core/wasm-journal", "acyclic-stream-contract-engine/wasm-journal", "acyclic-stream-contract-wire/wasm-journal"]
+wasm = ["js-bytes", "serde", "acyclic-stream-contract-core/wasm", "acyclic-stream-contract-engine/wasm", "acyclic-stream-contract-wire/wasm", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
+
+[dependencies]
+acyclic-stream-contract-core = { version = "=0.2.0", path = "../stream-contract-core" }
+acyclic-stream-contract-engine = { version = "=0.2.0", path = "../stream-contract-engine" }
+acyclic-stream-contract-wire = { version = "=0.2.0", path = "../stream-contract-wire" }
+acyclic-decimal-u64 = { version = "=0.2.0", path = "../decimal-u64" }
+acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
+acyclic-collections = { version = "=0.2.0", path = "../collections" }
+web-time = { version = "1.1.0" }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
+tempfile = { version = "3.27.0", optional = true }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+async-trait.workspace = true
+base64 = "0.23.1"
+blake3 = "1.8.2"
+bytes.workspace = true
+futures.workspace = true
+pin-project-lite = "0.2.17"
+http.workspace = true
+prost.workspace = true
+ruzstd.workspace = true
+serde_json.workspace = true
+serde = { workspace = true, optional = true }
+sha2.workspace = true
+smallvec = "1.16.2"
+thiserror.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt", "macros"] }
+tonic-prost = { workspace = true }
+uuid.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+web-sys = { workspace = true, features = ["BroadcastChannel", "MessageChannel", "MessagePort", "MessageEvent", "WorkerGlobalScope", "WebSocket", "BinaryType", "Event", "CloseEvent", "Url"], optional = true }
+tonic = { workspace = true, features = ["codegen"] }
+tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2", optional = true }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"], optional = true }
+indexed_db_futures = { workspace = true, optional = true }
+serde-wasm-bindgen = { workspace = true, optional = true }
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+h2 = { version = "0.4.19" }
+hyper = { version = "1.11.0", default-features = false }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
+tokio-postgres = { version = "0.7.18" }
+acyclic-log-frame = { version = "=0.2.0", path = "../log-frame" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+url = "=2.5.8"
+
+[dev-dependencies]
+web-time = "1.1.0"
+acyclic-compatibility-golden = { path = "../compatibility-golden" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+ed25519-dalek = "=3.0.0"
+tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-stream-trust = { version = "=0.2.0", path = "../stream-trust" }
+acyclic-process-resources = { version = "=0.2.0", path = "../process-resources" }
+proptest.workspace = true
+# The OS resource sampler the descriptor tests count with.
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
+axum = { workspace = true, features = ["ws"] }
+tonic-web.workspace = true
+tower-http = { version = "0.6.11", features = ["cors"] }
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
+hyper-util.workspace = true
+rcgen = "0.14.10"
+tempfile = "3.27.0"
+tokio-stream.workspace = true
+tower.workspace = true
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
+tokio = { version = "1.48.0", features = ["net", "io-util", "rt-multi-thread", "rt", "macros"] }
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+wasm-bindgen-test = "=0.3.67"
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
+web-sys = { workspace = true, features = ["Performance"] }
+
+[lints]
+workspace = true

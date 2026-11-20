@@ -239,8 +239,9 @@ async fn read_stdin_value() -> Result<Zeroizing<String>, Error> {
         if read == 0 {
             break;
         }
-        value.extend_from_slice(&chunk[..read]);
-        chunk[..read].zeroize();
+        let bytes = chunk.get_mut(..read).ok_or_else(input_error)?;
+        value.extend_from_slice(bytes);
+        bytes.zeroize();
     }
     match String::from_utf8(std::mem::take(&mut *value)) {
         Ok(value) => Ok(Zeroizing::new(value)),

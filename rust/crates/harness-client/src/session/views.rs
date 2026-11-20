@@ -1,11 +1,7 @@
 //! Retained-fold residency changes with the fold, never with a metric read.
 
 use super::RetainedView;
-use std::{
-    borrow::Borrow,
-    collections::BTreeMap,
-    ops::{Deref, DerefMut},
-};
+use std::{borrow::Borrow, collections::BTreeMap, ops::Deref};
 
 pub(super) struct Views<K> {
     entries: BTreeMap<K, RetainedView>,
@@ -41,16 +37,20 @@ impl<K: Ord> Views<K> {
         }
     }
 
-    pub(super) fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<ViewMut<'_>>
+    pub(super) fn apply<Q: Ord + ?Sized>(
+        &mut self,
+        key: &Q,
+        frame: &acyclic_stream::session::Frame,
+        revision: u64,
+    ) -> Option<Result<(), acyclic_stream::StreamError>>
     where
         K: Borrow<Q>,
     {
         let view = self.entries.get_mut(key)?;
-        Some(ViewMut {
-            prior: view.view.metadata_bytes(),
-            entry: view,
-            bytes: &mut self.bytes,
-        })
+        let prior = view.view.metadata_bytes();
+        let result = view.view.apply(frame, revision);
+        self.bytes = self.bytes - prior + view.view.metadata_bytes();
+        Some(result)
     }
 
     pub(super) fn retain(&mut self, mut keep: impl FnMut(&K, &RetainedView) -> bool) {
@@ -75,31 +75,5 @@ impl<K: Ord> Views<K> {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.bytes = 0;
-    }
-}
-
-pub(super) struct ViewMut<'a> {
-    entry: &'a mut RetainedView,
-    bytes: &'a mut usize,
-    prior: usize,
-}
-
-impl Deref for ViewMut<'_> {
-    type Target = RetainedView;
-
-    fn deref(&self) -> &Self::Target {
-        self.entry
-    }
-}
-
-impl DerefMut for ViewMut<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.entry
-    }
-}
-
-impl Drop for ViewMut<'_> {
-    fn drop(&mut self) {
-        *self.bytes = *self.bytes - self.prior + self.entry.view.metadata_bytes();
     }
 }

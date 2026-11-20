@@ -269,11 +269,6 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
 /// Either missing provenance handoff must fail before a later load can mask it.
 #[tokio::test]
 async fn forked_prepared_publication_retains_original_provenance() -> TestResult {
-    crate::conformance::fork_uniform(
-        Arc::new(MemoryStream::default()),
-        StreamPath::new("fork-placement")?,
-    )
-    .await?;
     let store = Store::new(Arc::new(MemoryStream::default()), state_root()?);
     let parent = actor("parent")?;
     let child = actor("child")?;
@@ -1286,37 +1281,8 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
 }
 
 #[tokio::test]
-async fn memory_atomic_history() -> TestResult {
-    atomic_history(Arc::new(MemoryStream::default()), state_root()?).await?;
-    atomic_history(
-        Arc::new(MemoryStream::default()),
-        StreamPath::new("actors")?,
-    )
-    .await
-}
-
-#[tokio::test]
 async fn memory_epoch_alarm_pause_fences() -> TestResult {
     fencing_history(Arc::new(MemoryStream::default())).await
-}
-
-#[tokio::test]
-async fn local_atomic_history() -> TestResult {
-    let root = tempfile::tempdir()?;
-    atomic_history(
-        Arc::new(LocalStream::open(root.path(), Default::default()).await?),
-        state_root()?,
-    )
-    .await
-}
-
-#[tokio::test]
-async fn local_epoch_alarm_pause_fences() -> TestResult {
-    let root = tempfile::tempdir()?;
-    fencing_history(Arc::new(
-        LocalStream::open(root.path(), Default::default()).await?,
-    ))
-    .await
 }
 
 #[tokio::test]
@@ -1661,111 +1627,4 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
         assert!(matches!(turn(vec![refused]), Err(Error::Invalid(_))));
     }
     Ok(())
-}
-
-/// The composed orphan-free oracle. Every scheduling entry (an activation or a
-/// deadline-window record) and every participant custody intent names its
-/// owner by itself, and that owner is a live actor; each intent's publication
-/// is reachable by its own key. Resolving an owner never scans the state
-/// root. Returns the orphaned entries.
-pub(super) async fn orphans<P: StreamProvider + ?Sized>(
-    store: &Store<P>,
-    custodians: &[ActorReference],
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let provider = store.provider();
-    let mut scheduled = Vec::new();
-    for shard in 0..store.scheduling_shards() {
-        let log = store.scheduling_path(shard)?;
-        scheduled.push(log.clone());
-        let mut after = None;
-        loop {
-            let page = match provider
-                .children_page(acyclic_stream::ChildrenPageRequest {
-                    offset: 0,
-                    tail_stream: None,
-                    parent: Some(log.clone()),
-                    after,
-                    hierarchy_version: None,
-                    limit: 64,
-                })
-                .await
-            {
-                Ok(page) => page,
-                Err(error) if error.category() == StreamCategory::NotFound => break,
-                Err(error) => return Err(error.into()),
-            };
-            scheduled.extend(page.children.into_iter().map(|child| child.path));
-            after = page.next_after;
-            if after.is_none() {
-                break;
-            }
-        }
-    }
-    let mut orphans = Vec::new();
-    for path in scheduled {
-        for (sequence, value) in values(&**provider, &path).await?.into_iter().enumerate() {
-            let live = match ActorReference::decode(&value) {
-                Ok(actor) => store.load(&actor).await?.state().is_some(),
-                Err(_) => false,
-            };
-            if !live {
-                orphans.push(format!("{path}@{sequence}"));
-            }
-        }
-    }
-    for actor in custodians {
-        let path = custody_path(&store.path(actor)?)?;
-        let live = store.load(actor).await?.state().is_some();
-        for (sequence, value) in values(&**provider, &path).await?.into_iter().enumerate() {
-            let applied = matches!(
-                provider
-                    .inspect_idempotency(record::Intent::decode(&value)?.key)
-                    .await?
-                    .map(|inspection| inspection.outcome),
-                Some(acyclic_stream::IdempotencyOutcome::Commit(_))
-            );
-            if !(live && applied) {
-                orphans.push(format!("{path}@{sequence}"));
-            }
-        }
-    }
-    Ok(orphans)
-}
-
-async fn values<P: StreamProvider + ?Sized>(
-    provider: &P,
-    path: &StreamPath,
-) -> Result<Vec<Bytes>, Box<dyn std::error::Error>> {
-    let tail = match provider.tail(path.clone()).await {
-        Ok(tail) => tail,
-        Err(StreamError::NotFound) => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    Ok(provider
-        .read(ReadRequest {
-            key: None,
-            path: path.clone(),
-            from: 0,
-            limit: u32::try_from(tail)?.max(1),
-            at_least: Default::default(),
-        })
-        .await?
-        .map_ok(|record| Bytes::copy_from_slice(record.value.as_ref()))
-        .try_collect()
-        .await?)
-}
-
-/// A provider refusal (a non-leader member's Unavailable) stays in the
-/// runtime error's source chain, so a diagnostic walking sources keeps its
-/// Stream code instead of only the provider's opaque causes.
-#[test]
-fn a_provider_refusal_keeps_its_stream_code_in_the_source_chain() {
-    let error = <Error>::from(StreamError::Unavailable);
-    assert_eq!(error.kind(), "unavailable");
-    let source =
-        std::error::Error::source(&error).and_then(|source| source.downcast_ref::<StreamError>());
-    assert_eq!(
-        source.map(|error| error.category()),
-        Some(StreamCategory::Unavailable)
-    );
 }

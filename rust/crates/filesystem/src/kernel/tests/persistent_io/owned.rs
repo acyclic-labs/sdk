@@ -130,7 +130,7 @@ proptest! {
         prop_assert_eq!(work.peak_allocation_bytes, exact_budget(count).peak_allocation_bytes);
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+            let original = crate::NativeMaterializationWork::root(WorkBudget::UNBOUNDED, &cancellation, &crate::services::ServicesInitialized::for_kernel_tests()).unwrap();
             let resource = original.native_volume_work(exact_budget(count)).unwrap();
             let baseline = original.live_allocation_bytes().unwrap();
             check_owned::<false>(count, &mut KernelAccounting::native(&resource, &cancellation))?;
@@ -147,9 +147,12 @@ fn exact_ownership_oracle_rejects_the_old_shared_owner_path() {
         assert!(check_owned::<true>(count, &mut accounting).is_err());
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let original =
-                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                    .unwrap();
+            let original = crate::NativeMaterializationWork::root(
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .unwrap();
             let resource = original.native_volume_work(exact_budget(count)).unwrap();
             let baseline = original.live_allocation_bytes().unwrap();
             assert!(
@@ -244,10 +247,18 @@ fn uncached_admission_rechecks_a_tightened_budget_before_handoff() {
 #[test]
 fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
     let cancellation = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let other =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .unwrap();
+    let other = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .unwrap();
     let baseline = original.live_allocation_bytes().unwrap();
     let input = page(2, &mut KernelAccounting::native(&original, &cancellation));
     let result = admit_page(
@@ -283,8 +294,12 @@ fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
 #[test]
 fn uncached_native_handoff_cannot_change_the_allocation_resource() {
     let cancellation = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .unwrap();
     let resource = original.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
     let baseline = original.live_allocation_bytes().unwrap();
     for (source, destination) in [(&original, &resource), (&resource, &original)] {

@@ -6,3 +6,6 @@ use acyclic_harness_core::*;
 
 mod hosting;
 pub use hosting::*;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod hosting_test_support;

@@ -84,13 +84,13 @@ impl MemoryStream {
     pub(crate) fn canonicalize(
         &self,
         command: crate::WriteRequest,
-    ) -> Result<crate::journal::CanonicalCommand, StreamError> {
+    ) -> Result<crate::request::command::CanonicalCommand, StreamError> {
         command.canonicalized_with(|request| self.commit_request_digest(request).map(Some))
     }
 
     pub(crate) async fn apply_durable(
         &self,
-        canonical: &crate::journal::CanonicalCommand,
+        canonical: &crate::request::command::CanonicalCommand,
         deadline: Option<u64>,
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> Result<crate::replicated::Execution, StreamError> {

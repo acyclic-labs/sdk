@@ -34,16 +34,10 @@ pub mod capability {
     pub(crate) const OPERATION_CANCEL: &str = "operation:cancel";
     #[doc(hidden)]
     pub const MODEL_GENERATE: &str = "model:generate";
-    #[doc(hidden)]
-    pub const CONTEXT_BUILD: &str = "context:build";
 
     /// Exact scope label granting a named tool invocation.
     pub fn tool_call(tool: impl Display) -> String {
         format!("tool:call:{tool}")
-    }
-
-    pub(crate) fn interaction_respond(id: impl Display) -> String {
-        format!("interaction:respond:{id}")
     }
 }
 

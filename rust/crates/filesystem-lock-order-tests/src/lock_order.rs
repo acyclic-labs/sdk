@@ -82,7 +82,8 @@ fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
     drop(healthy(lower.lock()));
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+// Exactly where production defines the ranked condition variable.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 #[test]
 fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
     let lower = Mutex::<_, 0>::new(());

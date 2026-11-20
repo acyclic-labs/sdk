@@ -84,3 +84,6 @@ fn required_credential_event<T>(
     take_credential_event(slot)?
         .ok_or(acyclic_auth::credential::CredentialCacheError::Unavailable.into())
 }
+
+#[path = "backoff.rs"]
+mod backoff_cases;

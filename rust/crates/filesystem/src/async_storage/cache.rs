@@ -104,7 +104,7 @@ pub enum DecodedCacheAdmission {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn owned_read(
     read: ObjectRead,
-    original: &crate::materializer::NativeMaterializationWork,
+    original: &crate::ledger::NativeMaterializationWork,
 ) -> Result<ObjectRead, crate::storage::ObjectStoreError> {
     let valid = match read.retention {
         crate::storage::ObjectReadRetention::Owned { logical_bytes } => {

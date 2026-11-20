@@ -286,5 +286,6 @@ impl Write for Count<'_, '_> {
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 mod tests;

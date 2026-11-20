@@ -191,22 +191,15 @@ impl NativeCheckout {
         destination_offset: BigInt,
         length: BigInt,
     ) -> Result<NativeMutationResult> {
-        let request = FileCloneRequest {
-            source: native_path(&source, self.config)?,
-            source_offset: bigint_u64(&source_offset, "sourceOffset")?,
-            destination: native_path(&destination, self.config)?,
-            destination_offset: bigint_u64(&destination_offset, "destinationOffset")?,
-            length: bigint_u64(&length, "length")?,
-        };
         let receipt = checkout_mutation!(
             self,
             change_content(
-                request.destination,
+                native_path(&destination, self.config)?,
                 acyclic_fs::ContentChange::CloneFrom {
-                    source: request.source,
-                    source_offset: request.source_offset,
-                    offset: request.destination_offset,
-                    length: request.length,
+                    source: native_path(&source, self.config)?,
+                    source_offset: bigint_u64(&source_offset, "sourceOffset")?,
+                    offset: bigint_u64(&destination_offset, "destinationOffset")?,
+                    length: bigint_u64(&length, "length")?,
                 },
                 acyclic_fs::ContentTimes::Preserve,
             )

@@ -1,6 +1,7 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
+use crate::kernel::deterministic::next as next_generated;
 use crate::kernel::{
     BlobBuildOptions, FileKind, FileRangeRequest, FileRecord, build_blob, decode_extent_page,
     read_file_range_async,
@@ -282,11 +283,4 @@ fn model_preallocate(
         }
     }
     true
-}
-
-fn next_generated(seed: &mut u64) -> u64 {
-    *seed = seed
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
-    *seed
 }

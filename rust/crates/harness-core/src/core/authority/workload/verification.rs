@@ -27,7 +27,13 @@ pub(crate) fn check_filesystem_refinement(parent: &acyclic_fs::access::Capabilit
         &Capabilities::new([child.to_scope_label().map_err(unauthorized)?]),
     )?;
     verifier.verify(&child, &mut None)?;
-    let verified = verify(&verifier, &issuer.audience, &child, now(), &mut None)?;
+    let verified = verify(
+        &verifier,
+        &issuer.audience,
+        &child,
+        verifier.public.now(),
+        &mut None,
+    )?;
     // Possessing the append key is insufficient to undo the previous ceiling.
     // Bypass the caller's subset check, sign the actual block, and admit it.
     let mut widened = child.clone();

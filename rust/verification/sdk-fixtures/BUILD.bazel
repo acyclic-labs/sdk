@@ -7,7 +7,7 @@ FEATURES = [
         "model-checking",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"sdk-fixture-verification","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"sdk-fixture-verification","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 extract_cargo_lints(
     name = "lints",
@@ -20,6 +20,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "sdk-fixture-verification",
@@ -40,9 +41,24 @@ rust_library(
     name = "sdk_fixture_verification",
     crate_root = "//rust/crates/sdk-generation:tests/cli_regressions/cache.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/sdk-docs:src/concrete_versions.rs",
+        "//rust/crates/sdk-docs:src/concrete_versions/tests.rs",
+        "//rust/crates/sdk-docs:src/projection.rs",
+        "//rust/crates/sdk-docs:src/publication.rs",
+        "//rust/crates/sdk-docs:src/tests.rs",
+        "//rust/crates/sdk-docs:src/tests/identity.rs",
+        "//rust/crates/sdk-docs:src/tests/projection.rs",
+        "//rust/crates/sdk-docs:src/tests/publication.rs",
+        "//rust/crates/sdk-docs:src/tests/rustdoc_adapter.rs",
+        "//rust/crates/sdk-docs:src/tests/scratch.rs",
+        "//rust/crates/sdk-generation:src/parallel.rs",
+        "//rust/crates/sdk-generation:src/shared_cache.rs",
         "//rust/crates/sdk-generation:tests/cli_regressions/cache.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -64,6 +80,9 @@ rust_library(
 rust_test(
     name = "sdk_fixture_verification_test_cases",
     crate = ":sdk_fixture_verification",
+    compile_data = [
+        "//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json",
+    ],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -74,7 +93,11 @@ rust_test(
     ],
     lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -139,7 +162,11 @@ rust_test(
         "//rust/crates/sdk-generation:src/parallel.rs",
         "//rust/crates/sdk-generation:src/shared_cache.rs",
     ],
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

@@ -376,11 +376,9 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
             crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
         )
     }));
-    let work = crate::materializer::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .unwrap();
+    let work =
+        crate::ledger::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .unwrap();
     work.charge(crate::WorkCounters {
         bytes_hashed: 5,
         ..Default::default()
@@ -420,11 +418,9 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     // own physical lifetime independent of the returned record's backing.
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let restarted = LocalCoreStateStore::new(directory.path());
-    let decoded_work = crate::materializer::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .unwrap();
+    let decoded_work =
+        crate::ledger::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .unwrap();
     let decoded_baseline = decoded_work.live_allocation_bytes().unwrap();
     let mut decoded_accounting =
         crate::kernel::KernelAccounting::native(&decoded_work, decoded_work.cancellation());
@@ -464,7 +460,7 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
         source_bytes_read: 7,
         ..crate::WorkBudget::UNBOUNDED
     };
-    let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+    let work = crate::ledger::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     work.charge(crate::WorkCounters {
         bytes_hashed: 5,
         ..Default::default()

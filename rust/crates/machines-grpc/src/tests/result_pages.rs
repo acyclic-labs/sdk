@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines::codec::codec_fuzz;
 use acyclic_machines::results::{ResultCursor, ResultCut};
 
 #[tokio::test]
@@ -17,7 +18,7 @@ async fn failed_remote_forks_retain_partial_and_empty_cuts_and_refuse_fidelity_d
     else {
         unreachable!("original create")
     };
-    original.fail_fork_after(NonZeroU32::MIN).await;
+    original.fail_fork_after(1).await;
     let count = NonZeroU32::new(3).unwrap();
     let failed = original.fork_machine(parent.id, count, key).await;
     let Err(ProviderError::ForkFailed { results, .. }) = failed.clone() else {

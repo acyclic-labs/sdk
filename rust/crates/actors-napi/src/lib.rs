@@ -3,15 +3,12 @@
 //! Protobuf bytes are the only operation payload crossing this boundary. The
 //! Rust client owns endpoint, credential, contract, transport, and size policy.
 
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 
-use acyclic_actors::{client, domain};
+use acyclic_actors::{client, domain, guest::CancellationToken};
 use napi::bindgen_prelude::{BigInt, Buffer, Error, Result, Status, Uint8Array};
 use napi_derive::napi;
 use serde::Serialize;
-use tokio_util::sync::CancellationToken;
-
-const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Thin N-API projection of the canonical producer Cause. No classification
 /// or attribution is reconstructed at this boundary.
@@ -31,29 +28,29 @@ pub struct NativeActorsCause {
 /// Structured Rust-owned error metadata.
 #[napi(object)]
 #[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeActorsErrorMetadata {
     /// Stable category.
     pub code: String,
     /// Human-readable reason.
     pub message: String,
     #[napi(js_name = "grpcCode")]
-    #[serde(rename = "grpcCode", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Numeric gRPC status code.
     pub grpc_code: Option<i32>,
     #[napi(js_name = "grpcName")]
-    #[serde(rename = "grpcName", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// gRPC status name.
     pub grpc_name: Option<String>,
     #[napi(js_name = "credentialRejected")]
-    #[serde(rename = "credentialRejected")]
     /// Authenticated remote rejection of the exact request credential.
     pub credential_rejected: bool,
     #[napi(js_name = "serviceCode")]
-    #[serde(rename = "serviceCode", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Service detail code.
     pub service_code: Option<i32>,
     #[napi(js_name = "serviceMessage")]
-    #[serde(rename = "serviceMessage", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Service detail message.
     pub service_message: Option<String>,
     /// Original producer attribution.
@@ -63,13 +60,12 @@ pub struct NativeActorsErrorMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<acyclic_auth::refusal::native::NativeRefusal>,
     #[napi(js_name = "contractCode")]
-    #[serde(rename = "contractCode", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Contract category.
     pub contract_code: Option<String>,
     /// Exact status detail bytes, including malformed payloads.
     #[napi(js_name = "rawDetails")]
     #[serde(
-        rename = "rawDetails",
         skip_serializing_if = "Option::is_none",
         serialize_with = "serialize_raw_details"
     )]
@@ -85,18 +81,20 @@ pub struct NativeActorsOperationResult {
     pub error: Option<NativeActorsErrorMetadata>,
 }
 
+fn envelope<T, U>(
+    result: std::result::Result<T, NativeActorsErrorMetadata>,
+    ok: impl FnOnce(T) -> U,
+) -> (Option<U>, Option<NativeActorsErrorMetadata>) {
+    match result {
+        Ok(value) => (Some(ok(value)), None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
 impl NativeActorsOperationResult {
     fn from_result(result: std::result::Result<Vec<u8>, NativeActorsErrorMetadata>) -> Self {
-        match result {
-            Ok(value) => Self {
-                value: Some(value.into()),
-                error: None,
-            },
-            Err(error) => Self {
-                value: None,
-                error: Some(error),
-            },
-        }
+        let (value, error) = envelope(result, Into::into);
+        Self { value, error }
     }
 }
 
@@ -109,12 +107,8 @@ pub struct NativeActorsConnectResult {
     pub error: Option<NativeActorsErrorMetadata>,
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "N-API error conversion receives owned metadata from fallible boundary adapters"
-)]
-fn napi_error(metadata: NativeActorsErrorMetadata) -> Error {
-    let reason = serde_json::to_string(&metadata)
+fn napi_error(metadata: &NativeActorsErrorMetadata) -> Error {
+    let reason = serde_json::to_string(metadata)
         .unwrap_or_else(|_| String::from(r#"{"code":"internal","message":"Actors error"}"#));
     Error::new(Status::GenericFailure, reason)
 }
@@ -133,7 +127,7 @@ fn nominal_error(error: domain::DomainError) -> NativeActorsErrorMetadata {
 pub fn actor_id(value: String) -> Result<String> {
     domain::ActorId::new(value)
         .map(String::from)
-        .map_err(|error| napi_error(nominal_error(error)))
+        .map_err(|error| napi_error(&nominal_error(error)))
 }
 
 /// Rust-backed exact namespace label constructor.
@@ -141,7 +135,7 @@ pub fn actor_id(value: String) -> Result<String> {
 pub fn actor_namespace(value: String) -> Result<String> {
     domain::ActorNamespace::new(value)
         .map(String::from)
-        .map_err(|error| napi_error(nominal_error(error)))
+        .map_err(|error| napi_error(&nominal_error(error)))
 }
 
 /// Validate and return a nominal SHA-256 digest.
@@ -153,7 +147,7 @@ pub fn actor_namespace(value: String) -> Result<String> {
 pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
     domain::CodeSha256::new(value.as_ref())
         .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
-        .map_err(|error| napi_error(nominal_error(error)))
+        .map_err(|error| napi_error(&nominal_error(error)))
 }
 
 /// Validate and return a nominal positive integer.
@@ -165,7 +159,7 @@ pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
 pub fn positive_u64(value: BigInt) -> Result<BigInt> {
     let (sign, raw, lossless) = value.get_u64();
     if sign || !lossless {
-        return Err(napi_error(NativeActorsErrorMetadata {
+        return Err(napi_error(&NativeActorsErrorMetadata {
             code: String::from("not_positive"),
             message: String::from("value must be a lossless positive u64"),
             ..Default::default()
@@ -173,7 +167,7 @@ pub fn positive_u64(value: BigInt) -> Result<BigInt> {
     }
     domain::PositiveU64::new(raw)
         .map(|value| BigInt::from(value.get()))
-        .map_err(|error| napi_error(nominal_error(error)))
+        .map_err(|error| napi_error(&nominal_error(error)))
 }
 
 /// Validate the nominal current-head marker.  The wire value is still a
@@ -183,7 +177,7 @@ pub fn positive_u64(value: BigInt) -> Result<BigInt> {
 pub fn current_head_marker(value: bool) -> Result<bool> {
     domain::subscription_start::CurrentHeadMarker::try_from(value)
         .map(bool::from)
-        .map_err(|error| napi_error(nominal_error(error)))
+        .map_err(|error| napi_error(&nominal_error(error)))
 }
 
 fn serialize_raw_details<S: serde::Serializer>(
@@ -324,24 +318,11 @@ mod tests {
     }
 }
 
-#[derive(Clone)]
-struct CancellationState {
-    token: CancellationToken,
-}
-
 /// Monotonic native cancellation handle.
 #[napi]
+#[derive(Default)]
 pub struct NativeActorsCancellation {
-    state: CancellationState,
-}
-impl Default for NativeActorsCancellation {
-    fn default() -> Self {
-        Self {
-            state: CancellationState {
-                token: CancellationToken::new(),
-            },
-        }
-    }
+    token: CancellationToken,
 }
 #[napi]
 impl NativeActorsCancellation {
@@ -353,12 +334,7 @@ impl NativeActorsCancellation {
     /// Cancel attached operations.
     #[napi]
     pub fn cancel(&self) {
-        self.state.token.cancel();
-    }
-    /// Whether the handle is cancelled.
-    #[napi(getter)]
-    pub fn cancelled(&self) -> bool {
-        self.state.token.is_cancelled()
+        self.token.cancel();
     }
 }
 
@@ -368,9 +344,9 @@ impl NativeActorsCancellation {
 )]
 async fn cancellable<T, F: Future<Output = std::result::Result<T, client::Error>>>(
     future: F,
-    cancellation: Option<CancellationState>,
+    cancellation: Option<CancellationToken>,
 ) -> std::result::Result<T, NativeActorsErrorMetadata> {
-    client::run_with_cancellation(future, cancellation.map(|value| value.token))
+    client::run_with_cancellation(future, cancellation)
         .await
         .map_err(client_error)
 }
@@ -378,51 +354,23 @@ async fn cancellable<T, F: Future<Output = std::result::Result<T, client::Error>
 /// Native client backed directly by the canonical Rust client.
 #[napi]
 pub struct NativeActorsClient {
-    inner: Arc<client::Client>,
-}
-impl NativeActorsClient {
-    fn from_client(inner: client::Client) -> Self {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
+    inner: client::Client,
 }
 
 async fn connect_envelope<
     F: Future<Output = std::result::Result<client::Client, client::Error>>,
 >(
     future: F,
-    cancellation: Option<CancellationState>,
+    cancellation: Option<CancellationToken>,
 ) -> NativeActorsConnectResult {
-    match cancellable(future, cancellation).await {
-        Ok(client) => NativeActorsConnectResult {
-            client: Some(NativeActorsClient::from_client(client)),
-            error: None,
-        },
-        Err(error) => NativeActorsConnectResult {
-            client: None,
-            error: Some(error),
-        },
-    }
+    let (client, error) = envelope(cancellable(future, cancellation).await, |inner| {
+        NativeActorsClient { inner }
+    });
+    NativeActorsConnectResult { client, error }
 }
 
 #[napi]
 impl NativeActorsClient {
-    /// Connect using native TLS and Rust-owned policy.
-    #[napi(factory)]
-    pub async fn connect(
-        endpoint: String,
-        token: String,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<Self> {
-        cancellable(
-            client::connect(&endpoint, &token, None),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await
-        .map(Self::from_client)
-        .map_err(napi_error)
-    }
     /// Structured connection result.
     #[napi(js_name = "connectResult")]
     pub async fn connect_result(
@@ -432,25 +380,9 @@ impl NativeActorsClient {
     ) -> Result<NativeActorsConnectResult> {
         Ok(connect_envelope(
             client::connect(&endpoint, &token, None),
-            cancellation.map(|value| value.state.clone()),
+            cancellation.map(|value| value.token.clone()),
         )
         .await)
-    }
-    /// Connect trusting exclusively the supplied native PEM CA certificate.
-    #[napi(factory, js_name = "connectWithCa")]
-    pub async fn connect_with_ca(
-        endpoint: String,
-        token: String,
-        ca: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<Self> {
-        cancellable(
-            client::connect(&endpoint, &token, Some(ca.as_ref())),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await
-        .map(Self::from_client)
-        .map_err(napi_error)
     }
     /// Structured connection result trusting exclusively the supplied native PEM CA.
     #[napi(js_name = "connectWithCaResult")]
@@ -462,24 +394,15 @@ impl NativeActorsClient {
     ) -> Result<NativeActorsConnectResult> {
         Ok(connect_envelope(
             client::connect(&endpoint, &token, Some(ca.as_ref())),
-            cancellation.map(|value| value.state.clone()),
+            cancellation.map(|value| value.token.clone()),
         )
         .await)
-    }
-    /// Native bridge package version.
-    #[napi]
-    pub fn version() -> String {
-        PACKAGE_VERSION.to_owned()
     }
     /// Selected transport.
     #[napi(getter, js_name = "transport")]
     pub fn transport(&self) -> String {
         self.inner.transport().to_owned()
     }
-}
-
-#[napi]
-impl NativeActorsClient {
     /// Execute one operation with a request-local credential on the existing connection.
     #[napi(js_name = "callWithCredentialResult")]
     pub async fn call_with_credential_result(
@@ -491,7 +414,7 @@ impl NativeActorsClient {
     ) -> Result<NativeActorsOperationResult> {
         let result = cancellable(
             self.inner.call_with_credential(&method, &request, &token),
-            cancellation.map(|value| value.state.clone()),
+            cancellation.map(|value| value.token.clone()),
         )
         .await;
         Ok(NativeActorsOperationResult::from_result(result))
@@ -514,7 +437,7 @@ macro_rules! operation_wrappers {
             ) -> Result<NativeActorsOperationResult> {
                 let value = cancellable(
                     self.inner.call($method, &request),
-                    cancellation.map(|value| value.state.clone()),
+                    cancellation.map(|value| value.token.clone()),
                 )
                 .await;
                 Ok(NativeActorsOperationResult::from_result(value))

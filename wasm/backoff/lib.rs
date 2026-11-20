@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 // Compile the same isolated schedule source without the credential graph.
-#[path = "../../rust/crates/auth/src/operation/backoff.rs"]
+#[path = "../../rust/crates/auth-operation/src/backoff.rs"]
 pub mod schedule;
 use wasm_bindgen::prelude::wasm_bindgen;
 

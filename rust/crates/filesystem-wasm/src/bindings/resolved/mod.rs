@@ -66,37 +66,13 @@ impl BrowserResolvedFile {
         offset: u64,
         length: u64,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let cancellation = CancellationToken::default();
-        let range = ByteRange { offset, length };
-        let receipt = self
-            .engine
-            .read_range(
-                range,
-                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserFileReadResult {
-            bytes: receipt.value.bytes.to_vec(),
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(self, read_range(ByteRange { offset, length },))?;
+        file_read_result(receipt.value.bytes.to_vec(), receipt.work)
     }
 
     #[wasm_bindgen(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_symbolic_link(
-                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserFileReadResult {
-            bytes: receipt.value.bytes.to_vec(),
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(self, read_symbolic_link())?;
+        file_read_result(receipt.value.bytes.to_vec(), receipt.work)
     }
 }

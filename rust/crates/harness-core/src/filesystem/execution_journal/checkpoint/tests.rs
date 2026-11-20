@@ -221,7 +221,7 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
         assert_eq!(loaded.1, recovery.head_tail);
         assert!(
             journal
-                .index_authenticates(loaded.0, summary.tail, retry, &event, io.as_ref())
+                .index_authenticates(loaded.0, summary.tail, retry, &event, io.as_ref(), None)
                 .await?
         );
         assert!(
@@ -231,7 +231,8 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
                     summary.tail,
                     "different-retry",
                     &event,
-                    io.as_ref()
+                    io.as_ref(),
+                    None,
                 )
                 .await
                 .is_err()
@@ -360,16 +361,17 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
             None,
         )?
         .await?;
+    let trust = issuer.public_workload_trust()?;
     let public = crate::core::AuthorityVerifier::from_public(
         "append-cost".into(),
         journal.verifier.audience().clone(),
-        issuer.public_workload_trust()?,
+        trust.clone(),
         journal.verifier.public_checkpoint_key(),
     )?;
     // The host's public trust has its own serving owner. Dropping signing
     // custody must not also close the trust needed to authorize this read.
     let trust_owner = std::mem::replace(&mut journal.verifier, public);
-    let trust_closed = issuer.trust_changes().changed();
+    let trust_closed = journal.verifier.trust_changes().changed();
     drop(issuer);
     let recovered = journal
         .load_index_checkpoint(operation, None)
@@ -382,14 +384,12 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
             .await
             .is_err()
     );
-    drop(trust_owner);
-    assert_eq!(
-        futures::FutureExt::now_or_never(trust_closed),
-        Some(Err(acyclic_auth::trust::SourceClosed))
-    );
+    trust.close(acyclic_auth::trust::FenceCause::Shutdown);
+    assert_eq!(trust_closed.await, Err(acyclic_auth::trust::SourceClosed));
     assert!(matches!(
         journal.load_index_checkpoint(operation, None).await,
         Err(Error::Unauthorized(_))
     ));
+    drop(trust_owner);
     Ok(())
 }

@@ -383,21 +383,13 @@ export function assertRegistryPinsCurrent(root) {
   }
 }
 
-function registryPackages(lock, universe, triple, {bazelTargets = [], sourceRoots = {}, bazelRules = new Map()} = {}) {
-  const sources = new Map(Object.entries(sourceRoots).map(([source, directory]) => [source, workspacePackages(directory)]));
+function registryPackages(lock, universe, triple, {bazelTargets = [], bazelRules = new Map()} = {}) {
   const external = (lock.package ?? []).filter(pkg => pkg.source);
   const byPin = Map.groupBy(external, pkg => pkg.name + ' ' + pkg.version);
   const rules = bazelTargets.map(target => target.rule).filter(rule => ['rust_library', 'rust_proc_macro'].includes(rule?.ruleClass));
   return external.map(p => {
-    const baseSource = p.source.split(/[?#]/)[0];
-    let checkout = sources.get(p.source);
-    if (!checkout && sources.has(baseSource)) {
-      const revisions = new Set(lock.package.filter(x => x.source?.split(/[?#]/)[0] === baseSource).map(x => x.source));
-      if (revisions.size !== 1) throw Error(`ambiguous Git source root ${baseSource}; supply exact locked-source keys`);
-      checkout = sources.get(baseSource);
-    }
-    const manifest = checkout?.find(x => x.name === p.name && x.version === p.version);
-    const matches = rules.filter(rule => {
+    const matches
+ = rules.filter(rule => {
       const attribute = name => rule.attribute?.find(a => a.name === name)?.stringValue;
       return rule.name.includes(`__${p.name}-${p.version}//`) || attribute('version') === p.version &&
         (attribute('crate_name') === p.name.replaceAll('-', '_') || rule.name.split(':').at(-1) === p.name.replaceAll('-', '_'));
@@ -416,20 +408,10 @@ function registryPackages(lock, universe, triple, {bazelTargets = [], sourceRoot
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
     const library = target && {kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name};
-    const targets = [...(manifest?.targets ?? [])];
-    if (library) {
-      const index = targets.findIndex(target => target.kind.some(kind => ['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'].includes(kind)));
-      if (index === -1) targets.push(library);
-      else {
-        const manifestTarget = targets[index];
-        const kind = lib.ProcMacro || manifestTarget.kind.includes('proc-macro') ? library.kind : manifestTarget.kind;
-        targets[index] = {...manifestTarget, name: library.name, kind};
-      }
-    }
     if (resolved) bazelRules.set(`${p.source}#${p.name}@${p.version}`, resolved);
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: manifest?.manifest_path ?? '', dependencies: [], metadata: manifest?.metadata ?? null,
-      features: manifest?.features ?? Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
-      targets};
+    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: p.dependencies ?? [], metadata: null,
+      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
+      targets: library ? [library] : []};
   });
 }
 
@@ -446,10 +428,39 @@ export function workspaceBrowserGraph(root, selections) {
   root = path.resolve(root);
   const triple = 'wasm32-unknown-unknown';
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
+  // The browser hub resolves from its own Cargo lock, which crate_universe writes back on
+  // repin. It can name a different transitive version than the native lock, so the browser
+  // graph reads it rather than the native lock. A registry package new to the browser
+  // closure is not in that lock yet; take it from the native lock so the generator can name
+  // it and the repin can resolve it.
+  const browserLock = fs.existsSync(path.join(root, 'cargo-wasm-bazel.Cargo.lock'))
+    ? toml(root, 'cargo-wasm-bazel.Cargo.lock') : lock;
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-wasm-bazel-lock.json'), 'utf8'));
-  const registry = registryPackages(lock, universe, triple);
-  const resolve = lockDependencyIndex(registry);
-  const packages = [...local, ...registry], byId = new Map(packages.map(p => [p.id, p]));
+  // A [patch] replaces a registry crate with a first-party one; the local package is the
+  // graph node, so the registry copy of the same pin is not.
+  const localPins = new Set(local.map(p => `${p.name} ${p.version}`));
+  const registry = registryPackages(browserLock, universe, triple).filter(p => !localPins.has(`${p.name} ${p.version}`));
+  // The browser lock is the output of the repin this graph feeds. A registry package new to
+  // the browser closure is not pinned yet, so take it from the native lock; the repin
+  // resolves its registry edges.
+  const nativeIndex = lockDependencyIndex(lock.package ?? []);
+  const browserPins = new Set((browserLock.package ?? []).map(p => `${p.name} ${p.version}`));
+  const synthetic = [];
+  for (const pkg of local) {
+    const owner = (lock.package ?? []).find(p => p.name === pkg.name && p.version === pkg.version && !p.source);
+    if (!owner) continue;
+    for (const d of pkg.dependencies) {
+      if (d.resolved_path || d.kind === 'dev' || !targetMatches(d.target, triple)) continue;
+      for (const m of lockedCandidates(nativeIndex, d, owner)) {
+        if (!m.source || browserPins.has(`${m.name} ${m.version}`)) continue;
+        browserPins.add(`${m.name} ${m.version}`);
+        synthetic.push({...m, id: `${m.source}#${m.name}@${m.version}`, manifest_path: '', dependencies: m.dependencies ?? [],
+          metadata: null, features: {}, targets: [{kind: ['lib'], name: m.name.replaceAll('-', '_')}]});
+      }
+    }
+  }
+  const packages = [...local, ...registry, ...synthetic], byId = new Map(packages.map(p => [p.id, p]));
+  const resolve = lockDependencyIndex(packages);
   const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const byPath = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
   const enabled = new Map(local.map(p => [p.id, new Set()]));
@@ -479,13 +490,28 @@ export function workspaceBrowserGraph(root, selections) {
       };
       if (pkg.source) {
         const pinned = universe.crates[`${pkg.name} ${pkg.version}`];
-        if (!pinned) throw Error(`browser Bazel lock lacks ${pkg.name}@${pkg.version}`);
-        for (const {entry, kind} of pinnedEdges(pinned, universe, triple)) {
-          const matches = byPin.get(entry.id) ?? [];
-          if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
-          const dep = matches[0];
-          addEdge(entry.alias ?? entry.target, dep, kind);
-          if (kind === null) add(reachable, dep.id);
+        if (pinned) {
+          for (const {entry, kind} of pinnedEdges(pinned, universe, triple)) {
+            const matches = byPin.get(entry.id) ?? [];
+            if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
+            const dep = matches[0];
+            addEdge(entry.alias ?? entry.target, dep, kind);
+            if (kind === null) add(reachable, dep.id);
+          }
+        } else {
+          // The browser lock is the output of the repin this graph feeds. A registry
+          // package new to the browser closure is not pinned yet, so take its local
+          // edges from the Cargo lock; the repin resolves its registry edges.
+          for (const reference of pkg.dependencies ?? []) {
+            const matches = resolve(reference);
+            // A registry edge the browser lock does not pin yet is the repin's job.
+            if (matches.length === 0) continue;
+            if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous Cargo lock edge ${reference}`);
+            const dep = matches[0];
+            if (dep.source) continue;
+            addEdge(dep.name, dep, null);
+            add(reachable, dep.id);
+          }
         }
       } else {
         const features = enabled.get(pkg.id);
@@ -515,7 +541,7 @@ export function workspaceBrowserGraph(root, selections) {
     workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
 
-export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile, resolution, bazelTargets = [], sourceRoots = {}} = {}) {
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile, resolution, bazelTargets = []} = {}) {
   const allPlatforms = triple === null;
   triple ??= 'x86_64-unknown-linux-gnu';
   root = path.resolve(root);
@@ -523,11 +549,11 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const universePath = universeFile ? path.resolve(sourceRoot, universeFile) : path.join(root, 'cargo-bazel-lock.json');
   const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
   if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
-  const pinnedResolution = resolution ?? bazelResolution(universePath, !universeFile);
+  const pinnedResolution = resolution === undefined ? bazelResolution(universePath, !universeFile) : resolution;
   const universe = pinnedResolution ?? {crates: {}, conditions: {}};
   const resolvedFeatures = pinnedResolution !== null || bazelTargets.length > 0;
   const bazelRules = new Map();
-  const registry = registryPackages(lock, universe, allPlatforms ? null : triple, {bazelTargets, sourceRoots, bazelRules});
+  const registry = registryPackages(lock, universe, allPlatforms ? null : triple, {bazelTargets, bazelRules});
   const packagesByRule = new Map(registry.flatMap(pkg => bazelRules.has(pkg.id) ? [[bazelRules.get(pkg.id).name, pkg]] : []));
   const packages = [...local, ...registry];
   const resolve = lockDependencyIndex(packages);

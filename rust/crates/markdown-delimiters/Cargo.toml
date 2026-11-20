@@ -1,0 +1,17 @@
+[package]
+name = "acyclic-markdown-delimiters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CommonMark delimiter-run state for the incremental Markdown parser"
+
+[features]
+enabled = ["acyclic-markdown-work/enabled"]
+
+[dependencies]
+acyclic-markdown-work = { path = "../markdown-work", version = "0.2.0" }
+
+[lints]
+workspace = true

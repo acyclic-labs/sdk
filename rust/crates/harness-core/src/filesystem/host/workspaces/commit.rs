@@ -158,46 +158,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(pause) = &self.publication_pause {
                     pause().await;
                 }
-                Self::publish_mutations(&mut transaction, mutations, io)?.await?;
-                if let Some((path, content)) = &content {
+                if let (Some((evidence, metadata_key)), None) = (&evidence, &content) {
+                    // Inline content and its protected metadata arrive together.
+                    let Some((WorkspaceMutation::PutFile { path, bytes }, parents)) =
+                        mutations.split_last()
+                    else {
+                        return Err(io.invalid("upload publication has no file destination"));
+                    };
+                    Self::publish_mutations(&mut transaction, parents, io)?.await?;
                     io.sdk(
                         transaction
-                            .write_staged(
+                            .write_with_attribute(
                                 path,
-                                std::slice::from_ref(content),
+                                bytes.clone(),
+                                (metadata_key, evidence.as_ref()),
                                 io,
                                 io.cancellation(),
                             )
                             .await,
                     )?;
-                }
-                if let Some((evidence, metadata_key)) = &evidence {
-                    // This path publishes one uploaded file, staged or inline.
-                    // Reuse its destination rather than allocate a second path.
-                    let path = content
-                        .as_ref()
-                        .map(|(path, _)| path.as_str())
-                        .or_else(|| {
-                            mutations.iter().find_map(|mutation| match mutation {
-                                WorkspaceMutation::PutFile { path, .. } => Some(path.as_str()),
-                                _ => None,
-                            })
-                        })
-                        .ok_or_else(|| io.invalid("upload publication has no file destination"))?;
-                    io.sdk(
-                        transaction
-                            .change_named_attribute(
-                                path,
-                                metadata_key,
-                                Some((
-                                    evidence.as_ref(),
-                                    acyclic_fs::NamedAttributeWriteMode::Upsert,
-                                )),
-                                io,
-                                io.cancellation(),
-                            )
-                            .await,
-                    )?;
+                } else {
+                    Self::publish_mutations(&mut transaction, mutations, io)?.await?;
+                    if let Some((path, content)) = &content {
+                        io.sdk(
+                            transaction
+                                .write_staged(
+                                    path,
+                                    std::slice::from_ref(content),
+                                    io,
+                                    io.cancellation(),
+                                )
+                                .await,
+                        )?;
+                        if let Some((evidence, metadata_key)) = &evidence {
+                            io.sdk(
+                                transaction
+                                    .change_named_attribute(
+                                        path,
+                                        metadata_key,
+                                        Some((
+                                            evidence.as_ref(),
+                                            acyclic_fs::NamedAttributeWriteMode::Upsert,
+                                        )),
+                                        io,
+                                        io.cancellation(),
+                                    )
+                                    .await,
+                            )?;
+                        }
+                    }
                 }
                 let context = evidence
                     .map(|(evidence, _)| publication_context(evidence, io))
@@ -384,17 +393,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 break commit;
             };
-            match commit {
+            let reason = match commit {
                 TransactionCommit::Committed(generation)
-                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                TransactionCommit::Conflict { .. }
-                | TransactionCommit::Fenced
-                | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Conflict,
-                    "workspace publication conflicted or was fenced",
-                )),
-            }
+                | TransactionCommit::AlreadyCommitted(generation) => return Ok(generation),
+                TransactionCommit::Conflict { .. } => {
+                    "workspace publication conflicted with the current generation"
+                }
+                TransactionCommit::Fenced => "workspace publication lost its authority fence",
+                TransactionCommit::IdempotencyConflict => {
+                    "workspace publication identity belongs to a different request"
+                }
+            };
+            Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                reason,
+            ))
         })
     }
 }

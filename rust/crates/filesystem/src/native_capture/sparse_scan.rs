@@ -11,7 +11,7 @@ pub(super) fn block_has_data(
     // No I/O, owner retirement or demand re-entry while the leaf stays locked.
     meter
         .with_original_leaf(|work| {
-            let items = |count| crate::materializer::NativeResourceCredit::Items.delta(count);
+            let items = |count| crate::ledger::NativeResourceCredit::Items.delta(count);
             let maximum = work.item_charge(items(block.len() as u64));
             let (maximum, length) = if work.reserve(maximum).is_ok() {
                 (maximum, block.len())

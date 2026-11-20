@@ -9,7 +9,7 @@ FEATURES = [
         "termcolor",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"ts-rs-macros","CARGO_PKG_DESCRIPTION":"derive macro for ts-rs","CARGO_PKG_REPOSITORY":"https://github.com/Aleph-Alpha/ts-rs","CARGO_PKG_LICENSE":"MIT"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"ts-rs-macros","CARGO_PKG_DESCRIPTION":"derive macro for ts-rs","CARGO_PKG_REPOSITORY":"https://github.com/Aleph-Alpha/ts-rs","CARGO_PKG_LICENSE":"MIT"}
 
 extract_cargo_lints(
     name = "lints",
@@ -21,6 +21,7 @@ rust_proc_macro(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "12.0.1",
     crate_features = FEATURES,
@@ -51,7 +52,11 @@ rust_test(
     ],
     lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

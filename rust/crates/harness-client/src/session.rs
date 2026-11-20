@@ -15,7 +15,8 @@ use std::{
 };
 
 mod subscription;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod viewport_tests;
 mod views;
 pub(crate) use subscription::Interest;
@@ -629,15 +630,15 @@ impl WireSession {
                 .revision
                 .checked_add(1)
                 .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-            let mut retained = match interest {
-                Interest::Stream(path) => self.views.get_mut(path),
-                Interest::Resource(resource) => self.resource_views.get_mut(resource.as_ref()),
+            match interest {
+                Interest::Stream(path) => self.views.apply(path, &frame, revision),
+                Interest::Resource(resource) => {
+                    self.resource_views
+                        .apply(resource.as_ref(), &frame, revision)
+                }
             }
-            .ok_or(WireSessionError::NotOpen)?;
-            retained
-                .view
-                .apply(&frame, revision)
-                .map_err(WireSessionError::Stream)?;
+            .ok_or(WireSessionError::NotOpen)?
+            .map_err(WireSessionError::Stream)?;
             self.revision = revision;
             Ok(Some(frame.into_wire()))
         })();
@@ -680,21 +681,17 @@ impl WireSession {
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<Option<SessionEvent>, WireSessionError>> {
-        loop {
-            match self.ready.poll_next(context) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => {
-                    return Poll::Ready(Err(WireSessionError::Stream(error)));
-                }
-                Poll::Ready(Ok(None)) => return Poll::Ready(Ok(None)),
-                Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => {
-                    context.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-                Poll::Ready(Ok(Some((interest, outcome)))) => {
-                    let outcome = self.fold(&interest, outcome);
-                    return Poll::Ready(Ok(Some((interest, outcome))));
-                }
+        match self.ready.poll_next(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(error)) => Poll::Ready(Err(WireSessionError::Stream(error))),
+            Poll::Ready(Ok(None)) => Poll::Ready(Ok(None)),
+            Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => {
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Poll::Ready(Ok(Some((interest, outcome)))) => {
+                let outcome = self.fold(&interest, outcome);
+                Poll::Ready(Ok(Some((interest, outcome))))
             }
         }
     }

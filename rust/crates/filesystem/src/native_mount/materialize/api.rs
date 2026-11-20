@@ -181,7 +181,7 @@ fn select_materialization_paths<'a>(
     receipt
         .custody
         .work()
-        .charge(crate::materializer::NativeResourceCredit::Copy.delta(copied as u64))
+        .charge(crate::ledger::NativeResourceCredit::Copy.delta(copied as u64))
         .map_err(MaterializeError::from)?;
     selected_paths.extend(paths);
     let work = receipt.custody.work().clone();
@@ -192,7 +192,7 @@ fn select_materialization_paths<'a>(
         receipt
             .custody
             .work()
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .charge(crate::ledger::NativeResourceCredit::Items.delta(1))
             .map_err(MaterializeError::from)?;
         if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
             return Err(MaterializeError::OverlappingPaths);
@@ -595,7 +595,7 @@ pub(super) fn generation_namespace_from_host(
         receipt
             .custody
             .work()
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .charge(crate::ledger::NativeResourceCredit::Items.delta(1))
             .map_err(MaterializeError::from)?;
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(MaterializeError::InvalidPath);
@@ -729,6 +729,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             prepared,
             replacement,
             materialized,
+            materialize_options.materialized_view,
             cleanup_slot,
             native_work.clone(),
         )

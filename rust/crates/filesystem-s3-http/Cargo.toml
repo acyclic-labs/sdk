@@ -14,6 +14,7 @@ unit-test-only-sources = ["src/s3_http/access_tests.rs", "src/s3_http/tests.rs"]
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 async-trait.workspace = true
 base64 = "0.23.1"

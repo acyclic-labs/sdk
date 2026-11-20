@@ -37,6 +37,9 @@ impl EventStream {
             ownership.retain(owned_bytes, work)?;
             retained = ownership.has_native_custody();
             native_write(work, 1)?;
+            // Registration ends with its marker's own writes.
+            work.admit(super::super::hub::MARKER_WRITES)?;
+            work.started_io(super::super::hub::MARKER_WRITES)?;
             if let Some(published) = published_bytes {
                 published.store(owned_bytes, Ordering::Release);
             }

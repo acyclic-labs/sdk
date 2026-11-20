@@ -102,10 +102,7 @@ pub(super) fn clone_capture_paths(
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     let mut result = capture_vec(paths.len(), meter)?;
     for path in paths {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
         if let Some(policy) = policy
             && capture_excludes(policy, path, meter)?
         {
@@ -137,10 +134,7 @@ pub(super) fn capture_has_duplicate_paths(
     meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
     for pair in paths.windows(2) {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
         if matches!(pair, [left, right] if left == right) {
             return Ok(true);
         }
@@ -162,10 +156,7 @@ pub(super) fn canonicalize_capture_roots(
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     capture_sort_by(&mut sorted, Ord::cmp, meter)?;
     for root in &sorted {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
         for _ in root.components() {
             capture_charge(
                 meter,

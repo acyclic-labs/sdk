@@ -168,7 +168,7 @@ fn flush<T>(
 }
 
 #[cfg(test)]
-#[cfg(all(target_os = "macos"))]
+#[cfg(target_os = "macos")]
 mod tests {
     use super::*;
 

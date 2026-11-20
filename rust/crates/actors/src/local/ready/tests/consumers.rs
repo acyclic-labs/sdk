@@ -15,7 +15,6 @@ use crate::local::scheduling;
 use std::collections::{BTreeMap, BTreeSet};
 
 const INPUTS: usize = 3;
-const DEPTH: usize = 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Consumer {
@@ -75,7 +74,7 @@ fn seq(index: usize) -> Result<u64, String> {
 }
 
 impl World {
-    fn new(actors: u8) -> Result<Self, String> {
+    fn with_actors(actors: u8) -> Result<Self, String> {
         let mut world = Self {
             actors: (1..=actors).collect(),
             set: ReadySet::default(),
@@ -329,28 +328,29 @@ fn ops(actors: u8) -> Vec<Op> {
     ops
 }
 
-fn explore(prefix: &mut Vec<Op>, ops: &[Op], runs: &mut usize) -> Outcome {
-    let mut world = World::new(2)?;
-    for &op in prefix.iter() {
-        world.apply(op)?;
-        world.check()?;
+impl Simulation for World {
+    type Op = Op;
+    const DEPTH: usize = 7;
+
+    fn new() -> Result<Self, String> {
+        Self::with_actors(2)
     }
-    *runs += 1;
-    let enabled: Vec<Op> = ops
-        .iter()
-        .copied()
-        .filter(|&op| world.enabled(op))
-        .collect();
-    world.finish()?;
-    if prefix.len() == DEPTH {
-        return Ok(());
+
+    fn enabled(&self, op: Op) -> bool {
+        World::enabled(self, op)
     }
-    for op in enabled {
-        prefix.push(op);
-        explore(prefix, ops, runs)?;
-        prefix.pop();
+
+    fn apply(&mut self, op: Op) -> Outcome {
+        World::apply(self, op)
     }
-    Ok(())
+
+    fn check(&self) -> Outcome {
+        World::check(self)
+    }
+
+    fn finish(self) -> Outcome {
+        World::finish(self)
+    }
 }
 
 /// Every schedule of two actors to the bounded depth: take, execute,
@@ -359,7 +359,7 @@ fn explore(prefix: &mut Vec<Op>, ops: &[Op], runs: &mut usize) -> Outcome {
 fn no_consumer_lets_a_checkpoint_pass_an_in_flight_delivery() -> Outcome {
     let mut prefix = Vec::new();
     let mut runs = 0;
-    explore(&mut prefix, &ops(2), &mut runs)
+    explore::<World>(&mut prefix, &ops(2), &mut runs)
         .map_err(|error| format!("{error} after {prefix:?}"))?;
     assert!(
         runs > 100_000,
@@ -376,7 +376,7 @@ fn seeded_schedules_of_three_actors_never_pass_an_undelivered_input() -> Outcome
     let ops = ops(3);
     for seed in 1..=SEEDS {
         let mut state = seed;
-        let mut world = World::new(3)?;
+        let mut world = World::with_actors(3)?;
         let mut schedule = Vec::new();
         for _ in 0..STEPS {
             let enabled: Vec<Op> = ops
@@ -410,7 +410,7 @@ fn seeded_schedules_of_three_actors_never_pass_an_undelivered_input() -> Outcome
 #[test]
 fn a_poisoned_actor_holds_back_only_its_own_entry() -> Outcome {
     const POISONED: u8 = 1;
-    let mut world = World::new(2)?;
+    let mut world = World::with_actors(2)?;
     world.apply(Op::Send(POISONED))?;
     for _ in 0..64 {
         world.apply(Op::Send(2))?;

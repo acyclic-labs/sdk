@@ -1,7 +1,7 @@
 use super::*;
 use crate::kernel::{
     OwnedSourceChunk, apply_attribute_mutations_with_accounting, decode_owned,
-    encode_attribute_page, lookup_attribute_async_with_accounting,
+    lookup_attribute_async_with_accounting,
 };
 
 /// The largest page a named-attribute listing returns. A requested page size
@@ -105,11 +105,9 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await?;
         let bytes = read.logical_owned_bytes();
-        #[cfg(not(target_arch = "wasm32"))]
-        if accounting.native_work().is_some() {
-            return Ok(Some(OwnedSourceChunk::intrinsic(read.bytes, bytes)));
-        }
-        Ok(Some(OwnedSourceChunk::claimed(read.bytes, bytes)))
+        Ok(Some(OwnedSourceChunk::from_accounted_read(
+            read.bytes, bytes, accounting,
+        )))
     }
     .await;
     let retained = result
@@ -157,7 +155,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-pub(super) async fn change_attribute<
+pub(crate) async fn change_attribute<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
@@ -169,23 +167,23 @@ pub(super) async fn change_attribute<
     cancellation: &CancellationToken,
 ) -> Result<FileMetadata, FsError> {
     let limits = DecodeLimits::for_volume(volume.config);
-    let root = attribute_root(
-        volume,
-        metadata.named_attributes,
-        value.map(|(_, mode)| mode),
-        accounting,
-        cancellation,
-    )
-    .await?;
-    let (entry, allocation) = lookup_attribute_async_with_accounting(
-        &volume.fs.inner.objects,
-        root,
-        name,
-        limits,
-        accounting,
-        cancellation,
-    )
-    .await?;
+    let (root, entry, allocation) = match metadata.named_attributes {
+        MetadataField::Value(root) => {
+            let (entry, allocation) = lookup_attribute_async_with_accounting(
+                &volume.fs.inner.objects,
+                root,
+                name,
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            (Some(root), entry, allocation)
+        }
+        // The metadata already establishes absence. Start the mutation
+        // with an empty tree without writing or rereading an empty page.
+        MetadataField::Unavailable => (None, None, accounting.claim_owned(0, 0)?),
+    };
     let bytes = entry
         .as_ref()
         .map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
@@ -298,7 +296,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 )?;
             loop {
                 let after = attributes.value.last().map(|(name, _)| name);
-                let (listing, mut allocation) = list_attributes_async_with_accounting(
+                let (listing, allocation) = list_attributes_async_with_accounting(
                     &self.volume.fs.inner.objects,
                     root,
                     after,
@@ -310,14 +308,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     None,
                 )
                 .await?;
-                let mut listing = listing;
                 let retired = listing
                     .entries
                     .capacity()
                     .checked_mul(size_of::<AttributeEntry>())
                     .map(usize_to_u64)
                     .ok_or(WorkError::Overflow)?;
-                attributes.allocation.absorb(&mut allocation)?;
+                let listing_bytes = listing.retained_bytes()?;
+                let mut listing = Owned::new(listing, allocation, listing_bytes).transfer_to(
+                    &mut attributes.allocation,
+                    &mut attributes.bytes,
+                    &mut accounting,
+                )?;
                 for entry in listing.entries.drain(..) {
                     attributes.ensure_for_push(usize::MAX, &mut accounting)?;
                     let read = read_blob_range_with_accounting(
@@ -333,19 +335,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                         true,
                     )
                     .await?;
-                    let copied = WorkCounters {
-                        items_examined: 1,
-                        bytes_copied: size_of::<(AttributeName, acyclic_stream::OwnedBytes)>()
-                            as u64,
-                        ..WorkCounters::UNCHARGED
-                    };
-                    accounting.admit(copied)?;
-                    attributes.value.push((entry.name, read.bytes));
-                    accounting.record_completed(copied)?;
+                    attributes.push((entry.name, read.bytes), &mut accounting)?;
                 }
                 let has_more = listing.has_more;
                 drop(listing);
+                let retained = attributes
+                    .bytes
+                    .checked_sub(retired)
+                    .ok_or(WorkError::Overflow)?;
                 accounting.release_owned(&mut attributes.allocation, retired)?;
+                attributes.bytes = retained;
                 if !has_more {
                     break;
                 }
@@ -632,42 +631,4 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         .await;
         budget.finish(result, &accounting)
     }
-}
-
-async fn attribute_root<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    volume: &Volume<A, O>,
-    attributes: MetadataField<ObjectId>,
-    mode: Option<NamedAttributeWriteMode>,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<ObjectId, FsError> {
-    let limits = DecodeLimits::for_volume(volume.config);
-    let root = match attributes {
-        MetadataField::Value(root) => root,
-        MetadataField::Unavailable if mode.is_none() => return Err(FsError::NotFound),
-        MetadataField::Unavailable if matches!(mode, Some(NamedAttributeWriteMode::Replace)) => {
-            return Err(FsError::CreationRejected);
-        }
-        MetadataField::Unavailable => {
-            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
-                encode_attribute_page(
-                    &AttributePage::Leaf(Vec::new()),
-                    limits.maximum_page_items,
-                    observe,
-                    reserve,
-                )
-            })?;
-            volume
-                .fs
-                .put_encoded_with_accounting(
-                    ObjectKind::AttributePage,
-                    encoded,
-                    accounting,
-                    cancellation,
-                )
-                .await?
-        }
-    };
-
-    Ok(root)
 }

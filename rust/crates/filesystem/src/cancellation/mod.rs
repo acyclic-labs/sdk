@@ -28,7 +28,7 @@ struct CancellationState {
 enum CancellationWake {
     Future(Waker),
     #[cfg(test)]
-    #[cfg(all(not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Notification(fn()),
 }
 
@@ -37,7 +37,7 @@ impl CancellationWake {
         match self {
             Self::Future(waker) => waker.wake(),
             #[cfg(test)]
-            #[cfg(all(not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Notification(notify) => notify(),
         }
     }
@@ -46,7 +46,7 @@ impl CancellationWake {
         match self {
             Self::Future(waker) => waker.will_wake(other),
             #[cfg(test)]
-            #[cfg(all(not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Notification(_) => false,
         }
     }
@@ -60,7 +60,7 @@ struct CancellationWaiter {
     links: Mutex<WaiterLinks>,
     #[cfg(not(target_arch = "wasm32"))]
     // Head may precede cleanup; links and waker guards never span cleanup.
-    cleanup: Mutex<Option<crate::materializer::NativeWorkReservation>>,
+    cleanup: Mutex<Option<crate::ledger::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
     _allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
 }

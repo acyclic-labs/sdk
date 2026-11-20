@@ -71,18 +71,23 @@ pub fn check(input: &[u8]) {
         }
     }
     if let Ok(value) = crate::contract::json_from_slice::<Value>(input) {
-        let encoded = crate::contract::canonical_json_bytes(&value).expect("JSON value encodes");
-        let replay =
-            crate::contract::json_from_slice::<Value>(&encoded).expect("JSON output decodes");
-        assert_eq!(
-            rpc::initialization(&value, None).map_err(|error| error_observation(&error)),
-            rpc::initialization(&replay, None).map_err(|error| error_observation(&error))
-        );
-        assert_eq!(
-            rpc::notification(&value, None).map_err(|error| error_observation(&error)),
-            rpc::notification(&replay, None).map_err(|error| error_observation(&error))
-        );
+        let result = check_replay(&value);
+        assert!(result.is_ok(), "JSON codec replay failed: {result:?}");
     }
+}
+
+fn check_replay(value: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let encoded = crate::contract::canonical_json_bytes(value)?;
+    let replay = crate::contract::json_from_slice::<Value>(&encoded)?;
+    assert_eq!(
+        rpc::initialization(value, None).map_err(|error| error_observation(&error)),
+        rpc::initialization(&replay, None).map_err(|error| error_observation(&error))
+    );
+    assert_eq!(
+        rpc::notification(value, None).map_err(|error| error_observation(&error)),
+        rpc::notification(&replay, None).map_err(|error| error_observation(&error))
+    );
+    Ok(())
 }
 
 /// Capture the actual client request writer. Server response seeds require

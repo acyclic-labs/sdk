@@ -3,7 +3,7 @@ use super::*;
 impl CoreLog {
     pub(super) fn adopt_native(
         &mut self,
-        work: &crate::materializer::NativeMaterializationWork,
+        work: &crate::ledger::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         self.residents().adopt_native(work)?;
         let needed = self.dirty.len();

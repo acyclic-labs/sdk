@@ -113,13 +113,14 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
         } else {
             budget.bytes_encoded = maximum;
         }
-        let original = NativeMaterializationWork::new(
+        let original = NativeMaterializationWork::root(
             if resource {
                 WorkBudget::UNBOUNDED
             } else {
                 budget
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let work = if resource {
@@ -227,12 +228,13 @@ fn check_only_admission_and_deleting_the_bound_assertion_are_detected() {
 fn refund_model<const OMIT: bool>(action: u8) {
     loom::model(move || {
         let cancellation = CancellationToken::new();
-        let root = NativeMaterializationWork::new(
+        let root = NativeMaterializationWork::root(
             WorkBudget {
                 bytes_encoded: 10,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let parent = root
@@ -353,12 +355,13 @@ pub(super) fn additive_reservation() -> bool {
 fn overlapping_model<const BROKEN: bool, const ASSERT_COMPLETE: bool>() {
     loom::model(|| {
         let cancellation = CancellationToken::new();
-        let root = NativeMaterializationWork::new(
+        let root = NativeMaterializationWork::root(
             WorkBudget {
                 bytes_encoded: 22,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let work = root

@@ -1,21 +1,31 @@
 {
-  "checksum": "7862276fd02064f448f3aa084be6880935532b8b3226a9e97653c58f99e74d4f",
+  "checksum": "f8567043e300b0d859cfbd4ca44aea2abdb162bdd56eec1bb5bea243c1ab59ef",
   "conditions": {
+    "aarch64-apple-darwin": [
+      "aarch64-apple-darwin"
+    ],
     "aarch64-pc-windows-gnullvm": [],
     "cfg(all(all(target_arch = \"aarch64\", target_endian = \"little\"), target_os = \"windows\"))": [],
-    "cfg(all(all(target_arch = \"aarch64\", target_endian = \"little\"), target_vendor = \"apple\", any(target_os = \"ios\", target_os = \"macos\", target_os = \"tvos\", target_os = \"visionos\", target_os = \"watchos\")))": [],
+    "cfg(all(all(target_arch = \"aarch64\", target_endian = \"little\"), target_vendor = \"apple\", any(target_os = \"ios\", target_os = \"macos\", target_os = \"tvos\", target_os = \"visionos\", target_os = \"watchos\")))": [
+      "aarch64-apple-darwin"
+    ],
     "cfg(all(any(all(target_arch = \"aarch64\", target_endian = \"little\"), all(target_arch = \"arm\", target_endian = \"little\")), any(target_os = \"android\", target_os = \"linux\")))": [],
-    "cfg(all(any(target_arch = \"x86_64\", target_arch = \"arm64ec\"), target_env = \"msvc\", not(windows_raw_dylib)))": [],
+    "cfg(all(any(target_arch = \"x86_64\", target_arch = \"arm64ec\"), target_env = \"msvc\", not(windows_raw_dylib)))": [
+      "x86_64-pc-windows-msvc"
+    ],
     "cfg(all(any(target_os = \"linux\", target_os = \"android\"), not(any(all(target_os = \"linux\", target_env = \"\"), getrandom_backend = \"custom\", getrandom_backend = \"linux_raw\", getrandom_backend = \"rdrand\", getrandom_backend = \"rndr\"))))": [
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(all(not(curve25519_dalek_backend = \"fiat\"), not(curve25519_dalek_backend = \"serial\"), target_arch = \"x86_64\"))": [
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(all(target_arch = \"aarch64\", target_env = \"msvc\", not(windows_raw_dylib)))": [],
     "cfg(all(target_arch = \"aarch64\", target_os = \"android\"))": [],
     "cfg(all(target_arch = \"aarch64\", target_os = \"linux\"))": [],
-    "cfg(all(target_arch = \"aarch64\", target_vendor = \"apple\"))": [],
+    "cfg(all(target_arch = \"aarch64\", target_vendor = \"apple\"))": [
+      "aarch64-apple-darwin"
+    ],
     "cfg(all(target_arch = \"loongarch64\", target_os = \"linux\"))": [],
     "cfg(all(target_arch = \"wasm32\", target_os = \"unknown\"))": [
       "wasm32-unknown-unknown"
@@ -32,18 +42,25 @@
     "cfg(all(target_os = \"uefi\", getrandom_backend = \"efi_rng\"))": [],
     "cfg(any())": [],
     "cfg(any(all(unix, not(target_os = \"aix\")), target_os = \"wasi\"))": [
+      "aarch64-apple-darwin",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_arch = \"aarch64\", target_arch = \"x86_64\", target_arch = \"x86\"))": [
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_arch = \"x86\", target_arch = \"x86_64\"))": [
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))": [
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\", target_arch = \"aarch64\", all(target_arch = \"wasm32\", target_feature = \"simd128\")))": [
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"hurd\", target_os = \"illumos\", target_os = \"cygwin\", all(target_os = \"horizon\", target_arch = \"arm\")))": [],
@@ -53,44 +70,64 @@
     "cfg(any(target_os = \"linux\", target_os = \"android\"))": [
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(any(target_os = \"macos\", target_os = \"openbsd\", target_os = \"vita\", target_os = \"emscripten\"))": [],
+    "cfg(any(target_os = \"macos\", target_os = \"openbsd\", target_os = \"vita\", target_os = \"emscripten\"))": [
+      "aarch64-apple-darwin"
+    ],
     "cfg(any(unix, target_os = \"hermit\", target_os = \"wasi\"))": [
+      "aarch64-apple-darwin",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(curve25519_dalek_backend = \"fiat\")": [],
     "cfg(not(all(target_arch = \"arm\", target_os = \"none\")))": [
+      "aarch64-apple-darwin",
       "wasm32-unknown-unknown",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(not(all(target_family = \"wasm\", target_os = \"unknown\")))": [
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(target_arch = \"wasm32\")": [
       "wasm32-unknown-unknown"
     ],
     "cfg(target_arch = \"x86_64\")": [
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(target_os = \"aix\")": [],
     "cfg(target_os = \"android\")": [],
     "cfg(target_os = \"haiku\")": [],
-    "cfg(target_os = \"macos\")": [],
+    "cfg(target_os = \"macos\")": [
+      "aarch64-apple-darwin"
+    ],
     "cfg(target_os = \"netbsd\")": [],
     "cfg(target_os = \"redox\")": [],
     "cfg(target_os = \"solaris\")": [],
     "cfg(target_os = \"vxworks\")": [],
     "cfg(target_os = \"wasi\")": [],
-    "cfg(target_os = \"windows\")": [],
-    "cfg(target_vendor = \"apple\")": [],
+    "cfg(target_os = \"windows\")": [
+      "x86_64-pc-windows-msvc"
+    ],
+    "cfg(target_vendor = \"apple\")": [
+      "aarch64-apple-darwin"
+    ],
     "cfg(unix)": [
+      "aarch64-apple-darwin",
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(windows)": [],
+    "cfg(windows)": [
+      "x86_64-pc-windows-msvc"
+    ],
     "i686-pc-windows-gnullvm": [],
     "wasm32-unknown-unknown": [
       "wasm32-unknown-unknown"
     ],
     "x86_64-pc-windows-gnullvm": [],
+    "x86_64-pc-windows-msvc": [
+      "x86_64-pc-windows-msvc"
+    ],
     "x86_64-unknown-linux-gnu": [
       "x86_64-unknown-linux-gnu"
     ]
@@ -2696,10 +2733,6 @@
           {
             "id": "uuid 1.29.0",
             "target": "uuid"
-          },
-          {
-            "id": "vte 0.15.0",
-            "target": "vte"
           },
           {
             "id": "walkdir 2.5.0",
@@ -7357,6 +7390,16 @@
             }
           ],
           "selects": {
+            "aarch64-apple-darwin": [
+              {
+                "id": "kqueue 1.2.1",
+                "target": "kqueue"
+              },
+              {
+                "id": "mio 1.2.4",
+                "target": "mio"
+              }
+            ],
             "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\", target_os = \"ios\"))": [
               {
                 "id": "kqueue 1.2.1",
@@ -11259,6 +11302,14 @@
             "proc-macro"
           ],
           "selects": {
+            "aarch64-apple-darwin": [
+              "visit",
+              "visit-mut"
+            ],
+            "x86_64-pc-windows-msvc": [
+              "visit",
+              "visit-mut"
+            ],
             "x86_64-unknown-linux-gnu": [
               "visit",
               "visit-mut"
@@ -11319,6 +11370,18 @@
             "proc-macro"
           ],
           "selects": {
+            "aarch64-apple-darwin": [
+              "extra-traits",
+              "fold",
+              "visit",
+              "visit-mut"
+            ],
+            "x86_64-pc-windows-msvc": [
+              "extra-traits",
+              "fold",
+              "visit",
+              "visit-mut"
+            ],
             "x86_64-unknown-linux-gnu": [
               "extra-traits",
               "fold",
@@ -11862,6 +11925,7 @@
           "macros",
           "rt",
           "sync",
+          "test-util",
           "time",
           "tokio-macros"
         ],
@@ -12032,6 +12096,12 @@
             }
           ],
           "selects": {
+            "aarch64-apple-darwin": [
+              {
+                "id": "libc 0.2.191",
+                "target": "libc"
+              }
+            ],
             "x86_64-unknown-linux-gnu": [
               {
                 "id": "libc 0.2.191",
@@ -13273,10 +13343,22 @@
             }
           ],
           "selects": {
+            "aarch64-apple-darwin": [
+              {
+                "id": "getrandom 0.4.3",
+                "target": "getrandom"
+              }
+            ],
             "wasm32-unknown-unknown": [
               {
                 "id": "wasm-bindgen 0.2.117",
                 "target": "wasm_bindgen"
+              }
+            ],
+            "x86_64-pc-windows-msvc": [
+              {
+                "id": "getrandom 0.4.3",
+                "target": "getrandom"
               }
             ],
             "x86_64-unknown-linux-gnu": [
@@ -13416,49 +13498,6 @@
         }
       ],
       "version": "0.8.0"
-    },
-    "vte 0.15.0": {
-      "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
-        "deps": [
-          {
-            "id": "arrayvec 0.7.8",
-            "target": "arrayvec"
-          },
-          {
-            "id": "memchr 2.8.3",
-            "target": "memchr"
-          }
-        ],
-        "edition": "2021"
-      },
-      "library_target_name": "vte",
-      "license": "Apache-2.0 OR MIT",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "vte",
-      "package_url": "https://github.com/alacritty/vte",
-      "repository": {
-        "Http": {
-          "sha256": "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd",
-          "url": "https://static.crates.io/crates/vte/0.15.0/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "vte",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.15.0"
     },
     "walkdir 2.5.0": {
       "common_attrs": {
@@ -14356,6 +14395,20 @@
     },
     "windows-sys 0.61.2": {
       "common_attrs": {
+        "crate_features": [
+          "Win32",
+          "Win32_Foundation",
+          "Win32_Security",
+          "Win32_Storage",
+          "Win32_Storage_FileSystem",
+          "Win32_System",
+          "Win32_System_Console",
+          "Win32_System_IO",
+          "Win32_System_SystemInformation",
+          "Win32_System_Threading",
+          "Win32_System_WindowsProgramming",
+          "default"
+        ],
         "deps": [
           {
             "id": "windows-link 0.2.1",
@@ -15528,7 +15581,6 @@
     "unicode-width 0.2.2",
     "url 2.5.8",
     "uuid 1.29.0",
-    "vte 0.15.0",
     "walkdir 2.5.0",
     "wasm-bindgen 0.2.117",
     "wasm-bindgen-futures 0.4.67",

@@ -16,10 +16,11 @@ proptest! {
     ) {
         let actual = prefix.min(reserved);
         let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
+        let work = NativeMaterializationWork::root(WorkBudget {
             bytes_copied: 64,
             ..WorkBudget::UNBOUNDED
-        }, &cancellation).unwrap();
+        }, &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),).unwrap();
         let mut credit = EffectCredit::new(&work, &cancellation);
         credit.reserve(WorkCounters {
             bytes_copied: reserved,

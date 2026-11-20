@@ -1,0 +1,43 @@
+[package]
+name = "acyclic-harness-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Real-binary end-to-end tests for the Acyclic harness"
+
+[package.metadata.bazel]
+build-script-data = ["tests/scenarios"]
+integration-test-shards = 4
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support"] }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support", "conformance"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "test-support"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
+acyclic-test-support = { path = "../test-support" }
+blake3.workspace = true
+futures.workspace = true
+hex.workspace = true
+proptest.workspace = true
+rcgen = "0.14.10"
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util", "process", "io-util", "net"] }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

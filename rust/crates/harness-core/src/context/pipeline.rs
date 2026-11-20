@@ -204,36 +204,6 @@ impl ContextPipeline {
         Ok(())
     }
 
-    /// Appends to a caller-guarded native pipeline, returning only its actual backing-capacity delta.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn append_with_native_work(
-        &mut self,
-        stage: Arc<dyn ContextStage>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeAllocation> {
-        work.remaining()?;
-        if !stage.supports_native() {
-            return Err(crate::Error::NativeBoundary {
-                code: ErrorCode::Unsupported,
-                reason: "context stage has no native capability",
-            });
-        }
-        stage.validate(Some(&crate::executor::PreparationIo::from_native_work(
-            work,
-        )?))?;
-        let capacity = self
-            .0
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| crate::Error::NativeBoundary {
-                code: ErrorCode::Invalid,
-                reason: "context stage count overflows",
-            })?;
-        let guard = reserve_context_vec_native(&mut self.0, capacity, work)?;
-        self.0.push(stage);
-        Ok(guard)
-    }
-
     /// Installs a structurally valid replacement for future operations only.
     pub fn reload(&self, replacement: Self) -> Result<Self> {
         replacement.validate(None)?;

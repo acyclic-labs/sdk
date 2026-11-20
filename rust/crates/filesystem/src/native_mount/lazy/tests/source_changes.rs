@@ -161,19 +161,26 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
         source.path(),
         crate::model::FilesystemProfile::Portable,
     ))?);
-    let view = runtime.block_on(mounted_view_of_with_authored_work(
-        demand,
-        "empty-pages",
-        crate::MemoryLazyWorkspaceStore::default(),
-        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
-        Some(&work),
-    ))?;
-    let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
+    let view = runtime
+        .block_on(mounted_view_of_with_authored_work(
+            demand,
+            "empty-pages",
+            crate::MemoryLazyWorkspaceStore::default(),
+            crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+            Some(&work),
+        ))
+        .map_err(|error| format!("open listing view: {error}"))?;
+    let empty = view
+        .read_directory(&mounted(&["empty"]), None, 64)
+        .map_err(|error| format!("read empty directory: {error}"))?;
     assert!(empty.entries.is_empty());
     assert!(empty.next_cursor.is_none(), "an empty page continues");
-    view.create_file(&mounted(&["b"]), FileMetadata::default(), None, &work)?;
+    view.create_file(&mounted(&["b"]), FileMetadata::default(), None, &work)
+        .map_err(|error| format!("create authored child before listing: {error}"))?;
 
-    let first = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
+    let first = view
+        .read_directory_with_meter(&MountPath::root(), None, 1, &work)
+        .map_err(|error| format!("read first root page: {error}"))?;
     let first_cursor = first.next_cursor().ok_or("first page must continue")?;
     let peer_stop = CancellationToken::new();
     let peer_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &peer_stop)
@@ -181,17 +188,21 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let peer_baseline = peer_work.live_allocation_bytes().unwrap();
     let peers = (0..1_024)
         .map(|_| view.read_directory_with_meter(&MountPath::root(), None, 1, &peer_work))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("read peer root pages: {error}"))?;
     assert!(peers.iter().all(|page| page.next_cursor().is_some()));
-    let other = runtime.block_on(mounted_view(source.path(), "independent-listing-owner"))?;
+    let other = runtime
+        .block_on(mounted_view(source.path(), "independent-listing-owner"))
+        .map_err(|error| format!("open independent listing view: {error}"))?;
     assert!(matches!(
         other.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work),
         Err(MountSourceError::Stale)
     ));
     drop(other);
     let visited = work.receipt().unwrap().source_entries_visited;
-    let resumed =
-        view.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work)?;
+    let resumed = view
+        .read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work)
+        .map_err(|error| format!("resume original root listing: {error}"))?;
     assert_eq!(resumed.entries().len(), 1);
     assert_eq!(
         work.receipt().unwrap().source_entries_visited,
@@ -215,7 +226,9 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let mut cursor = None;
     let mut listed = 0;
     loop {
-        let page = view.read_directory(&MountPath::root(), cursor.as_ref(), 1)?;
+        let page = view
+            .read_directory(&MountPath::root(), cursor.as_ref(), 1)
+            .map_err(|error| format!("read root listing after {listed} entries: {error}"))?;
         assert!(
             !page.entries.is_empty() || page.next_cursor.is_none(),
             "an empty page continues"

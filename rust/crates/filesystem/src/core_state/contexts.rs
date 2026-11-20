@@ -474,13 +474,13 @@ impl LocalCoreStateStore {
     pub async fn load_context(
         &self,
         context_id: WorkspaceContextId,
-        original: &crate::materializer::NativeMaterializationWork,
+        original: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
         Option<(WorkspaceContext, crate::NativeAllocation)>,
         (
             crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
-            Option<crate::materializer::NativeAllocation>,
+            Option<crate::ledger::NativeAllocation>,
         ),
     > {
         native_records::check(original, cancellation).map_err(|error| {
@@ -511,13 +511,13 @@ impl LocalCoreStateStore {
         context_id: WorkspaceContextId,
         expected_revision: u64,
         replacement: (WorkspaceContext, crate::NativeAllocation),
-        original: &crate::materializer::NativeMaterializationWork,
+        original: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
         bool,
         (
             crate::workspace_context::WorkspaceContextError<LocalCoreStateStoreError>,
-            Option<crate::materializer::NativeAllocation>,
+            Option<crate::ledger::NativeAllocation>,
         ),
     > {
         native_records::check(original, cancellation).map_err(|error| {
@@ -566,13 +566,13 @@ impl LocalCoreStateStore {
     pub async fn load_lineage(
         &self,
         workspace_id: WorkspaceId,
-        original: &crate::materializer::NativeMaterializationWork,
+        original: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
         Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
         (
             crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
-            Option<crate::materializer::NativeAllocation>,
+            Option<crate::ledger::NativeAllocation>,
         ),
     > {
         native_records::check(original, cancellation)
@@ -600,13 +600,13 @@ impl LocalCoreStateStore {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
-        original: &crate::materializer::NativeMaterializationWork,
+        original: &crate::ledger::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
         bool,
         (
             crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
-            Option<crate::materializer::NativeAllocation>,
+            Option<crate::ledger::NativeAllocation>,
         ),
     > {
         native_records::check(original, cancellation)

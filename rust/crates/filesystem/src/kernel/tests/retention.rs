@@ -19,12 +19,13 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
         config: VolumeConfig::portable(Lifecycle::Durable),
     };
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             bytes_copied: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let label_guard = original.claim(

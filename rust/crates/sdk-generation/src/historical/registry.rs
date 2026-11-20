@@ -124,7 +124,7 @@ pub fn verify_archive(
 
 // Read entries without extracting or rewriting historical sources. Every retained
 // native Rust/Markdown byte must agree with the claimed clean checkout.
-pub(super) fn verify_archive_sources(
+fn verify_archive_sources(
     root: &Path,
     package: &cargo_metadata::Package,
     source: &Path,
@@ -196,7 +196,7 @@ pub(super) fn verify_archive_sources(
         }
     }
     let mut source_files = Vec::new();
-    crate::collect_source_files(root, source, archive, &mut source_files)
+    crate::collect_source_files(root, source, archive, &mut source_files, false)
         .map_err(|e| e.to_string())?;
     for file in source_files {
         if matches!(

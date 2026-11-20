@@ -3,10 +3,9 @@
 use crate::NativeRootIdentity;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::NativeWorkReservation;
-use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
-use crate::materializer::{
-    NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
-};
+use crate::demand::{DemandError, SourceDemandReadWork};
+use crate::ledger::{DemandWork, NativeAllocation, NativeCleanupWrite, NativeMaterializationWork};
+use crate::materializer::NativeTreeMaterializationError;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::performance::WorkBudget;
 use crate::performance::WorkCounters;
@@ -74,7 +73,7 @@ pub(crate) use cwd::canonical_directory_path_held;
 #[cfg(all(unix, any(test, not(target_arch = "wasm32"))))]
 pub(crate) use cwd::normalize_root_path;
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 pub(crate) use cwd::short_path;
 #[cfg(windows)]
 pub(crate) use cwd::{canonical_directory_wide, fold_case_wide, long_path_wide};
@@ -171,6 +170,8 @@ pub(crate) use sparse::*;
 mod ranges;
 #[cfg(windows)]
 mod yielding;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub use acyclic_fs_storage_probe::native_mount::punch_hole::punch_hole;
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", windows),
     any(not(target_arch = "wasm32"), test)
@@ -180,8 +181,6 @@ pub use metadata::NativeMetadataError;
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
 pub use root::{CachedRoot, HostRoot};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub use sparse::punch_hole;
 pub use stat::{HostDataRange, HostListedEntry, HostStat};
 #[cfg(windows)]
 pub use yielding::{Yielded, YieldingFile};
@@ -210,11 +209,11 @@ mod tests;
 #[path = "tests_windows_clone.rs"]
 mod windows_clone_tests;
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 #[path = "tests_windows_directory.rs"]
 mod windows_directory_tests;
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 #[path = "tests_windows_file_opens.rs"]
 mod windows_file_open_tests;
 #[cfg(test)]

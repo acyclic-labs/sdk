@@ -10,7 +10,8 @@
 use super::HostChange;
 use super::{Delivery, HostChangeWide};
 use crate::cancellation::custody::Custody;
-use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::demand::{DemandError, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::ledger::DemandWork;
 use crate::performance::WorkCounters;
 use std::io;
 use std::mem::size_of;
@@ -96,7 +97,7 @@ struct Shared {
     /// A native retirement failed on its terminal credit; nothing retries it.
     parked: AtomicBool,
     ownership: SourcePayloadOwnership,
-    cleanup: Mutex<[Option<crate::materializer::NativeWorkReservation>; 2]>,
+    cleanup: Mutex<[Option<crate::ledger::NativeWorkReservation>; 2]>,
     dropped: AtomicBool,
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,

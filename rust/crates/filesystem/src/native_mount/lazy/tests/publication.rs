@@ -8,6 +8,10 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     std::fs::write(source_root.path().join("removed"), b"source before")?;
     std::fs::write(source_root.path().join("edited"), b"before")?;
     std::fs::write(source_root.path().join("same"), b"same bytes")?;
+    std::fs::hard_link(
+        source_root.path().join("same"),
+        source_root.path().join("same-alias"),
+    )?;
     let view = mounted_view(source_root.path(), "original-native-cuts").await?;
     let cancellation = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -57,8 +61,27 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         view.lazy
             .content_changed_at_snapshots(&unchanged_before, &unchanged_after, &mut accounting,)
             .await?,
+        Some(false),
+        "identical bytes with the same source and overlay were counted as a change"
+    );
+    let alias = view.lazy.lookup("/same-alias", &mut accounting).await?;
+    view.lazy.retire_lookup(alias, &mut accounting)?;
+    let with_alias_observation = view.lazy.snapshot(&mut accounting).await?;
+    assert_eq!(
+        with_alias_observation.authored_generation,
+        unchanged_after.authored_generation
+    );
+    assert_ne!(with_alias_observation.overlay, unchanged_after.overlay);
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(
+                &unchanged_after,
+                &with_alias_observation,
+                &mut accounting,
+            )
+            .await?,
         None,
-        "source identity promotion invented complete alias coverage"
+        "the authored change frontier cannot cover an independent alias observation"
     );
     let created = mounted(&["created"]);
     view.create_file(&created, FileMetadata::default(), None, &work)?;

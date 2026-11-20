@@ -316,13 +316,10 @@ fn aborted_child(
         let _ = std::panic::catch_unwind(run);
         std::process::exit(0);
     }
-    let output = crate::process_output(
-        crate::ProcessCommand::new(std::env::current_exe()?)
-            .args(["--exact", test, "--nocapture"])
-            .env(marker, "1"),
-        CaptureSchedule::Unbounded,
-        8 * 1024 * 1024,
-    )?;
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", test, "--nocapture"])
+        .env(marker, "1")
+        .output()?;
     assert!(
         !output.status.success(),
         "fail-stop body returned or unwound into its original caller"

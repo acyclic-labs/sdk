@@ -12,7 +12,6 @@ pub use trust::*;
 pub fn limits(value: Option<u64>) -> Limits {
     claims::limits(value)
 }
-pub const TIP: [u8; 32] = [4; 32];
 
 fn sign_claims(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u8> {
     let mut message = domain.to_vec();
@@ -52,7 +51,7 @@ pub fn root(mut change: impl FnMut(&mut Block)) -> Vec<u8> {
         .to_vec();
     CapabilityProto {
         blocks: vec![SignedBlockProto { payload, signature }],
-        proof: Some(TipProofProto::Secret(TIP.to_vec())),
+        proof: Some(TipProofProto::Secret([4; 32].to_vec())),
         version: VERSION,
     }
     .encode_canonical()

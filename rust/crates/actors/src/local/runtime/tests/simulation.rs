@@ -214,6 +214,10 @@ async fn admission_close(credit: usize) -> TestResult {
         addresses.push(address);
     }
     let mut entered = handler.entered.subscribe();
+    let mut unavailable = Vec::new();
+    for address in &addresses {
+        unavailable.push(runtime.unavailable(address)?);
+    }
     let mut running = futures::stream::FuturesUnordered::new();
     for address in &addresses {
         let runtime = &runtime;
@@ -230,6 +234,7 @@ async fn admission_close(credit: usize) -> TestResult {
     handler.gate.add_permits(credit);
     let mut accepted = 0;
     let mut refused = 0;
+    let mut closed = Vec::new();
     while let Some((address, result)) = running.next().await {
         let delivered = match result {
             Ok(()) => {
@@ -238,6 +243,7 @@ async fn admission_close(credit: usize) -> TestResult {
             }
             Err(Error::AdmissionClosed(_)) => {
                 refused += 1;
+                closed.push(address);
                 false
             }
             Err(error) => return Err(error.into()),
@@ -256,6 +262,19 @@ async fn admission_close(credit: usize) -> TestResult {
     }
     assert_eq!(accepted, credit);
     assert_eq!(refused, 2);
+    // A closed admission publishes its original unavailability, so a waiting
+    // observer learns why the input was not consumed.
+    for address in &closed {
+        let index = addresses
+            .iter()
+            .position(|candidate| candidate == *address)
+            .ok_or("refused address is not one of the hosted actors")?;
+        let cause = unavailable[index].as_mut().await;
+        assert!(
+            cause.to_string().contains("runtime admission is closed"),
+            "closed admission did not publish its original unavailability: {cause}"
+        );
+    }
     drop(running);
     drop(runtime);
     // A new owner can deliver the refused inputs; accepted inputs remain

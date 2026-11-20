@@ -1,0 +1,349 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::MAX_PATH_BYTES;
+use crate::StreamError;
+use std::{fmt, sync::Arc};
+
+/// Permanent account-relative slash-separated ASCII path.
+/// The value occupies three machine words and shares its path text.
+pub struct StreamPath {
+    text: PathText,
+    length: usize,
+}
+
+const _: () = assert!(std::mem::size_of::<StreamPath>() == 3 * std::mem::size_of::<usize>());
+
+#[derive(Clone)]
+enum PathText {
+    Plain(Arc<str>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(Arc<NativePathText>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+// Text storage retires before its metadata and original payload allowance.
+struct NativePathText {
+    text: String,
+    _metadata: acyclic_native_runtime::ReadAllocation,
+    _payload: acyclic_native_runtime::ReadAllocation,
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for StreamPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for StreamPath {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct PathVisitor;
+        impl serde::de::Visitor<'_> for PathVisitor {
+            type Value = StreamPath;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a canonical stream path")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<StreamPath, E> {
+                StreamPath::new(value).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_str(PathVisitor)
+    }
+}
+
+impl StreamPath {
+    /// Account and complete path, independent of commits or resource incarnation.
+    pub fn identity(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
+        crate::addressing::ResourceIdentity::new(account, self.as_str().as_bytes())
+    }
+
+    /// Validates and owns one path.
+    pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
+        let path = path.as_ref();
+        Self::validate(path)?;
+        Ok(Self {
+            text: PathText::Plain(Arc::from(path)),
+            length: path.len(),
+        })
+    }
+
+    /// Checks the canonical path grammar without allocating a path owner.
+    ///
+    /// # Errors
+    /// Returns an invalid-path error for a noncanonical or oversized path.
+    pub fn validate(path: &str) -> Result<(), StreamError> {
+        acyclic_stream_wire::validation::is_path(path)
+            .then_some(())
+            .ok_or(StreamError::InvalidPath)
+    }
+
+    /// Validates and owns path storage on the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native(
+        path: impl AsRef<str>,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        let path = path.as_ref();
+        if let Err(error) = Self::validate(path) {
+            return Ok(Err(error));
+        }
+        Self::native_parts(&[path], meter).map(Ok)
+    }
+
+    /// Validates and joins borrowed pieces directly into original-owned path
+    /// storage, without an intermediate concatenation buffer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native_parts(
+        parts: &[&str],
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if parts
+            .iter()
+            .try_fold(0usize, |length, part| length.checked_add(part.len()))
+            .is_none_or(|length| length == 0 || length > MAX_PATH_BYTES)
+        {
+            return Ok(Err(StreamError::InvalidPath));
+        }
+        let path = Self::native_parts(parts, meter)?;
+        Ok(Self::validate(path.as_str()).map(|()| path))
+    }
+
+    /// Concatenates an admitted source with its canonical slash-prefixed suffix.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_native_suffix(
+        &self,
+        suffix: &str,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        let Some(relative) = suffix.strip_prefix('/') else {
+            return Ok(Err(StreamError::InvalidPath));
+        };
+        Self::join_native(Some(self), relative, meter)
+    }
+
+    /// Joins borrowed canonical input without an unadmitted formatted string.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn join_native(
+        parent: Option<&Self>,
+        relative: &str,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if let Err(error) = Self::validate(relative) {
+            return Ok(Err(error));
+        }
+        let Some(parent) = parent else {
+            return Self::native_parts(&[relative], meter).map(Ok);
+        };
+        let length = parent
+            .as_str()
+            .len()
+            .checked_add(1)
+            .and_then(|n| n.checked_add(relative.len()));
+        if length.is_none_or(|length| length > MAX_PATH_BYTES) {
+            return Ok(Err(StreamError::InvalidPath));
+        }
+        Self::native_parts(&[parent.as_str(), "/", relative], meter).map(Ok)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_parts(
+        parts: &[&str],
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        let length = parts.iter().map(|part| part.len()).sum();
+        let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, length)?;
+        let mut data = String::new();
+        data.try_reserve_exact(length)
+            .map_err(|error| meter.allocation_failed(error))?;
+        allocation.reconcile_capacity(data.capacity())?;
+        meter.admit_codec(0, length as u64, 0)?;
+        for part in parts {
+            data.push_str(part);
+        }
+        meter.record_codec(0, length as u64, 0)?;
+        let metadata = acyclic_native_runtime::ReadAllocation::new(
+            meter,
+            acyclic_native_runtime::arc_allocation_bytes::<NativePathText>(),
+        )?;
+        Ok(Self {
+            text: PathText::Native(Arc::new(NativePathText {
+                text: data,
+                _metadata: metadata,
+                _payload: allocation,
+            })),
+            length,
+        })
+    }
+
+    /// Canonical path text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        #[cfg(target_arch = "wasm32")]
+        let PathText::Plain(text) = &self.text;
+        #[cfg(not(target_arch = "wasm32"))]
+        let text: &str = match &self.text {
+            PathText::Plain(text) => text,
+            PathText::Native(text) => &text.text,
+        };
+        // `length` always ends on a segment boundary of `text`.
+        text.get(..self.length).unwrap_or(text)
+    }
+
+    fn prefix(&self, length: usize) -> Self {
+        assert!(length <= self.length, "path prefix exceeds its source");
+        Self {
+            text: self.text.clone(),
+            length,
+        }
+    }
+
+    /// Shares this path or a complete ancestor; rejects partial segments.
+    pub fn ancestor(&self, ancestor: &str) -> Option<Self> {
+        relative_suffix(self.as_str(), ancestor)?;
+        Some(self.prefix(ancestor.len()))
+    }
+
+    /// Whether a subtree fork includes this path after its relative exclusions.
+    #[cfg(feature = "serde")]
+    pub fn inherited_by(&self, source: &Self, exclude: &[crate::RelativePath]) -> bool {
+        relative_suffix(self.as_str(), source.as_str()).is_some_and(|relative| {
+            !exclude
+                .iter()
+                .any(|excluded| relative_suffix(relative, excluded.as_str()).is_some())
+        })
+    }
+
+    /// Immediate parent, if any.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        Self::parent_text(self.as_str()).map(|parent| self.prefix(parent.len()))
+    }
+
+    pub fn parent_text(path: &str) -> Option<&str> {
+        path.rsplit_once('/').map(|(parent, _)| parent)
+    }
+
+    pub fn ancestors_including_self(&self) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(self.as_str()), |&path| Self::parent_text(path))
+    }
+
+    /// Walks through parents while they match, owning only the final path.
+    pub fn ascend_while(&self, mut matches: impl FnMut(&str) -> bool) -> Self {
+        self.prefix(
+            self.ancestors_including_self()
+                .skip(1)
+                .take_while(|&parent| matches(parent))
+                .last()
+                .map_or(self.length, str::len),
+        )
+    }
+
+    pub fn root_prefixes(path: &str) -> impl Iterator<Item = &str> {
+        path.match_indices('/')
+            .filter_map(|(end, _)| path.get(..end))
+            .chain(std::iter::once(path))
+    }
+
+    pub fn descendants(&self) -> Descendants {
+        // ASCII '0' immediately follows '/', so this interval selects only descendants.
+        Descendants {
+            prefix: format!("{self}/"),
+            end: format!("{self}0"),
+        }
+    }
+}
+
+pub struct Descendants {
+    prefix: String,
+    end: String,
+}
+
+impl Descendants {
+    pub fn bounds(&self) -> impl std::ops::RangeBounds<str> + '_ {
+        use std::ops::Bound::{Excluded, Included};
+        (Included(self.prefix.as_str()), Excluded(self.end.as_str()))
+    }
+}
+
+// Borrow canonical path components without allocating another path or matcher.
+pub fn relative_suffix<'a>(path: &'a str, ancestor: &str) -> Option<&'a str> {
+    if ancestor.is_empty()
+        || ancestor.len() > path.len()
+        || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
+    {
+        return None;
+    }
+    let suffix = path.get(ancestor.len()..)?;
+    if suffix.is_empty() {
+        Some(suffix)
+    } else {
+        suffix.strip_prefix('/')
+    }
+}
+
+impl fmt::Display for StreamPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for StreamPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("StreamPath")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+impl std::hash::Hash for StreamPath {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(self.as_str(), state);
+    }
+}
+impl std::borrow::Borrow<str> for StreamPath {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Clone for StreamPath {
+    fn clone(&self) -> Self {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if matches!(&self.text, PathText::Plain(_)) && crate::path_text_tests::copy_on_clone() {
+            return Self::new(self.as_str())
+                .unwrap_or_else(|_| unreachable!("validated path clone"));
+        }
+        Self {
+            text: self.text.clone(),
+            length: self.length,
+        }
+    }
+}
+
+impl PartialEq for StreamPath {
+    fn eq(&self, other: &Self) -> bool {
+        let (left, right) = (self.as_str(), other.as_str());
+        std::ptr::eq(left, right) || left == right
+    }
+}
+impl Eq for StreamPath {}
+impl PartialOrd for StreamPath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for StreamPath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (left, right) = (self.as_str(), other.as_str());
+        if std::ptr::eq(left, right) {
+            std::cmp::Ordering::Equal
+        } else {
+            crate::owned_bytes::compare_bytes(left.as_bytes(), right.as_bytes())
+        }
+    }
+}

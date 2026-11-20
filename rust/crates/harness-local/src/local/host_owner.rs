@@ -81,7 +81,7 @@ impl HostWorkspaceOwner {
     #[cfg(target_os = "linux")]
     pub async fn guest_session(
         &self,
-        enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
+        enrollment: crate::hosting::LocalGuestEnrollment,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_fs::native_mount::GuestSessionAdmission> {
         self.local.guest_session(enrollment, work).await

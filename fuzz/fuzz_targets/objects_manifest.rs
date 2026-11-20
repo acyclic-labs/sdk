@@ -7,9 +7,10 @@ use libfuzzer_sys::fuzz_target;
 // bytes, so one manifest has exactly one digest.
 fuzz_target!(|bytes: &[u8]| {
     if let Ok(manifest) = Manifest::decode(bytes) {
-        assert_eq!(
-            manifest.encode().expect("decoded manifest re-encodes"),
-            bytes
+        let encoded = manifest.encode();
+        assert!(
+            matches!(encoded.as_deref(), Ok(encoded) if encoded == bytes),
+            "manifest did not re-encode canonically: {encoded:?}"
         );
     }
 });

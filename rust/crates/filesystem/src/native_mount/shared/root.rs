@@ -17,7 +17,7 @@
 //! the next start reaps.
 
 use super::super::{NativeMountError, registry};
-use acyclic_native_runtime::{FileLock, FileLockMode};
+use acyclic_native_runtime::{FileLock, FileLockMode, paths::strip_native_prefix};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -55,7 +55,9 @@ pub fn shared_view_namespace_contains(
     let Some(namespace) = root.parent() else {
         return Ok(false);
     };
-    let Ok(relative) = destination.strip_prefix(namespace) else {
+    // A native alias may report an ordinary Windows path while the mount
+    // owner holds its equivalent verbatim spelling. The old view may be gone.
+    let Some(relative) = strip_native_prefix(destination, namespace) else {
         return Ok(false);
     };
     let mut components = relative.components();
@@ -270,13 +272,9 @@ fn root_in(roots: &crate::HeldRoot) -> Result<PathBuf, NativeMountError> {
     if let Some(root) = index.get(&key) {
         return Ok(root.path.clone());
     }
-    let root = create_root(
-        roots,
-        &format!(
-            "{:032x}",
-            u128::from_be_bytes(crate::MountId::new().into_bytes())
-        ),
-    )?;
+    // The directory is shared with other real processes. A seeded logical
+    // identifier can repeat across owners of this physical namespace.
+    let root = create_root(roots, &uuid::Uuid::new_v4().simple().to_string())?;
     verify_placement(roots)?;
     let path = root.path.clone();
     index.insert(key, root);
@@ -415,7 +413,7 @@ mod issuance_tests {
 }
 
 #[cfg(test)]
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(super) mod tests {
     use super::*;
 

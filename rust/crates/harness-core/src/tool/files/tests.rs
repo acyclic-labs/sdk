@@ -627,13 +627,20 @@ async fn feedback_sink_resolves_every_path_form_is_appended_and_readable() -> Re
             "The volume-qualified path reaches the same sink."
         );
     }
-    let page = project
+    let page = home
         .list_private_directory("live/agents/self", None, None, 8)
         .await?;
     assert!(
         page.entries
             .iter()
             .any(|entry| entry.name == "feedback.jsonl")
+    );
+    let project_root = project.list_private_directory("", None, None, 8).await?;
+    assert!(
+        project_root
+            .entries
+            .iter()
+            .all(|entry| entry.name != "live")
     );
     Ok(())
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
-    pub(crate) fn new(accounting: &'a mut KernelAccounting<'operation>) -> Result<Self, FsError> {
+    pub fn new(accounting: &'a mut KernelAccounting<'operation>) -> Result<Self, FsError> {
         let allocation = accounting.claim_owned(0, 0)?;
         #[cfg(not(target_arch = "wasm32"))]
         let credit = crate::kernel::allocation::effects::EffectCredit::for_accounting(accounting);
@@ -14,7 +14,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         })
     }
 
-    pub(crate) fn observe(
+    pub fn observe(
         &mut self,
         step: super::super::codec::ReadAllocationStep,
     ) -> Result<(), FsError> {
@@ -106,7 +106,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         std::mem::replace(&mut self.allocation, KernelOwnedAllocation::Standalone)
     }
 
-    pub(crate) fn into_parts(mut self) -> (KernelOwnedAllocation, u64) {
+    pub fn into_parts(mut self) -> (KernelOwnedAllocation, u64) {
         (
             std::mem::replace(&mut self.allocation, KernelOwnedAllocation::Standalone),
             self.owned_bytes,
@@ -129,7 +129,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         self.accounting.record_completed(delta)
     }
 
-    pub(crate) fn retire(mut self) -> Result<(), FsError> {
+    pub fn retire(mut self) -> Result<(), FsError> {
         self.accounting
             .release_owned(&mut self.allocation, self.owned_bytes)
     }

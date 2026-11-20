@@ -1,8 +1,7 @@
 //! Public follow and filtered-follow contracts.
 
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../src/filtered_follow_fixture.rs"]
-mod filtered_follow_fixture;
+use acyclic_stream_contract::filtered_follow_fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod filtered_follow_tests;
 #[cfg(not(target_arch = "wasm32"))]

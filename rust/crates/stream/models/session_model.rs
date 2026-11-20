@@ -1,12 +1,11 @@
-#[cfg(not(loom))]
-compile_error!(
-    r#"STEP_FAILED stream-models: Loom synchronization is disabled; recovery: ACYCLIC_LOOM=1 cargo test --manifest-path rust/crates/stream/models/Cargo.toml --features model-checking --test session_model"#
-);
+//! Loom models of the stream session client. They exist only under `cfg(loom)`
+//! (`ACYCLIC_LOOM=1` under Cargo, `--config=loom` under Bazel).
+#![cfg(loom)]
 
 pub use acyclic_stream::StreamError;
 use acyclic_stream::StreamSelection;
 use acyclic_stream_wire::wire;
-#[path = "../src/runtime/sync.rs"]
+#[path = "../../stream-contract-core/src/runtime/sync.rs"]
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
@@ -25,7 +24,7 @@ mod gate {
     include!("gate.rs");
 }
 pub(crate) mod signal {
-    include!("../src/runtime/signal.rs");
+    include!("../../stream-contract-core/src/runtime/signal.rs");
     include!("signal.rs");
 }
 mod runtime {

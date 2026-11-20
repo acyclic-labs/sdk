@@ -49,10 +49,6 @@ impl NamespaceId {
         }
         Ok(value)
     }
-    /// Admit an explicitly deployed namespace, excluding the legacy scope.
-    pub fn for_deployment(bytes: &[u8]) -> Result<Self, IdentityError> {
-        Ok(Self(Self::validate_deployment(bytes)?.to_owned()))
-    }
     /// Exact spelling for logs and existing string fields.
     pub fn as_str(&self) -> &str {
         &self.0

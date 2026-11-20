@@ -48,7 +48,9 @@ mod access_tests;
 mod accounting_tests;
 mod attributes;
 #[cfg(test)]
-pub(crate) use accounting_tests::Prefunded;
+mod test_work;
+#[cfg(test)]
+pub(crate) use test_work::Prefunded;
 mod changed_paths;
 mod checkout;
 mod commit;
@@ -82,7 +84,7 @@ mod outcomes;
 mod path_apply;
 mod paths;
 mod publication;
-pub use publication::OperationPublication;
+pub use publication::{OperationPublication, PublicationEvidenceSeal};
 mod read_core;
 mod reads;
 mod restore;
@@ -185,8 +187,8 @@ pub(crate) use reverse_traversal::{
 };
 
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
 mod access_read_model;
 #[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
 mod access_write_model;

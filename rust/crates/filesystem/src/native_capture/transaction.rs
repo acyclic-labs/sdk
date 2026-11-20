@@ -13,12 +13,7 @@ pub(super) async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObject
     // Descendants that carried their own hint are already queued (absent paths are captured deepest first); a second remove of the same path would find its source missing.
     let mut queued = Vec::new();
     for mutation in mutations.iter() {
-        {
-            capture_charge(
-                meter,
-                crate::materializer::NativeResourceCredit::Items.delta(1),
-            )
-        }?;
+        { capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1)) }?;
         if let AuthoredMutation::Remove { path, .. } = mutation
             && capture_position(&queued, path, meter)?.is_err()
         {
@@ -76,10 +71,7 @@ pub(super) async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncOb
 ) -> Result<(), CaptureError> {
     let mut bytes = vector_bytes(&mutations);
     for mutation in &mutations {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        capture_charge(meter, crate::ledger::NativeResourceCredit::Items.delta(1))?;
         bytes = bytes
             .checked_add(mutation.logical_owned_bytes())
             .ok_or(WorkError::Overflow)?;

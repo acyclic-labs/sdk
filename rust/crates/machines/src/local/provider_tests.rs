@@ -39,14 +39,11 @@ pub(super) fn options() -> LocalOptions {
     }
 }
 
-fn child() -> ExecCommand {
+fn child_command() -> ExecCommand {
     ExecCommand::new(
-        vec![
-            std::env::current_exe().unwrap().to_str().unwrap().into(),
-            "--exact".into(),
-            "local::tests::child".into(),
-            "--nocapture".into(),
-        ],
+        std::iter::once(std::env::current_exe().unwrap().to_str().unwrap().into())
+            .chain(super::tests::child_args())
+            .collect(),
         Some(5_000),
     )
     .unwrap()
@@ -89,11 +86,11 @@ async fn admitted_guest_environment_excludes_ambient_host_values()
             environment.insert(name.into(), value);
         }
     }
-    let argv = ["--exact", "local::tests::child", "--nocapture"];
+    let argv = super::tests::child_args();
     // The former inherited launch reaches the SAME real-child oracle with
     // the same explicit values. Only the ambient host projection differs.
     let inherited = Command::new(&executable)
-        .args(argv)
+        .args(&argv)
         .envs(&environment)
         .output()?;
     assert_eq!(inherited.status.code(), Some(91));
@@ -112,7 +109,7 @@ async fn admitted_guest_environment_excludes_ambient_host_values()
     .await?;
     let command = ExecCommand::new(
         std::iter::once(executable.to_str().unwrap().to_owned())
-            .chain(argv.into_iter().map(str::to_owned))
+            .chain(argv)
             .collect(),
         Some(5_000),
     )?;
@@ -207,7 +204,7 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
 
     // Keep the output receiver alive and withhold credit after real bytes.
     // Waiting on handler drop instead of physical completion hangs this path.
-    let mut output = local.exec(machine, child()).await?;
+    let mut output = local.exec(machine, child_command()).await?;
     assert!(matches!(output.next().await, Some(Ok(ExecOutput::Data(_)))));
     assert!(matches!(factory().await, Err(ProviderError::Conflict(_))));
     let stop = IdempotencyKey::new();
@@ -220,7 +217,7 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
         MutationOutcome::Suspended(machine)
     );
     assert!(matches!(
-        local.exec(machine, child()).await,
+        local.exec(machine, child_command()).await,
         Err(ProviderError::Conflict(_))
     ));
     let mut cleaned = false;
@@ -438,7 +435,7 @@ async fn failed_spawn_cannot_become_a_positive_destroy_receipt()
         matches!(local.watch_operation(operation).await, Err(ProviderError::Indeterminate(original)) if original == key)
     );
     assert!(matches!(
-        local.exec(machine, child()).await,
+        local.exec(machine, child_command()).await,
         Err(ProviderError::Conflict(_))
     ));
     Ok(())
@@ -475,7 +472,9 @@ async fn idle_suspended_machine_wakes_for_exec_and_attached_devices_only_detach(
     local.suspend(machine, IdempotencyKey::new()).await?;
     // The manual-policy refusal is the negative control in the public factory
     // test above: the same exec on a Manual Machine returns Conflict.
-    let mut output = local.exec(machine, child().with_stdin(vec![0])).await?;
+    let mut output = local
+        .exec(machine, child_command().with_stdin(vec![0]))
+        .await?;
     let mut exit = None;
     while let Some(frame) = output.next().await {
         if let ExecOutput::ExitCode(code) = frame? {
@@ -537,13 +536,13 @@ async fn idle_suspended_machine_wakes_for_exec_and_attached_devices_only_detach(
     // Detach stops exactly the commands this binding dispatched. A process the
     // device runs outside the binding keeps running and exits on its own.
     let mut bystander = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", "local::tests::child", "--nocapture"])
+        .args(super::tests::child_args())
         .env("ACYCLIC_TEST_MACHINE_PROCESS", "input")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
-    let mut output = local.exec(device, child()).await?;
+    let mut output = local.exec(device, child_command()).await?;
     assert!(matches!(output.next().await, Some(Ok(ExecOutput::Data(_)))));
     assert_eq!(
         local.destroy_machine(device, IdempotencyKey::new()).await?,

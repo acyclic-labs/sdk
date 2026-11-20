@@ -266,9 +266,12 @@ async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = CancellationToken::new();
-            let original =
-                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                    .map_err(|(error, _)| error)?;
+            let original = crate::NativeMaterializationWork::root(
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             let baseline = original.live_allocation_bytes().unwrap();
             let mut accounting = KernelAccounting::native(&original, &cancellation);
             let (native_probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(

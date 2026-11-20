@@ -13,7 +13,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27.0"
 proptest.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "test-util"] }
 

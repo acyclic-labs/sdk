@@ -6,7 +6,7 @@ use crate::{
 use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProviderExt as _};
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod commit_tests;
 
 mod frame;
@@ -27,7 +27,7 @@ pub(crate) fn authority_parts<T>(owned: crate::kernel::Owned<T>) -> (T, Authorit
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod custody_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -122,7 +122,7 @@ pub struct AuthorityWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     /// The original native ledger, when present.
     pub original: Option<&'a crate::NativeMaterializationWork>,
-    pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
+    pub allocations: crate::kernel::allocation::AllocationLedger,
     pub(crate) scratch_floor: u64,
     pub(crate) read_observation: Option<&'a crate::kernel::ProofDataCustody>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -274,7 +274,7 @@ impl<'a> AuthorityWork<'a> {
         self.work.admit(&delta, &self.budget).map_err(Into::into)
     }
 
-    pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
+    pub fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
             let result = original.record_admitted(delta);

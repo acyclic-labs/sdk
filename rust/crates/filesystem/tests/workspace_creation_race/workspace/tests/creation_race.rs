@@ -13,7 +13,7 @@ use acyclic_fs::{
 use acyclic_stream::OwnedBytes;
 use std::{error::Error, sync::Arc};
 
-use crate::fixtures::fork_workspace;
+use crate::workspace_creation_race::fixtures::fork_workspace;
 use acyclic_stream::StreamProviderExt as _;
 use std::cell::Cell;
 use std::future::Future;

@@ -13,13 +13,16 @@ use acyclic_harness_core::{
     filesystem::{Grants, PRIVATE_VOLUME, TurnLimits},
     model::{ModelDispatch, ModelProvider, PreparedModelRequest},
     preset::Preset,
-    tool::{JsonToolProjection, Tool, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
+    tool::{JsonToolProjection, Tool, ToolRegistry},
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::session::Client;
 use futures::TryFutureExt as _;
 use prost::Message as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 type Objects = crate::conformance::ObjectStore;
 struct Owner;
@@ -43,29 +46,6 @@ impl ModelProvider for Scripted {
         crate::model::ModelStream::new(Box::pin(futures::stream::iter(
             model_events(dispatch.step).into_iter().map(Ok),
         )))
-    }
-}
-
-struct Echo(Arc<AtomicUsize>);
-impl ToolExecutor for Echo {
-    fn execute<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-        _: Option<acyclic_harness_core::runtime::ToolContext>,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<ToolResult>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move {
-            Ok(ToolResult {
-                value: invocation.arguments,
-            })
-        })
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _: ToolInvocation,
-        _: Option<acyclic_harness_core::runtime::ToolContext>,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Option<ToolResult>>> {
-        Box::pin(async { Ok(None) })
     }
 }
 
@@ -96,7 +76,7 @@ pub async fn open<B: Backend + ?Sized>(
     policy: ApprovalPolicy,
 ) -> Result<Box<dyn Endpoint>> {
     let storage = backend.fresh().await?;
-    let stream = Arc::new(Observed::new(storage.open().await?));
+    let stream = ProviderOwner::new(Observed::new(storage.open().await?));
     let objects = storage.objects().await?;
     let capabilities = objects.capabilities;
     let objects = objects.into_store(storage.as_ref())?;
@@ -245,7 +225,7 @@ impl Endpoint for Embedded {
     fn binding(&self) -> &[u8] {
         &self.binding
     }
-    fn provider(&self) -> Arc<dyn StreamProvider> {
+    fn provider(&self) -> ProviderOwner<dyn StreamProvider> {
         self.bound.agents().provider().clone()
     }
     fn exchange(&self, invocation: Bytes) -> BoxProviderFuture<'_, Result<Bytes>> {

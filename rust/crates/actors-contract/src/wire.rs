@@ -42,11 +42,11 @@ pub use crate::contract::{
 };
 
 /// Reserved reply header marking a committed guest failure. Its only value is
-/// [`GUEST_FAILURE_VERSION`]. The guest response encoder refuses it on a guest's
+/// `GUEST_FAILURE_VERSION`. The guest response encoder refuses it on a guest's
 /// own HTTP response, so an ordinary guest 5xx is never read as a guest failure.
 pub const GUEST_FAILURE_HEADER: &str = "acyclic-guest-failure";
 /// Format version of a guest failure reply body.
-pub const GUEST_FAILURE_VERSION: &str = "1";
+const GUEST_FAILURE_VERSION: &str = "1";
 const GUEST_FAILURE_STATUS: u32 = 500;
 
 /// A committed guest failure as an Actors reply: status 500, exactly the

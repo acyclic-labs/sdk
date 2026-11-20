@@ -12,8 +12,17 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[package.metadata.bazel]
+integration-test-shards = 6
+
 [package.metadata.bazel.test-tools.main]
 node = "@nodejs//:node"
+
+[package.metadata.bazel.test-data.main]
+sdk-package = "//:typescript/packages/sdk/package.json"
+sdk-process = "//:typescript/packages/sdk/native/process.mjs"
+sdk-process-completion = "//:typescript/packages/sdk/native/process-completion.mjs"
+sdk-process-completion-fuzz = "//:typescript/packages/sdk/test/process-completion.fuzz.mjs"
 
 [package.metadata.bazel.test-tools.acyclic_native_runtime_test]
 node = "@nodejs//:node"
@@ -25,19 +34,26 @@ test = false
 bench = false
 
 [features]
-model-checking = ["dep:loom"]
-test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "tokio/io-util"]
+model-checking = ["dep:loom", "acyclic-native-file/model-checking"]
+test-support = [
+  "acyclic-native-file/test-support",
+  "tokio/macros",
+  "tokio/time",
+  "tokio/test-util",
+  "tokio/net",
+  "tokio/io-util",
+]
 
 [dependencies]
 acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 loom = { version = "=0.7.3", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-native-file = { version = "=0.2.0", path = "../native-file" }
 acyclic-process-identity = { version = "=0.2.0", path = "../process-identity" }
 bytes.workspace = true
 dirs.workspace = true
 blake3.workspace = true
-sha2.workspace = true
 subtle.workspace = true
 getrandom = { workspace = true, features = ["std"] }
 zeroize.workspace = true
@@ -121,28 +137,3 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "wake_loom"
-path = "tests/wake_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "retained_submission_loom"
-path = "tests/retained_submission_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "device_flush_loom"
-path = "tests/device_flush_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "process_signal_loom"
-path = "tests/process_signal_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "owner_count_loom"
-path = "tests/owner_count_loom.rs"
-required-features = ["model-checking"]

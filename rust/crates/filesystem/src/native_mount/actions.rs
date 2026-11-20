@@ -25,19 +25,26 @@ impl Mutation {
 #[cfg(any(windows, test))]
 pub(crate) fn require_projfs_mode(
     view: &PathTrie,
+    root: &crate::kernel::NamespacePath,
     writable: bool,
     now: u64,
-) -> Result<(), super::MountLifecycleError> {
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), super::NativeMountError> {
     if !writable {
-        return Err(super::MountLifecycleError::NativePolicy(
+        return Err(super::NativeMountError::Lifecycle(
             "ProjFS cannot prevent host mutations on read-only mounts",
         ));
     }
     if view.valid_until().is_some()
         || view.generation_sensitive()
-        || !view.allows_every_path(&[Action::Create, Action::Write, Action::Append], now)
+        || !view.allows_native_subtree(
+            root,
+            &[Action::Create, Action::Write, Action::Append],
+            now,
+            work,
+        )?
     {
-        return Err(super::MountLifecycleError::NativePolicy(
+        return Err(super::NativeMountError::Lifecycle(
             "ProjFS cannot enforce restrictive writable policies before host effects",
         ));
     }

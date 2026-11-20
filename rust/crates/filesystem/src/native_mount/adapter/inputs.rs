@@ -2,7 +2,7 @@ pub(super) struct InputBuffers<'a, 'w> {
     pub(super) carrier: &'a mut NativeDemandCarrier<'w>,
     pub(super) bytes: u64,
     allocation: Option<crate::NativeAllocation>,
-    pending: Option<crate::materializer::NativeWorkReservation>,
+    pending: Option<crate::ledger::NativeWorkReservation>,
 }
 
 impl<'a, 'w> InputBuffers<'a, 'w> {
@@ -64,7 +64,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     }
 
     pub(super) fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
-        let delta = crate::materializer::NativeResourceCredit::Copy.delta(bytes.len() as u64);
+        let delta = crate::ledger::NativeResourceCredit::Copy.delta(bytes.len() as u64);
         self.admit(delta)?;
         let mut owned = self.vec(bytes.len())?;
         owned.extend_from_slice(bytes);
@@ -161,7 +161,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     }
 
     pub(super) fn items(&mut self, count: usize) -> Result<(), MountSourceError> {
-        self.charge(crate::materializer::NativeResourceCredit::Items.delta(count as u64))
+        self.charge(crate::ledger::NativeResourceCredit::Items.delta(count as u64))
     }
 
     pub(super) fn release(&mut self, bytes: u64) -> Result<(), MountSourceError> {

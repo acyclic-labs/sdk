@@ -56,13 +56,15 @@ fn assert_status(data: &wire::SessionData, sequence: u64, attention: bool) {
     assert_eq!(data.accepted, sequence + 1);
     assert_eq!(data.durable, 0);
 }
+/// The sequence whose delivery completes the test, and its waiter.
+type Completion = Option<(u64, tokio::sync::oneshot::Sender<()>)>;
 struct Counted {
     memory: Arc<MemoryStream>,
-    pulled: AtomicUsize,
-    completion: std::sync::Mutex<Option<(u64, tokio::sync::oneshot::Sender<()>)>>,
+    pulled: Arc<AtomicUsize>,
+    completion: Arc<std::sync::Mutex<Completion>>,
 }
 #[async_trait::async_trait]
-impl StreamProvider for Arc<Counted> {
+impl StreamProvider for Counted {
     fn context(&self) -> crate::ProviderContext<'_> {
         crate::ProviderContext::new(self.memory.context().operation_claims())
     }
@@ -104,12 +106,12 @@ impl StreamProvider for Arc<Counted> {
             .lock()
             .map_err(|_| StreamError::Unavailable)?
             .take();
-        let counted = Arc::clone(self);
+        let pulled = Arc::clone(&self.pulled);
         Ok(self.memory.follow(request).await?.map_cursor(|cursor| {
             cursor
                 .inspect(move |item| {
                     if let Ok(crate::FollowUpdate::Record(record)) = item {
-                        counted.pulled.fetch_add(1, Ordering::Relaxed);
+                        pulled.fetch_add(1, Ordering::Relaxed);
                         if completion
                             .as_ref()
                             .is_some_and(|(sequence, _)| *sequence == record.sequence)
@@ -131,8 +133,8 @@ async fn saturation_completion_ends_when_its_source_cursor_is_dropped() -> TestR
     let (completed, completion) = tokio::sync::oneshot::channel();
     let counted = Arc::new(Counted {
         memory,
-        pulled: AtomicUsize::new(0),
-        completion: std::sync::Mutex::new(Some((9, completed))),
+        pulled: Arc::new(AtomicUsize::new(0)),
+        completion: Arc::new(std::sync::Mutex::new(Some((9, completed)))),
     });
     let source = counted
         .follow(crate::FollowRequest::new(StreamPath::new("status")?, 1))
@@ -151,10 +153,10 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
     let (completed, completion) = tokio::sync::oneshot::channel();
     let counted = Arc::new(Counted {
         memory: Arc::clone(&memory),
-        pulled: AtomicUsize::new(0),
-        completion: std::sync::Mutex::new(Some((9, completed))),
+        pulled: Arc::new(AtomicUsize::new(0)),
+        completion: Arc::new(std::sync::Mutex::new(Some((9, completed)))),
     });
-    let fixture = Fixture::open(Arc::new(Arc::clone(&counted)), "node").await?;
+    let fixture = Fixture::open(Arc::clone(&counted), "node").await?;
     let client = fixture.client()?;
     let mut overview = client
         .follow_data(

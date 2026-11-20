@@ -1,6 +1,6 @@
 //! FUSE negotiation and physical reply completion, shared by every transport.
 
-use super::packet::{PacketInput, PacketRequest};
+use super::packet::{PacketInput, PacketOutput, PacketRequest};
 use super::packet_dispatch::{PacketCompletion, PacketFailure};
 use super::packet_router::PacketRouter;
 use super::*;
@@ -92,6 +92,26 @@ impl PacketReply<'_> {
             self.completion.discard_rejected(core, request, response)?;
         }
         self.pending = false;
+        Ok(())
+    }
+
+    /// Changes a reply refused before publication into its original packet's error.
+    /// Retain the admitted view and work until the transport has published the error.
+    pub(super) fn refuse(
+        &mut self,
+        request: &PacketRequest<'_>,
+        response: &mut [u8],
+        errno: i32,
+    ) -> Result<(), PacketFailure> {
+        if self.next_phase.is_some() {
+            return Err(libc::EPROTO.into());
+        }
+        if let Some(core) = self.core() {
+            self.completion.discard_rejected(core, request, response)?;
+        }
+        self.completion.payload = None;
+        self.completion.length =
+            Some(PacketOutput::new(response, 0)?.finish(request.unique, Some(errno))?);
         Ok(())
     }
 }

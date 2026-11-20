@@ -40,19 +40,6 @@ fn empty_sibling_marker_preserves_list_indentation() {
 }
 
 #[test]
-fn short_block_grammar_preserves_every_partition() {
-    let lines = [
-        "a", "*", "-", "+", "1.", "1)", " *", "* ", "*\t", ">", "> a", "> *", "=", "---", "```",
-        "~~~",
-    ];
-    for first in lines {
-        for second in lines {
-            check_all_partitions(&format!("{first}\n{second}\na"));
-        }
-    }
-}
-
-#[test]
 fn partial_fence_interrupts_the_previous_paragraph() {
     check_all_partitions("a\n~~~\na");
     check_all_partitions("a\n```\na");
@@ -71,12 +58,13 @@ fn completed_indented_lists_and_fences_have_linear_work() {
         let measure = |count| {
             let source = block.repeat(count);
             let mut markdown = Markdown::default();
-            let before = work::current();
+            let before = acyclic_markdown_work::work::current();
             for character in source.chars() {
                 markdown.push(&character.to_string());
             }
-            let used =
-                work::current() - before + markdown.boundary_work + markdown.visible_work.get();
+            let used = acyclic_markdown_work::work::current() - before
+                + markdown.boundary_work
+                + markdown.visible_work.get();
             assert_eq!(markdown.lines(), full_parse(&source));
             used
         };
@@ -86,16 +74,6 @@ fn completed_indented_lists_and_fences_have_linear_work() {
             large <= 2 * small + 1024,
             "{block:?}: work {small} -> {large}"
         );
-    }
-}
-
-#[test]
-fn list_marker_variants_preserve_every_partition() {
-    let markers = ["*", "-", "+", "0.", "1.", "9.", "0)", "1)", "9)"];
-    for first in markers {
-        for second in markers {
-            check_all_partitions(&format!(" {first} a\n{second}\na"));
-        }
     }
 }
 
@@ -368,30 +346,6 @@ fn negative_control_reparsing_shared_histories_fails_the_same_work_bound() {
     assert_unique_rewrite_work(&sources, &check_rewrite_histories(&sources, false));
 }
 
-pub(super) fn check_inline_cuts(sources: &[&str]) {
-    check_rewrites(sources);
-    for source in sources {
-        let source = format!("retained archive\n\n{source}");
-        let expected = full_parse(&source);
-        let mut whole = Markdown::default();
-        whole.push(&source);
-        assert_eq!(whole.lines(), expected);
-        for cut in source
-            .char_indices()
-            .map(|(index, _)| index)
-            .chain([source.len()])
-        {
-            let mut markdown = Markdown::default();
-            markdown.push(source.get(..cut).unwrap());
-            let mut rows = markdown.lines().to_vec();
-            let changed = markdown.push(source.get(cut..).unwrap());
-            rows.truncate(changed);
-            rows.extend_from_slice(markdown.lines().get(changed..).unwrap());
-            assert_eq!(rows, expected, "two chunks at {cut}: {source:?}");
-        }
-    }
-}
-
 #[test]
 fn empty_bullet_markers_keep_their_container_context() {
     check_rewrites(&["*\n  €\n\na", "-\n  €\n\na", "+\n  €\n\na"]);
@@ -444,12 +398,12 @@ fn table_delimiters_and_widths_remain_provisional() {
 fn completed_empty_marker_items_have_linear_work() {
     let measure = |count| {
         let source = "*\n  €\n\na\n\n".repeat(count);
-        let before = work::current();
+        let before = acyclic_markdown_work::work::current();
         let mut markdown = Markdown::default();
         for character in source.chars() {
             markdown.push(&character.to_string());
         }
-        let used = work::current() - before;
+        let used = acyclic_markdown_work::work::current() - before;
         assert_eq!(markdown.lines(), full_parse(&source));
         used
     };

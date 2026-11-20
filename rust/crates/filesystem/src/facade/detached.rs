@@ -82,7 +82,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         budget.finish(result, &accounting)
     }
 
+    /// The record the detached file currently holds.
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn record(&self) -> FileRecord {
+        self.record
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) const fn record(&self) -> FileRecord {
         self.record
     }

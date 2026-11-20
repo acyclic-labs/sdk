@@ -59,7 +59,7 @@ impl Table {
                     return;
                 }
                 #[cfg(test)]
-                crate::work::event(event);
+                acyclic_markdown_work::work::copy(crate::events::event_bytes(event));
                 self.cell.push(event.clone().into_static());
             }
         }
@@ -91,7 +91,7 @@ impl Table {
             .skip(start)
             .map(|(index, cells)| {
                 #[cfg(test)]
-                crate::work::copy(
+                acyclic_markdown_work::work::copy(
                     cells
                         .iter()
                         .flat_map(|cell| &cell.spans)
@@ -121,13 +121,13 @@ pub(super) fn width(line: &Line) -> usize {
     if let [span] = line.spans.as_slice() {
         acyclic_markdown_work::record!(scan(span.text.len()));
         #[cfg(test)]
-        crate::work::scan(span.text.len());
+        acyclic_markdown_work::work::scan(span.text.len());
         UnicodeWidthStr::width(span.text.as_str())
     } else {
         let text = cell_text(line);
         acyclic_markdown_work::record!(scan(text.len()));
         #[cfg(test)]
-        crate::work::scan(text.len());
+        acyclic_markdown_work::work::scan(text.len());
         UnicodeWidthStr::width(text.as_str())
     }
 }
@@ -135,7 +135,7 @@ pub(super) fn width(line: &Line) -> usize {
 fn cell_text(line: &Line) -> String {
     let length = line.spans.iter().map(|span| span.text.len()).sum();
     #[cfg(test)]
-    crate::work::copy(length);
+    acyclic_markdown_work::work::copy(length);
     let mut text = String::with_capacity(length);
     for span in &line.spans {
         text.push_str(&span.text);

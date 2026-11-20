@@ -50,6 +50,11 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
                 ScriptedTurn::Text("answer".into()),
                 ScriptedTurn::Text("answer".into()),
             ])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 4096,
+                output_tokens: Some(128),
+                output_shares_context: false,
+            })
             .with_dispatch_observer(move |_| {
                 // Request admission is complete. Response journaling serializes
                 // wall-clock latency, whose decimal width is nondeterministic.

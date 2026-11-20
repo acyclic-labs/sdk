@@ -1,0 +1,774 @@
+use crate::{HttpRequest, HttpTransport, invalid};
+use acyclic_harness_core::Result;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{Read as _, Write as _},
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use zeroize::Zeroizing;
+#[path = "credential_io.rs"]
+mod credential_io;
+use credential_io::CredentialIo;
+use {acyclic_fs::NativeAllocation, acyclic_fs_work::performance::WorkCounters};
+
+const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const MAX_AUTH_BYTES: u64 = 1024 * 1024;
+
+// Match the original JSON object's sorted keys without allocating that object.
+#[derive(serde::Serialize)]
+struct RefreshRequest<'a> {
+    client_id: &'static str,
+    grant_type: &'static str,
+    refresh_reason: &'static str,
+    refresh_token: &'a str,
+}
+
+/// Native-only reuse of an existing Codex CLI ChatGPT login.
+/// Refreshes serialize in memory and defer to concurrent CLI writes.
+/// File reads, parsing and publication use the shared native I/O service.
+/// Cancelling an admitted publication does not undo it: its original lock and
+/// accounting remain owned until physical completion. Metered callers initialize
+/// the shared native I/O services before admitting their original work.
+pub struct CodexLogin {
+    path: std::sync::Arc<Path>,
+    account: std::sync::Arc<OnceLock<Option<blake3::Hash>>>,
+    document: std::sync::Arc<crate::credentials::watched::Watched<Option<std::sync::Arc<Value>>>>,
+    refresh: crate::sync::Arc<crate::refresh::Refresh<RefreshFailure>>,
+    clock: std::sync::Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+}
+
+/// A refresh failure shared across concurrent attempts, carried without rendering or allocating.
+#[derive(Clone, Copy)]
+struct RefreshFailure {
+    cause: RefreshCause,
+    message: [u8; 256],
+    length: usize,
+}
+
+/// The class a shared refresh failure reports.
+#[derive(Clone, Copy)]
+enum RefreshCause {
+    /// A static native cause, preserved as the same error.
+    Boundary {
+        code: acyclic_harness_core::wire::ErrorCode,
+        reason: &'static str,
+    },
+    /// A diagnostic whose text the failure carries.
+    Diagnostic(RefreshDiagnosticKind),
+}
+
+#[derive(Clone, Copy)]
+enum RefreshDiagnosticKind {
+    Invalid,
+    Unauthorized,
+    Storage,
+    Transport(acyclic_harness_core::ModelTransportFailure),
+}
+
+impl RefreshFailure {
+    fn from_error(error: &acyclic_harness_core::Error) -> Option<Self> {
+        use acyclic_harness_core::Error;
+        if !matches!(
+            error.code(),
+            acyclic_harness_core::wire::ErrorCode::Unauthorized
+                | acyclic_harness_core::wire::ErrorCode::Storage
+                | acyclic_harness_core::wire::ErrorCode::Unavailable
+                | acyclic_harness_core::wire::ErrorCode::Invalid
+        ) {
+            return None;
+        }
+        if let Error::NativeBoundary { code, reason } = error {
+            return Some(Self {
+                cause: RefreshCause::Boundary {
+                    code: *code,
+                    reason,
+                },
+                message: [0; 256],
+                length: 0,
+            });
+        }
+        use RefreshDiagnosticKind as Kind;
+        use acyclic_harness_core::wire::ErrorCode as Code;
+        let (message, kind) = match error {
+            Error::ModelUnavailable { failure, excerpt } => {
+                (excerpt.as_str(), Kind::Transport(*failure))
+            }
+            Error::Invalid(message)
+            | Error::ModelDiagnostic {
+                code: Code::Invalid,
+                message,
+                ..
+            }
+            | Error::NativeDiagnostic {
+                code: Code::Invalid,
+                message,
+                ..
+            } => (message.as_str(), Kind::Invalid),
+            Error::Unauthorized(message)
+            | Error::ModelDiagnostic {
+                code: Code::Unauthorized,
+                message,
+                ..
+            }
+            | Error::NativeDiagnostic {
+                code: Code::Unauthorized,
+                message,
+                ..
+            } => (message.as_str(), Kind::Unauthorized),
+            Error::Storage(message)
+            | Error::NativeDiagnostic {
+                code: Code::Storage,
+                message,
+                ..
+            } => (message.as_str(), Kind::Storage),
+            // An invocation-owned diagnostic with no reconstructible transport class stays
+            // local, like an oversized diagnostic; never cache it as another failure class.
+            _ => return None,
+        };
+        if message.len() > 256 {
+            return None;
+        }
+        let mut failure = Self {
+            cause: RefreshCause::Diagnostic(kind),
+            message: [0; 256],
+            length: message.len(),
+        };
+        if let Some(target) = failure.message.get_mut(..message.len()) {
+            target.copy_from_slice(message.as_bytes());
+        }
+        Some(failure)
+    }
+    // Only call for token-endpoint failures, never per-model credential checks.
+    fn share<T>(result: Result<T>, failure: &mut Option<Self>) -> Result<T> {
+        if let Err(error) = &result {
+            *failure = Self::from_error(error);
+        }
+        result
+    }
+    fn error(self, io: &mut CredentialIo) -> Result<acyclic_harness_core::Error> {
+        use acyclic_harness_core::Error;
+        let kind = match self.cause {
+            RefreshCause::Boundary { code, reason } => {
+                return Ok(Error::NativeBoundary { code, reason });
+            }
+            RefreshCause::Diagnostic(kind) => kind,
+        };
+        let text = std::str::from_utf8(self.message.get(..self.length).unwrap_or_default())
+            .map_err(|_| invalid("invalid shared refresh diagnostic"))?;
+        let message = io.string(text)?;
+        Ok(match kind {
+            RefreshDiagnosticKind::Transport(failure) => Error::ModelUnavailable {
+                failure,
+                excerpt: message,
+            },
+            RefreshDiagnosticKind::Unauthorized => Error::Unauthorized(message),
+            RefreshDiagnosticKind::Storage => Error::Storage(message),
+            RefreshDiagnosticKind::Invalid => Error::Invalid(message),
+        })
+    }
+}
+
+impl CodexLogin {
+    /// Reuses this auth.json; never starts an interactive login flow.
+    pub fn from_path(path: PathBuf) -> Self {
+        Self {
+            document: std::sync::Arc::new(crate::credentials::watched::Watched::new(
+                vec![path.clone()],
+                None,
+            )),
+            path: path.into(),
+            account: std::sync::Arc::new(OnceLock::new()),
+            refresh: crate::sync::Arc::new(crate::refresh::Refresh::new()),
+            clock: std::sync::Arc::new(OffsetDateTime::now_utc),
+        }
+    }
+
+    /// Supplies the clock for expiry decisions and publication timestamps.
+    pub fn with_clock(
+        mut self,
+        clock: impl Fn() -> OffsetDateTime + Send + Sync + 'static,
+    ) -> Self {
+        self.clock = std::sync::Arc::new(clock);
+        self
+    }
+
+    /// A copy that re-reads the document and re-pins the account, sharing the refresh lock.
+    pub fn fresh(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            document: self.document.clone(),
+            account: std::sync::Arc::new(OnceLock::new()),
+            refresh: self.refresh.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+
+    /// Finds `$CODEX_HOME/auth.json` or the current user's `~/.codex/auth.json`.
+    pub fn discover() -> Option<Self> {
+        let path = Self::discover_path()?;
+        path.is_file().then(|| Self::from_path(path))
+    }
+
+    /// The path `$CODEX_HOME` or the current user's home resolves to, whether or not it exists.
+    pub fn discover_path() -> Option<PathBuf> {
+        std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                    .map(|home| PathBuf::from(home).join(".codex"))
+            })
+            .map(|root| root.join("auth.json"))
+    }
+
+    /// Re-reads the document whenever WATCH reports a change.
+    pub fn watched(mut self, watch: crate::credentials::watched::Watch) -> Self {
+        self.document = std::sync::Arc::new(crate::credentials::watched::Watched::new(
+            vec![self.path.to_path_buf()],
+            Some(watch),
+        ));
+        self
+    }
+
+    /// A copy that shares PIN, so a changed account is detected across clones.
+    pub fn pinned(&self, pin: std::sync::Arc<OnceLock<Option<blake3::Hash>>>) -> Self {
+        Self {
+            path: self.path.clone(),
+            document: self.document.clone(),
+            account: pin,
+            refresh: self.refresh.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+
+    /// The account pin this login shares with its clones.
+    pub fn pin(&self) -> std::sync::Arc<OnceLock<Option<blake3::Hash>>> {
+        self.account.clone()
+    }
+
+    /// `root/auth.json` when it exists; the file is read only on first use.
+    #[cfg(test)]
+    pub fn in_home(root: &Path) -> Option<Self> {
+        let path = root.join("auth.json");
+        path.is_file().then(|| Self::from_path(path))
+    }
+
+    /// The rejected bearer is supplied only following HTTP 401, before any SSE is read.
+    pub async fn bearer(
+        &self,
+        transport: &dyn HttpTransport,
+        rejected: Option<&str>,
+        mut custody: Option<&mut NativeAllocation>,
+    ) -> Result<(String, Option<String>)> {
+        let mut io = CredentialIo::new(custody.as_deref_mut())?;
+        let result = match self.refresh.acquire().await {
+            Ok(permit) => {
+                let mut permit = Some(permit);
+                let mut failure = None;
+                let result = self
+                    .refresh_bearer(transport, rejected, &mut io, &mut permit, &mut failure)
+                    .await;
+                if let Some(permit) = permit {
+                    self.refresh.complete(permit, failure);
+                }
+                result
+            }
+            Err(failure) => Err(failure.error(&mut io)?),
+        };
+        let result = io.checked(result);
+        io.finish(custody)?;
+        result
+    }
+
+    async fn refresh_bearer(
+        &self,
+        transport: &dyn HttpTransport,
+        rejected: Option<&str>,
+        io: &mut CredentialIo,
+        permit: &mut Option<crate::refresh::Permit<RefreshFailure>>,
+        failure: &mut Option<RefreshFailure>,
+    ) -> Result<(String, Option<String>)> {
+        let path = self.path.clone();
+        // HTTP 401 is authoritative invalidation even before a pending file
+        // event. Recover from the current source, never cached tokens.
+        let (generation, cached) = self
+            .document
+            .read(rejected.is_some(), |auth| Ok(auth.clone()))?;
+        let mut auth = match cached {
+            Some(auth) => auth,
+            None => std::sync::Arc::new(io.blocking(permit, move |io| load(&path, io)).await?.1),
+        };
+        self.check_account(&auth)?;
+        for attempt in 0..2 {
+            let access = token(&auth, "access_token")?;
+            let force = rejected.is_some_and(|rejected| rejected == access);
+            if !force && !needs_refresh(&auth, (self.clock)()) {
+                break;
+            }
+            let refresh = token(&auth, "refresh_token")?;
+            io.graph(refresh.len() as u64 * 6 + 1024, 32)?;
+            let request = HttpRequest {
+                method: http::Method::POST,
+                url: "https://auth.openai.com/oauth/token".into(),
+                headers: BTreeMap::new(),
+                body: io.json_body(&RefreshRequest {
+                    client_id: CLIENT_ID,
+                    grant_type: "refresh_token",
+                    refresh_reason: if force {
+                        "unauthorized"
+                    } else {
+                        "proactive_expiry"
+                    },
+                    refresh_token: refresh,
+                })?,
+            };
+            let response = RefreshFailure::share(
+                async { crate::http::send(transport, request, io.work())?.await }.await,
+                failure,
+            )?;
+            if response.status != 200 {
+                if attempt == 0 && matches!(response.status, 400 | 401) {
+                    let path = self.path.clone();
+                    let (_, current) = io.blocking(permit, move |io| load(&path, io)).await?;
+                    self.check_account(&current)?;
+                    if token(&current, "refresh_token").ok() != Some(refresh)
+                        || token(&current, "access_token").ok() != Some(access)
+                    {
+                        auth = std::sync::Arc::new(current);
+                        continue;
+                    }
+                }
+                return RefreshFailure::share(
+                    Err(if matches!(response.status, 400 | 401 | 403) {
+                        acyclic_harness_core::Error::Unauthorized(format!(
+                            "Codex refresh HTTP status {}; sign in with the Codex CLI again",
+                            response.status
+                        ))
+                    } else {
+                        acyclic_harness_provider_response::http_error(response.status)
+                    }),
+                    failure,
+                );
+            }
+            let tokens = RefreshFailure::share(refresh_document(response.body, io).await, failure)?;
+            let last_refresh = json!(
+                (self.clock)()
+                    .format(&Rfc3339)
+                    .map_err(|_| invalid("Codex refresh timestamp failed"))?
+            );
+            let updated = RefreshUpdate {
+                tokens,
+                last_refresh,
+            };
+            let path = self.path.clone();
+            auth = std::sync::Arc::new(
+                io.blocking(permit, move |io| {
+                    persist_if_unchanged(&path, &auth, &updated, io)
+                })
+                .await?
+                .into_document(),
+            );
+            self.check_account(&auth)?;
+            break;
+        }
+        self.document.publish(generation, Some(auth.clone()))?;
+        let access = io.string(token(&auth, "access_token")?)?;
+        let account = auth
+            .get("tokens")
+            .and_then(|tokens| tokens.get("account_id"))
+            .and_then(Value::as_str)
+            .map(|account| io.string(account))
+            .transpose()?;
+        Ok((access, account))
+    }
+
+    fn check_account(&self, auth: &Value) -> Result<()> {
+        let current = auth
+            .get("tokens")
+            .and_then(|tokens| tokens.get("account_id"))
+            .and_then(Value::as_str)
+            .map(|account| blake3::hash(account.as_bytes()));
+        if self.account.get_or_init(|| current) != &current {
+            return Err(acyclic_harness_core::Error::Unauthorized(
+                "Codex login account changed; resolve the model again".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+async fn refresh_document(
+    body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
+    io: &mut CredentialIo,
+) -> Result<Value> {
+    let body = crate::http::bounded::read(
+        body,
+        usize::try_from(MAX_AUTH_BYTES)
+            .map_err(|_| invalid("Codex auth.json limit exceeds the address space"))?,
+        io.work(),
+    )
+    .await?;
+    // Encoded body custody retires with that buffer. Only the decoded document
+    // joins the original credential operation and its publication owner.
+    let updated = io.json(&body.bytes)?;
+    if !["access_token", "refresh_token", "id_token"]
+        .iter()
+        .any(|field| updated.get(field).is_some())
+    {
+        return Err(invalid("Codex refresh did not return any tokens"));
+    }
+    for field in ["access_token", "refresh_token", "id_token"] {
+        if let Some(value) = updated.get(field)
+            && value.as_str().is_none_or(|token| token.trim().is_empty())
+        {
+            return Err(invalid("Codex refresh returned an invalid token"));
+        }
+    }
+    Ok(updated)
+}
+
+fn token<'a>(auth: &'a Value, field: &str) -> Result<&'a str> {
+    auth.get("tokens")
+        .and_then(|tokens| tokens.get(field))
+        .and_then(Value::as_str)
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| invalid("Codex CLI ChatGPT login is incomplete; sign in again"))
+}
+
+/// Whether AUTH's access token expires within five minutes of NOW.
+pub fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Claims {
+        exp: Option<i64>,
+    }
+    let expiry = auth
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .and_then(Value::as_str)
+        .and_then(|token| token.split('.').nth(1))
+        .and_then(|payload| URL_SAFE_NO_PAD.decode(payload).ok())
+        .and_then(|payload| serde_json::from_slice::<Claims>(&payload).ok())
+        .and_then(|claims| claims.exp);
+    if let Some(expiry) = expiry {
+        return expiry <= now.unix_timestamp().saturating_add(300);
+    }
+    auth.get("last_refresh")
+        .and_then(Value::as_str)
+        .and_then(|date| OffsetDateTime::parse(date, &Rfc3339).ok())
+        .is_none_or(|last| now - last >= time::Duration::days(8))
+}
+
+fn load(path: &Path, io: &mut CredentialIo) -> Result<(Zeroizing<Vec<u8>>, Value)> {
+    let bytes = read(path, io)?;
+    let auth = document(&bytes, io)?;
+    Ok((bytes, auth))
+}
+
+fn read(path: &Path, io: &mut CredentialIo) -> Result<Zeroizing<Vec<u8>>> {
+    io.charge(WorkCounters {
+        backend_read_operations: 2,
+        object_probes: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut file = File::open(path).map_err(|_| invalid("cannot read Codex auth.json"))?;
+    let length = file
+        .metadata()
+        .map_err(|_| invalid("cannot stat Codex auth.json"))?
+        .len();
+    if length > MAX_AUTH_BYTES {
+        return Err(invalid("Codex auth.json exceeds limit"));
+    }
+    let length = usize::try_from(length)
+        .map_err(|_| invalid("Codex auth.json exceeds the address space"))?;
+    let capacity = length
+        .checked_add(1)
+        .ok_or_else(|| invalid("Codex auth.json exceeds the address space"))?;
+    io.claim(capacity as u64, 1, WorkCounters::UNCHARGED)?;
+    // Retain protection from the first read through comparison or parse failure.
+    // This fixed allocation never grows or retires an unprotected old backing.
+    let mut bytes = Zeroizing::new(vec![0; capacity]);
+    let read_allowance = io
+        .work()
+        .map(|work| {
+            work.reserve_work(WorkCounters {
+                source_bytes_read: capacity as u64,
+                ..WorkCounters::UNCHARGED
+            })
+        })
+        .transpose()?;
+    let mut read = 0;
+    while read < capacity {
+        io.charge(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let Some(target) = bytes.get_mut(read..) else {
+            break;
+        };
+        let count = file
+            .read(target)
+            .map_err(|_| invalid("cannot read Codex auth.json"))?;
+        if count == 0 {
+            break;
+        }
+        if let Some(reserved) = &read_allowance {
+            reserved.record_completed(WorkCounters {
+                source_bytes_read: count as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        read += count;
+    }
+    if read > length {
+        return Err(invalid("Codex auth.json changed while reading"));
+    }
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+fn document(bytes: &[u8], io: &mut CredentialIo) -> Result<Value> {
+    let auth = io.json(bytes)?;
+    validate_auth(&auth)?;
+    Ok(auth)
+}
+
+/// Decodes a Codex `auth.json` document under the same admission as the live reader.
+pub fn decode_auth(bytes: &[u8]) -> Result<Value> {
+    if bytes.len() as u64 > MAX_AUTH_BYTES {
+        return Err(invalid("Codex auth.json exceeds limit"));
+    }
+    document(bytes, &mut CredentialIo::new(None)?)
+}
+
+fn validate_auth(auth: &Value) -> Result<()> {
+    if auth["auth_mode"]
+        .as_str()
+        .is_some_and(|mode| mode != "chatgpt")
+    {
+        return Err(invalid("Codex auth.json is not a ChatGPT CLI login"));
+    }
+    token(&auth, "access_token")?;
+    Ok(())
+}
+
+/// A concurrent document is not evidence that our refresh was published.
+/// The published branch owns only completion evidence, never a fresh source
+/// revision or immutable contents. The Auth source owner admits those separately.
+enum RefreshPublication {
+    Observed(Value),
+    Published {
+        document: Value,
+        file: acyclic_native_runtime::private_file::PublishedFile,
+    },
+}
+
+/// The original parsed baseline remains immutable until publication. OAuth
+/// updates own only the admitted response and publication timestamp.
+struct RefreshUpdate {
+    tokens: Value,
+    last_refresh: Value,
+}
+
+impl RefreshPublication {
+    fn into_document(self) -> Value {
+        match self {
+            Self::Observed(document) => document,
+            Self::Published { document, file } => {
+                drop(file);
+                document
+            }
+        }
+    }
+}
+
+fn persist_if_unchanged(
+    path: &Path,
+    original: &Value,
+    updated: &RefreshUpdate,
+    io: &mut CredentialIo,
+) -> Result<RefreshPublication> {
+    persist_with(path, original, updated, || Ok(()), io)
+}
+
+fn persist_with(
+    path: &Path,
+    original: &Value,
+    updated: &RefreshUpdate,
+    before_replace: impl FnOnce() -> Result<()>,
+    io: &mut CredentialIo,
+) -> Result<RefreshPublication> {
+    io.charge(WorkCounters {
+        backend_write_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    io.claim(
+        path.as_os_str().len() as u64 * 3 + 1024,
+        16,
+        WorkCounters::UNCHARGED,
+    )?;
+    let absolute = if path.is_absolute() {
+        None
+    } else {
+        Some(std::path::absolute(path).map_err(|_| invalid("cannot resolve Codex auth path"))?)
+    };
+    let path = absolute.as_deref().unwrap_or(path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
+    // Stage on the same filesystem. A metadata edit does not take credential
+    // ownership: preserve it while publishing the rotated token fields.
+    let (mut observed, current) = load(path, io)?;
+    let Some(mut auth) = merge_refresh(original, &observed, &current, &updated, io)? else {
+        return Ok(RefreshPublication::Observed(current));
+    };
+    let mut file = crate::credential_file::create(parent)
+        .map_err(|_| invalid("cannot create Codex credential update"))?;
+    stage(&mut file, &auth, io)?;
+    before_replace()?;
+    let bytes = read(path, io)?;
+    if bytes != observed {
+        let current = document(&bytes, io)?;
+        let Some(merged) = merge_refresh(original, &bytes, &current, &updated, io)? else {
+            return Ok(RefreshPublication::Observed(current));
+        };
+        auth = merged;
+        stage(&mut file, &auth, io)?;
+        observed = bytes;
+        if read(path, io)? != observed {
+            return Err(acyclic_harness_core::Error::Storage(
+                "Codex credentials changed during publication; retry".into(),
+            ));
+        }
+    }
+    // The CLI does not participate in our lock. This final read + replacement
+    // is still best-effort, not an atomic compare-and-swap against CLI writes.
+    io.charge(WorkCounters {
+        backend_write_operations: 1,
+        durability_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let file = file
+        .publish_retained(path, acyclic_native_runtime::RenameMode::Replace)
+        .map_err(|_| invalid("cannot replace Codex auth.json"))?;
+    Ok(RefreshPublication::Published {
+        document: auth,
+        file,
+    })
+}
+
+fn stage(
+    file: &mut acyclic_native_runtime::private_file::StagedFile,
+    auth: &Value,
+    io: &mut CredentialIo,
+) -> Result<()> {
+    let encoded = (acyclic_harness_provider_response::encoded_json_len(auth)? as u64)
+        .checked_add(1)
+        .filter(|&bytes| bytes <= MAX_AUTH_BYTES)
+        .ok_or_else(|| invalid("Codex merged credentials exceed limit"))?;
+    write_staged(file, auth, encoded, io)
+}
+
+fn write_staged(
+    file: &mut acyclic_native_runtime::private_file::StagedFile,
+    auth: &Value,
+    encoded: u64,
+    io: &mut CredentialIo,
+) -> Result<()> {
+    use std::io::{Seek as _, SeekFrom};
+    io.charge(WorkCounters {
+        bytes_encoded: encoded,
+        output_bytes: encoded,
+        backend_write_operations: 3,
+        ..WorkCounters::UNCHARGED
+    })?;
+    file.as_file_mut()
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| file.as_file_mut().set_len(0))
+        .map_err(|_| invalid("cannot prepare Codex credential update"))?;
+    serde_json::to_writer(file.as_file_mut(), auth)
+        .map_err(|_| invalid("cannot encode Codex credential update"))?;
+    file.as_file_mut()
+        .write_all(b"\n")
+        .map_err(|_| invalid("cannot flush Codex credential update"))
+}
+
+fn merge_refresh(
+    original: &Value,
+    current_wire: &[u8],
+    current: &Value,
+    refreshed: &RefreshUpdate,
+    io: &mut CredentialIo,
+) -> Result<Option<Value>> {
+    const FIELDS: [&str; 4] = ["account_id", "access_token", "refresh_token", "id_token"];
+    fn field<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+        value.get("tokens").and_then(|tokens| tokens.get(name))
+    }
+    if original
+        .get("auth_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("chatgpt")
+        != current
+            .get("auth_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("chatgpt")
+        || original.get("OPENAI_API_KEY") != current.get("OPENAI_API_KEY")
+        || FIELDS
+            .iter()
+            .any(|name| field(original, name) != field(current, name))
+    {
+        return Ok(None);
+    }
+    // The current wire supplies the graph's structural bound without encoding
+    // another copy. Only OAuth's changed string fields need additional storage.
+    let (bytes, nodes) = crate::allocation::shape(current_wire);
+    let fields = ["access_token", "refresh_token", "id_token"];
+    let mut replacement_bytes = 0u64;
+    for value in fields
+        .iter()
+        .map(|name| refreshed.tokens.get(name))
+        .chain(std::iter::once(Some(&refreshed.last_refresh)))
+        .flatten()
+    {
+        // Unchanged omitted fields may be null; refresh responses themselves
+        // have already admitted nonempty token strings.
+        if let Some(text) = value.as_str() {
+            replacement_bytes = replacement_bytes
+                .checked_add(text.len() as u64)
+                .ok_or_else(|| invalid("Codex credential merge size overflow"))?;
+        }
+    }
+    io.graph(
+        bytes
+            .checked_add(replacement_bytes)
+            .ok_or_else(|| invalid("Codex credential merge size overflow"))?,
+        nodes + 8,
+    )?;
+    let mut merged = current.clone();
+    for field in fields {
+        let Some(value) = refreshed.tokens.get(field) else {
+            continue;
+        };
+        if let Some(tokens) = merged.get_mut("tokens").and_then(Value::as_object_mut)
+            && tokens.get(field) != Some(value)
+        {
+            tokens.insert(field.to_owned(), value.clone());
+        }
+    }
+    if let Some(object) = merged.as_object_mut() {
+        object.insert("last_refresh".to_owned(), refreshed.last_refresh.clone());
+    }
+    Ok(Some(merged))
+}
+
+#[cfg(test)]
+#[path = "codex_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+pub fn fixed_now() -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(1_792_150_400).expect("fixed fixture timestamp")
+}

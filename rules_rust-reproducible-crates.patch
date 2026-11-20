@@ -1,0 +1,134 @@
+diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
+index 082c8f0..26682cc 100644
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -1810,7 +1810,10 @@ def rustc_compile_action(
+     )
+ 
+     clippy_driver = getattr(ctx.attr, "_clippy_driver", None)
+-    use_clippy = clippy_driver != None and clippy_driver[BuildSettingInfo].value
++    # The process wrapper's own crates compile without it, so with nothing to stage their clippy
++    # configuration: they compile with rustc, and the wrapper every other action runs is the same binary
++    # in every checkout.
++    use_clippy = clippy_driver != None and clippy_driver[BuildSettingInfo].value and bool(getattr(ctx.executable, "_process_wrapper", None))
+     if use_clippy and not toolchain.clippy_driver:
+         fail("--@rules_rust//rust/settings:clippy_driver requires a toolchain with clippy-driver")
+     # One driver compiles both the metadata and the rlib of a crate: clippy-driver sets `--cfg clippy`, so an
+@@ -2020,7 +2023,12 @@ def rustc_compile_action(
+     if use_clippy:
+         clippy_config = getattr(ctx.file, "clippy_config", None) or getattr(ctx.file, "_clippy_config", None)
+         if clippy_config:
+-            env["CLIPPY_CONF_DIR"] = clippy_config.dirname or "."
++            # process_wrapper stages the file and points CLIPPY_CONF_DIR at it: clippy folds the
++            # canonical path of its configuration into the crate hash, and the declared input is a
++            # symlink into the checkout, which the action key does not hold.
++            for compile_args in [args, args_metadata]:
++                if compile_args:
++                    compile_args.process_wrapper_flags.add("--clippy-conf", clippy_config)
+             compile_inputs = depset([clippy_config], transitive = [compile_inputs])
+ 
+     if hasattr(attr, "version") and attr.version != "0.0.0":
+diff --git a/util/process_wrapper/main.rs b/util/process_wrapper/main.rs
+index 1ab0757..a14fb97 100644
+--- a/util/process_wrapper/main.rs
++++ b/util/process_wrapper/main.rs
+@@ -20,8 +20,9 @@ mod util;
+ 
+ use std::collections::HashMap;
+ use std::fmt;
+-use std::fs::{copy, OpenOptions};
++use std::fs::{self, copy, OpenOptions};
+ use std::io;
++use std::path::PathBuf;
+ use std::process::{exit, Command, ExitStatus, Stdio};
+ 
+ use tinyjson::JsonValue;
+@@ -118,8 +119,21 @@ fn process_line(
+     }
+ }
+ 
++/// Copies `conf` to a regular file in a directory of this action's own, and returns that
++/// directory canonicalized. clippy canonicalizes its configuration file and folds the result into
++/// the crate hash: a declared input is a symlink into whichever checkout ran the build, so read in
++/// place it would give the same action a different crate in every checkout.
++fn stage_clippy_conf(conf: &str) -> Result<PathBuf, ProcessWrapperError> {
++    let staged = PathBuf::from(format!("_clippy_conf.{}", std::process::id()));
++    fs::create_dir_all(&staged)
++        .and_then(|()| copy(conf, staged.join("clippy.toml")).map(drop))
++        .and_then(|()| staged.canonicalize())
++        .map_err(|e| ProcessWrapperError(format!("failed to stage {conf}: {e}")))
++}
++
+ fn main() -> Result<(), ProcessWrapperError> {
+     let opts = options().map_err(|e| ProcessWrapperError(e.to_string()))?;
++    let clippy_conf_dir = opts.clippy_conf.as_deref().map(stage_clippy_conf).transpose()?;
+ 
+     let mut command = Command::new(opts.executable);
+     command
+@@ -138,6 +152,11 @@ fn main() -> Result<(), ProcessWrapperError> {
+             Stdio::inherit()
+         })
+         .stderr(Stdio::piped());
++    if let Some(dir) = &clippy_conf_dir {
++        command
++            .env("CLIPPY_CONF_DIR", dir)
++            .arg(format!("--remap-path-prefix={}=clippy-conf", dir.display()));
++    }
+     debug_log!("{:#?}", command);
+     let mut child = command
+         .spawn()
+@@ -209,6 +228,11 @@ fn main() -> Result<(), ProcessWrapperError> {
+         .map_err(|e| ProcessWrapperError(format!("failed to wait for child process: {}", e)))?;
+     // If the child process is rustc and is killed after metadata generation, that's also a success.
+     let code = status_code(status, was_killed);
++    if let Some(dir) = clippy_conf_dir {
++        fs::remove_dir_all(&dir).map_err(|e| {
++            ProcessWrapperError(format!("failed to remove {}: {}", dir.display(), e))
++        })?;
++    }
+     let success = code == 0;
+     if success {
+         if let Some(tf) = opts.touch_file {
+diff --git a/util/process_wrapper/options.rs b/util/process_wrapper/options.rs
+index 7b9baf1..cef2d91 100644
+--- a/util/process_wrapper/options.rs
++++ b/util/process_wrapper/options.rs
+@@ -37,6 +37,9 @@ pub(crate) struct Options {
+     pub(crate) touch_file: Option<String>,
+     // If set to (source, dest) copies the source file to dest.
+     pub(crate) copy_output: Option<(String, String)>,
++    // If set, the clippy configuration file, staged for clippy-driver as a regular file at a
++    // path remapped out of the crate hash.
++    pub(crate) clippy_conf: Option<String>,
+     // If set, redirects the child process stdout to this file.
+     pub(crate) stdout_file: Option<String>,
+     // If set, redirects the child process stderr to this file.
+@@ -64,6 +67,7 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+     let mut cargo_bin_name = None;
+     let mut touch_file = None;
+     let mut copy_output_raw = None;
++    let mut clippy_conf = None;
+     let mut stdout_file = None;
+     let mut stderr_file = None;
+     let mut output_file = None;
+@@ -110,6 +114,12 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+         &mut touch_file,
+     );
+     flags.define_repeated_flag("--copy-output", "", &mut copy_output_raw);
++    flags.define_flag(
++        "--clippy-conf",
++        "clippy.toml for clippy-driver, staged as a regular file so its canonical path, which \
++         clippy folds into the crate hash, is the action's own and remapped, never a checkout's.",
++        &mut clippy_conf,
++    );
+     flags.define_flag(
+         "--stdout-file",
+         "Redirect subprocess stdout in this file.",
+@@ -317,6 +327,7 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+         child_environment: vars,
+         touch_file,
+         copy_output,
++        clippy_conf,
+         stdout_file,
+         stderr_file,
+         output_file,

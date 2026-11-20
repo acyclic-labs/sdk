@@ -1,91 +1,24 @@
 use super::*;
-use crate::test_support::{ScriptedSearch, ScriptedSearchProvider};
-use std::sync::Arc;
+use proptest::strategy::Strategy as _;
 
-#[test]
-fn request_file_contracts() -> Result<()> {
-    for (query, limit, valid) in [
-        ("test".into(), 1, true),
-        ("test".into(), 20, true),
-        ("".into(), 1, false),
-        (" \n\t".into(), 1, false),
-        ("test".into(), 0, false),
-        ("test".into(), 21, true),
-        ("test".into(), u32::MAX, true),
-        ("a".repeat(4097), 1, true),
-        (format!("{}x", " ".repeat(4097)), 1, true),
-    ] {
-        assert_eq!(
-            SearchRequest {
-                query,
-                max_results: limit
-            }
-            .validate()
-            .is_ok(),
-            valid
-        );
+// The advertised schema must never be stricter than the runtime validator, and
+// the validator accepts every non-blank query at any length with a positive
+// limit: there is no hidden length or result cap.
+proptest::proptest! {
+    #[test]
+    fn validation_accepts_exactly_non_blank_queries_with_a_positive_limit(
+        query in proptest::collection::vec(proptest::char::any(), 0..8192)
+            .prop_map(|characters| characters.into_iter().collect::<String>()),
+        max_results in proptest::arbitrary::any::<u32>(),
+    ) {
+        let accepted = query.chars().any(|character| !character.is_whitespace()) && max_results >= 1;
+        let request = SearchRequest { query: query.clone(), max_results };
+        proptest::prop_assert_eq!(request.validate().is_ok(), accepted);
+        if accepted {
+            let schema = crate::tool::schema::input::<SearchRequest>().expect("search request schema");
+            let validator = jsonschema::validator_for(&schema).expect("search request validator");
+            let input = serde_json::json!({"query": query, "max_results": max_results});
+            proptest::prop_assert!(validator.is_valid(&input));
+        }
     }
-    for invalid in [
-        serde_json::json!({"query":"test", "key":"must-not-accept"}),
-        serde_json::json!({"query":"test", "max_results":-1}),
-    ] {
-        assert!(serde_json::from_value::<SearchRequest>(invalid).is_err());
-    }
-    Ok(())
-}
-
-#[test]
-fn unicode_validation_matches_the_advertised_schema() -> Result<()> {
-    let schema = crate::tool::schema::input::<SearchRequest>()?;
-    let validator =
-        jsonschema::validator_for(&schema).map_err(|e| Error::Invalid(e.to_string()))?;
-    for (query, valid) in [
-        ("東".repeat(1366), true),
-        ("東".repeat(4096), true),
-        ("東".repeat(4097), true),
-        ("🦀".repeat(4096), true),
-        ("🦀".repeat(4097), true),
-    ] {
-        let input = serde_json::json!({"query":query});
-        assert_eq!(validator.is_valid(&input), valid);
-        let request: SearchRequest =
-            serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
-        assert_eq!(request.validate().is_ok(), valid);
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn scripted_search_checks_requests_and_exhaustion() -> Result<()> {
-    let request = SearchRequest {
-        query: "test".into(),
-        max_results: 5,
-    };
-    let response = SearchResponse { results: vec![] };
-    let search = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
-        request: request.clone(),
-        response: Some(response.clone()),
-        error: None,
-    }])?);
-    let wrong = SearchRequest {
-        query: "wrong".into(),
-        max_results: 5,
-    };
-    assert!(matches!(
-        search.search(&wrong).await,
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(search.remaining(), 1);
-    assert_eq!(search.search(&request).await?, response);
-    assert_eq!(search.remaining(), 0);
-    assert!(search.search(&request).await.is_err());
-    assert!(
-        ScriptedSearchProvider::new([ScriptedSearch {
-            request,
-            response: Some(response),
-            error: Some("ambiguous".into()),
-        }])
-        .is_err()
-    );
-    Ok(())
 }

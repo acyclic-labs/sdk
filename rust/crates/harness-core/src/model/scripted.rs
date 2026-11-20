@@ -1,0 +1,788 @@
+use crate::{
+    Error, Result,
+    context::{ModelContextCapacity, ModelTokenCount},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, ModelRequest, PreparedModelRequest},
+};
+mod volume;
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use futures::{StreamExt as _, TryStreamExt as _};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{SeqAccess, Visitor, value::SeqAccessDeserializer},
+};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+use volume::VolumeScript;
+pub use volume::VolumeScriptSource;
+
+/// One provider response. A string emits text followed by completion; an event
+/// list is replayed exactly, including errors, incomplete streams and metadata.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum ScriptedTurn {
+    /// Complete text-only response.
+    Text(String),
+    /// Exact ordered streaming response.
+    Events(Vec<ScriptedEvent>),
+}
+
+impl<'de> Deserialize<'de> for ScriptedTurn {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct TurnVisitor;
+        impl<'de> Visitor<'de> for TurnVisitor {
+            type Value = ScriptedTurn;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a response string or an array of tagged scripted events")
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(ScriptedTurn::Text(value.into()))
+            }
+            fn visit_string<E: serde::de::Error>(
+                self,
+                value: String,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(ScriptedTurn::Text(value))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                Vec::deserialize(SeqAccessDeserializer::new(seq)).map(ScriptedTurn::Events)
+            }
+        }
+        deserializer.deserialize_any(TurnVisitor)
+    }
+}
+
+/// One event or failure in an exact streaming response.
+#[derive(Clone, Debug, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScriptedEvent {
+    /// Provider-neutral stream event.
+    Event(ModelEvent),
+    /// Failure at this position in the stream.
+    Error {
+        /// Diagnostic returned as a provider storage error.
+        error: String,
+    },
+    /// Provider exchange definitively failed after its own recovery ended.
+    Interrupted {
+        /// Diagnostic retained with the terminal model failure.
+        error: String,
+    },
+    /// A permanent failure the provider cannot recover from.
+    Fatal {
+        /// Diagnostic retained as the terminal model failure.
+        error: String,
+    },
+    /// The provider refused the exchange with this HTTP status (408, 429 or
+    /// 5xx), as a rate limit or overload does.
+    Refused {
+        /// Refusal status.
+        status: u16,
+        /// Diagnostic retained with the model failure.
+        error: String,
+    },
+    /// Remains pending until the consumer drops the stream.
+    Pending {},
+}
+
+/// One reconciliation of a previously admitted model request.
+#[derive(Clone, Debug, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptedReconciliation {
+    /// Explicitly permits recovery on a fresh provider that never generated this dispatch.
+    #[serde(default)]
+    pub orphan: bool,
+    /// Exact durable prefix that the executor must supply.
+    pub observed: Vec<ModelEvent>,
+    /// Remaining events, or `None` when the provider cannot recover the request.
+    pub continuation: Option<Vec<ModelEvent>>,
+}
+
+/// Observes each dispatch before its first event; thread-safe wherever providers must be.
+trait DispatchObserver:
+    Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>> + acyclic_stream::ProviderPlatform
+{
+}
+
+impl<T> DispatchObserver for T where
+    T: Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>>
+        + acyclic_stream::ProviderPlatform
+{
+}
+
+#[derive(Default)]
+struct State {
+    turns: VecDeque<ScriptedTurn>,
+    /// A [routed](ScriptedModelProvider::routed) script's replies to parent
+    /// turns woken by a child's settlement.
+    wakes: Option<VecDeque<ScriptedTurn>>,
+    /// The agent each wake request woke, in request order.
+    woken: Vec<crate::agent::AgentPath>,
+    requests: Vec<PreparedModelRequest>,
+    dispatches: Vec<ModelDispatch>,
+    recoveries: VecDeque<ScriptedReconciliation>,
+    reconciliations: Vec<ModelDispatch>,
+    /// Takes each [retrospective](is_retrospective) reply from `turns`
+    /// instead of answering it `none`.
+    scripts_retrospectives: bool,
+}
+
+type ReconciliationObserver = dyn Fn(ModelDispatch) -> Result<()> + Send + Sync;
+type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
+type Responder = dyn Fn(&ModelRequest) -> Result<ScriptedTurn> + Send + Sync;
+type Answered = Mutex<Vec<(ModelDispatch, ScriptedTurn)>>;
+type ContentReader = (
+    Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    Option<u64>,
+);
+
+/// The seed feedback plugin's waking after-settlement notice. Every turn that
+/// settles with that plugin enabled asks the model this once more.
+pub const RETROSPECTIVE: &str =
+    "What slowed you down or blocked you? Append feedback records; reply none if nothing.";
+
+/// Whether `request` asks the [retrospective](RETROSPECTIVE): its newest
+/// model-visible input is that notice.
+#[must_use]
+pub fn is_retrospective(request: &ModelRequest) -> bool {
+    request_input(request).is_some_and(|message| {
+        message.role == crate::model::ModelRole::User
+            && matches!(&message.content,
+                    crate::model::ModelContent::Text(text) if text == RETROSPECTIVE)
+    })
+}
+
+/// Replays responses once and retains the exact requests delivered by the executor.
+/// Exhaustion fails instead of silently repeating the final response. Each
+/// [retrospective](is_retrospective) request is recorded, observed and
+/// reconciled like any other but answered `none` without consuming a scripted
+/// turn, so a script states only its work whether or not the feedback plugin
+/// is enabled; [`Self::scripting_retrospectives`] scripts them instead. A
+/// [responding](Self::responding) provider instead answers each request from
+/// its content, for concurrent agents whose request order a seed decides.
+pub struct ScriptedModelProvider {
+    state: Arc<Mutex<State>>,
+    responder: Option<Arc<Responder>>,
+    /// Every responder answer by dispatch: the remote side, which outlives
+    /// the host that sent it (see [`Self::reopened`]).
+    answered: Arc<Answered>,
+    capacity: Option<ModelContextCapacity>,
+    token_counter: Option<Arc<TokenCounter>>,
+    dispatch_observer: Option<Arc<dyn DispatchObserver>>,
+    reconciliation_observer: Option<Arc<ReconciliationObserver>>,
+    reads_content: bool,
+    content: Option<ContentReader>,
+    volume: Option<Arc<VolumeScript>>,
+}
+
+impl ScriptedModelProvider {
+    /// Constructs an independent script; sharing the provider shares its cursor.
+    #[must_use]
+    pub fn new(turns: impl IntoIterator<Item = ScriptedTurn>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(State {
+                turns: turns.into_iter().collect(),
+                ..State::default()
+            })),
+            responder: None,
+            answered: Arc::default(),
+            capacity: Some(ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: Some(4_096),
+                output_shares_context: false,
+            }),
+            token_counter: Some(Arc::new(serialized_tokens)),
+            dispatch_observer: None,
+            reconciliation_observer: None,
+            reads_content: false,
+            content: None,
+            volume: None,
+        }
+    }
+
+    /// Scripts a session tree in two queues. A child's settlement wakes its
+    /// parent with a `child.settled` notice, and that turn takes the next
+    /// `wakes` reply; every other request, each agent's own prompt, brief or
+    /// tool continuation, takes the next `inputs` reply. A wake can therefore
+    /// never consume a reply another agent's input was scripted to receive,
+    /// and a wake with no reply left fails naming the agent it woke.
+    #[must_use]
+    pub fn routed(
+        inputs: impl IntoIterator<Item = ScriptedTurn>,
+        wakes: impl IntoIterator<Item = ScriptedTurn>,
+    ) -> Self {
+        let provider = Self::new(inputs);
+        provider.lock().wakes = Some(wakes.into_iter().collect());
+        provider
+    }
+
+    /// Answers every request with `respond(request)` instead of the queued
+    /// turns. Requests and dispatches are still recorded; an error fails
+    /// only that request. Runs without the state lock, so concurrent agents'
+    /// requests are answered in the order the executor dispatches them.
+    #[must_use]
+    pub fn responding(
+        respond: impl Fn(&ModelRequest) -> Result<ScriptedTurn> + Send + Sync + 'static,
+    ) -> Self {
+        let mut provider = Self::new([]);
+        provider.responder = Some(Arc::new(respond));
+        provider
+    }
+
+    /// The same responding model seen by a host reopened after a crash: no
+    /// requests, dispatches or observers cross, but the remote side keeps its
+    /// answers, so the new host reconciles an interrupted dispatch from them,
+    /// as a provider with durable responses does. A dispatch it never answered
+    /// stays unreconciled.
+    #[must_use]
+    pub fn reopened(&self) -> Self {
+        // The model's own settings survive; host state and observers do not.
+        let mut provider = Self::new([]);
+        provider.responder.clone_from(&self.responder);
+        provider.answered = Arc::clone(&self.answered);
+        provider.capacity = self.capacity;
+        provider.token_counter.clone_from(&self.token_counter);
+        provider.reads_content = self.reads_content;
+        provider
+    }
+
+    /// The remaining events of an answered dispatch that extend `observed`;
+    /// `None` when it was never answered or ended in a failure.
+    fn replay(&self, dispatch: ModelDispatch, observed: &[ModelEvent]) -> Option<Vec<ModelEvent>> {
+        let answered = self
+            .answered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_, turn) = answered.iter().find(|(sent, _)| *sent == dispatch)?;
+        turn.continuation(observed)
+    }
+}
+
+impl ScriptedTurn {
+    fn continuation(&self, observed: &[ModelEvent]) -> Option<Vec<ModelEvent>> {
+        let events = self.clone().into_events();
+        let mut events = events.into_iter();
+        for expected in observed {
+            if !matches!(events.next(), Some(ScriptedEvent::Event(event)) if &event == expected) {
+                return None;
+            }
+        }
+        events
+            .map(|event| match event {
+                ScriptedEvent::Event(event) => Some(event),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl ScriptedModelProvider {
+    /// Takes each retrospective reply from the script, for tests of the
+    /// retrospective itself: its tool calls, failures or accounting.
+    #[must_use]
+    pub fn scripting_retrospectives(self) -> Self {
+        self.lock().scripts_retrospectives = true;
+        self
+    }
+
+    /// Reads every file part's bytes through the reader the harness binds for
+    /// the executing task before answering, as a real provider projects them.
+    /// An unbound or refused read fails the request; the script cursor is shared
+    /// with every bound copy.
+    #[must_use]
+    pub const fn reading_content(mut self) -> Self {
+        self.reads_content = true;
+        self
+    }
+
+    /// Replaces the model's advertised context and output capacities.
+    #[must_use]
+    pub fn with_context_capacity(mut self, capacity: ModelContextCapacity) -> Self {
+        self.capacity = Some(capacity);
+        self
+    }
+
+    /// Replaces deterministic request token accounting.
+    #[must_use]
+    pub fn with_token_counter(
+        mut self,
+        counter: impl Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync + 'static,
+    ) -> Self {
+        self.token_counter = Some(Arc::new(counter));
+        self
+    }
+
+    /// Leaves capacity and token accounting unavailable, as in providers without compaction support.
+    #[must_use]
+    pub fn without_accounting(mut self) -> Self {
+        self.capacity = None;
+        self.token_counter = None;
+        self
+    }
+
+    /// Observes an accepted dispatch after recording it and releasing the state lock.
+    /// Its future completes before the first scripted event, allowing native I/O
+    /// to progress while the actual model turn retains its resources. An error
+    /// ends that stream; invalid requests and exhausted scripts do not observe.
+    #[must_use]
+    pub fn with_dispatch_observer(
+        mut self,
+        observer: impl Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>>
+        + acyclic_stream::ProviderPlatform
+        + 'static,
+    ) -> Self {
+        self.dispatch_observer = Some(Arc::new(observer));
+        self
+    }
+
+    /// Configures ordered recovery replies before sharing this provider.
+    pub fn with_reconciliations(
+        self,
+        replies: impl IntoIterator<Item = ScriptedReconciliation>,
+    ) -> Self {
+        self.lock().recoveries = replies.into_iter().collect();
+        self
+    }
+
+    /// Snapshots complete requests, including system messages, tools and context.
+    pub fn requests(&self) -> Vec<ModelRequest> {
+        self.lock()
+            .requests
+            .iter()
+            .map(|r| r.request().clone())
+            .collect()
+    }
+
+    /// Counts recorded requests without copying their messages and tool schemas.
+    pub fn request_count(&self) -> usize {
+        self.lock().requests.len()
+    }
+
+    /// Snapshots one complete request without copying the rest of its history.
+    pub fn request(&self, index: usize) -> Option<ModelRequest> {
+        self.lock().requests.get(index).map(|r| r.request().clone())
+    }
+
+    /// Snapshots the last complete request without copying earlier requests.
+    pub fn last_request(&self) -> Option<ModelRequest> {
+        self.lock().requests.last().map(|r| r.request().clone())
+    }
+
+    /// Snapshots dispatch identities in the same order as the recorded requests.
+    pub fn dispatches(&self) -> Vec<ModelDispatch> {
+        self.lock().dispatches.clone()
+    }
+
+    /// The agent each request woken by a child's settlement belonged to, in
+    /// request order, whether or not the script routes wakes.
+    pub fn woken(&self) -> Vec<crate::agent::AgentPath> {
+        self.lock().woken.clone()
+    }
+
+    /// Requests that were not woken by a child's settlement, counted in one
+    /// snapshot so a concurrent wake cannot skew the count.
+    pub fn input_requests(&self) -> usize {
+        let state = self.lock();
+        state.requests.len() - state.woken.len()
+    }
+
+    /// Original requests and dispatches in the input queue's order.
+    pub fn input_exchanges(&self) -> Vec<(ModelDispatch, ModelRequest)> {
+        let state = self.lock();
+        state
+            .dispatches
+            .iter()
+            .zip(&state.requests)
+            .filter(|(_, request)| matches!(waking_child(request.request()), Ok(None)))
+            .map(|(dispatch, request)| (*dispatch, request.request().clone()))
+            .collect()
+    }
+
+    /// Number of responses not yet requested.
+    pub fn remaining(&self) -> usize {
+        self.lock().turns.len()
+    }
+
+    /// Appends responses after fixture initialization has selected its immutable files.
+    pub fn extend(&self, turns: impl IntoIterator<Item = ScriptedTurn>) {
+        self.lock().turns.extend(turns);
+    }
+
+    /// Snapshots interrupted dispatches submitted for reconciliation.
+    pub fn reconciliations(&self) -> Vec<ModelDispatch> {
+        self.lock().reconciliations.clone()
+    }
+
+    /// Snapshots the scripted recovery replies that have not been consumed.
+    pub fn recoveries(&self) -> Vec<ScriptedReconciliation> {
+        self.lock().recoveries.iter().cloned().collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn next(&self, request: PreparedModelRequest, dispatch: ModelDispatch) -> Result<ScriptedTurn> {
+        if dispatch.request_digest != request.request_digest()
+            || dispatch.request_digest != *blake3::hash(request.bytes()).as_bytes()
+            || request.bytes() != crate::contract::canonical_json_bytes(request.request())?
+        {
+            return Err(Error::Invalid(
+                "scripted model request digest mismatch".into(),
+            ));
+        }
+        let answer = self
+            .responder
+            .as_ref()
+            .map(|respond| respond(request.request()));
+        if let Some(Ok(turn)) = &answer {
+            self.answered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((dispatch, turn.clone()));
+        }
+        let waking = waking_child(request.request())?;
+        let retrospective = is_retrospective(request.request());
+        let mut state = self.lock();
+        state.requests.push(request);
+        state.dispatches.push(dispatch);
+        let State {
+            turns,
+            wakes,
+            woken,
+            scripts_retrospectives,
+            ..
+        } = &mut *state;
+        if let Some(child) = &waking {
+            woken.push(child.parent().ok_or_else(|| {
+                Error::Invalid(format!("settled agent {child} has no parent to wake"))
+            })?);
+        }
+        answer.unwrap_or_else(|| match (&waking, wakes.as_mut()) {
+            (Some(child), Some(wakes)) => wakes.pop_front().ok_or_else(|| {
+                let parent = woken.last().map_or_else(String::new, ToString::to_string);
+                Error::Invalid(format!(
+                    "scripted model has no wake turn left for {parent}, woken by {child}"
+                ))
+            }),
+            _ if retrospective && !*scripts_retrospectives => Ok(ScriptedTurn::Text("none".into())),
+            _ => turns
+                .pop_front()
+                .ok_or_else(|| Error::Invalid("scripted model exhausted".into())),
+        })
+    }
+}
+
+/// The child whose settlement woke this request: its newest model-visible
+/// input is a waking `child.settled` notice, whose body names the child.
+fn waking_child(request: &ModelRequest) -> Result<Option<crate::agent::AgentPath>> {
+    let Some((notices, _)) =
+        request_input(request).and_then(|message| message.content.notice_parts())
+    else {
+        return Ok(None);
+    };
+    notices
+        .iter()
+        .rev()
+        .find(|notice| notice.wake && notice.kind == "child.settled")
+        .map(|notice| {
+            let child = notice.body.get("child").unwrap_or(&serde_json::Value::Null);
+            serde::Deserialize::deserialize(child)
+                .map_err(|error| Error::Invalid(format!("child.settled names no child: {error}")))
+        })
+        .transpose()
+}
+
+fn request_input(request: &ModelRequest) -> Option<&crate::model::ModelMessage> {
+    // Context discovery can publish quiet notices after the original input.
+    // These are visible, but they do not identify what opened the request.
+    model_visible_messages(&request.messages).rfind(|message| {
+        message
+            .content
+            .notice_parts()
+            .is_none_or(|(notices, parts)| {
+                !parts.is_empty() || notices.iter().any(|notice| notice.wake)
+            })
+    })
+}
+
+/// Borrows messages that contribute provider-visible content. Canonical
+/// requests also retain private validation notices; mixed event batches and
+/// original attachments remain visible, as in the provider projection.
+#[must_use]
+pub fn model_visible_messages(
+    messages: &[crate::model::ModelMessage],
+) -> impl DoubleEndedIterator<Item = &crate::model::ModelMessage> {
+    messages.iter().filter(|message| {
+        message
+            .content
+            .notice_parts()
+            .is_none_or(|(notices, attachments)| {
+                !attachments.is_empty() || notices.iter().any(|notice| notice.model_visible())
+            })
+    })
+}
+
+/// Reads every file part a provider projects as bytes through `reader`, as the
+/// stock providers do; the first unbound or refused read fails. Reference parts
+/// travel as identities and are not read.
+pub async fn read_request_files(
+    reader: Option<(
+        &dyn crate::conversation::ContentResidencyVerifier,
+        Option<u64>,
+    )>,
+    request: &PreparedModelRequest,
+) -> Result<()> {
+    for message in &request.request().messages {
+        for (file, policy) in message.content.file_parts() {
+            if !matches!(
+                policy,
+                crate::model::FileProjectionPolicy::BoundedFull
+                    | crate::model::FileProjectionPolicy::ProjectInstructions(_)
+            ) {
+                continue;
+            }
+            let (reader, maximum) = reader.ok_or_else(|| {
+                Error::Unauthorized("scripted provider has no content reader".into())
+            })?;
+            policy.projected_bytes(file, maximum)?;
+            reader
+                .read(file, file.descriptor().byte_length(), None, None)?
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+impl ScriptedModelProvider {
+    fn answer(
+        &self,
+        request: PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> BoxProviderStream<'_, Result<ModelEvent>> {
+        let turn = self.next(request, dispatch);
+        match (turn, self.dispatch_observer.as_ref()) {
+            (Ok(turn), Some(observer)) => {
+                let observed = observer(dispatch);
+                Box::pin(
+                    futures::stream::once(async move {
+                        observed.await?;
+                        Ok::<_, Error>(turn.stream())
+                    })
+                    .try_flatten(),
+                )
+            }
+            (Ok(turn), None) => turn.stream(),
+            (Err(error), _) => Box::pin(futures::stream::iter([Err(error)])),
+        }
+    }
+}
+
+impl ModelProvider for ScriptedModelProvider {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        maximum_bytes: Option<u64>,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        self.reads_content.then(|| {
+            Arc::new(Self {
+                state: Arc::clone(&self.state),
+                responder: self.responder.clone(),
+                answered: Arc::clone(&self.answered),
+                capacity: self.capacity,
+                token_counter: self.token_counter.clone(),
+                dispatch_observer: self.dispatch_observer.clone(),
+                reconciliation_observer: self.reconciliation_observer.clone(),
+                reads_content: true,
+                content: Some((reader, maximum_bytes)),
+                volume: self.volume.clone(),
+            }) as Arc<dyn ModelProvider>
+        })
+    }
+
+    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
+        self.capacity.ok_or_else(|| {
+            Error::Unsupported("selected model context capacity is unavailable".into())
+        })
+    }
+    fn reported_input_tokens(
+        &self,
+        _: &Model,
+        metadata: &serde_json::Value,
+    ) -> Result<Option<u64>> {
+        // This inclusive counter is unambiguous; arbitrary scripted metadata
+        // with other conventions retains the trait's unknown observation.
+        Ok(metadata
+            .get("usage")
+            .and_then(|usage| usage.get("prompt_tokens"))
+            .and_then(serde_json::Value::as_u64))
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        _ceiling: u64,
+    ) -> crate::model::ModelStream<'a> {
+        crate::model::ModelStream::from_count(async move {
+            let counter = self.token_counter.as_ref().ok_or_else(|| {
+                Error::Unsupported("selected model token counting is unavailable".into())
+            })?;
+            counter(request)
+        })
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        if let Some(volume) = &self.volume {
+            let turn = if request.request_digest() == dispatch.request_digest {
+                volume.select(dispatch.step)
+            } else {
+                Err(Error::Conflict(
+                    "scripted model request digest mismatch".into(),
+                ))
+            };
+            let stream = match turn {
+                Ok(turn) => turn.clone().stream(),
+                Err(error) => Box::pin(futures::stream::iter([Err(error)])),
+            };
+            return crate::model::ModelStream::new(stream);
+        }
+        if !self.reads_content {
+            return crate::model::ModelStream::new(self.answer(request.clone(), dispatch));
+        }
+        crate::model::ModelStream::new(Box::pin(
+            futures::stream::once(async move {
+                let reader = self
+                    .content
+                    .as_ref()
+                    .map(|(reader, maximum)| (reader.as_ref(), *maximum));
+                read_request_files(reader, request).await?;
+                Ok::<_, Error>(self.answer(request.clone(), dispatch))
+            })
+            .try_flatten(),
+        ))
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        dispatch: ModelDispatch,
+        observed: &'a [ModelEvent],
+    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async move {
+            if let Some(volume) = &self.volume {
+                return Ok(volume.select(dispatch.step)?.continuation(observed));
+            }
+            let mut state = self.lock();
+            state.reconciliations.push(dispatch);
+            if self.responder.is_some() && state.recoveries.is_empty() {
+                // A responding model reconciles from its own answers, after
+                // the same check a scripted recovery passes.
+                if let Some(observer) = &self.reconciliation_observer {
+                    observer(dispatch)?;
+                }
+                return Ok(self.replay(dispatch, observed));
+            }
+            if state.dispatches.iter().any(|original| {
+                original.operation_id == dispatch.operation_id
+                    && original.step == dispatch.step
+                    && original.request_digest != dispatch.request_digest
+            }) {
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch mismatch".into(),
+                ));
+            }
+            if !state.dispatches.contains(&dispatch)
+                && !state.recoveries.front().is_some_and(|reply| reply.orphan)
+            {
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch was not generated".into(),
+                ));
+            }
+            if let Some(observer) = &self.reconciliation_observer {
+                observer(dispatch)?;
+            }
+            let reply = state
+                .recoveries
+                .pop_front()
+                .ok_or_else(|| Error::Invalid("scripted reconciliation exhausted".into()))?;
+            if reply.observed != observed {
+                state.recoveries.push_front(reply);
+                return Err(Error::Conflict(
+                    "scripted reconciliation prefix mismatch".into(),
+                ));
+            }
+            Ok(reply.continuation)
+        })
+    }
+
+    fn bind_workspace<'a>(
+        &'a self,
+        agent: &'a crate::agent::AgentState,
+        input: &'a crate::model::ModelContent,
+        content: &'a crate::runtime::ContentBindings,
+        maximum: Option<u64>,
+    ) -> Option<BoxProviderFuture<'a, Result<Arc<dyn ModelProvider>>>> {
+        let volume = self.volume.as_ref()?;
+        Some(Box::pin(async move {
+            let mut bound = Self::new([]);
+            bound.volume = Some(Arc::new(volume.bind(agent, input, content, maximum).await?));
+            Ok(Arc::new(bound) as Arc<dyn ModelProvider>)
+        }))
+    }
+}
+
+fn serialized_tokens(request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+    Ok(request.serialized_token_upper_bound(None)?.0)
+}
+
+#[cfg(test)]
+#[path = "../test_support/tests.rs"]
+mod tests;
+
+impl ScriptedTurn {
+    fn into_events(self) -> Vec<ScriptedEvent> {
+        match self {
+            Self::Text(delta) => vec![
+                ScriptedEvent::Event(ModelEvent::Content { delta }),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ],
+            Self::Events(events) => events,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn stream(self) -> BoxProviderStream<'static, Result<ModelEvent>> {
+        Box::pin(
+            futures::stream::iter(self.into_events()).then(|event| async move {
+                match event {
+                    ScriptedEvent::Event(event) => Ok(event),
+                    ScriptedEvent::Error { error } => Err(Error::Storage(error)),
+                    ScriptedEvent::Interrupted { error } => Err(Error::ModelUnavailable {
+                        failure: crate::ModelTransportFailure::Interrupted,
+                        excerpt: error,
+                    }),
+                    ScriptedEvent::Fatal { error } => Err(Error::Invalid(error)),
+                    ScriptedEvent::Refused { status, error } => Err(Error::ModelUnavailable {
+                        failure: crate::ModelTransportFailure::Status(status),
+                        excerpt: error,
+                    }),
+                    ScriptedEvent::Pending {} => std::future::pending().await,
+                }
+            }),
+        )
+    }
+}

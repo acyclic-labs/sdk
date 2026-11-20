@@ -32,6 +32,6 @@ struct Journal {
     /// Held for as long as the provider is open, without a descriptor, and
     /// released only after the journal's files close. Each user-facing
     /// provider holds one of its handles.
-    claim: acyclic_native_runtime::StoreClaim,
+    claim: acyclic_native_claim::StoreClaim,
     _ownership_anchor: Option<OwnershipAnchor>,
 }

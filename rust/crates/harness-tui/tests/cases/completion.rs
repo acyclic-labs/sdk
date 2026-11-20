@@ -16,11 +16,6 @@ mod deltas;
 #[path = "../support/completion_sequences.rs"]
 mod sequences;
 
-#[test]
-fn completion_fuzz_empty_input_is_valid() {
-    sequences::exercise(&[]).unwrap();
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
@@ -92,25 +87,7 @@ fn refresh_commands(menu: &mut CompletionMenu, editor: &Editor) {
     menu.refresh(editor);
 }
 #[test]
-fn file_completion_is_fuzzy_keeps_at_and_quotes_spaces() {
-    for (text, expected) in [
-        ("read @srm", "read @src/readme.md "),
-        ("@ab", "@\"src/a b.rs\" "),
-        ("@a", "@\"src/a b.rs\" "),
-        ("@@m", "@@memo.rs "),
-        ("@\u{1f469}", "@\u{754c}/\u{1f469}\u{200d}\u{1f4bb}.rs "),
-    ] {
-        let mut editor = Editor::new(text);
-        let mut menu = CompletionMenu::default();
-        refresh_files(&mut menu, &editor);
-        assert!(menu.active(&editor));
-        assert!(menu.accept(&mut editor, 0));
-        assert_eq!(editor.text(), expected);
-        editor.undo();
-        assert_eq!(editor.text(), text);
-        assert_eq!(editor.cursor(), text.len());
-        assert!(editor.selection().is_empty());
-    }
+fn non_mention_text_has_no_completion_request() {
     let editor = Editor::new("@zz");
     let mut menu = CompletionMenu::default();
     refresh_files(&mut menu, &editor);
@@ -126,34 +103,6 @@ fn file_completion_is_fuzzy_keeps_at_and_quotes_spaces() {
     ] {
         assert_eq!(completion_request(&Editor::new(text)), None);
     }
-}
-
-#[test]
-fn quoted_and_mid_token_requests_replace_the_whole_token() {
-    let mut editor = Editor::new("read @src/readme old");
-    editor.set_cursor(9, false);
-    let request = completion_request(&editor);
-    assert_eq!(request.as_ref().map(|r| r.query.as_str()), Some("src"));
-    assert_eq!(request.as_ref().map(|r| r.range.clone()), Some(5..16));
-    let mut menu = CompletionMenu::default();
-    refresh_files(&mut menu, &editor);
-    assert!(menu.accept(&mut editor, 0));
-    assert_eq!(editor.text(), "read @src/readme.md old");
-    assert_eq!((editor.cursor(), editor.anchor()), (20, 20));
-    assert!(editor.undo());
-    assert_eq!(
-        (editor.text(), editor.cursor(), editor.anchor()),
-        ("read @src/readme old", 9, 9)
-    );
-    let mut editor = Editor::new("@\"src/a b\"");
-    assert_eq!(
-        completion_request(&editor).map(|r| r.query),
-        Some("src/a b".into())
-    );
-    let mut menu = CompletionMenu::default();
-    refresh_files(&mut menu, &editor);
-    assert!(menu.accept(&mut editor, 0));
-    assert_eq!(editor.text(), "@\"src/a b.rs\" ");
 }
 
 #[test]
@@ -400,28 +349,6 @@ fn stale_results_dismissals_and_folded_pastes_do_not_accept_completion() {
 }
 
 #[test]
-fn popup_geometry_stays_within_terminal_bounds() {
-    let editor = Editor::new("/th");
-    let mut menu = CompletionMenu::default();
-    refresh_commands(&mut menu, &editor);
-    let mut buffer = Buffer::empty(Rect::default());
-    for width in 1..=80 {
-        for height in 1..=24 {
-            let screen = Rect::new(0, 0, width, height);
-            let popup = CompletionPopup::new(&menu, &editor);
-            let area = popup.area(
-                Rect::new(0, height.saturating_sub(3), width, 3.min(height)),
-                screen,
-            );
-            assert!(area.right() <= screen.right() && area.bottom() <= screen.bottom());
-            assert!(area.width <= 60 && area.height <= 12);
-            buffer.resize(area);
-            popup.render(area, &mut buffer);
-        }
-    }
-}
-
-#[test]
 fn unicode_popup_rows_are_clipped_by_display_cells() -> Result<(), Box<dyn std::error::Error>> {
     let editor = Editor::new("@");
     let mut menu = CompletionMenu::default();
@@ -579,8 +506,14 @@ proptest! {
         let cursor = accepted.grapheme_indices(true).map(|(i, _)| i).chain([accepted.len()]).find(|i| *i >= desired).unwrap_or(accepted.len());
         prop_assert_eq!(editor.text(), &accepted);
         prop_assert_eq!((editor.cursor(), editor.anchor()), (cursor, cursor));
-        let request = completion_request(&Editor::new(&token));
-        prop_assert_eq!(request.map(|r| r.query), Some(path));
+        let request = completion_request(&Editor::new(&token)).expect("quoted or bare mention");
+        prop_assert_eq!(request.query.as_str(), path.as_str());
+        let mut mid_token = Editor::new(&original);
+        mid_token.set_cursor(9, false);
+        let request = completion_request(&mid_token).expect("mid-token mention");
+        prop_assert_eq!(request.query.as_str(), "x");
+        prop_assert_eq!((request.range.start, request.range.end), (7, 9 + suffix.len()));
+        prop_assert!(request.range.end >= mid_token.cursor());
         prop_assert!(editor.undo());
         prop_assert_eq!(editor.text(), original);
         prop_assert_eq!((editor.cursor(), editor.anchor()), (8, 8));
@@ -610,14 +543,20 @@ proptest! {
 
     #[test]
     fn popup_geometry_handles_a_prompt_outside_the_screen(
-        x in any::<u16>(), y in any::<u16>(), width in any::<u16>(), height in any::<u16>()
+        x in any::<u16>(), y in any::<u16>(), width in any::<u16>(), height in any::<u16>(),
+        screen_x in any::<u16>(), screen_y in any::<u16>(),
+        screen_width in 1u16..160, screen_height in 1u16..80
     ) {
         let editor = Editor::new("/th");
         let mut menu = CompletionMenu::default(); refresh_commands(&mut menu, &editor);
-        let screen = Rect::new(3, 4, 80, 24);
-        let area = CompletionPopup::new(&menu, &editor).area(Rect::new(x, y, width, height), screen);
+        let screen = Rect::new(screen_x, screen_y, screen_width, screen_height);
+        let popup = CompletionPopup::new(&menu, &editor);
+        let area = popup.area(Rect::new(x, y, width, height), screen);
         prop_assert!(area.x >= screen.x && area.y >= screen.y);
         prop_assert!(area.right() <= screen.right() && area.bottom() <= screen.bottom());
+        prop_assert!(area.width <= 60 && area.height <= 12);
+        let mut buffer = Buffer::empty(area);
+        popup.render(area, &mut buffer);
     }
 
     #[test]
@@ -660,19 +599,6 @@ fn casefold_entry(line: &str) -> Option<(char, String)> {
         .map(scalar)
         .collect::<Option<String>>()?;
     Some((scalar(from)?, folded))
-}
-
-#[test]
-fn unicode_casefold_keeps_the_source_spelling() {
-    for (query, path) in [("Σ", "ς.rs"), ("STRASSE", "Straße.rs"), ("FFI", "ﬃ.rs")] {
-        assert!(fuzzy_score(query, path).is_some());
-        let mut editor = Editor::new(&format!("@{query}"));
-        let mut menu = CompletionMenu::default();
-        single(&mut menu, path);
-        menu.refresh(&editor);
-        assert!(menu.accept(&mut editor, 0));
-        assert_eq!(editor.text(), format!("@{path} "));
-    }
 }
 
 #[test]

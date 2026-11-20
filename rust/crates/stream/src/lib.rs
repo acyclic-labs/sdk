@@ -1,96 +1,41 @@
 #![doc = include_str!("../README.md")]
-/// Session admission version. Checked before credentials or the first request.
-pub const SESSION_PROTOCOL_VERSION: u32 = 3;
 
-/// Shared canonical account-relative resource addressing.
-pub use acyclic_auth::addressing;
-pub mod completion;
-pub mod demand;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-acyclic_test_support::counting_allocator!();
+extern crate self as acyclic_stream;
 
-use std::sync::Arc;
+pub use acyclic_stream_contract::*;
 
-use crate::OwnedBytes as Bytes;
 use acyclic_stream_wire::wire;
+#[cfg(not(target_arch = "wasm32"))]
 use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
-use thiserror::Error;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+mod browser;
 pub mod conformance;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod filtered_follow_fixture;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod follow_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-mod head_tests;
-pub mod http_response;
-pub mod pages;
-mod pending;
-pub mod persistence;
+pub mod http;
+#[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+mod journal_provider;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod postgres;
-pub mod preparation;
-#[cfg(not(target_arch = "wasm32"))]
-pub use pending::NativePending;
-pub use pending::{AppendPending, Pending};
-pub mod pull;
-pub mod request;
-pub mod runtime;
-pub mod search;
 #[cfg(any(
     not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub mod session;
-pub mod testing;
-pub mod trace;
-// The WASM adapter consumes this module on browser builds; native builds keep
-#[cfg(not(target_arch = "wasm32"))]
-pub mod http;
-#[cfg(not(target_arch = "wasm32"))]
-mod transport_credential;
-// Request projection is shared by the native HTTP client and the browser adapter.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-mod browser;
-#[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-mod journal_provider;
 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
 pub use journal_provider::{JournalStream, JournalStreamLimits};
-mod change;
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-mod http_codec;
-mod interest;
-mod journal;
 #[cfg(not(target_arch = "wasm32"))]
 mod local;
 mod memory;
-mod operation_claim;
-// The publication models in change and interest wake through this probe.
-#[cfg(all(loom, test))]
-#[path = "../publication-models/probe.rs"]
-mod probe;
 mod replicated;
-pub use operation_claim::{
-    OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
-};
-mod follow_filter;
-mod follow_index;
-#[cfg(not(target_arch = "wasm32"))]
-mod obs;
-#[doc(hidden)]
-pub mod query_sync;
-mod snapshot;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
-pub use follow_filter::FollowFilter;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -103,8 +48,18 @@ pub use wasm::{
 #[cfg(any(feature = "test-support", all(test, not(target_arch = "wasm32"))))]
 #[doc(hidden)]
 pub mod codec_fuzz;
-/// Conversion helpers between the canonical Rust domain types and generated wire messages.
-pub mod wire_codec;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod follow_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod head_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use acyclic_stream_contract_bytes::test_meter;
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod test_trace;
 
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "memory/recovery_model.rs"]
@@ -128,79 +83,60 @@ pub use local::{
 };
 pub use memory::{CommitAdmission, MemoryLimits, MemoryStream, admit_commit};
 
-/// Maximum opaque record body.
-pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
-/// Maximum records, participants, mutations, or path segments in one request.
-pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
-const REPLAY_PAGE: u32 = 1_024;
-const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
-/// Maximum canonical application command, including metadata.
-pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Filesystem resource index prefix width. Complete paths remain in metadata
-/// and are authorized after coarse indexed selection.
-pub const RESOURCE_INDEX_PREFIX_BYTES: usize = 1024;
-/// Maximum caller retry-identity width.
-pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
-/// Maximum canonical path text accepted by the single-command wire format.
-pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
+// The publication models in change and interest wake through this probe.
+#[cfg(all(loom, test))]
+#[path = "../publication-models/probe.rs"]
+mod probe;
 
-#[path = "lib/path.rs"]
-mod path;
-pub use path::StreamPath;
-#[path = "lib/revision.rs"]
-pub mod revision;
-pub use revision::{AppliedRevisions, Revision, RevisionCut, RevisionScope, RevisionTracker};
-mod provenance;
-pub use provenance::{ForkCut, Provenance};
+// Contract unit tests that exercise the contract through the providers that build on it.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "changes_tests.rs"]
+mod changes_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "follow_filter_tests.rs"]
+mod follow_filter_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "journal_tests.rs"]
+mod journal_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "lib_tests.rs"]
+mod lib_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "pages_tests.rs"]
+mod pages_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "pending_tests.rs"]
+mod pending_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "persistence_tests.rs"]
+mod persistence_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "provider_cursor_tests.rs"]
+mod provider_cursor_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "query_tests.rs"]
+mod query_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "receipt_tests.rs"]
+mod receipt_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "request_tests.rs"]
+mod request_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "search_tests.rs"]
+mod search_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "session_wire_tests.rs"]
+mod session_wire_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "sources_tests.rs"]
+mod sources_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "testing_tests.rs"]
+mod testing_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "trace_tests.rs"]
+mod trace_tests;
 
-include!("lib/domain.rs");
-include!("lib/write.rs");
-include!("lib/head.rs");
-include!("lib/receipt.rs");
-
-mod changes;
-mod record_headers;
-pub use changes::{
-    ChangeEntryRef, changes_chunk_len, changes_context, changes_encoded_len, decode_changes,
-    is_changes,
-};
-pub use record_headers::{RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders};
-
-include!("lib/provider_context.rs");
-include!("lib/provider.rs");
-include!("lib/native_provider.rs");
-include!("lib/provider_ext.rs");
-
-include!("lib/stream.rs");
-
-include!("lib/error.rs");
-
-include!("lib/tests.rs");
-
-mod owned_bytes;
-#[cfg(any(test, feature = "test-support"))]
-pub use owned_bytes::hashed_on_this_thread;
-#[cfg(all(feature = "js-bytes", target_arch = "wasm32"))]
-pub use owned_bytes::javascript as javascript_bytes;
-pub use owned_bytes::{
-    OwnedBytes, OwnedBytesBacking, SealedBytes, UniqueOwnedBytes, content_digest,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
-#[cfg(not(target_arch = "wasm32"))]
-mod native;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use native::{
-    NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
-    PreparedNativeCommit, PreparedRecordCapacity,
-};
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod test_meter;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
-mod test_trace;
-
-#[cfg(test)]
-#[path = "lib/path_text_tests.rs"]
-mod path_text_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();

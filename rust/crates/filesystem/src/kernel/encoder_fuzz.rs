@@ -601,13 +601,14 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(
     #[cfg(not(target_arch = "wasm32"))]
     let root = (mode != 0)
         .then(|| {
-            crate::NativeMaterializationWork::new(
+            crate::NativeMaterializationWork::root(
                 if mode == 2 || mode == 4 {
                     WorkBudget::UNBOUNDED
                 } else {
                     budget
                 },
                 &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
             )
             .map_err(|(error, _)| error)
         })

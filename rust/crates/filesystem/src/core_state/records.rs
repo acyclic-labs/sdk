@@ -66,6 +66,7 @@ impl RecordPaths<'_> {
         from: &Path,
         to: &Path,
         parent: Option<&cap_std::fs::Dir>,
+        mode: acyclic_native_runtime::RenameMode,
     ) -> Result<(), LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             return acyclic_native_runtime::rename_file(from, to).map_err(Into::into);
@@ -91,7 +92,7 @@ impl RecordPaths<'_> {
                     source,
                     parent.get(),
                     target,
-                    acyclic_native_runtime::RenameMode::NoReplace,
+                    mode,
                     None,
                     work,
                 )
@@ -448,18 +449,42 @@ pub(super) fn write_journaled<T: Serialize>(
     paths: &RecordPaths,
     value: &T,
 ) -> Result<(), LocalCoreStateStoreError> {
+    write_record(paths, value, Publication::Recoverable)
+}
+
+/// Publishes data whose previous image cannot be reached by an acknowledged
+/// record. Its caller holds the referencing record's lock.
+pub(super) fn write_unacknowledged<T: Serialize>(
+    paths: &RecordPaths,
+    value: &T,
+) -> Result<(), LocalCoreStateStoreError> {
+    write_record(paths, value, Publication::Unacknowledged)
+}
+
+#[derive(Clone, Copy)]
+enum Publication {
+    Recoverable,
+    Unacknowledged,
+}
+
+fn write_record<T: Serialize>(
+    paths: &RecordPaths,
+    value: &T,
+    publication: Publication,
+) -> Result<(), LocalCoreStateStoreError> {
     let parent = paths
         .allocation
         .as_ref()
         .map(|allocation| materialization_parent(&paths.temporary, allocation.work()))
         .transpose()?;
-    write_journaled_in(paths, value, parent.as_ref())
+    write_record_in(paths, value, parent.as_ref(), publication)
 }
 
-fn write_journaled_in<T: Serialize>(
+fn write_record_in<T: Serialize>(
     paths: &RecordPaths,
     value: &T,
     parent: Option<&cap_std::fs::Dir>,
+    publication: Publication,
 ) -> Result<(), LocalCoreStateStoreError> {
     let work = paths
         .allocation
@@ -512,22 +537,28 @@ fn write_journaled_in<T: Serialize>(
     }
     drop(temporary);
 
-    {
-        paths.remove_in(&paths.previous, parent)?;
-        if paths.exists(&paths.current, parent)? {
-            paths.rename(&paths.current, &paths.previous, parent)?;
+    use acyclic_native_runtime::RenameMode::{NoReplace, Replace};
+    match publication {
+        Publication::Unacknowledged => {
+            paths.rename(&paths.temporary, &paths.current, parent, Replace)?;
+            paths.sync_in(parent)
         }
-        if let Err(error) = paths.rename(&paths.temporary, &paths.current, parent) {
-            if paths.exists(&paths.previous, parent).unwrap_or(false)
-                && !paths.exists(&paths.current, parent).unwrap_or(true)
-            {
-                let _ = paths.rename(&paths.previous, &paths.current, parent);
+        Publication::Recoverable => {
+            paths.remove_in(&paths.previous, parent)?;
+            if paths.exists(&paths.current, parent)? {
+                paths.rename(&paths.current, &paths.previous, parent, NoReplace)?;
             }
-            return Err(error);
+            if let Err(error) = paths.rename(&paths.temporary, &paths.current, parent, NoReplace) {
+                if paths.exists(&paths.previous, parent).unwrap_or(false)
+                    && !paths.exists(&paths.current, parent).unwrap_or(true)
+                {
+                    let _ = paths.rename(&paths.previous, &paths.current, parent, NoReplace);
+                }
+                return Err(error);
+            }
+            paths.sync_in(parent)?;
+            paths.remove_in(&paths.previous, parent)
         }
-        paths.sync_in(parent)?;
-        paths.remove_in(&paths.previous, parent)?;
-        Ok(())
     }
 }
 
@@ -540,5 +571,5 @@ pub(super) fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 mod windows_publication_tests;

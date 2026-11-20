@@ -1,8 +1,8 @@
-use super::{
-    FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
-};
-use crate::http::transport_error;
-use crate::tool::edit::{allocation, charge, reserve_string};
+use super::{FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, validate_url_text};
+use crate::http::await_io;
+use crate::http::transport::{self, Kind, Response, copy_text, public_address};
+use crate::rejection;
+use crate::tool::edit::{allocation, charge};
 use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::Url;
@@ -12,9 +12,7 @@ use std::sync::Arc;
 mod native_tests;
 #[cfg(test)]
 pub(crate) mod tests;
-mod transport;
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 const MAXIMUM_REDIRECTS: usize = 5;
 
 /// Direct GET adapter. No keys, cookies, proxy credentials, or search provider are used.
@@ -25,15 +23,9 @@ pub struct HttpFetch {
 impl HttpFetch {
     /// Creates a credential-free HTTP client using platform TLS verification.
     pub fn new() -> Result<Self> {
-        use rustls_platform_verifier::BuilderVerifierExt as _;
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .and_then(|builder| builder.with_platform_verifier())
-        .map_err(|_| Error::Invalid("cannot create fetch TLS client".into()))?
-        .with_no_client_auth();
-        Ok(Self { tls: Arc::new(tls) })
+        Ok(Self {
+            tls: crate::http::transport::tls_config()?,
+        })
     }
 
     async fn run(
@@ -70,11 +62,30 @@ impl HttpFetch {
                     ..Default::default()
                 })?;
             }
+            let headers = [
+                (
+                    http::header::ACCEPT_ENCODING,
+                    http::header::HeaderValue::from_static("identity"),
+                ),
+                (
+                    http::header::USER_AGENT,
+                    http::header::HeaderValue::from_static(concat!(
+                        "acyclic-harness/",
+                        env!("CARGO_PKG_VERSION")
+                    )),
+                ),
+            ];
             let mut failure = None;
             let response = transport::send(
+                Kind::Fetch {
+                    require_public_address: redirects > 0
+                        && (!explicitly_local || endpoint.origin() != original_origin),
+                },
+                http::Method::GET,
                 &endpoint,
-                &self.tls,
-                redirects > 0 && (!explicitly_local || endpoint.origin() != original_origin),
+                &headers,
+                bytes::Bytes::new(),
+                Some(&self.tls),
                 work,
                 &mut failure,
             )
@@ -83,7 +94,10 @@ impl HttpFetch {
                 return Err(error);
             }
             match response? {
-                transport::Response::Redirect(location, _location_held) => {
+                Response::Redirect {
+                    location,
+                    held: _location_held,
+                } => {
                     if redirects == MAXIMUM_REDIRECTS {
                         return Err(rejection(work, "fetch redirect limit exceeded"));
                     }
@@ -106,7 +120,7 @@ impl HttpFetch {
                     endpoint = next;
                     endpoint_held = next_held;
                 }
-                transport::Response::Content {
+                Response::Content {
                     bytes,
                     mut held,
                     status,
@@ -138,14 +152,6 @@ impl HttpFetch {
         }
         Err(rejection(work, "fetch redirect limit exceeded"))
     }
-}
-
-fn copy_text(text: &str, held: &mut acyclic_fs::NativeCustody) -> Result<String> {
-    let mut output = String::new();
-    reserve_string(held, &mut output, text.len())?;
-    charge(held, text.len() as u64, 1)?;
-    output.push_str(text);
-    Ok(output)
 }
 
 fn url_allocation(
@@ -225,51 +231,6 @@ fn validate_redirect_host(endpoint: &Url, work: acyclic_fs::NativeWork<'_>) -> R
         ));
     }
     Ok(())
-}
-
-fn public_address(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified()
-                || a == 0
-                || a >= 224
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 198 && (b == 18 || b == 19)))
-        }
-        IpAddr::V6(ip) => {
-            // Permit global unicast only. IPv4-mapped addresses inherit IPv4 policy.
-            if let Some(ip) = ip.to_ipv4_mapped() {
-                return public_address(IpAddr::V4(ip));
-            }
-            let segments = ip.segments();
-            (segments[0] & 0xe000) == 0x2000
-                && !(segments[0] == 0x2001 && (segments[1] <= 0x01ff || segments[1] == 0x0db8))
-                && segments[0] != 0x2002
-                && !(segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
-        }
-    }
-}
-
-async fn await_io<F: Future>(future: F, work: acyclic_fs::NativeWork<'_>) -> Result<F::Output> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = work {
-        work.remaining()?;
-        return tokio::select! {
-            biased;
-            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
-            result = future => Ok(result),
-        };
-    }
-    let _ = work;
-    Ok(future.await)
 }
 
 impl FetchProvider for HttpFetch {

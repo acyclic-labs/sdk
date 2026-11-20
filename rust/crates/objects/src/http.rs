@@ -7,7 +7,7 @@ use crate::{
     json, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 use bytes::Bytes;
 use reqwest::{
     Client, Response, Url,

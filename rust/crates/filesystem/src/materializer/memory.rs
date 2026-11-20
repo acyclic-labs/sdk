@@ -1,5 +1,6 @@
 use super::sdk;
-use sdk::{MaterializationJournal as Journal, MaterializationJournalStore, OperationId};
+use acyclic_fs_format::identity::OperationId;
+use sdk::{MaterializationJournal as Journal, MaterializationJournalStore};
 use std::collections::BTreeMap;
 
 #[derive(Default)]

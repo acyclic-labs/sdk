@@ -15,15 +15,7 @@ impl BrowserCheckout {
     }
 
     pub async fn discard(&mut self) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .discard(
-                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, discard())?;
         mutation_value(receipt.work)
     }
 }

@@ -5,7 +5,8 @@ use acyclic_fs::{
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_merge::fixtures::fork_workspace;
+use crate::workspace_merge::transaction::commit;
 
 #[tokio::test]
 async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {

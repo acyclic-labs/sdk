@@ -130,7 +130,6 @@ doc = false
 bench = false
 
 [dev-dependencies]
-arrayvec = { version = "0.7.8", default-features = false }
 acyclic-test-support = { path = "../crates/test-support" }
 proptest.workspace = true
 

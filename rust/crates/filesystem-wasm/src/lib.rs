@@ -4,7 +4,7 @@
 mod opfs;
 
 #[cfg(target_arch = "wasm32")]
-pub use acyclic_fs::browser::{IndexedDbObjectStore, IndexedDbOpenError};
+pub use acyclic_fs::browser::IndexedDbObjectStore;
 
 #[cfg(target_arch = "wasm32")]
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};

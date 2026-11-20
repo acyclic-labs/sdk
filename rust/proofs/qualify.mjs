@@ -270,7 +270,7 @@ const claims = {
       additionalDiagnostics: ["EOF discarded the recovered final frame"] },
   ],
   "terminal-drain-stop": [
-    "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
+    "rust/crates/harness-tui-term/tests/terminal_frames.rs", "acyclic-harness-tui-term",
     "terminal_frames::terminal_drain_cancellation_does_not_require_slave_closure",
     "a retained PTY slave must not keep a cancelled drainer waiting", [],
     { target: ["--test", "main"] },
@@ -336,7 +336,7 @@ const claims = {
     ] },
   ],
   "cli-failure-output": [
-    "rust/crates/harness/src/completion.rs", "acyclic-plugin",
+    "rust/crates/harness-cli/src/completion.rs", "acyclic-plugin",
     "runner::lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
     "failure output retained a lost shutdown producer", [],
     { mutations: [
@@ -1085,12 +1085,12 @@ const claims = {
     },
   ],
   "native-hook-ownership": [
-    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "rust/crates/harness-cli/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
     "foreign hook metadata was admitted", [],
     { fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 } },
   ],
   "native-hook-admission": [
-    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "rust/crates/harness-cli/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
     "native hook writer output was refused", [],
     {
       fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 },
@@ -1192,10 +1192,10 @@ const claims = {
     ] },
   ],
   "public-pause-retirement": [
-    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
+    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-conformance",
     "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
     "abandoned public pause lost its original native transition",
-    ["--features", "test-support"],
+    [],
     { target: ["--test", "main"] },
   ],
   "public-settlement-source": [

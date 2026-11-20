@@ -8,8 +8,9 @@ use acyclic_fs_work::performance::WorkBudget;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{allow, commit, fork_workspace};
-use crate::selected_budget::selected_transaction_budget;
+use crate::workspace_restore::fixtures::fork_workspace;
+use crate::workspace_restore::selected_budget::selected_transaction_budget;
+use crate::workspace_restore::transaction::{allow, commit};
 
 #[tokio::test]
 async fn path_restore_reuses_exact_records_and_preserves_unselected_state()

@@ -26,11 +26,17 @@ pub(super) fn attest_generated_sources(
         } else {
             logical_path.clone()
         };
-        validate_generated_sha256(&source.sha256)?;
         let digest = source
             .sha256
-            .trim_start_matches("sha256:")
-            .to_ascii_lowercase();
+            .strip_prefix("sha256:")
+            .unwrap_or(&source.sha256);
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Invalid(format!(
+                "generated source digest must be a SHA-256 value: {:?}",
+                source.sha256
+            )));
+        }
+        let digest = digest.to_ascii_lowercase();
         if let Some(previous) = logical_paths.insert(logical_key, digest.clone()) {
             if previous != digest {
                 return Err(Error::Invalid(format!(
@@ -80,7 +86,6 @@ pub(super) fn attest_generated_sources(
             )));
         }
         let bytes = fs::read(&physical_path)?;
-        validate_generated_sha256(&source.sha256)?;
         if !generated_sha256_matches(&source.sha256, &bytes) {
             return Err(Error::Invalid(format!(
                 "generated source digest does not match {}",
@@ -173,7 +178,10 @@ pub(super) fn normalize_rustdoc_filenames(value: &mut serde_json::Value, reposit
             for (key, child) in map {
                 if key == "filename" {
                     if let serde_json::Value::String(filename) = child {
-                        *filename = stable_rustdoc_filename(filename, repository_root);
+                        *filename = crate::path_identity::stable_filename(
+                            filename,
+                            &repository_root.to_string_lossy(),
+                        );
                         continue;
                     }
                 }
@@ -187,20 +195,6 @@ pub(super) fn normalize_rustdoc_filenames(value: &mut serde_json::Value, reposit
         }
         _ => {}
     }
-}
-
-pub(super) fn stable_rustdoc_filename(filename: &str, repository_root: &Path) -> String {
-    crate::path_identity::stable_filename(filename, &repository_root.to_string_lossy())
-}
-
-pub(super) fn validate_generated_sha256(value: &str) -> Result<(), Error> {
-    let digest = value.strip_prefix("sha256:").unwrap_or(value);
-    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(Error::Invalid(format!(
-            "generated source digest must be a SHA-256 value: {value:?}"
-        )));
-    }
-    Ok(())
 }
 
 pub(super) fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {

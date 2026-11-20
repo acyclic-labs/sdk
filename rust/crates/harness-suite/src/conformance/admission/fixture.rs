@@ -7,15 +7,16 @@ use acyclic_harness_core::{
         Grants, StockExecutors,
         hosting::{Bound, Placement, RootRequest, RootSubmission, Turns},
     },
-    test_support::{ScriptedModelProvider, ScriptedTurn},
+    model::scripted::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
+use acyclic_stream::ProviderOwner;
 
 pub(crate) struct Fixture {
     pub path: AgentPath,
     pub binding: WorkspaceEntry,
-    pub provider: Arc<Observed>,
-    scheduler: Arc<Observed>,
+    pub provider: ProviderOwner<Observed>,
+    scheduler: ProviderOwner<Observed>,
     filesystem: Arc<
         FilesystemHost<acyclic_fs::StreamAuthorityStore<Observed>, crate::conformance::ObjectStore>,
     >,
@@ -37,8 +38,8 @@ impl Fixture {
     pub async fn new(backend: &dyn Backend) -> Result<Self> {
         let storage = backend.fresh().await?;
         let raw = storage.open().await?;
-        let scheduler = Arc::new(Observed::new(raw.clone()));
-        let provider = Arc::new(Observed::new(raw));
+        let scheduler = ProviderOwner::new(Observed::new(raw.clone()));
+        let provider = ProviderOwner::new(Observed::new(raw));
         let agent = crate::conformance::fixtures::adopted().agent;
         let binding = crate::conformance::roots::volume(
             acyclic_harness_core::agent::WorkspaceRole::Private,
@@ -166,18 +167,21 @@ impl Fixture {
         expected: &str,
     ) -> Result {
         let executors = Arc::new(Executors(AtomicUsize::new(0)));
+        let provider = self.provider.clone();
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-            self.provider.clone(),
+            provider,
             acyclic_actors::addressing::ActorReference::new(b"conformance", b"agents", b"host")?,
             self.filesystem.clone(),
             root,
             admission,
             executors.clone(),
-            TurnLimits {
-                maximum_bytes: Some(64 * 1024),
-                history_turns: 8,
-            },
-            Default::default(),
+            (
+                TurnLimits {
+                    maximum_bytes: Some(64 * 1024),
+                    history_turns: 8,
+                },
+                Default::default(),
+            ),
         ));
         let handler = backend.handler(Arc::new(AgentHandler::new(
             actor_store(&self.scheduler)?,

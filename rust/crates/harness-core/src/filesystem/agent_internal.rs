@@ -25,7 +25,7 @@ mod ui;
 const PAGE: u32 = 256;
 
 /// Internal records and public content under distinct original volume grants.
-pub(in crate::filesystem) struct AgentInternalFiles<A: 'static, O: 'static> {
+pub struct AgentInternalFiles<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     grant: ContentGrant,

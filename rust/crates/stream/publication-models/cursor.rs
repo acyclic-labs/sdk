@@ -43,15 +43,18 @@ fn delivery_racing_close_never_restores_a_closed_cursor() {
         state.close();
         producer.join().unwrap();
         if first.is_pending() {
-            assert_eq!(
+            assert!(matches!(
                 next.as_mut().poll(&mut Context::from_waker(&wake)),
                 Poll::Ready(Ok(None))
-            );
+            ));
         } else {
-            assert_eq!(first, Poll::Ready(Ok(Some(vec![7]))));
+            assert!(matches!(first, Poll::Ready(Ok(Some(bytes))) if bytes == [7]));
         }
         drop(next);
-        assert_eq!(loom::future::block_on(Box::pin(state.next())), Ok(None));
+        assert!(matches!(
+            loom::future::block_on(Box::pin(state.next())),
+            Ok(None)
+        ));
         assert!(state.stream.lock().unwrap().is_none());
     });
 }
@@ -78,10 +81,10 @@ fn close_wakeup(broken: bool) {
             count.count.load(Ordering::SeqCst) > 0,
             "close stranded a pending next"
         );
-        assert_eq!(
+        assert!(matches!(
             next.as_mut().poll(&mut Context::from_waker(&wake)),
             Poll::Ready(Ok(None))
-        );
+        ));
     });
 }
 #[test]

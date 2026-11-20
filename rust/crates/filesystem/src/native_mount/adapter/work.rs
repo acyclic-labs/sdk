@@ -1,14 +1,14 @@
 use acyclic_stream::OwnedBytes;
 
 pub(super) enum NativeDemandCarrier<'a> {
-    Borrowed(&'a mut crate::demand::DemandWork),
+    Borrowed(&'a mut crate::ledger::DemandWork),
     Native(&'a crate::NativeMaterializationWork),
 }
 
 impl<'a> NativeDemandCarrier<'a> {
     pub(super) fn with_work<T>(
         &mut self,
-        operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
+        operation: impl FnOnce(&mut crate::ledger::DemandWork) -> T,
     ) -> T {
         match self {
             Self::Borrowed(work) => operation(work),

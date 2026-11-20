@@ -29,7 +29,10 @@ impl Compiler {
         let executable = if let Some(path) = std::env::var_os("PROTOC") {
             PathBuf::from(path)
         } else {
-            if EXECUTABLE.is_empty() {
+            // Included here, not at module scope, so the bytes live only in the
+            // object file and never in the crate metadata a dependent reads.
+            let bundled: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/protoc"));
+            if bundled.is_empty() {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "no bundled protoc for this platform; set PROTOC",
@@ -38,16 +41,16 @@ impl Compiler {
             let path = bundle
                 .path()
                 .join(format!("protoc{}", std::env::consts::EXE_SUFFIX));
-            fs::write(&path, EXECUTABLE)?;
+            fs::write(&path, bundled)?;
             fs::set_permissions(&path, fs::metadata(std::env::current_exe()?)?.permissions())?;
             path
         };
         let includes = if let Some(path) = std::env::var_os("PROTOC_INCLUDE") {
             PathBuf::from(path)
         } else {
-            materialize(&bundle.path().join("include"), INCLUDES)?
+            materialize(&bundle.path().join("include"), include_files())?
         };
-        let shared = materialize(&bundle.path().join("shared"), SHARED)?;
+        let shared = materialize(&bundle.path().join("shared"), shared_files())?;
         Ok(Self {
             executable,
             includes,

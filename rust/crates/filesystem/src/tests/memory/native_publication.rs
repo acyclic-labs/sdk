@@ -1,4 +1,6 @@
 use super::*;
+use crate::performance::WorkBudget;
+use crate::storage::AuthorityFailure;
 use crate::{NativeAuthorityGuard, NativeMaterializationWork};
 
 #[path = "../../../tests/support/native_authority_publication.rs"]

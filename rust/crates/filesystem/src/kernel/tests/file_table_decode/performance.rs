@@ -75,8 +75,12 @@ fn check(count: u8, bindings: bool, sealed: bool, fault: u8) -> Result<(), &'sta
     // byte once, including optional binding and sealed-reference fields.
     let copied_bytes = u64::try_from(bytes.len() - DOMAIN.len()).unwrap();
     let cancellation = crate::CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let decode = |accounting: &mut KernelAccounting<'_>| {
         crate::kernel::decode_owned(accounting, |observe| {

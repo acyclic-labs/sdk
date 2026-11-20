@@ -2,7 +2,7 @@ use super::*;
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     mode: u32,
     uid: u32,
@@ -26,7 +26,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     directory: c_int,
 ) -> c_int {
@@ -56,7 +56,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
-    address: usize,
+    address: CallbackAddress,
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
@@ -86,7 +86,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_link(
-    address: usize,
+    address: CallbackAddress,
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
@@ -111,7 +111,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_link(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
-    address: usize,
+    address: CallbackAddress,
     target: *const c_char,
     destination: *const c_char,
     uid: u32,
@@ -143,7 +143,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     buffer: *mut c_char,
     length: usize,
@@ -170,7 +170,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     mode: u32,
     device: u64,
@@ -208,7 +208,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     mode: u32,
     handle: u64,
@@ -230,7 +230,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     uid: u32,
     gid: u32,
@@ -257,7 +257,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
-    address: usize,
+    address: CallbackAddress,
     path: *const c_char,
     times: *const NativeTimes,
     handle: u64,

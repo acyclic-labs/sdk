@@ -55,8 +55,12 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
     for native in [false, true] {
         for outcome in 0..4 {
             let cancellation = CancellationToken::new();
-            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(error, _)| error)?;
+            let original = crate::NativeMaterializationWork::root(
+                budget,
+                &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             let mut accounting = if native {
                 KernelAccounting::native(&original, &cancellation)
             } else {
@@ -225,8 +229,12 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]), 8).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (value, allocation) = lookup_async_with_accounting::<FileTableFormat>(
@@ -254,12 +262,13 @@ async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dy
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1)]), 8).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();
@@ -285,8 +294,12 @@ async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dy
 fn native_owned_reserve_preserves_the_actual_allocator_error()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(
@@ -353,8 +366,12 @@ fn owned_growth_admits_the_original_and_replacement_before_allocating()
                 };
                 let original = if native {
                     Some(
-                        crate::NativeMaterializationWork::new(budget, &cancellation)
-                            .map_err(|(error, _)| error)?,
+                        crate::NativeMaterializationWork::root(
+                            budget,
+                            &cancellation,
+                            &crate::services::ServicesInitialized::for_kernel_tests(),
+                        )
+                        .map_err(|(error, _)| error)?,
                     )
                 } else {
                     None

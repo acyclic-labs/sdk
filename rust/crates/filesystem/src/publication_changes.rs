@@ -66,7 +66,6 @@ impl PublicationDelta {
 
     /// Applies the original query to one expanded full path, with the record's
     /// original attributes and the volume's original key encoding.
-
     pub fn selects(
         self,
         (volume, authorization): (VolumeId, &acyclic_stream::session::ResourceAuthorization),
@@ -99,7 +98,9 @@ impl PublicationDelta {
             acyclic_auth::authority::PolicyDecision::Allow,
         ) {
             Ok(()) => Ok(true),
-            Err(acyclic_stream::StreamError::AccessDenied) => Ok(false),
+            Err(error) if error.category() == acyclic_stream::StreamCategory::AccessDenied => {
+                Ok(false)
+            }
             Err(error) => Err(error),
         }
     }
@@ -220,7 +221,7 @@ impl PublicationChanges {
     pub(crate) async fn proposed<O: AsyncObjectStore>(
         objects: &O,
         base: (&GenerationRoot, ObjectId),
-        candidate: &GenerationRoot,
+        (candidate, records): (&GenerationRoot, &[crate::kernel::FileRecordChange]),
         request: PublishGenerationRequest,
         config: VolumeConfig,
         accounting: &mut KernelAccounting<'_>,
@@ -239,6 +240,7 @@ impl PublicationChanges {
                     root: candidate,
                 }),
             ],
+            Some(records),
             Some((request.expected, base.1)),
             request.generation_root,
             config,
@@ -325,6 +327,7 @@ impl PublicationChanges {
 
     async fn prepare<O: AsyncObjectStore>(
         endpoints: [Option<NamespaceView<'_, O>>; 2],
+        records: Option<&[crate::kernel::FileRecordChange]>,
         base: Option<(Head, ObjectId)>,
         root: ObjectId,
         config: VolumeConfig,
@@ -342,10 +345,15 @@ impl PublicationChanges {
                 acyclic_fs_format::object_reference::GenerationId::from_root(root),
             )
         });
-        let paths =
-            crate::workspace::complete_changed_paths(endpoints, None, accounting, cancellation)
-                .await
-                .map_err(change_error)?;
+        let paths = crate::workspace::complete_changed_paths(
+            endpoints,
+            records,
+            None,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(change_error)?;
         let paths = Retained::from_owned(paths, accounting)?;
         Self::sealed(
             volume,
@@ -389,6 +397,7 @@ impl PublicationChanges {
                     root: &root.value,
                 }),
             ],
+            None,
             None,
             creation.initial_generation_root,
             creation.config,
@@ -446,6 +455,7 @@ impl PublicationChanges {
                     root: candidate,
                 }),
             ],
+            None,
             Some((head, basis.predecessor.unwrap_or(current_root))),
             request.generation_root,
             config,

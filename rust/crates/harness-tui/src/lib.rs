@@ -37,15 +37,13 @@ pub use query_controller::QueryController;
 #[cfg(not(target_arch = "wasm32"))]
 pub use query_page::QueryPage;
 #[cfg(not(target_arch = "wasm32"))]
-mod hyperlink;
-#[cfg(not(target_arch = "wasm32"))]
 mod screen;
 #[cfg(not(target_arch = "wasm32"))]
 mod scrollbar;
 #[cfg(not(target_arch = "wasm32"))]
 mod styled_cells;
 #[cfg(not(target_arch = "wasm32"))]
-pub use hyperlink::{Hyperlinks, RowLink};
+pub use acyclic_harness_tui_term::{Hyperlinks, RowLink};
 #[cfg(not(target_arch = "wasm32"))]
 mod thinking;
 #[cfg(not(target_arch = "wasm32"))]
@@ -89,8 +87,8 @@ pub use ratatui;
 pub use widget::PromptWidget;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub use acyclic_harness_tui_term as term;
+#[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Screen, ScreenAreas};
 #[cfg(not(target_arch = "wasm32"))]
 pub use scrollbar::TranscriptScrollbar;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod term;

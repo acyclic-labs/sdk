@@ -208,6 +208,12 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// The immediately preceding settled turn's working context, if retained
+    /// by this journal's owner on the same conversation.
+    fn preceding_working_context(&self) -> Option<&WorkingContextPrefix> {
+        None
+    }
+
     /// Stable identity of this immutable journal binding for execution caches.
     /// Create a fresh identity with `Default` for every new or rebound journal.
     /// Returning `None` disables memoization without changing replay semantics.

@@ -45,13 +45,14 @@ fn copy_model_impl<const BROKEN: bool, const CHECK_LIMIT: bool>(
             bytes_copied: maximum,
             ..WorkBudget::UNBOUNDED
         };
-        let original = crate::NativeMaterializationWork::new(
+        let original = crate::NativeMaterializationWork::root(
             if resource {
                 WorkBudget::UNBOUNDED
             } else {
                 limit
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let work = if resource {
@@ -187,7 +188,12 @@ fn refund_model<const OMIT: bool>(action: u8) {
             bytes_copied: 8,
             ..WorkBudget::UNBOUNDED
         };
-        let root = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let root = crate::NativeMaterializationWork::root(
+            budget,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .unwrap();
         let parent = root.native_volume_work(budget).unwrap();
         let child = parent.native_volume_work(budget).unwrap();
         let outer_allocation = parent.claim(0, 0, WorkCounters::UNCHARGED).unwrap();

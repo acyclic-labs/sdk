@@ -1,4 +1,6 @@
 use super::*;
+use crate::performance::WorkBudget;
+use crate::storage::ObjectFailure;
 
 #[tokio::test]
 async fn object_store_verifies_identity_bounds_and_original_work()

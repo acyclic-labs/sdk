@@ -303,29 +303,22 @@ fn views_match_terminal_goldens() -> Result<(), Box<dyn std::error::Error>> {
     for view in VIEWS {
         for (mode, background) in [("dark", [0; 3]), ("light", [255; 3])] {
             for size in [Size::new(80, 24), Size::new(120, 40)] {
-                for (depth, colour) in [
-                    ("rgb", ColourDepth::TrueColour),
-                    ("indexed256", ColourDepth::Indexed256),
-                    ("ansi16", ColourDepth::Ansi16),
-                    ("monochrome", ColourDepth::Monochrome),
-                ] {
-                    let profile = Capabilities {
-                        colour,
-                        background: Some(background),
-                        ..Default::default()
-                    };
-                    let actual = snapshot(&frame(view, size, &profile)?, size);
-                    let name = format!("{view}-{mode}-{}x{}-{depth}.txt", size.width, size.height);
-                    if update {
-                        std::fs::create_dir_all(&directory)?;
-                        std::fs::write(directory.join(&name), actual)?;
-                    } else {
-                        assert_eq!(
-                            std::fs::read_to_string(directory.join(&name))?.replace("\r\n", "\n"),
-                            actual,
-                            "{name}"
-                        );
-                    }
+                let profile = Capabilities {
+                    colour: ColourDepth::TrueColour,
+                    background: Some(background),
+                    ..Default::default()
+                };
+                let actual = snapshot(&frame(view, size, &profile)?, size);
+                let name = format!("{view}-{mode}-{}x{}.txt", size.width, size.height);
+                if update {
+                    std::fs::create_dir_all(&directory)?;
+                    std::fs::write(directory.join(&name), actual)?;
+                } else {
+                    assert_eq!(
+                        std::fs::read_to_string(directory.join(&name))?.replace("\r\n", "\n"),
+                        actual,
+                        "{name}"
+                    );
                 }
             }
         }

@@ -1,4 +1,4 @@
-#[path = "../../crates/observability/src/interval/unix.rs"]
+#[path = "../../crates/observability-core/src/interval/unix.rs"]
 mod production;
 
 #[kani::proof]

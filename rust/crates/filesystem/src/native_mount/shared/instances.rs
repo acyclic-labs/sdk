@@ -98,7 +98,7 @@ impl<I> Instances<I> {
                 // constructor failure or unwind removes the slot as well.
                 let state = Arc::clone(&slot.state);
                 #[cfg(test)]
-                #[cfg(all(not(loom)))]
+                #[cfg(not(loom))]
                 tests::before_wait();
                 drop(
                     state
@@ -175,7 +175,7 @@ fn physical_root(root: &Path) -> Result<PathBuf, NativeMountError> {
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -12,7 +12,7 @@ pub(super) enum PacketFailure {
     Source {
         _core: Arc<ProjectionCore>,
         errno: i32,
-        completion: PacketCompletion,
+        completion: Box<PacketCompletion>,
     },
 }
 
@@ -38,7 +38,7 @@ impl PacketFailure {
                 .first_fatal
                 .as_ref()
                 .map_or(libc::ENODEV, |failure| callback_errno(&failure.0)),
-            completion: PacketCompletion::no_reply(),
+            completion: Box::new(PacketCompletion::no_reply()),
         }
     }
 

@@ -11,15 +11,19 @@ use super::*;
 use acyclic_native_runtime::{ProcessCommand, ProcessInput, ProcessStdio, ProcessTree};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 
 #[test]
-#[ignore = "requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
 fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
 -> Result<(), Box<dyn std::error::Error>> {
-    let artifacts = std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or(
-        "step=locate guest artifacts; recovery: python3 -B scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest --vmm /path/to/cloud-hypervisor --vmm-sha256 <sha256>; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture",
-    )?;
-    let artifacts = Path::new(&artifacts).canonicalize()?;
+    let artifacts = std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS")
+        .expect("Bazel sets ACYCLIC_FS_GUEST_ARTIFACTS to the prepared guest artifacts");
+    let artifacts = PathBuf::from(artifacts);
+    let artifacts = std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").map_or_else(
+        || artifacts.clone(),
+        |root| Path::new(&root).join(&artifacts),
+    );
+    let artifacts = artifacts.canonicalize()?;
     let provenance = std::fs::read(artifacts.join("provenance.json"))?;
     for vmm in ["qemu", "cloud-hypervisor"] {
         let cancellation = crate::CancellationToken::new();

@@ -1,12 +1,5 @@
 #![deny(unsafe_code)]
 #![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        clippy::arc_with_non_send_sync,
-        reason = "public shared handles retain uniform ownership while browser providers stay on their event loop"
-    )
-)]
-#![cfg_attr(
     test,
     allow(
         clippy::indexing_slicing,
@@ -30,7 +23,7 @@ pub use acyclic_harness_hosting as hosting;
 
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod completion;
+pub use acyclic_harness_cli::completion;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_harness_local::local;
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,16 +35,16 @@ pub use acyclic_harness_suite::conformance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tui;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-mod wasm;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::BrowserContentReader;
+pub use acyclic_harness_browser::BrowserContentReader;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
-pub use wasm::{WasmAgentProviders, WasmAgentRegistry, WasmMachinesWorkspace, WasmObjects};
+pub use acyclic_harness_browser::{
+    WasmAgentProviders, WasmAgentRegistry, WasmMachinesWorkspace, WasmObjects,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use local::{LocalHarness, LocalHarnessConfig};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod host_hooks;
+pub use acyclic_harness_cli::host_hooks;
 #[cfg(not(target_arch = "wasm32"))]
 pub use local::host_workspace;

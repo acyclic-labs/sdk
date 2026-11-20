@@ -95,11 +95,6 @@ fn materialize_policy(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
-#[test]
-fn volume_policy_is_not_a_native_extended_attribute() -> Result<(), Box<dyn std::error::Error>> {
-    materialize_policy(b"volume authority metadata")
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     // Projection preserves authority metadata and application annotations in

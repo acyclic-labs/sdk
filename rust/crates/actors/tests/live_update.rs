@@ -309,14 +309,14 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
 fn envelope(
     selection: &Selection,
     route: &Route,
-    publication: &AdmittedPublication,
+    publication: &Publication,
 ) -> Result<CallEnvelope> {
     Ok(CallEnvelope {
         deployment: selection.deployment.clone(),
         pin: route.pin.clone(),
         epoch: selection.epoch,
         version: selection.version(&route.pin)?.clone(),
-        contract: publication.schema(),
+        contract: publication.schema_digest(),
     })
 }
 fn host<P: StreamProvider + 'static>(
@@ -325,7 +325,7 @@ fn host<P: StreamProvider + 'static>(
     target: usize,
     selection: &Selection,
     fence: &SelectionFence,
-    publications: &[AdmittedPublication],
+    publications: &[Publication],
 ) -> Result<(Host<P>, Arc<FencedHandler>)> {
     let route = routes.get(target).ok_or("route")?;
     let version = selection.version(&route.pin)?;
@@ -335,7 +335,6 @@ fn host<P: StreamProvider + 'static>(
         .ok_or("publication")?;
     let namespace = route.actor.namespace().as_str();
     let code = publication
-        .publication()
         .artifacts()
         .get(namespace)
         .ok_or("artifact")?
@@ -425,14 +424,11 @@ async fn select<P: StreamProvider>(
 
 async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
     let store = Store::new(Arc::clone(&provider), path("proof/actors")?);
-    let publications = [
-        AdmittedPublication::new(publication(0)?)?,
-        AdmittedPublication::new(publication(1)?)?,
-    ];
+    let publications = [publication(0)?, publication(1)?];
     let v1 = publications[0].version().clone();
     let v2 = publications[1].version().clone();
     let mut selection = Selection {
-        deployment: publications[0].publication().deployment().clone(),
+        deployment: publications[0].deployment().clone(),
         epoch: NonZeroU64::MIN,
         split: Split {
             stable: v1.clone(),
@@ -788,13 +784,10 @@ impl Handler for Held {
 
 async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -> Result {
     let store = Store::new(Arc::clone(&provider), path("proof/actors")?);
-    let publications = [
-        AdmittedPublication::new(publication(0)?)?,
-        AdmittedPublication::new(publication(1)?)?,
-    ];
+    let publications = [publication(0)?, publication(1)?];
     let old = publications[0].version().clone();
     let selection = Selection {
-        deployment: publications[0].publication().deployment().clone(),
+        deployment: publications[0].deployment().clone(),
         epoch: NonZeroU64::MIN,
         split: Split {
             stable: old.clone(),

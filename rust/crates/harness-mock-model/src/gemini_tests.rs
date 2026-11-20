@@ -1,4 +1,4 @@
-use crate::{Engine, Script, Step, events_with_usage, last_content};
+use crate::{Step, events_with_usage};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -27,35 +27,4 @@ proptest! {
             prop_assert!(events_with_usage(wrong,&step,tokens).is_none());
         }
     }
-}
-
-#[test]
-fn gemini_guards_preserve_latest_user_and_tool_result_without_consuming_mismatches() {
-    let script: Script = serde_json::from_value(json!({"cases":{"gemini":{"steps":[
-        {"when":{"user":"latest user","tool_result":"real-result"},"text":["done"]}
-    ]}}}))
-    .unwrap();
-    let mut engine = Engine::new(script);
-    let body = json!({"contents":[
-        {"role":"user","parts":[{"text":"historical user"}]},
-        {"role":"model","parts":[{"functionCall":{"id":"call","name":"read","args":{}}}]},
-        {"role":"user","parts":[{"functionResponse":{"id":"call","name":"read","response":{"output":"{\"value\":\"real-result\"}"}}},{"text":"latest user"}]}
-    ]});
-    assert_eq!(last_content(&body, false), "latest user");
-    assert_eq!(
-        serde_json::from_str::<Value>(&last_content(&body, true)).unwrap(),
-        json!({"value":"real-result"})
-    );
-    let path = "models/tiny:streamGenerateContent";
-    assert!(
-        engine
-            .take(
-                "gemini",
-                path,
-                &json!({"contents":[{"role":"user","parts":[{"text":"wrong"}]}]})
-            )
-            .is_none()
-    );
-    assert_eq!(engine.take("gemini", path, &body).unwrap().0, 0);
-    assert!(engine.take("gemini", path, &body).is_none());
 }

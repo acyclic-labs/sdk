@@ -1,7 +1,5 @@
 //! Thin embedded `Fs`/`Volume`/`Checkout` composition over the two durable stores.
 
-#[cfg(test)]
-use crate::foundation::Epoch;
 use acyclic_stream::ProviderTask;
 
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
@@ -47,22 +45,18 @@ use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializati
 use crate::kernel::decode_retention_created;
 
 use crate::kernel::{
-    AsyncBlobSource, AttributeEntry, AttributeListing, AttributeLookupError, AttributeMutation,
-    AttributeMutationError, AttributeName, AttributePage, AuthenticatedGenerationProbe,
-    AuthenticatedProbeError, BlobBuildError, BlobBuildOptions, BlobReadError, CanonicalDecodeError,
-    CheckoutDependencies, CheckpointError, CheckpointRequest, ClosureError, ClosureLimits,
-    DecodeLimits, Dependency, DependencyError, DependencyRegion, DependencyState, DirectoryPage,
-    DirectoryReadError, ExtentPlan, ExtentRangeRequest, ExtentSeekRequest, ExtentSeekTarget,
-    FileKind, FileMetadata, FileMutation, FilePayload, FileRangeRead, FileRangeReadError,
-    FileRangeRequest, FileRecord, FileRecordReadError, FileTableMutationError,
-    GenerationExportManifest, GenerationMutationError, GenerationRoot, GenerationTransferBatch,
-    GenerationTransferError, InlineFileData, InlineFileDataError, LogicalName,
-    MergeConflictResolution, MergeConflictSide, MergeGenerationError, MergeGenerationOutcome,
-    MergeGenerationRequest, MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup,
-    PathLookup, PathLookupError, ProbeLimits, PublicationError, PublicationIntent,
-    PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError, RegularMutation,
-    RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind, TransferCursor,
-    TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError, apply_regular_mutation_async,
+    AsyncBlobSource, AttributeEntry, AttributeListing, AttributeMutation, AttributeName,
+    AuthenticatedGenerationProbe, BlobBuildOptions, CanonicalDecodeError, CheckoutDependencies,
+    CheckpointRequest, ClosureLimits, DecodeLimits, Dependency, DependencyRegion, DependencyState,
+    DirectoryPage, ExtentPlan, ExtentRangeRequest, ExtentSeekRequest, ExtentSeekTarget, FileKind,
+    FileMetadata, FileMutation, FilePayload, FileRangeRead, FileRangeReadError, FileRangeRequest,
+    FileRecord, GenerationExportManifest, GenerationRoot, GenerationTransferBatch,
+    GenerationTransferError, InlineFileData, LogicalName, MergeConflictResolution,
+    MergeConflictSide, MergeGenerationError, MergeGenerationOutcome, MergeGenerationRequest,
+    MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup, PathLookup,
+    PathLookupError, ProbeLimits, PublicationIntent, PublishGenerationRequest, RebaseDecision,
+    RebaseError, RegularMutation, RegularMutationError, RetentionCreated, RetentionKind,
+    TransferCursor, TreePage, VolumeCreated, apply_regular_mutation_async,
     authenticate_generation_export_manifest_async, build_blob,
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
@@ -75,8 +69,8 @@ pub use crate::kernel::{LiveMutationOutcome, LivePublicationObservation, MergeCo
 use crate::kernel::{decode_source_volume, source_authority_id};
 
 use crate::model::{
-    AccessMode, CaseSensitivity, CheckoutMode, CheckoutModeError, ConcurrencyMode, ConsistencyMode,
-    GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
+    AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
+    GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig,
 };
 
 use crate::performance::{
@@ -110,15 +104,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
 
-use thiserror::Error;
-
 mod fork_selection;
 
-#[cfg(test)]
-#[path = "../tests/facade/mod.rs"]
-mod tests;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_snapshot;
 
-mod access_policy;
+pub(crate) mod access_policy;
 mod attributes;
 mod authored_compile;
 mod authored_model;
@@ -133,7 +124,7 @@ mod content;
 mod content_model;
 mod detached;
 mod diff;
-pub(crate) mod policy_cache;
+pub mod policy_cache;
 use crate::kernel::diff_generation_file_tables;
 mod directory;
 mod error;
@@ -187,13 +178,13 @@ mod volume_creation;
 mod work;
 mod workspace_creation;
 
+pub use crate::error::FsError;
 pub use crate::kernel::{DirectoryBindingChange, FileRecordChange, GenerationDiff};
 #[cfg(test)]
-pub(crate) use access_policy::policy_confirmation;
-#[cfg(test)]
-#[cfg(all(loom))]
+#[cfg(loom)]
 pub(crate) use access_policy::policy_revision_is_current;
 pub use attributes::NamedAttributeWriteMode;
+pub(crate) use attributes::change_attribute;
 pub(crate) use attributes::{ATTRIBUTE_PAGE_ENTRIES, AttributePageSize};
 use authored_compile::clone_authored_path;
 #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
@@ -219,7 +210,6 @@ pub use directory::DirectoryRecordPage;
 pub use directory::PathMetadataLookup;
 pub use directory::ResolvedDirectoryEntry;
 pub use directory::ResolvedDirectoryPage;
-pub use error::FsError;
 use error::map_merge_failure;
 use error::map_transfer_error;
 use error::validate_checkout;
@@ -263,9 +253,6 @@ pub(crate) use lineage::WorkspaceCommonAncestor;
 pub(crate) use lineage::WorkspaceRebaseRequest;
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 pub use local::LocalOptions;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
-#[cfg(test)]
-use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
 use proof::DependencyLedger;
 use proof::Proof;
@@ -315,4 +302,5 @@ pub(crate) mod test_authority;
 use crate::kernel::{decode_published_generation, decode_volume_created};
 
 #[cfg(test)]
-pub(crate) mod test_fixtures;
+/// Shared fixtures for facade unit tests.
+pub mod test_fixtures;

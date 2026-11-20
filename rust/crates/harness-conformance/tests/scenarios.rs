@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 
 fn corpus() -> PathBuf {
-    acyclic_test_support::source_path("rust/crates/harness/tests/scenarios")
+    acyclic_test_support::source_path("rust/crates/harness-e2e/tests/scenarios")
 }
 
 async fn original_corpus(root: PathBuf) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
@@ -146,7 +146,7 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
     let mut value: Value = serde_json::from_slice(include_bytes!(
-        "../../harness/tests/scenarios/core/text.json"
+        "../../harness-e2e/tests/scenarios/core/text.json"
     ))?;
     *value
         .pointer_mut("/expect/text")
@@ -215,7 +215,7 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
     }
     std::fs::write(
         directory.path().join("good.json"),
-        include_bytes!("../../harness/tests/scenarios/core/text.json"),
+        include_bytes!("../../harness-e2e/tests/scenarios/core/text.json"),
     )?;
     for filter in [None, Some("good")] {
         let report = runner::run(directory.path(), Arc::new(substrate::Local), filter, 4).await?;
@@ -239,7 +239,7 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
 async fn client_oracles_reject_mutations() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
     let baseline: Value = serde_json::from_slice(include_bytes!(
-        "../../harness/tests/scenarios/core/text.json"
+        "../../harness-e2e/tests/scenarios/core/text.json"
     ))?;
     let mutations = [
         ("text", serde_json::json!("WRONG")),

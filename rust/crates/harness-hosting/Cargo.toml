@@ -1,5 +1,6 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "src/**"]
+include = ["clippy.toml", "Cargo.toml", "src/**", "tests/**"]
+autotests = false
 name = "acyclic-harness-hosting"
 version.workspace = true
 edition.workspace = true
@@ -8,6 +9,14 @@ license.workspace = true
 repository.workspace = true
 description = "The admitted agent-tree server behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-hosting"
+
+[package.metadata.bazel]
+# Each group is its own test binary so one group's generic instantiation never
+# pays for another's; the library's own unit tests stay the suite's internal case.
+linked-unit-tests = [
+    "editor_input",
+    "hosted_sessions",
+    "machine_results"]
 
 [features]
 test-support = [
@@ -56,3 +65,15 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 
 [lints]
 workspace = true
+
+[[test]]
+name = "editor_input"
+path = "tests/editor_input.rs"
+
+[[test]]
+name = "hosted_sessions"
+path = "tests/hosted_sessions.rs"
+
+[[test]]
+name = "machine_results"
+path = "tests/machine_results.rs"

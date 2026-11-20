@@ -1,6 +1,6 @@
 //! Process isolation for tracing's process-global first-registration cache.
 
-pub(crate) fn isolate(test: &str) -> std::io::Result<bool> {
+pub fn isolate(test: &str) -> std::io::Result<bool> {
     const CHILD: &str = "ACYCLIC_TRACE_CAPTURE_TEST";
     if std::env::var(CHILD).as_deref() == Ok(test) {
         return Ok(false);
@@ -13,7 +13,7 @@ pub(crate) fn isolate(test: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
-pub(crate) fn command(test: &str) -> std::io::Result<std::process::Command> {
+pub fn command(test: &str) -> std::io::Result<std::process::Command> {
     let test = test
         .split_once("::")
         .ok_or_else(|| std::io::Error::other("test module"))?

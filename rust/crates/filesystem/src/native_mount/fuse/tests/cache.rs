@@ -675,7 +675,7 @@ pub(super) fn cache_work(
     cancellation: &crate::CancellationToken,
 ) -> crate::NativeMaterializationWork {
     crate::NativeMaterializationWork::from_meter(Arc::new(
-        crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
+        crate::ledger::NativeDemandReadMeter::new(crate::ledger::DemandWork::new(
             budget,
             cancellation,
         )),

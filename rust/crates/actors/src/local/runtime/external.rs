@@ -5,7 +5,7 @@ use crate::guest::Subscription;
 use futures::task::AtomicWaker;
 use std::collections::VecDeque;
 use tokio::sync::watch;
-#[cfg(test)]
+#[cfg(all(test, not(runtime_tests)))]
 mod tests;
 
 #[derive(Clone, PartialEq)]

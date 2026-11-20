@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, reason = "benchmarks abort on setup failure")]
 
 use acyclic_objects::{Blobs, ByteRange, Digest, LocalMedium, LocalObjects, Store};
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 use divan::Bencher;
 use divan::counter::ItemsCount;
 use tokio::runtime::Runtime;
@@ -166,7 +166,7 @@ fn floor_hash(bencher: Bencher, length: usize) {
     let body = sized(0, length);
     bencher
         .counter(divan::counter::BytesCount::new(length))
-        .bench_local(|| acyclic_stream::content_digest(&body));
+        .bench_local(|| acyclic_stream_contract::content_digest(&body));
 }
 
 /// Floor term `B_copy`: one copy of the body.

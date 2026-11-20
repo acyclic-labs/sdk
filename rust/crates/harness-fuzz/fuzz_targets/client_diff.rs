@@ -7,7 +7,7 @@ use libfuzzer_sys::fuzz_target;
 mod diff_case;
 #[path = "../../harness/tests/support/expected_outcome.rs"]
 mod expected_outcome;
-#[path = "../../harness/tests/e2e/local_case.rs"]
+#[path = "../../harness-e2e/tests/e2e/local_case.rs"]
 mod local_case;
 
 pub type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

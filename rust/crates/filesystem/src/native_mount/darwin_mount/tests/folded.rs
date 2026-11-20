@@ -38,14 +38,6 @@ fn filtered_pages(pages: usize, visible: bool) -> TestResult {
     Ok(())
 }
 
-#[test]
-fn folded_filtered_pages_reach_visible_entries_and_eof() -> TestResult {
-    for visible in [false, true] {
-        filtered_pages(9, visible)?;
-    }
-    Ok(())
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(8))]
 

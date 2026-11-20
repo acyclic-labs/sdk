@@ -113,7 +113,7 @@ impl<K: Copy + Ord, V: Revisioned> MemoryRecords<K, V> {
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

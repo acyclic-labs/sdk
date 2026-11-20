@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"model-epoch-proofs","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"model-epoch-proofs","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 extract_cargo_lints(
     name = "lints",
@@ -19,6 +19,7 @@ rust_library(
         "//rust/crates/harness-control:src/epochs/protocol.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

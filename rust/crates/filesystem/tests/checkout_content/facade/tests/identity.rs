@@ -4,9 +4,10 @@ use acyclic_fs::kernel::{
 use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, DependencyRegion,
-    ExtentSeekTarget, FilesystemProfile, FsError, NamedAttributeWriteMode, OperationFailure,
+    ExtentSeekTarget, FilesystemProfile, FsError, NamedAttributeWriteMode,
 };
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_fs_work::performance::OperationFailure;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

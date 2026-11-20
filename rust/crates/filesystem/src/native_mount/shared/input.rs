@@ -1,7 +1,7 @@
 //! Owned callback input, admitted in full before a source can observe it.
 use crate::NativeMaterializationWork;
 use crate::kernel::OwnedSourceChunk;
-use crate::materializer::NativeResourceCredit::Copy;
+use crate::ledger::NativeResourceCredit::Copy;
 use crate::native_mount::NativeMountError;
 use acyclic_stream::OwnedBytes;
 

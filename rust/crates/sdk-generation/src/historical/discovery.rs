@@ -37,7 +37,7 @@ pub(super) fn frontier_git() -> Result<std::path::PathBuf, String> {
 
 // One maintained Git process reads exact ls-tree IDs without export-ignore,
 // textconv, filters or replacement-object substitution.
-pub(super) fn git_source_blobs(
+fn git_source_blobs(
     repository: &Path,
     listing: &[u8],
     consume: impl FnMut(&str, &[u8]) -> Result<(), String>,
@@ -152,7 +152,7 @@ pub(super) fn discovery_environment_inputs(
     Ok(environment_sha256)
 }
 
-pub(super) fn cargo_discovery_inputs(
+fn cargo_discovery_inputs(
     repository: &Path,
     root: &Path,
     cargo: &Path,
@@ -187,7 +187,7 @@ pub(super) fn cargo_discovery_inputs(
         }
     }
     let environment_sha256 =
-        discovery_environment_inputs(sdk_docs::command_environment().into_iter(), cfg!(windows))?;
+        discovery_environment_inputs(sdk_docs::command_environment(), cfg!(windows))?;
     let git_sha256 = crate::file_cache::tool_identity(repository, &frontier_git()?)
         .map_err(|e| e.to_string())?;
     let cargo_sha256 =

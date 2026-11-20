@@ -768,7 +768,8 @@ async fn one_process_owns_a_local_root() -> Result<(), Box<dyn Error>> {
         command
             .args([
                 "--exact",
-                "workspace::tests::publication::collection::a_root_owner_holds_its_root_until_killed",
+                acyclic_test_support::unit_test_name!(a_root_owner_holds_its_root_until_killed)
+                    .as_str(),
                 "--test-threads=1",
                 "--nocapture",
             ])

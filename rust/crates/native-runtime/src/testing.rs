@@ -19,7 +19,7 @@
 //!   sites: [`Schedule::inject`] plans a store-defined fault at an exact call,
 //!   [`Schedule::intercept`] applies it and [`Schedule::hold`] parks a call at a
 //!   [`Boundary`]. OS processes are scripted
-//!   ([`Schedule::set_process_provider`]), never spawned.
+//!   ([`Schedule::set_boundary`]), never spawned.
 //! - **Boundaries**: each owned operation pauses at a [`Boundary`] the driver
 //!   releases, so a driver chooses interleavings at real submission points.
 //! - **Costs**: production marks each hot-path cost with
@@ -69,7 +69,7 @@ mod metadata;
 mod sites;
 pub mod snapshot;
 pub mod sweep;
-pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
+pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times, source_identity};
 pub use sites::{SiteCall, SiteFault};
 #[cfg(test)]
 #[cfg(loom)]
@@ -201,8 +201,9 @@ struct State {
     wall: clock::Wall,
     writes: durability::Writes,
     sites: sites::Sites,
-    process: Option<Arc<process::Provider>>,
+    boundary: Option<Arc<dyn std::any::Any + Send + Sync>>,
     metadata: Option<Arc<metadata::Provider>>,
+    source_identity: Option<Arc<metadata::SourceIdentityProvider>>,
 }
 
 struct Inner {
@@ -462,6 +463,40 @@ impl Schedule {
     /// Original submissions and their completion trace, including cancellation.
     pub fn trace(&self) -> Vec<String> {
         self.0.state().trace.clone()
+    }
+
+    /// Installs one opaque boundary before dispatch. It cannot change while a
+    /// turn or any accepted descendant owns this schedule.
+    ///
+    /// # Panics
+    ///
+    /// Panics after dispatch or cancellation, while owned work is active, or
+    /// if a boundary is already installed.
+    pub fn set_boundary<T: std::any::Any + Send + Sync>(&self, boundary: T) {
+        let mut state = self.0.state();
+        assert!(state.trace.is_empty(), "boundary must precede dispatch");
+        assert_eq!(state.active, 0, "cannot replace a live boundary");
+        assert!(state.boundary.is_none(), "boundary already installed");
+        state.boundary = Some(Arc::new(boundary));
+    }
+
+    /// The installed boundary, if it has the requested type.
+    pub fn boundary<T: std::any::Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.0.state().boundary.clone()?.downcast::<T>().ok()
+    }
+
+    /// Records one boundary crossing in the trace.
+    pub fn record_boundary(&self, name: String) {
+        let mut state = self.0.state();
+        if state.record_trace {
+            state.trace.push(name);
+        }
+    }
+
+    /// The schedule of the current simulation scope, if any, including on a
+    /// blocking worker that scope dispatched.
+    pub fn current() -> Option<Self> {
+        Context::simulation().map(|context| context.schedule)
     }
 
     /// Exact seeded task-poll trace, including detached completions.

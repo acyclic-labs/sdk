@@ -1,6 +1,6 @@
 use super::*;
 use crate::facade::FsWork;
-use crate::workspace::accounting_tests::{Observation, ObservedAuthority, Prefunded};
+use crate::workspace::accounting_tests::{Observation, ObservedAuthority};
 use std::sync::Mutex;
 
 #[tokio::test]
@@ -66,7 +66,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
         completion: None,
     });
     let (result, spent, live, baseline) = generation
-        .retain_if_unpublished("exact", &source, &cancellation)
+        .retain_if_unpublished(|_| Ok("exact"), &source, &cancellation)
         .await;
     result?;
     spent.verify(budget)?;
@@ -74,6 +74,25 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
     assert!(spent.backend_read_operations > 0);
     assert_eq!(spent.backend_write_operations, 0);
     assert_eq!(live, baseline);
+
+    let published = crate::Fs::memory()
+        .create_workspace("published-retention", budget, &cancellation)
+        .await?
+        .value;
+    let TransactionCommit::Committed(published) = published.write_text("/file", "live").await?
+    else {
+        panic!("fresh write must publish a generation");
+    };
+    let retained = published
+        .retain_if_unpublished(
+            |_| -> Result<&str, WorkspaceError> {
+                panic!("published generation must not construct another pin identity")
+            },
+            budget,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(retained.work.backend_write_operations, 0);
 
     // Repeated exact replay shares one caller ledger and retires only each
     // discarded result's scratch. Its earlier buffer and retained Vec survive.

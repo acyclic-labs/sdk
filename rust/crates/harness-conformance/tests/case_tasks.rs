@@ -20,7 +20,7 @@ fn corpus() -> Result<tempfile::TempDir> {
     for name in ["first.json", "second.json"] {
         std::fs::write(
             directory.path().join(name),
-            include_bytes!("../../harness/tests/scenarios/core/text.json"),
+            include_bytes!("../../harness-e2e/tests/scenarios/core/text.json"),
         )?;
     }
     Ok(directory)

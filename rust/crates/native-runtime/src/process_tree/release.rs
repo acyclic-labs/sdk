@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 type Control = NativeOperationReservation<Arc<dyn NativeReadMeter>>;
 
-/// A command admitted before an external effect, executed after this owner
-/// releases it or exits. Its activity descriptors delay execution until every
-/// admitted producer has closed its descriptor. All owner endpoints are
-/// close-on-exec; only explicitly transferred activity endpoints may escape.
+/// A command admitted before an external effect, executed after explicit
+/// release or a pidfd notification of owner exit. Its activity descriptors
+/// delay execution until every admitted producer has closed its descriptor.
+/// All owner endpoints are close-on-exec.
 ///
 /// The command must terminate and must have explicit, non-piped standard
 /// streams. An original namespace lock can be its standard input, keeping that

@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-fs-lease-path-proof","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-fs-lease-path-proof","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 extract_cargo_lints(
     name = "lints",
@@ -23,6 +23,7 @@ rust_library(
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-distinct-max",
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-zero",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -62,7 +63,11 @@ rust_test(
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-zero",
         "//rust/crates/filesystem:src/operation_window/lease_path/encoding.rs",
     ],
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

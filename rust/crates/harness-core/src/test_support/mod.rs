@@ -25,12 +25,11 @@ pub mod crash_cuts;
 mod policy;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
-mod scripted;
 pub use policy::FixedToolPolicy;
 #[cfg(not(target_arch = "wasm32"))]
 pub use replay::assert_replay_admission;
 
-pub use scripted::{
+pub use crate::model::scripted::{
     RETROSPECTIVE, ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
     is_retrospective, model_visible_messages, read_request_files,
 };
@@ -86,21 +85,6 @@ pub fn error_observation(error: &crate::Error) -> (crate::wire::Error, bool) {
 /// Available wherever this module is (unit tests on every target, or `test-support`).
 pub fn environment(name: &str) -> Option<std::ffi::OsString> {
     crate::native_environment::variable_with_user_locations(name, false)
-}
-
-/// Holds automatic advancement of a paused Tokio clock during native I/O.
-///
-/// The test can still advance protocol deadlines explicitly. Dropping the
-/// returned sender releases the blocking job, including on errors or unwinds.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
-    let (release, wait) = tokio::sync::oneshot::channel::<()>();
-    // Tokio tracks its blocking pool as outstanding work. Native sockets and
-    // the shared I/O service alone do not prevent virtual-time auto-advancement.
-    drop(tokio::task::spawn_blocking(move || {
-        let _ = wait.blocking_recv();
-    }));
-    release
 }
 
 /// A unique Streams idempotency key for a fixture write that has no retry

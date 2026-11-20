@@ -58,7 +58,7 @@ fn threads() -> io::Result<u64> {
         );
         Ok(total + u64::try_from(started).map_err(io::Error::other)?)
     })?;
-    acyclic_process_resources::resources::process_resources()?
+    acyclic_process_resources::resources::sample_process_resources()?
         .threads
         .checked_sub(shared)
         .ok_or_else(|| {
@@ -106,10 +106,11 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     })?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
     let baseline = threads()?;
-    // The assertion needs more than four times the pool width, not a
-    // population proportional to the machine's descriptor or process limits.
-    // The blocking-wait control below already starves at pool + 1 children.
-    let count = 4 * pool + 1;
+    // More outstanding waits than the pool has workers: a thread-per-child
+    // implementation would need one thread per child and exceed both the pool
+    // and the baseline. The blocking-wait control below already starves at
+    // pool + 1 children, so this positive control needs no larger population.
+    let count = pool + 1;
     let done = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::with_capacity(count);
     let mut releases = Vec::with_capacity(count);

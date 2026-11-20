@@ -1,0 +1,34 @@
+[package]
+name = "acyclic-harness-native-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Native receipt and host hook integration tests for the Acyclic harness"
+
+[package.metadata.bazel]
+integration-test-shards = 2
+
+[features]
+test-support = ["acyclic-harness/test-support"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+required-features = ["test-support"]
+
+[dev-dependencies]
+acyclic-harness = { version = "=0.2.0", path = "../harness" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+regex-lite = "0.1.9"
+serde_json = { workspace = true, features = ["raw_value", "unbounded_depth"] }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

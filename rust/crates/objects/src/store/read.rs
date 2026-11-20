@@ -152,14 +152,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 if selected.is_empty() && !self.complete(&digest, &envelope).await? {
                     return Err(ErrorCode::NotFound.into());
                 }
-                if selected.end - selected.start > maximum_bytes {
-                    return Err(ErrorCode::QuotaExceeded.into());
+                let observed = selected.end - selected.start;
+                if observed > maximum_bytes {
+                    return Err(Error::from(ErrorCode::QuotaExceeded).with_source(
+                        crate::ReadLimitExceeded {
+                            observed,
+                            maximum: maximum_bytes,
+                        },
+                    ));
                 }
-                let mut parts = Selection::new(selected.end - selected.start)?;
+                let mut parts = Selection::new(observed)?;
                 self.select(digest, &envelope, selected.clone(), &mut parts)
                     .await?;
                 let body = parts.finish(&*self.medium)?;
-                if body.len() as u64 != selected.end - selected.start {
+                if body.len() as u64 != observed {
                     return Err(corrupt());
                 }
                 self.medium

@@ -610,7 +610,7 @@ proptest::proptest! {
 
 #[test]
 fn wasm_hosted_record_projection() -> std::io::Result<()> {
-    let output = std::process::Command::new("bun")
+    let output = std::process::Command::new(acyclic_test_support::host_tool!("bun"))
         .args([
             "test",
             "./node_modules/@acyclic-labs/stream/test/record-origin.test.ts",

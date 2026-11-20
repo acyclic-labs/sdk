@@ -6,7 +6,9 @@ use std::ffi::OsStr;
 pub(crate) struct HostNameEncodingError;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
+use crate::demand::{DemandError, SourceDemandReadWork};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ledger::DemandWork;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 
@@ -14,7 +16,7 @@ use crate::{CancellationToken, WorkBudget, WorkCounters};
 enum NameWork<'a, W: SourceDemandReadWork = DemandWork> {
     Original {
         work: &'a crate::NativeMaterializationWork,
-        allocation: Option<crate::materializer::NativeAllocation>,
+        allocation: Option<crate::ledger::NativeAllocation>,
         source: Option<&'a crate::NativeMaterializationWork>,
     },
     Source(&'a mut W),
@@ -95,7 +97,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
     fn reserve_copy(
         &mut self,
         bytes: u64,
-    ) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
+    ) -> Result<Option<crate::ledger::NativeWorkReservation>, DemandError> {
         match self {
             Self::Source(_) => {
                 self.admit(WorkCounters {
@@ -146,10 +148,7 @@ pub(crate) fn host_name_bytes_with_native_work(
     profile: FilesystemProfile,
     original: &crate::NativeMaterializationWork,
 ) -> Result<
-    (
-        (NameEncoding, Vec<u8>),
-        crate::materializer::NativeAllocation,
-    ),
+    ((NameEncoding, Vec<u8>), crate::ledger::NativeAllocation),
     crate::NativeTreeMaterializationError,
 > {
     let mut accounting: NameWork<'_> = NameWork::Original {

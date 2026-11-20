@@ -367,15 +367,12 @@ impl<'a> RecordIndex<'a> {
                 .flatten();
         }
         // Merge the two ordered cursors without moving or sorting retained records.
-        while let Some(side) = match next {
-            [Some((a, _)), Some((b, _))] => Some(usize::from(a > b)),
-            [Some(_), None] => Some(0),
-            [None, Some(_)] => Some(1),
+        while let Some((side, (key, record))) = match next {
+            [Some(a), Some(b)] if a.0 > b.0 => Some((1, b)),
+            [Some(a), _] => Some((0, a)),
+            [None, Some(b)] => Some((1, b)),
             [None, None] => None,
         } {
-            let Some((key, record)) = next[side] else {
-                unreachable!("the selected cursor has a record")
-            };
             crate::model::charge_items(io, 1)?;
             if select(&record.event) {
                 if maximum.is_some_and(|maximum| selected.len() >= maximum) {

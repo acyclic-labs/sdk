@@ -1,4 +1,4 @@
-use pulldown_cmark::{BrokenLink, Event, Parser, Tag};
+use pulldown_cmark::{BrokenLink, Event, Parser, Tag, TagEnd};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -11,7 +11,7 @@ type Definition = (Arc<str>, Arc<str>, usize);
 // its ASCII whitespace rules must not be applied again as Unicode whitespace.
 pub(crate) fn normalize(label: &str) -> Key {
     #[cfg(test)]
-    crate::work::copy(label.len());
+    acyclic_markdown_work::work::copy(label.len());
     unicase::UniCase::new(label.to_owned())
 }
 
@@ -42,12 +42,12 @@ impl References {
         if !source.contains('[') {
             acyclic_markdown_work::record!(scan(source.len()));
             #[cfg(test)]
-            crate::work::scan(source.len());
+            acyclic_markdown_work::work::scan(source.len());
             return self.replace_pending(HashMap::new());
         }
         acyclic_markdown_work::record!(scan(source.len()));
         #[cfg(test)]
-        PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+        acyclic_markdown_work::work::parsed(source.len());
         let parser = Parser::new_ext(source, crate::options());
         let pending: HashMap<_, _> = parser
             .reference_definitions()
@@ -55,7 +55,7 @@ impl References {
             .map(|(key, value)| {
                 acyclic_markdown_work::record!(node());
                 #[cfg(test)]
-                crate::work::copy(
+                acyclic_markdown_work::work::copy(
                     value.dest.len() + value.title.as_ref().map_or(0, |title| title.len()),
                 );
                 (
@@ -121,7 +121,7 @@ impl Template {
         source: &str,
         quotes: usize,
         events: &[(Event<'_>, std::ops::Range<usize>)],
-    ) -> Self {
+    ) -> Option<Self> {
         let paragraph = matches!(events.first(), Some((Event::Start(Tag::Paragraph), _)));
         let task = events
             .iter()
@@ -144,7 +144,7 @@ impl Template {
             normalized.push_str(line);
         }
         #[cfg(test)]
-        crate::work::copy(normalized.len());
+        acyclic_markdown_work::work::copy(normalized.len());
         let mut keys = HashSet::new();
         let mut callback = |link: BrokenLink<'_>| {
             keys.insert(normalize(&link.reference));
@@ -152,20 +152,45 @@ impl Template {
         };
         acyclic_markdown_work::record!(scan(normalized.len()));
         #[cfg(test)]
-        PARSED_BYTES.with(|work| work.set(work.get() + normalized.len()));
-        for _ in Parser::new_with_broken_link_callback(
+        acyclic_markdown_work::work::parsed(normalized.len());
+        let mut first = None;
+        for event in Parser::new_with_broken_link_callback(
             &normalized,
             options(paragraph),
             Some(&mut callback),
         ) {
             acyclic_markdown_work::record!(node());
+            if first.is_none() {
+                first = match event {
+                    Event::Start(tag) => Some(tag.to_end()),
+                    _ => None,
+                };
+            }
         }
-        Self {
+        // A block that is a lazy continuation of a preceding definition or
+        // paragraph is not a standalone block: reparsing its raw source can
+        // change its block structure. Keep a template only when the reparse
+        // starts with the same block as the original events.
+        let original = events.first().and_then(|(event, _)| match event {
+            Event::Start(tag) => Some(tag.to_end()),
+            _ => None,
+        });
+        // A task template prepends a list marker, so its reparse starts with
+        // the synthetic list rather than the original paragraph.
+        let matches_original = if task {
+            matches!(first, Some(TagEnd::List(_)))
+        } else {
+            first == original
+        };
+        if !matches_original {
+            return None;
+        }
+        Some(Self {
             source: normalized,
             paragraph,
             task,
             keys,
-        }
+        })
     }
 
     pub(crate) fn events(
@@ -227,9 +252,4 @@ fn options(paragraph: bool) -> pulldown_cmark::Options {
         options.remove(pulldown_cmark::Options::ENABLE_TABLES);
     }
     options
-}
-
-#[cfg(test)]
-std::thread_local! {
-    pub(crate) static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

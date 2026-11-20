@@ -7,7 +7,6 @@ use tracing_subscriber::prelude::*;
 
 const CASE: &str = "ACYCLIC_CAPTURE_INTEREST_CASE";
 const RELEASE: &str = "ACYCLIC_CAPTURE_RELEASE_REGISTRATION";
-const TEST: &str = "tests::interest_tests::capture_owns_cold_callsite_registration";
 
 fn emit() {
     let _span = tracing::info_span!("capture.interest.operation");
@@ -59,7 +58,13 @@ fn capture_owns_cold_callsite_registration() {
         "observer-before-foreign",
     ] {
         let result = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--test-threads=1", "--nocapture"])
+            .args([
+                "--exact",
+                acyclic_test_support::unit_test_name!(capture_owns_cold_callsite_registration)
+                    .as_str(),
+                "--test-threads=1",
+                "--nocapture",
+            ])
             .env(CASE, case)
             .output()
             .unwrap();
@@ -73,7 +78,12 @@ fn capture_owns_cold_callsite_registration() {
     // Delete the actual owned registration before installing the observer.
     // The same production callsites must then expose the old failure.
     let broken = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", TEST, "--test-threads=1", "--nocapture"])
+        .args([
+            "--exact",
+            acyclic_test_support::unit_test_name!(capture_owns_cold_callsite_registration).as_str(),
+            "--test-threads=1",
+            "--nocapture",
+        ])
         .env(CASE, "foreign-after-install")
         .env(RELEASE, "1")
         .output()

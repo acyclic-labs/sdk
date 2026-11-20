@@ -28,7 +28,7 @@ pub struct Epoch {
     #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     pointer: Option<PathBuf>,
     #[cfg(test)]
-    #[cfg(all(not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) hooks: hooks::Hooks,
 }
 
@@ -72,7 +72,7 @@ impl Epoch {
             unreleased: AtomicU64::new(unreleased),
             pointer: Some(pointer),
             #[cfg(test)]
-            #[cfg(all(not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             hooks: hooks::Hooks::default(),
         })
     }
@@ -175,7 +175,7 @@ pub(crate) enum Step {
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod hooks {
     use super::Step;
     use std::sync::{Arc, Mutex, PoisonError};

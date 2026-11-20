@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "conformance/**"]
+include = ["Cargo.toml", "README.md", "src/**", "conformance/**"]
 name = "acyclic-objects"
 version = "0.2.0"
 edition.workspace = true
@@ -22,21 +22,36 @@ harness = false
 name = "objects-rpc-inventory"
 path = "src/bin/objects-rpc-inventory.rs"
 test = false
+
+[package.metadata.bazel]
+unit-test-only-sources = [
+    "src/grpc_context_tests.rs",
+    "src/grpc_revision_tests.rs",
+    "src/grpc_tests.rs",
+    "src/http/tests.rs",
+    "src/http_context_tests.rs",
+    "src/local/outcome_tests.rs",
+    "src/s3/tests.rs",
+    "src/s3/tests/**",
+    "src/tests.rs",
+    "src/tests/**",
+]
+
 [features]
 # The original JavaScript request owner over canonical binary messages.
-javascript = ["acyclic-auth/javascript", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]
-# Request accounting over `acyclic_stream::testing::Counted`.
-conformance = ["acyclic-stream/conformance"]
-test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+javascript = ["acyclic-objects-core/javascript", "dep:wasm-bindgen"]
+# Request accounting over `acyclic_stream_contract::testing::Counted`.
+conformance = ["acyclic-objects-core/conformance", "acyclic-stream-contract/conformance"]
+test-support = ["acyclic-objects-core/test-support", "acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream-contract/test-support"]
 
 [dependencies]
+acyclic-objects-core = { version = "=0.2.0", path = "../objects-core" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
-acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 http-body = { version = "1" }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream-contract = { version = "=0.2.0", path = "../stream-contract" }
 acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 async-trait.workspace = true
 blake3 = "1.8.2"
@@ -45,9 +60,7 @@ futures.workspace = true
 getrandom = { version = "=0.4.3", features = ["wasm_js"] }
 hex.workspace = true
 prost.workspace = true
-prost-reflect = { workspace = true, features = ["serde"] }
 serde_json = { workspace = true }
-sha2.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt", "macros"] }
 
@@ -72,9 +85,7 @@ rustls = { workspace = true }
 wasm-bindgen-test = "=0.3.67"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
-wasm-bindgen-futures.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
@@ -90,8 +101,7 @@ tower = { workspace = true, features = ["util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-compatibility-golden = { path = "../compatibility-golden" }
+# examples/objects-authorization.rs renders the admission table through it.
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
-
-[build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

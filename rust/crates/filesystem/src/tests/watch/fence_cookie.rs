@@ -8,6 +8,7 @@ struct Fixture {
     _root: tempfile::TempDir,
     watch: NativeWatch,
     hints: RootHints,
+    hint_receiver: QueueReceiver<QueuedWatchChange>,
 }
 
 /// A watch excluding `names`, each created as a directory with `mode`, and
@@ -43,16 +44,27 @@ fn fixture(
     }
     let rescan = watch.begin_rescan()?;
     watch.finish_rescan(rescan)?;
+    let (sender, hint_receiver) = crate::watch_queue::channel(None);
     let hints = RootHints {
-        root: watch.root.clone(),
-        shared: Arc::clone(&watch.shared),
-        fenced: Arc::clone(&watch.fenced),
-        _root_allocation: None,
+        delivery: NativeEventDelivery {
+            context: NativeEventContext {
+                root: watch.root.clone(),
+                root_identity: watch.root_identity,
+                profile: watch.profile,
+                limits: watch.limits,
+                _root_allocation: None,
+            },
+            sender,
+            shared: Arc::clone(&watch.shared),
+            queued: Arc::new(AtomicUsize::new(0)),
+            fenced: Arc::clone(&watch.fenced),
+        },
     };
     Ok(Fixture {
         _root: root,
         watch,
         hints,
+        hint_receiver,
     })
 }
 
@@ -84,7 +96,7 @@ fn deliver(
     items: u64,
 ) -> Result<(), crate::demand::DemandError> {
     let cancellation = CancellationToken::new();
-    let mut work = crate::demand::DemandWork::new(
+    let mut work = crate::ledger::DemandWork::new(
         WorkBudget {
             items_examined: items,
             ..WorkBudget::UNBOUNDED
@@ -92,6 +104,43 @@ fn deliver(
         &cancellation,
     );
     hints.host_changed(changes, &mut work)
+}
+
+#[test]
+fn a_path_hint_delivered_during_baseline_preserves_the_scan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = fixture(&[], false)?;
+    let path = relative_namespace_path(
+        &fixture.watch.root,
+        &fixture.watch.root.join("file"),
+        fixture.watch.profile,
+        fixture.watch.limits,
+    )?;
+    let scan = fixture.watch.begin_rescan()?;
+    deliver(
+        &fixture.hints,
+        &[HostChange::Rebound("file".into())],
+        u64::MAX,
+    )?;
+    assert!(matches!(
+        fixture.watch.finish_rescan(scan)?,
+        WatchBatch::Changes { .. }
+    ));
+    assert_eq!(
+        fixture.hint_receiver.try_recv()?.change,
+        WatchChange::Arrived(path)
+    );
+
+    let scan = fixture.watch.begin_rescan()?;
+    deliver(&fixture.hints, &[HostChange::Everything], u64::MAX)?;
+    assert!(matches!(
+        fixture.watch.finish_rescan(scan)?,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::NativeRescanRequired,
+            ..
+        }
+    ));
+    Ok(())
 }
 
 /// A read-only excluded directory cannot hold a cookie, so the next one

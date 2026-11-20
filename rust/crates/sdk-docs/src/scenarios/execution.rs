@@ -23,13 +23,19 @@ pub fn compile_all(
     }
     Ok(())
 }
-/// Execute local examples with a structured Cargo invocation. Endpoint-backed
-/// examples deliberately remain receipt-only until their declared service is
-/// available.
-pub fn execute_local(
+/// Execute every registered scenario that has a release-gate invocation.
+///
+/// Local Cargo examples and endpoint-backed fixture scripts are both selected
+/// from the Rust-owned registry. The latter are deliberately invoked through
+/// the checked-in fixture path recorded on [`Scenario::fixture_script`], so a
+/// generation run cannot silently report only the local examples as the full
+/// release result. Endpoint-backed examples remain receipt-only until their
+/// declared service is available.
+pub fn execute_all(
     root: &Path,
     sources: &[ScenarioSource],
     cargo_path: Option<&Path>,
+    bun_path: Option<&Path>,
 ) -> Result<Vec<ScenarioExecution>, Error> {
     let mut executions = Vec::new();
     for source in sources {
@@ -42,29 +48,6 @@ pub fn execute_local(
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
         executions.push(execution(source, output, "")?);
     }
-    executions.sort_by_key(|execution| {
-        sources
-            .iter()
-            .position(|source| source.scenario.id == execution.scenario.id)
-            .unwrap_or(usize::MAX)
-    });
-    Ok(executions)
-}
-
-/// Execute every registered scenario that has a release-gate invocation.
-///
-/// Local Cargo examples and endpoint-backed fixture scripts are both selected
-/// from the Rust-owned registry. The latter are deliberately invoked through
-/// the checked-in fixture path recorded on [`Scenario::fixture_script`], so a
-/// generation run cannot silently report only the local examples as the full
-/// release result.
-pub fn execute_all(
-    root: &Path,
-    sources: &[ScenarioSource],
-    cargo_path: Option<&Path>,
-    bun_path: Option<&Path>,
-) -> Result<Vec<ScenarioExecution>, Error> {
-    let mut executions = execute_local(root, sources, cargo_path)?;
     let bun = bun_path.unwrap_or_else(|| Path::new("bun"));
     for source in sources {
         if source.scenario.mode != ScenarioMode::ExecuteWithEndpoint {
@@ -91,13 +74,19 @@ pub fn execute_all(
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
         executions.push(execution(source, output, " fixture")?);
     }
+    sort_by_registry(&mut executions, sources);
+    Ok(executions)
+}
+
+/// Restore registry order after execution, which interleaves local and
+/// endpoint scenarios.
+fn sort_by_registry(executions: &mut [ScenarioExecution], sources: &[ScenarioSource]) {
     executions.sort_by_key(|execution| {
         sources
             .iter()
             .position(|source| source.scenario.id == execution.scenario.id)
             .unwrap_or(usize::MAX)
     });
-    Ok(executions)
 }
 
 fn scenario_command(root: &Path, source: &ScenarioSource, cargo: &Path, run: bool) -> Command {

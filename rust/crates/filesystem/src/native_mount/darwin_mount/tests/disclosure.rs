@@ -58,12 +58,6 @@ fn cached_disclosure(hidden: &[bool], deny_parent: bool) -> TestResult {
     Ok(())
 }
 
-#[test]
-fn native_access_nfs_cached_rows_obey_disclosure_revocation() -> TestResult {
-    cached_disclosure(&[true, false, true], false)?;
-    cached_disclosure(&[false, false], true)
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]

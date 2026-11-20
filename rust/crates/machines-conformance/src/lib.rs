@@ -23,6 +23,12 @@ pub const SUITE: &[u8] = include_bytes!("../conformance/machines.json");
 pub trait Backend: acyclic_stream::ProviderPlatform {
     /// Provider under test.
     fn provider(&self) -> &dyn MachinesProvider;
+    /// Mechanisms this deployment actually serves. A transport provider cannot
+    /// learn its server's mechanisms, so its fixture states them; every other
+    /// provider answers for itself.
+    fn capability(&self, capability: ProviderCapability) -> Support {
+        self.provider().capability(capability)
+    }
     /// Ledger measured at the provider or instrumented transport boundary.
     fn requests(&self) -> RequestLedger;
     /// Immutable image enrolled by this fixture's production provider.
@@ -36,6 +42,7 @@ pub struct Fixture<P> {
     provider: CountedProvider<P>,
     image: Image,
     network_policy: [u8; 32],
+    declared: Option<Box<dyn Fn(ProviderCapability) -> Support + Send + Sync>>,
 }
 impl<P> Fixture<P> {
     /// Starts independent accounting with the provider's enrolled test resources.
@@ -44,12 +51,28 @@ impl<P> Fixture<P> {
             provider: CountedProvider::new(provider),
             image,
             network_policy,
+            declared: None,
         }
+    }
+    /// States the mechanisms the deployment behind this provider serves, for a
+    /// transport that cannot learn them from its server.
+    pub fn declaring(
+        mut self,
+        declared: impl Fn(ProviderCapability) -> Support + Send + Sync + 'static,
+    ) -> Self {
+        self.declared = Some(Box::new(declared));
+        self
     }
 }
 impl<P: MachinesProvider> Backend for Fixture<P> {
     fn provider(&self) -> &dyn MachinesProvider {
         &self.provider
+    }
+    fn capability(&self, capability: ProviderCapability) -> Support {
+        self.declared.as_ref().map_or_else(
+            || self.provider.capability(capability),
+            |declared| declared(capability),
+        )
     }
     fn requests(&self) -> RequestLedger {
         self.provider.ledger()
@@ -170,11 +193,9 @@ fn probe(platform: Platform) -> Result<ExecCommand, String> {
 
 /// Admits one exec and consumes its whole result. A provider without a guest
 /// operating system still performs admission, then reports Unsupported.
-async fn exec_admitted(
-    provider: &dyn MachinesProvider,
-    machine: &MachineObservation,
-) -> Result<(), String> {
-    if provider.capability(ProviderCapability::RequestResponseExec) == Support::Supported {
+async fn exec_admitted(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
+    let provider = backend.provider();
+    if backend.capability(ProviderCapability::RequestResponseExec) == Support::Supported {
         let receipt = provider
             .exec_request(machine.id, probe(machine.contract.platform)?)
             .await
@@ -189,7 +210,7 @@ async fn exec_admitted(
                 .await,
         )?;
     }
-    if provider.capability(ProviderCapability::BinaryDuplexExec) == Support::Unsupported {
+    if backend.capability(ProviderCapability::BinaryDuplexExec) == Support::Unsupported {
         return require_unsupported(
             provider
                 .exec(machine.id, probe(machine.contract.platform)?)
@@ -212,11 +233,12 @@ async fn exec_admitted(
 /// Exec wakes a Machine suspended under AfterIdle within the same call, and
 /// never wakes a manually suspended one.
 async fn exec_wakes(
-    provider: &dyn MachinesProvider,
+    backend: &dyn Backend,
     machine: &MachineObservation,
     image: Image,
     network_policy: [u8; 32],
 ) -> Result<(), String> {
+    let provider = backend.provider();
     let key = |suffix: u8| {
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
             .map_err(|error| error.to_string())
@@ -228,7 +250,7 @@ async fn exec_wakes(
         .suspend(machine.id, key(0x08)?)
         .await
         .map_err(|error| error.to_string())?;
-    exec_admitted(provider, machine).await?;
+    exec_admitted(backend, machine).await?;
     if state(provider, machine.id).await? != MachineState::Running {
         return Err("exec did not wake an idle-suspended Machine".into());
     }
@@ -270,13 +292,13 @@ async fn exec_wakes(
 }
 
 fn create_request(
-    provider: &dyn MachinesProvider,
+    backend: &dyn Backend,
     key: IdempotencyKey,
     image: Image,
     network: [u8; 32],
 ) -> CreateMachine {
     let mut request = CreateMachine::new(key, Some(image), network);
-    if provider.capability(ProviderCapability::SuspendResume) == Support::Unsupported {
+    if backend.capability(ProviderCapability::SuspendResume) == Support::Unsupported {
         request.suspension = SuspensionPolicy::Manual;
     }
     request
@@ -291,12 +313,7 @@ fn require_unsupported<T>(result: Result<T, ProviderError>) -> Result<(), String
 
 /// Runs all lifecycle, replay, capability, fork, operation and payload-read cases.
 pub async fn verify(backend: &dyn Backend) -> Result<(), String> {
-    verify_provider(
-        backend.provider(),
-        backend.image().clone(),
-        backend.network_policy(),
-    )
-    .await?;
+    verify_provider(backend).await?;
     if backend.provider().capability(ProviderCapability::Events) == Support::Supported {
         workload(backend, 3, "b0").await?;
     }
@@ -335,7 +352,7 @@ async fn workload(
     };
     let created = provider
         .create(create_request(
-            provider,
+            backend,
             key("0001")?,
             backend.image().clone(),
             backend.network_policy(),
@@ -408,11 +425,10 @@ macro_rules! suite {
 }
 
 /// Exercises the public shape-free lifecycle, replay, fork, and observation semantics.
-async fn verify_provider(
-    provider: &dyn MachinesProvider,
-    image: Image,
-    network_policy: [u8; 32],
-) -> Result<(), String> {
+async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
+    let provider = backend.provider();
+    let image = backend.image().clone();
+    let network_policy = backend.network_policy();
     let key = |suffix: u8| {
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
             .map_err(|error| error.to_string())
@@ -437,7 +453,7 @@ async fn verify_provider(
     for (capability, create_suffix, destroy_suffix) in capability_cases {
         let required = std::collections::BTreeSet::from([capability]);
         let mut capability_request =
-            create_request(provider, key(create_suffix)?, image.clone(), network_policy);
+            create_request(backend, key(create_suffix)?, image.clone(), network_policy);
         capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
         let admission = provider.create(capability_request).await;
         if qualification.capabilities.contains(&capability) {
@@ -466,7 +482,7 @@ async fn verify_provider(
         }
     }
     let create_key = key(1)?;
-    let request = create_request(provider, create_key, image.clone(), network_policy);
+    let request = create_request(backend, create_key, image.clone(), network_policy);
     let created = provider
         .create(request.clone())
         .await
@@ -482,7 +498,7 @@ async fn verify_provider(
     {
         return Err("create replay changed its outcome".into());
     }
-    if provider.capability(ProviderCapability::AttachVolume) == Support::Unsupported {
+    if backend.capability(ProviderCapability::AttachVolume) == Support::Unsupported {
         require_unsupported(
             provider
                 .attach_volume(machine.id, Default::default(), key(0x60)?)
@@ -492,7 +508,7 @@ async fn verify_provider(
     if machine.state != MachineState::Running {
         return Err("created machine is not ready".into());
     }
-    if provider.capability(ProviderCapability::Operations) == Support::Supported {
+    if backend.capability(ProviderCapability::Operations) == Support::Supported {
         let operation = provider
             .recover_operation(create_key)
             .await
@@ -535,7 +551,7 @@ async fn verify_provider(
         require_unsupported(provider.cancel(operation).await)?;
         require_unsupported(provider.watch_operation(operation).await)?;
     }
-    if provider.capability(ProviderCapability::Checkpoint) == Support::Supported {
+    if backend.capability(ProviderCapability::Checkpoint) == Support::Supported {
         let checkpointed = provider
             .checkpoint(machine.id, key(2)?)
             .await
@@ -617,7 +633,7 @@ async fn verify_provider(
         require_unsupported(provider.fork(checkpoint, NonZeroU32::MIN, key(3)?).await)?;
         require_unsupported(provider.destroy_checkpoint(checkpoint, key(6)?).await)?;
     }
-    if provider.capability(ProviderCapability::SuspendResume) == Support::Supported {
+    if backend.capability(ProviderCapability::SuspendResume) == Support::Supported {
         provider
             .suspend(machine.id, key(4)?)
             .await
@@ -644,7 +660,7 @@ async fn verify_provider(
                 .await,
         )?;
     }
-    if provider.capability(ProviderCapability::Events) == Support::Supported {
+    if backend.capability(ProviderCapability::Events) == Support::Supported {
         let events = provider
             .events(machine.id, None, 16)
             .await
@@ -657,7 +673,7 @@ async fn verify_provider(
                 _ => None,
             })
             .collect::<Vec<_>>();
-        if provider.capability(ProviderCapability::SuspendResume) == Support::Supported
+        if backend.capability(ProviderCapability::SuspendResume) == Support::Supported
             && !states.windows(3).any(|states| {
                 states
                     == [
@@ -673,12 +689,12 @@ async fn verify_provider(
         require_unsupported(provider.events(machine.id, None, 16).await)?;
         require_unsupported(provider.follow_events(machine.id, None).await)?;
     }
-    if provider.capability(ProviderCapability::SuspendResume) == Support::Supported {
-        exec_wakes(provider, &machine, image, network_policy).await?;
+    if backend.capability(ProviderCapability::SuspendResume) == Support::Supported {
+        exec_wakes(backend, &machine, image, network_policy).await?;
     } else {
-        exec_admitted(provider, &machine).await?;
+        exec_admitted(backend, &machine).await?;
     }
-    if provider.capability(ProviderCapability::Usage) == Support::Supported {
+    if backend.capability(ProviderCapability::Usage) == Support::Supported {
         let usage = provider
             .usage(machine.id, 1, 2)
             .await
@@ -692,8 +708,8 @@ async fn verify_provider(
     } else {
         require_unsupported(provider.usage(machine.id, 1, 2).await)?;
     }
-    live_fork(provider, &machine).await?;
-    if provider.capability(ProviderCapability::Destroy) == Support::Supported {
+    live_fork(backend, &machine).await?;
+    if backend.capability(ProviderCapability::Destroy) == Support::Supported {
         provider
             .destroy_machine(machine.id, key(7)?)
             .await
@@ -717,10 +733,8 @@ async fn verify_provider(
 /// rebinding rejection, and children joined before their source (a source destroy refuses
 /// with the typed [`Precondition::LiveForks`] while one lives). Then a suspended source
 /// forks as its own checkpoint and stays suspended.
-async fn live_fork(
-    provider: &dyn MachinesProvider,
-    machine: &MachineObservation,
-) -> Result<(), String> {
+async fn live_fork(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
+    let provider = backend.provider();
     let key = |suffix: u8| {
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
             .map_err(|error| error.to_string())

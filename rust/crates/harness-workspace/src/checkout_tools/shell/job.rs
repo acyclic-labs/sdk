@@ -1,0 +1,33 @@
+//! File controls for one admitted shell, over the shared native input watch.
+use super::*;
+
+pub struct Cancellation {
+    watcher: crate::input_watch::InputWatch,
+    path: std::path::PathBuf,
+}
+
+impl Cancellation {
+    pub fn open(root: &std::path::Path, operation: crate::OperationId) -> Result<Self> {
+        let path = root.join(format!("shell-{operation}.cancel"));
+        let watcher = crate::input_watch::InputWatch::new(vec![path.clone()])?;
+        Ok(Self { watcher, path })
+    }
+
+    pub async fn wait(mut self) -> Result<()> {
+        loop {
+            // Subscribe before observing the predicate. Each re-read follows
+            // a new input event; no sticky tree invalidation can spin here.
+            let changed = self.watcher.changed();
+            let (cancelled, original) = native_process::prepare_with_custody(self, |original| {
+                original.watcher.arm()?;
+                original.path.try_exists().map_err(storage)
+            })
+            .await?;
+            self = original;
+            if cancelled {
+                return Ok(());
+            }
+            changed.await?;
+        }
+    }
+}

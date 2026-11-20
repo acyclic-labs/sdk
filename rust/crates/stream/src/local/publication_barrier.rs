@@ -12,10 +12,4 @@ impl LocalStream {
         let _ = entered.send(());
         let _ = release.await;
     }
-
-    /// Detects an outstanding read permit without waiting or a timeout.
-    #[doc(hidden)]
-    pub fn test_publication_available(&self) -> bool {
-        self.inner.publication.try_write().is_ok()
-    }
 }

@@ -9,7 +9,7 @@ async fn persisted_policy_blocks_s3_reads_writes_and_bucket_disclosure()
         let adapter = adapter(true).await?;
         acyclic_fs::access::fixtures::publish_policy(
             &adapter.resolver.principal.workspace,
-            &acyclic_fs::access::fixtures::denied(action, "secrets/**"),
+            &acyclic_fs::access::fixtures::denied(action, "secrets/**")?,
         )
         .await?;
         for mutation in [false, true] {
@@ -57,7 +57,7 @@ async fn streaming_s3_body_stops_before_the_next_revoked_chunk()
     );
     acyclic_fs::access::fixtures::publish_policy(
         workspace,
-        &acyclic_fs::access::fixtures::denied(acyclic_fs::access::Action::Read, "**"),
+        &acyclic_fs::access::fixtures::denied(acyclic_fs::access::Action::Read, "**")?,
     )
     .await?;
     assert!(body.next().await.ok_or("missing stream denial")?.is_err());

@@ -234,9 +234,15 @@ impl Prepared {
             FilesystemCommitOutcome::Rejected(_) => {
                 Err(Error::Record("agent exists with another creation"))
             }
-            FilesystemCommitOutcome::Unknown { commit, .. } => {
-                Ok(RootSubmission::Unknown(Self { child, commit }))
-            }
+            FilesystemCommitOutcome::Unknown { commit, error } => match error {
+                // A definitive provider refusal is not uncertain: no resubmission
+                // can settle it, so report the refusal rather than promising a
+                // retry that can never succeed.
+                acyclic_fs::AuthorityStoreError::NativeStream(stream) if !stream.uncertain() => {
+                    Err(Error::Stream(stream))
+                }
+                _ => Ok(RootSubmission::Unknown(Self { child, commit })),
+            },
         }
     }
 
@@ -484,14 +490,13 @@ where
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let turner = FilesystemTurnHost::new(
-            Arc::clone(&stream),
+            acyclic_stream::ProviderOwner::clone(&stream),
             within.clone(),
             Arc::clone(&volumes),
             issuer.clone(),
             admission.clone(),
             turns.executors,
-            turns.limits,
-            turns.approval_policy,
+            (turns.limits, turns.approval_policy),
         )
         .with_trace_interest(traces.clone())
         .with_clock(turns.clock.clone())
@@ -530,7 +535,7 @@ where
             None,
         ));
         let control_composer: Arc<dyn acyclic_actors::guest::Composer> = composer.clone();
-        controls.bind_composer(Arc::downgrade(&control_composer));
+        controls.bind_composer(Arc::downgrade(&control_composer))?;
         let agents = AgentHost::hosting(
             acyclic_actors::guest::Requests::default(),
             stream,

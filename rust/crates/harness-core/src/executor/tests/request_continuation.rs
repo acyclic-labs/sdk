@@ -129,11 +129,15 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
                 || (),
                 |()| runtime.block_on(executor.execute_progress(input.clone(), journal)),
             );
+            if let Ok(ExecutionProgress::PreDispatchFailed(failure)) = result {
+                return Err(failure.into_error());
+            }
             #[cfg(not(target_arch = "wasm32"))]
             assert_eq!(
                 visits(&_trace, ReplayObservation::Requested),
                 0,
-                "ordinary continuation requested journal replay at {turns} steps ({max_steps:?})"
+                "ordinary continuation requested journal replay at {turns} steps ({max_steps:?}): {:?}",
+                result.as_ref().err(),
             );
             if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
                 // The limit ends the turn with every step it settled.

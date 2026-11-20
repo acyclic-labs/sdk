@@ -58,7 +58,7 @@ fn golden_controls() -> Result<(), Box<dyn Error>> {
         .position(|decoder| decoder.name == "acyclic.harness.v2.ConversationMessage")
         .ok_or("golden control has no current decoder")?;
     let current = u64::try_from(index)?.to_le_bytes();
-    let mut saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf/{name}"))?;
+    let mut saved = acyclic_compatibility_golden::frame(&format!("corpus/protobuf/{name}"))?;
     saved
         .get_mut(..8)
         .ok_or("short golden selector")?
@@ -81,7 +81,7 @@ fn golden_controls() -> Result<(), Box<dyn Error>> {
     fresh[0] ^= 1;
     assert!(!equivalent("protobuf", &fresh, &saved)?);
 
-    let mut saved = acyclic_proto_build::golden::frame(&format!("corpus/protobuf_json/{name}"))?;
+    let mut saved = acyclic_compatibility_golden::frame(&format!("corpus/protobuf_json/{name}"))?;
     saved
         .get_mut(..8)
         .ok_or("short JSON selector")?
@@ -108,7 +108,7 @@ fn save(
     let accept = std::env::args().any(|arg| arg == "--accept-goldens");
     let extend = std::env::args().any(|arg| arg == "--extend-goldens");
     let frame = format!("corpus/{target}/{name}");
-    let golden = match acyclic_proto_build::golden::frame(&frame) {
+    let golden = match acyclic_compatibility_golden::frame(&frame) {
         Ok(golden) => Some(golden),
         Err("golden frame is missing") if accept || extend => None,
         Err(error) => return Err(format!("golden {frame}: {error}").into()),
@@ -538,7 +538,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "state-outcome",
     ] {
         let bytes =
-            acyclic_proto_build::golden::frame(&format!("corpus/filesystem_codecs/{name}"))?;
+            acyclic_compatibility_golden::frame(&format!("corpus/filesystem_codecs/{name}"))?;
         if !matches!(
             acyclic_fs::distributed::state_record::StateRecord::decode(
                 bytes::Bytes::copy_from_slice(&bytes).into()
@@ -1042,7 +1042,7 @@ fn finish(manifest: &str, replaced_prefix: &str) -> Result<(), Box<dyn Error>> {
 
 fn finish_selected(manifest: &str, selected: impl Fn(&str) -> bool) -> Result<(), Box<dyn Error>> {
     if std::env::args().any(|arg| matches!(arg.as_str(), "--accept-goldens" | "--extend-goldens")) {
-        let path = Path::new("../../compatibility/frames/golden.hex");
+        let path = Path::new("../crates/compatibility-golden/frames/golden.hex");
         let previous = std::fs::read_to_string(path)?;
         let mut frames = previous
             .lines()

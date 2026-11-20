@@ -7,7 +7,7 @@ FEATURES = [
         "test-support",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-plugin","CARGO_PKG_DESCRIPTION":"Acyclic agent CLI and native host integration","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-plugin","CARGO_PKG_DESCRIPTION":"Acyclic agent CLI and native host integration","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -15,6 +15,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-plugin",
@@ -29,6 +30,7 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     build_script_env = PACKAGE_ENV,
@@ -37,10 +39,11 @@ cargo_build_script(
 rust_library(
     name = "acyclic_plugin",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/graphcoder.rs","src/install.rs","src/install/extensions.rs","src/main.rs","src/tests.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//:fixtures/harness/v2/conversation-message.json",
     ],
+    tags = ["resources:memory:640"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -52,6 +55,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -98,6 +102,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = select({
@@ -126,7 +131,11 @@ rust_test(
     ],
     }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:640"],
 )
 
 isolated_test(
@@ -155,8 +164,13 @@ isolated_test(
 rust_binary(
     name = "acyclic",
     crate_root = "src/main.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/install.rs",
+        "src/install/extensions.rs",
+        "src/main.rs",
+        "src/tests.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -168,6 +182,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -202,8 +217,12 @@ rust_binary(
 rust_test(
     name = "acyclic_test_cases",
     crate_root = "src/main.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/install.rs",
+        "src/install/extensions.rs",
+        "src/main.rs",
+        "src/tests.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -215,6 +234,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -302,7 +322,11 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.agents/plugins/marketplace.json",
     ],
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -331,8 +355,10 @@ isolated_test(
 rust_binary(
     name = "graphcoder",
     crate_root = "src/graphcoder.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/graphcoder.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -344,6 +370,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -378,8 +405,9 @@ rust_binary(
 rust_test(
     name = "graphcoder_test_cases",
     crate_root = "src/graphcoder.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/graphcoder.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -391,6 +419,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -476,7 +505,11 @@ rust_test(
     ],
     }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -506,13 +539,19 @@ rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
     srcs = [
+        "examples/embedded.rs",
+        "tests/cli.rs",
         "tests/execution.rs",
         "tests/identity.rs",
         "tests/identity_contract.rs",
         "tests/main.rs",
         "tests/native_input.rs",
+        "tests/supervision.rs",
         "tests/support/binary.rs",
         "tests/support/native_os.rs",
+    ],
+    compile_data = [
+        "//rust/crates/conformance:fixtures/inference/llamacpp/auth.body",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -525,6 +564,7 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -612,8 +652,17 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//plugin/identity:tree",
         "//plugin:tree",
+    ] + [
+        ":acyclic",
+        ":graphcoder",
+        "@nodejs//:node",
     ],
-    tags = ["manual"],
+    env = {"CARGO_BIN_EXE_acyclic":"$(rootpath :acyclic)","CARGO_BIN_EXE_graphcoder":"$(rootpath :graphcoder)","CARGO_BIN_EXE_node":"$(rootpath @nodejs//:node)"},
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -622,6 +671,7 @@ isolated_test(
     binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder","@nodejs//:node":"node"},
     id = "acyclic-plugin::main",
     exclude = ["::full_cloud::"],
+    shard_count = 6,
     limit_seconds = 10,
     env_inherit = ["PATH"],
     tags = ["no-sandbox"],
@@ -640,146 +690,13 @@ isolated_test(
     tags = ["manual","no-sandbox"],
 )
 
-rust_test(
-    name = "cli_cases",
-    crate_root = "tests/cli.rs",
-    srcs = [
-        "examples/embedded.rs",
-        "tests/cli.rs",
-        "tests/supervision.rs",
-    ],
-    compile_data = [
-        "//rust/crates/conformance:fixtures/inference/llamacpp/auth.body",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"test-support\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = "//:workspace_lints",
-    deps = [
-        ":acyclic_plugin",
-        ":build_script",
-    ] + select({
-        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
-        "//plugin/identity:acyclic_plugin_identity",
-        "//rust/crates/executable-search:acyclic_executable_search",
-        "//rust/crates/filesystem:acyclic_fs",
-        "//rust/crates/harness-client:acyclic_harness_client",
-        "//rust/crates/harness-providers:acyclic_harness_providers",
-        "//rust/crates/harness:acyclic_harness",
-        "//rust/crates/native-lines:acyclic_native_lines",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/native-stdin:acyclic_native_stdin",
-        "//rust/crates/observability:acyclic_observability",
-        "//rust/crates/stream:acyclic_stream",
-        "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//async-stream-0.3.6",
-        "@sdk_crates//axum-0.8.9",
-        "@sdk_crates//blake3-1.8.7",
-        "@sdk_crates//clap-4.6.7",
-        "@sdk_crates//futures-0.3.34",
-        "@sdk_crates//rustix-openpty-0.2.0",
-        "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//tracing-subscriber-0.3.23",
-    ],
-        "@rules_rust//rust/platform:aarch64-apple-darwin": [
-        "//plugin/identity:acyclic_plugin_identity",
-        "//rust/crates/executable-search:acyclic_executable_search",
-        "//rust/crates/filesystem:acyclic_fs",
-        "//rust/crates/harness-client:acyclic_harness_client",
-        "//rust/crates/harness-providers:acyclic_harness_providers",
-        "//rust/crates/harness:acyclic_harness",
-        "//rust/crates/native-lines:acyclic_native_lines",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/native-stdin:acyclic_native_stdin",
-        "//rust/crates/observability:acyclic_observability",
-        "//rust/crates/stream:acyclic_stream",
-        "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//async-stream-0.3.6",
-        "@sdk_crates//axum-0.8.9",
-        "@sdk_crates//blake3-1.8.7",
-        "@sdk_crates//clap-4.6.7",
-        "@sdk_crates//futures-0.3.34",
-        "@sdk_crates//rustix-openpty-0.2.0",
-        "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//tracing-subscriber-0.3.23",
-    ],
-        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
-        "//plugin/identity:acyclic_plugin_identity",
-        "//rust/crates/executable-search:acyclic_executable_search",
-        "//rust/crates/filesystem:acyclic_fs",
-        "//rust/crates/harness-client:acyclic_harness_client",
-        "//rust/crates/harness-providers:acyclic_harness_providers",
-        "//rust/crates/harness:acyclic_harness",
-        "//rust/crates/native-lines:acyclic_native_lines",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/native-stdin:acyclic_native_stdin",
-        "//rust/crates/observability:acyclic_observability",
-        "//rust/crates/stream:acyclic_stream",
-        "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//async-stream-0.3.6",
-        "@sdk_crates//axum-0.8.9",
-        "@sdk_crates//blake3-1.8.7",
-        "@sdk_crates//clap-4.6.7",
-        "@sdk_crates//futures-0.3.34",
-        "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//tracing-subscriber-0.3.23",
-    ],
-    }),
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "cli",
-    binary = ":cli_cases",
-    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
-    id = "acyclic-plugin::cli",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    env_inherit = ["PATH"],
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "cli_full-cloud",
-    binary = ":cli_cases",
-    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder","@nodejs//:node":"node"},
-    id = "acyclic-plugin::cli",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    env_inherit = ["PATH"],
-    tags = ["manual","no-sandbox"],
-)
-
 rust_binary(
     name = "embedded_example",
     crate_root = "examples/embedded.rs",
     srcs = [
         "examples/embedded.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -791,6 +708,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -883,6 +801,7 @@ rust_binary(
     srcs = [
         "examples/workspace-probe.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -894,6 +813,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [

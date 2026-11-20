@@ -6,7 +6,7 @@ use crate::{Adapter, Authentication, ProviderSpec, Result, RetrySpec, TimeoutSpe
 use std::collections::BTreeMap;
 
 fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec> {
-    crate::registry::validate_url(&base_url, None)?;
+    crate::spec::validate_url(&base_url, None)?;
     Ok(ProviderSpec {
         adapter: Adapter::Chat,
         authentication,

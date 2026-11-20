@@ -1,6 +1,6 @@
 #![no_std]
 
-include!("../../crates/stream/src/preparation/clock.rs");
+include!("../../crates/stream-contract-core/src/preparation/clock.rs");
 
 #[kani::proof]
 fn committed_time_is_the_exact_clamped_monotonic_projection() {

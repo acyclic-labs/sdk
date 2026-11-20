@@ -3,6 +3,20 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+/// The authenticated identity of a publication's exact original evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationEvidenceSeal {
+    /// Logical length of the original evidence.
+    pub bytes: u64,
+    /// BLAKE3 of the domain followed by the complete original evidence.
+    pub digest: crate::Digest,
+}
+
+impl PublicationEvidenceSeal {
+    /// Domain used to hash evidence streamed from the caller's request.
+    pub const DOMAIN: &'static [u8] = crate::kernel::EVIDENCE_DOMAIN;
+}
+
 /// An original publication and its caller-supplied evidence, recovered together.
 /// The evidence retains its original authenticated blob-read allocation.
 /// It is not a workspace file and never appears in a directory or checkout.
@@ -69,6 +83,50 @@ impl<A, O> OperationPublication<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
+    /// Recovers an original operation's generation and authenticated evidence
+    /// identity. A retry can match its own evidence without reading the stored
+    /// body. Bound handles recheck current access before returning the identity.
+    pub async fn operation_publication_seal<W: crate::facade::FsWork>(
+        &self,
+        key: IdempotencyKey,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<(Generation<A, O>, Option<PublicationEvidenceSeal>)>, WorkspaceError>
+    {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let (observed, allocation) = self
+                .volume
+                .fs
+                .workspace_operation_generation(
+                    &self.volume,
+                    key.operation_id(),
+                    None,
+                    None,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let result = observed.map(|(id, _, evidence)| {
+                let generation = Generation {
+                    workspace: self.clone(),
+                    id,
+                    publication_closure: None,
+                };
+                let seal = evidence.map(|evidence| PublicationEvidenceSeal {
+                    bytes: evidence.bytes,
+                    digest: evidence.digest,
+                });
+                (generation, seal)
+            });
+            crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
+            Ok(result)
+        }
+        .await;
+        let result = read_core::authorize(self, result, &mut accounting, cancellation).await;
+        work.finish(result, &accounting)
+    }
+
     /// Recovers a publication's immutable generation and original evidence using
     /// its existing authority operation index, without reading workspace paths.
     /// Bound handles recheck current access before returning evidence; unbound

@@ -83,11 +83,11 @@ impl<'a> StockExecution<'a> {
         step: u32,
         prior: &[ModelMessage],
     ) -> Result<(ContextInput, crate::context::Context, Option<FileRef>)> {
-        let reference = if !matches!(
+        let compaction = !matches!(
             self.compaction_policy()?,
             crate::context::CompactionPolicy::Disabled
-        ) && let Some(previous) = step.checked_sub(1)
-        {
+        );
+        let reference = if compaction && let Some(previous) = step.checked_sub(1) {
             let (_, records) = self
                 .model_records(
                     journal,
@@ -110,6 +110,16 @@ impl<'a> StockExecution<'a> {
             None
         };
         let Some(reference) = reference else {
+            if compaction
+                && let Some((covered, base)) = self.preceding_context(journal, input).await?
+            {
+                let context_input =
+                    ContextInput::copy_turn_suffix(input, step, prior, covered, self.io)?;
+                let delta =
+                    ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
+                let base = ContextPipeline::continue_base(base, delta, self.stock.limits, self.io)?;
+                return Ok((context_input, base, None));
+            }
             if self.working_tail.lock().await.prior_offset != 0 {
                 return Err(self.invalid_working_cut());
             }
@@ -157,6 +167,120 @@ impl<'a> StockExecution<'a> {
         })?;
         crate::context::validate_projected_context(&base, self.stock.limits, self.io)?;
         Ok((context_input, base, Some(reference)))
+    }
+
+    fn matching_prefix(
+        &self,
+        input: &TurnInput,
+        prefix: &WorkingContextPrefix,
+    ) -> Result<Option<usize>> {
+        let Some(selected) = input.selected_context.as_ref() else {
+            return Ok(None);
+        };
+        if selected.selection.checkpoint.is_some() {
+            return Ok(None);
+        }
+        let Some(covered) = usize::try_from(prefix.messages)
+            .ok()
+            .filter(|covered| *covered > 0 && *covered < selected.messages.len())
+        else {
+            return Ok(None);
+        };
+        let ids = selected
+            .selection
+            .message_ids
+            .get(..covered)
+            .ok_or_else(|| self.invalid_working_cut())?;
+        Ok((preparation_digest(&ids, self.io)? == prefix.selection).then_some(covered))
+    }
+
+    async fn preceding_context(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+    ) -> Result<Option<(usize, crate::context::Context)>> {
+        let Some(prefix) = journal.preceding_working_context() else {
+            return Ok(None);
+        };
+        let Some(covered) = self.matching_prefix(input, prefix)? else {
+            return Ok(None);
+        };
+        if journal.working_checkpoint_authority().is_none() {
+            return Err(self.invalid_working_cut());
+        }
+        let mut cache = self.working_tail.lock().await;
+        self.refresh_working_cut(&mut cache, journal, &prefix.checkpoint)
+            .await?;
+        let retained = cache
+            .retained
+            .as_ref()
+            .ok_or_else(|| self.invalid_working_cut())?;
+        if retained.cut.operation != prefix.operation
+            || retained.cut.step != 0
+            || cache.prior_offset != 0
+        {
+            return Err(self.invalid_working_cut());
+        }
+        // The active input ends the original selection. Configuration and
+        // steering after it re-enter in the next turn's original transcript.
+        let through = retained
+            .context
+            .current_input_index
+            .and_then(|index| (index as usize).checked_add(1))
+            .ok_or_else(|| self.invalid_working_cut())?;
+        let context = with_history_io(self.io, |work| {
+            crate::context::clone_context_range(&retained.context, 0..through, work)
+                .map(|(context, _)| context)
+        })?;
+        Ok(Some((covered, context)))
+    }
+
+    /// Carry only the original first-step cut. Later cuts can consume part of
+    /// this turn's transcript, which the next turn selects independently.
+    pub(super) async fn working_context_at_settlement(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+    ) -> Result<Option<WorkingContextPrefix>> {
+        let Some(selected) = input.selected_context.as_ref() else {
+            return Ok(None);
+        };
+        if journal.working_checkpoint_authority().is_none()
+            || matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            )
+        {
+            return Ok(None);
+        }
+        let (_, records) = self
+            .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
+            .await?;
+        if let Some(projection) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ContextCompacted { projection, .. } => Some(projection),
+            _ => None,
+        }) && let Some(checkpoint) =
+            transcript::working_reference(journal, projection, self.io).await?
+        {
+            return Ok(Some(WorkingContextPrefix {
+                checkpoint,
+                operation: input.operation_id,
+                messages: selected.selection.message_ids.len() as u64,
+                selection: preparation_digest(&selected.selection.message_ids.as_slice(), self.io)?,
+            }));
+        }
+        let Some(previous) = journal.preceding_working_context() else {
+            return Ok(None);
+        };
+        if self.matching_prefix(input, previous)?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(WorkingContextPrefix {
+            checkpoint: crate::model::clone_file(&previous.checkpoint, self.io)?,
+            operation: previous.operation,
+            messages: previous.messages,
+            selection: previous.selection,
+        }))
     }
 
     async fn refresh_working_cut(
@@ -350,28 +474,20 @@ impl<'a> StockExecution<'a> {
             (input.operation_id, step),
             self.io,
         )?;
-        let compaction_key = with_history_io(self.io, |work| {
-            preparation_format(format_args!("context:{step}:compaction"), work)
-        })?;
+        let candidate_key = |component| {
+            super::compaction::compaction_candidate_key(step, proof, component, self.io)
+        };
+        let compaction_key = candidate_key("compaction")?;
         let compaction =
             stage_json(journal, input.operation_id, &compaction_key, proof, self.io).await?;
-        let key = |suffix| {
-            with_history_io(self.io, |work| {
-                preparation_format(format_args!("context:{step}:working-{suffix}"), work)
-            })
-        };
-        let source = stage_json(
-            journal,
-            input.operation_id,
-            &key("source")?,
-            source,
-            self.io,
-        )
-        .await?;
+        let source_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("context:{step}:working-source"), work)
+        })?;
+        let source = stage_json(journal, input.operation_id, &source_key, source, self.io).await?;
         let retained = stage_json(
             journal,
             input.operation_id,
-            &key("retained")?,
+            &candidate_key("working-retained")?,
             retained,
             self.io,
         )
@@ -402,7 +518,7 @@ impl<'a> StockExecution<'a> {
         let checkpoint = stage_json(
             journal,
             input.operation_id,
-            &key("checkpoint")?,
+            &candidate_key("working-checkpoint")?,
             &cut,
             self.io,
         )

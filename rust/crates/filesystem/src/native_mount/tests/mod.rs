@@ -1,12 +1,13 @@
 use super::*;
+use crate::Fs;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, FilesystemProfile, GenerationSelector, Lifecycle,
     MutationMode, VolumeConfig, VolumeLimits,
 };
-use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
+use crate::{ByteRange, WatchBatch, WatchChange};
+use crate::{CancellationToken, VolumeId, WorkBudget};
 
-pub(in crate::native_mount) use super::fixture_access;
 pub(super) use super::recovery::wait_for_retirement as await_recovery_worker;
 
 pub(super) async fn memory_volume(

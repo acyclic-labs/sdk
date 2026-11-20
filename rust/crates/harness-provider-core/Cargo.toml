@@ -1,0 +1,72 @@
+[package]
+autotests = false
+name = "acyclic-harness-provider-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider foundation: endpoint specs, credentials, transports and shared wire helpers"
+
+[features]
+browser = ["dep:tsify", "dep:wasm-bindgen"]
+fuzzing = ["acyclic-harness-core/test-support"]
+model-checking = ["dep:loom"]
+
+[dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", version = "=0.2.0" }
+acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0" }
+acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
+acyclic-auth = { path = "../auth", version = "=0.2.0" }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
+acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
+async-stream = "0.3.6"
+base64 = "=0.23.1"
+bytes.workspace = true
+blake3.workspace = true
+futures.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+url = "2.5.7"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "0.7.3", optional = true }
+acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
+serde_path_to_error = "0.1.20"
+reqwest.workspace = true
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+tempfile = "3.27.0"
+time = { workspace = true, features = ["formatting", "parsing"] }
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+httpdate = "1.0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0", features = ["test-support"] }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["conformance"] }
+acyclic-test-support = { path = "../test-support" }
+acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0", features = ["test-support"] }
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+tempfile = "3.27.0"
+loom = "0.7.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -12,11 +12,11 @@ mod case_data;
 #[path = "../../harness/tests/support/discovery.rs"]
 mod discovery;
 mod execution;
-#[path = "../../harness/tests/e2e/expectations.rs"]
+#[path = "../../harness-e2e/tests/e2e/expectations.rs"]
 mod expectations;
 #[path = "../../harness/tests/support/ordered_matcher.rs"]
 mod ordered_matcher;
-#[path = "../../harness/tests/e2e/scenario.rs"]
+#[path = "../../harness-e2e/tests/e2e/scenario.rs"]
 mod scenario;
 #[path = "../../harness/tests/support/scenario_matchers.rs"]
 mod scenario_matchers;

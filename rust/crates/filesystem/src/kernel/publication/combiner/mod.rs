@@ -568,7 +568,7 @@ async fn prepare_delta<O: crate::AsyncObjectStore>(
         let changes = crate::PublicationChanges::proposed(
             objects,
             (base, base_id),
-            &root.value,
+            (&root.value, &delta.value.files),
             request,
             config,
             accounting,

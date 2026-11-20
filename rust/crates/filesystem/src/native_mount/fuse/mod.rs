@@ -15,10 +15,10 @@ use super::{
     create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::ledger::NativeResourceCredit::{Copy, Items};
 use crate::lock_order::{
     Condvar as RankedCondvar, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION, VIEW,
 };
-use crate::materializer::NativeResourceCredit::{Copy, Items};
 use fuser::{FileAttr, FileType, FopenFlags, INodeNo, InitFlags, TimeOrNow};
 use std::collections::HashMap;
 use std::ffi::OsStr;

@@ -401,7 +401,7 @@ fn a_grant_not_yet_resumed_is_revoked_when_the_endpoint_closes() {
 }
 
 #[test]
-fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() {
+fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() -> Result<()> {
     paused().block_on(async {
         let transport = capacity();
         let work = crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new()).unwrap();
@@ -412,7 +412,7 @@ fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() {
             .await
             .unwrap();
         // An immediate admission queues nothing and funds nothing.
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         assert!(held.observe(429, Some(RETRY_AFTER), transport.now()));
         let mut waiter = Box::pin(gate.clone().admit(transport.as_ref(), Some(&work)));
         assert!(matches!(
@@ -421,7 +421,7 @@ fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() {
         ));
         // The start exposes the original queue allocation before its native
         // timer is constructed on the next poll.
-        assert_eq!(work.live_allocation_bytes(), baseline + QUEUED_BYTES);
+        assert_eq!(work.live_allocation_bytes()?, baseline + QUEUED_BYTES);
         assert!(waiter.next().now_or_never().is_none());
         drop(held);
         assert!(matches!(
@@ -430,9 +430,10 @@ fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() {
         ));
         assert!(matches!(waiter.next().await, Some(Ok(Event::Ready(_)))));
         drop(waiter);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         assert!(gate.lock().waiters.capacity() == 0);
-    });
+        Ok(())
+    })
 }
 
 #[test]
@@ -471,7 +472,7 @@ fn admission_span_starts_before_grant_and_retains_cause_changes() {
 }
 
 #[test]
-fn cancelling_an_observed_admission_releases_original_queue_custody() {
+fn cancelling_an_observed_admission_releases_original_queue_custody() -> Result<()> {
     for at_finish in [false, true] {
         paused().block_on(async {
             let transport = capacity();
@@ -484,7 +485,7 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
                 .await
                 .unwrap();
             assert!(held.observe(429, Some(RETRY_AFTER), transport.now()));
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let mut waiting = Box::pin(gate.clone().admit(transport.as_ref(), Some(&work)));
             assert!(matches!(
                 waiting.next().now_or_never(),
@@ -492,7 +493,7 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
                     cause: ModelAdmissionCause::Cooldown { until }
                 }))))
              if until == RETRY_AFTER));
-            assert_eq!(work.live_allocation_bytes(), baseline + QUEUED_BYTES);
+            assert_eq!(work.live_allocation_bytes()?, baseline + QUEUED_BYTES);
             assert!(waiting.next().now_or_never().is_none());
             if at_finish {
                 tokio::time::advance(RETRY_AFTER).await;
@@ -505,11 +506,11 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
             } else {
                 // An interrupted span keeps its original start and has no finish.
                 drop(waiting);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
                 tokio::time::advance(RETRY_AFTER).await;
                 held.waited();
             }
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
             assert!(gate.lock().waiters.is_empty());
             // The next caller sees the expired cooldown without a leaked wait.
             let mut next = Box::pin(gate.clone().admit(transport.as_ref(), Some(&work)));
@@ -517,8 +518,10 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
                 next.next().now_or_never(),
                 Some(Some(Ok(Event::Ready(_))))
             ));
-        });
+            Ok::<_, crate::Error>(())
+        })?;
     }
+    Ok(())
 }
 
 // Queue scheduling tests consume the same observations as every other caller.

@@ -1,5 +1,4 @@
 use super::*;
-use proptest::prelude::*;
 
 proptest! {
     #[test]
@@ -21,7 +20,7 @@ proptest! {
         value["includes_private"] = serde_json::json!(private);
         value["format_version"] = serde_json::json!(if legacy { 59 } else { 60 });
         let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&value).unwrap().into();
-        let decoded = crate::public_api::decode::from_slice(&bytes).unwrap();
+        let decoded = serde_json::from_slice::<rustdoc_types::Crate>(&bytes).unwrap();
         let result = crate::public_api::extract(Path::new("fixture.json"), &bytes, &decoded);
         if private || legacy {
             prop_assert!(result.is_err());

@@ -82,7 +82,7 @@ where
         if !effect.is_empty() {
             self.authored.record_projection_change(
                 &ViewChange::Effect(&effect),
-                &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::ledger::DemandWork::new(
                     WorkBudget::UNBOUNDED,
                     self.authored.cancellation(),
                 )),

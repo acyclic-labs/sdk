@@ -1,9 +1,9 @@
 use acyclic_fs::kernel::{AttributeClass, AttributeName, Mutation};
 use acyclic_fs::{
-    ByteRange, CancellationToken, ContentChange, ExtentSeekTarget, FsError,
-    NamedAttributeWriteMode, OperationFailure,
+    ByteRange, CancellationToken, ContentChange, ExtentSeekTarget, FsError, NamedAttributeWriteMode,
 };
 use acyclic_fs_format::metadata::MetadataField;
+use acyclic_fs_work::performance::OperationFailure;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

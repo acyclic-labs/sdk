@@ -44,7 +44,7 @@ struct Storage {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
-pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
+pub async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
     // One allocation holds both phases, keeping their state machines out of
     // the entry frame without allocating again between preparation and open.
     Box::pin(async move { prepare(config).await?.open().await }).await
@@ -121,6 +121,7 @@ impl PreparedLocalHarness {
             home: &stored.scratch,
             seed: (&stored.seed.0, &stored.seed.1),
             configuration: &opening.config.configuration,
+            issuer_access: None,
             decisions: crate::config::SettingsAdmissions::new(&stored.volume_stream),
 
             maximum_bytes: opening.config.limits.file_bytes,
@@ -301,10 +302,7 @@ impl Opening {
     /// The host's own refusals, before any state is touched: each names what
     /// is missing and its recovery. Opening stops at the first.
     fn host_refusals(&self) -> Vec<Error> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
         let native = self.native_execution;
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let native = true;
         let mut refusals = self.config.native_refusals(native);
         refusals.extend(self.config.state_refusals());
         refusals
@@ -335,25 +333,8 @@ impl Opening {
                 .map_err(storage)?;
         }
         let (directory, checkout) = self.checkout()?;
-        #[cfg(test)]
-        let checkout = match (&self.config.project, owner::RECAPTURE.get()) {
-            (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
-            _ => checkout,
-        };
-        let custody_directory = self
-            .config
-            .without_user_settings
-            .then(|| directory.join("signing-custody"));
-        let custody = match (
-            self.config.signing_store.as_deref(),
-            custody_directory.as_deref(),
-        ) {
-            (Some(store), _) => acyclic_native_runtime::signing_key::SigningCustody::Store(store),
-            (None, Some(directory)) => {
-                acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(directory)
-            }
-            (None, None) => acyclic_native_runtime::signing_key::SigningCustody::Configured,
-        };
+        let custody_directory = directory.join("signing-custody");
+        let custody = self.config.signing_custody(&custody_directory);
         let owner = owner::Owner::open(
             &directory,
             &self.config.project,
@@ -555,18 +536,10 @@ impl Opening {
         Ok(workspace.map(Arc::new))
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn user_roots(&self) -> Vec<PathBuf> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
-        {
-            self.settings
-                .as_ref()
-                .map_or_else(Vec::new, |settings| settings.skill_roots().to_vec())
-        }
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        {
-            Vec::new()
-        }
+        self.settings
+            .as_ref()
+            .map_or_else(Vec::new, |settings| settings.skill_roots().to_vec())
     }
 
     fn finish(
@@ -658,8 +631,6 @@ impl Opening {
             }
             None => (None, None),
         };
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let (workspace_tools, checkout_writer) = (None, None);
         let writer: Option<Arc<dyn crate::conversation::ContentPublisher>> =
             match self.config.project {
                 LocalProject::Volume { .. } => Some(FilesystemContentPublisher::new(
@@ -696,6 +667,7 @@ impl Opening {
             home: &scratch,
             seed: (&seed.0, &seed.1),
             configuration: &self.config.configuration,
+            issuer_access: None,
             decisions: crate::config::SettingsAdmissions::new(&volume_stream),
 
             maximum_bytes: self.config.limits.file_bytes,
@@ -718,20 +690,13 @@ impl Opening {
                 .model
                 .clone()
                 .map(|binding| Arc::new(crate::model::ResolvedModel::new(binding)));
-            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-            let settings_tree =
-                agent_settings::Tree::pinned(&volumes, home_generation.clone(), None)?;
-            #[cfg(any(test, not(target_arch = "wasm32")))]
             let resolver = self
                 .models
                 .as_deref()
                 .map(|models| move |selection: &str| models.resolve_shared(selection));
-            #[cfg(any(test, not(target_arch = "wasm32")))]
             let resolve = resolver.as_ref().map(|resolve| {
                 resolve as &(dyn Fn(&str) -> Result<Arc<crate::model::ResolvedModel>> + Sync)
             });
-            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-            let resolve = None;
             let settings = agent_settings::admit(
                 &settings_tree,
                 owner.agent,

@@ -195,7 +195,7 @@ pub struct LocalMaterializationActionCompletion {
     journal: Option<MaterializationJournal>,
     receipt: Receipt,
     encoding: Vec<u8>,
-    encoding_credit: crate::materializer::NativeWorkReservation,
+    encoding_credit: crate::ledger::NativeWorkReservation,
     host: Option<crate::native_host::PreparedMaterializationRecord>,
     record_lock: OwnerLock,
     _admission: Admission,
@@ -243,7 +243,7 @@ impl Future for LocalMaterializationActionCompletion {
 }
 
 pub(super) struct MaterializationEncodedSize<'a> {
-    pub(super) work: &'a crate::materializer::NativeMaterializationWork,
+    pub(super) work: &'a crate::ledger::NativeMaterializationWork,
     pub(super) length: usize,
 }
 
@@ -269,12 +269,12 @@ impl Write for MaterializationEncodedSize<'_> {
 
 fn prepare_materialization_encoding(
     journal: &mut Receipt,
-    work: &crate::materializer::NativeMaterializationWork,
+    work: &crate::ledger::NativeMaterializationWork,
 ) -> Result<
     (
         Vec<u8>,
-        crate::materializer::NativeWorkReservation,
-        crate::materializer::NativeAllocation,
+        crate::ledger::NativeWorkReservation,
+        crate::ledger::NativeAllocation,
     ),
     LocalCoreStateStoreError,
 > {
@@ -334,7 +334,7 @@ impl LocalCoreStateStore {
     }
 
     /// Binds the existing journal family to the native execution accounting boundary.
-    pub fn materialization(&self, work: crate::materializer::NativeMaterializationWork) -> Self {
+    pub fn materialization(&self, work: crate::ledger::NativeMaterializationWork) -> Self {
         Self {
             journal_work: Some(work),
             ..self.clone()

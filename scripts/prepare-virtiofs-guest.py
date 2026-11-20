@@ -126,6 +126,24 @@ poweroff -f
     (output / "provenance.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
+GUEST_ENTRIES = frozenset({"root", "kernel", "initramfs.gz", "cloud-hypervisor", "provenance.json"})
+
+
+def clear_guest_directory(output, recovery):
+    """Remove a previous run's guest directory, empty or partial, before publishing."""
+    if not output.exists():
+        return
+    if not output.is_dir() or not {entry.name for entry in output.iterdir()} <= GUEST_ENTRIES:
+        raise RuntimeError("step=select unused guest artifact directory: destination exists; recovery: "
+                           + recovery + " --output " + shlex.quote(str(output.with_name(output.name + "-new"))))
+    for entry in output.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    output.rmdir()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -138,17 +156,13 @@ def main():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError(f"step=select guest architecture: Linux x86_64 required; recovery: {recovery}")
     output = args.output.resolve()
-    if output.exists():
-        raise RuntimeError("step=select unused guest artifact directory: destination exists; recovery: "
-                           + recovery + " --output " + shlex.quote(str(output.with_name(output.name + "-new"))))
     output.parent.mkdir(parents=True, exist_ok=True)
+    clear_guest_directory(output, recovery)
     # Failed preparation leaves no partially usable guest or downloaded VMM.
     with tempfile.TemporaryDirectory(prefix=".acyclic-guest-", dir=output.parent) as temporary:
         prepared = Path(temporary) / "guest"
         prepared.mkdir()
         prepare(prepared, recovery, args.vmm.resolve(), args.vmm_sha256)
-        if output.exists():
-            raise RuntimeError(f"step=publish guest artifacts: destination appeared; recovery: {recovery}")
         prepared.rename(output)
     executable = output / "cloud-hypervisor"
     print(json.dumps({"kernel": str(output / "kernel"), "initramfs": str(output / "initramfs.gz"),

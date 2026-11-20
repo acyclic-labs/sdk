@@ -28,6 +28,7 @@ pub struct NativeMetadataInput {
 }
 
 pub(super) type Provider = dyn Fn(NativeMetadataInput) -> NativeTimes + Send + Sync;
+pub(super) type SourceIdentityProvider = dyn Fn([u8; 32]) -> [u8; 32] + Send + Sync;
 
 impl Schedule {
     /// Supplies explicit native timestamp inputs before dispatch. Physical
@@ -54,6 +55,26 @@ impl Schedule {
         );
         state.metadata = Some(Arc::new(provider));
     }
+
+    /// Supplies stable stand-ins for native file identities before dispatch.
+    /// Only logical source keys use these stand-ins. Host snapshot validation
+    /// and authorization continue to compare the original physical identities.
+    ///
+    /// # Panics
+    ///
+    /// Panics while owned work is active or if a provider is already installed.
+    pub fn set_source_identity_provider(
+        &self,
+        provider: impl Fn([u8; 32]) -> [u8; 32] + Send + Sync + 'static,
+    ) {
+        let mut state = self.0.state();
+        assert_eq!(state.active, 0, "cannot replace live source identities");
+        assert!(
+            state.source_identity.is_none(),
+            "source identities already installed"
+        );
+        state.source_identity = Some(Arc::new(provider));
+    }
 }
 
 /// Reads fixture input on the original task or its receiving native worker.
@@ -62,4 +83,11 @@ pub fn capture_native_times(input: NativeMetadataInput) -> Option<NativeTimes> {
     let context = Context::simulation()?;
     let provider = context.schedule.0.state().metadata.clone()?;
     Some(provider(input))
+}
+
+/// Selects a replay's logical source identity, keeping native validation intact.
+pub fn source_identity(original: [u8; 32]) -> [u8; 32] {
+    let provider = Context::simulation()
+        .and_then(|context| context.schedule.0.state().source_identity.clone());
+    provider.map_or(original, |provider| provider(original))
 }

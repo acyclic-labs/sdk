@@ -4,8 +4,8 @@ use crate::native_mount::retirement::SourceRetirementWait;
 /// Retains a physical source operation until its last alias finishes.
 pub type NativeSourceIoLease = Arc<CaptureProducer>;
 
-impl CaptureProducer {
-    pub(crate) fn original_work(&self) -> Option<&crate::NativeMaterializationWork> {
+impl crate::ledger::NativeSourceIo for CaptureProducer {
+    fn original_work(&self) -> Option<&crate::NativeMaterializationWork> {
         self.original.as_ref()
     }
 }
@@ -93,7 +93,7 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     pub(in crate::native_mount) fn capture_producer(
         &self,
-        mut credit: Option<crate::materializer::NativeWorkReservation>,
+        mut credit: Option<crate::ledger::NativeWorkReservation>,
     ) -> Result<CaptureProducer, MountSourceError> {
         let mut gate = self
             .capture_signal
@@ -135,7 +135,7 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     pub(in crate::native_mount) fn reserve_capture_poll(
         &self,
-    ) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError> {
+    ) -> Result<Option<crate::ledger::NativeWorkReservation>, MountSourceError> {
         self.native_original
             .as_ref()
             .map(|original| {

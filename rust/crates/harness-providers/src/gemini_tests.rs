@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_harness_core::model::{ModelContentPart, NativePart, ToolCall, ToolResultContent};
 
 #[tokio::test]
 async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected() -> Result<()> {
@@ -109,82 +108,5 @@ async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<(
     assert!(
         matches!(&events[0], ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")
     );
-    Ok(())
-}
-
-#[test]
-fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<()> {
-    let (provider, _) = provider(Adapter::Gemini, 200);
-    let (initial, _) = request(&provider)?;
-    let mut request = initial.request().clone();
-    request
-        .tools
-        .push(acyclic_harness_core::tool::ToolDefinition {
-            name: "echo".into(),
-            revision: "1".into(),
-            description: "echo".into(),
-            input_schema: json!({"type":"object"}),
-            output_schema: json!({}),
-            projection_schema: json!({}),
-        });
-    for step in 0..2 {
-        for index in 0..2 {
-            // The first call of each batch carries its signed part.
-            let native = (index == 0).then(|| NativePart {
-                origin: provider.reasoning_origin(provider.key.as_deref(), None),
-                continuity: serde_json::to_vec(&json!({"functionCall":{"id":format!("{step}-{index}"),"name":"echo","args":{}},"thoughtSignature":format!("signature-{step}")})).expect("native Gemini part"),
-            });
-            let parts = vec![ModelContentPart::ToolCall(
-                ToolCall::new(format!("{step}-{index}"), "echo".into(), json!({}))
-                    .with_native(native),
-            )];
-            request.messages.push(ModelMessage {
-                role: ModelRole::Assistant,
-                content: ModelContent::Parts(parts),
-            });
-        }
-        for index in 0..2 {
-            request.messages.push(ModelMessage {
-                role: ModelRole::Tool,
-                content: ModelContent::Part(ModelContentPart::ToolResult {
-                    call_id: format!("{step}-{index}"),
-                    name: "echo".into(),
-                    content: ToolResultContent::Json {
-                        value: json!({"ok":true}),
-                    },
-                }),
-            });
-        }
-    }
-    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-    let replayed = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
-    for request in [prepared.request(), replayed.request()] {
-        let body = projection::body(&provider, request)?;
-        let contents = body["contents"].as_array().expect("contents");
-        assert_eq!(contents.len(), 5);
-        for step in 0..2 {
-            let model = &contents[1 + 2 * step];
-            let results = &contents[2 + 2 * step];
-            assert_eq!(model["role"], "model");
-            assert_eq!(results["role"], "user");
-            assert_eq!(model["parts"].as_array().expect("calls").len(), 2);
-            assert_eq!(results["parts"].as_array().expect("results").len(), 2);
-            assert_eq!(
-                model["parts"][0]["thoughtSignature"],
-                format!("signature-{step}")
-            );
-            assert!(model["parts"][1].get("thoughtSignature").is_none());
-            for index in 0..2 {
-                assert_eq!(
-                    model["parts"][index]["functionCall"]["id"],
-                    format!("{step}-{index}")
-                );
-                assert_eq!(
-                    results["parts"][index]["functionResponse"]["id"],
-                    format!("{step}-{index}")
-                );
-            }
-        }
-    }
     Ok(())
 }

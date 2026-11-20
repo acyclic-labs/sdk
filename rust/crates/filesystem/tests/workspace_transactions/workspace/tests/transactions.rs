@@ -8,7 +8,8 @@ use acyclic_fs_format::metadata::FileMetadata;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::{commit, fork_workspace};
+use crate::workspace_transactions::fixtures::fork_workspace;
+use crate::workspace_transactions::transaction::commit;
 
 #[tokio::test]
 async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<dyn Error>> {

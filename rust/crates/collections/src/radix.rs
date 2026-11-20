@@ -58,7 +58,6 @@ impl BinaryKey<'_> {
     /// Two bounded descents, one complete comparison and one original identity
     /// observation. The bound holds after arbitrary intervening insertions.
     pub fn insertion_examinations(self) -> Option<u64> {
-        self.0.len().checked_mul(9)?.checked_add(1)?;
         u64::try_from(self.0.len())
             .ok()?
             .checked_mul(19)?

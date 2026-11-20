@@ -1,9 +1,18 @@
-//! Linux positional I/O through one owned Compio completion path.
+//! Linux positional I/O through one owned Compio completion path, and the
+//! standard FUSE mount helpers.
 
 #![allow(
     unsafe_code,
     reason = "positional I/O submits raw descriptors to the Compio driver"
 )]
+
+/// The standard Linux FUSE helpers, in preference order.
+pub const FUSE_MOUNT_HELPERS: [&std::ffi::CStr; 4] = [
+    c"/usr/bin/fusermount3",
+    c"/bin/fusermount3",
+    c"/usr/bin/fusermount",
+    c"/bin/fusermount",
+];
 
 use std::fs::File;
 use std::io;

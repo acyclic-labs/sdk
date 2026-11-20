@@ -23,8 +23,9 @@ proptest! {
         let completed = completed.min(reserved);
         let cancellation = CancellationToken::new();
         let limit = WorkBudget { bytes_copied: reserved, ..WorkBudget::UNBOUNDED };
-        let original = crate::NativeMaterializationWork::new(
+        let original = crate::NativeMaterializationWork::root(
             if mode == 0 { limit } else { WorkBudget::UNBOUNDED }, &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         ).unwrap();
         let work = if mode == 0 { original.clone() } else {
             original.native_volume_work(limit).unwrap()
@@ -68,7 +69,7 @@ proptest! {
             let name = super::super::super::LogicalName::new(
                 super::super::super::NameEncoding::Utf8, vec![b'x'; length],
             ).unwrap();
-            let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+            let original = crate::NativeMaterializationWork::root(budget, &cancellation, &crate::services::ServicesInitialized::for_kernel_tests()).unwrap();
             let child = original.native_volume_work(budget).unwrap();
             let recheck = child.recheck_admitted();
             let mut accounting = match mode {
@@ -107,7 +108,7 @@ proptest! {
         let cancellation = CancellationToken::new();
         let caller = CancellationToken::new();
         let budget = WorkBudget { bytes_copied: 8, ..WorkBudget::UNBOUNDED };
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let original = crate::NativeMaterializationWork::root(budget, &cancellation, &crate::services::ServicesInitialized::for_kernel_tests()).unwrap();
         let child = original.native_volume_work(budget).unwrap();
         let work = if resource { &child } else { &original };
         let mut accounting = KernelAccounting::native(work, &caller);
@@ -156,8 +157,9 @@ proptest! {
         let maximum = (bytes.len() - 8) as u64;
         let limit = WorkBudget { bytes_copied: maximum, ..WorkBudget::UNBOUNDED };
         let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(
+        let original = crate::NativeMaterializationWork::root(
             if resource { WorkBudget::UNBOUNDED } else { limit }, &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         ).unwrap();
         let work = if resource { original.native_volume_work(limit).unwrap() } else { original.clone() };
         let mut accounting = KernelAccounting::native(&work, &cancellation);

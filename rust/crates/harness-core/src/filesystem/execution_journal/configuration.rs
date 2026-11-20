@@ -64,42 +64,6 @@ where
             .map_or(operation, |identity| identity.1)
     }
 
-    /// Admits the SDK Arc attempt while keeping metadata custody intrinsic.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(
-        mut self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<Self>> {
-        if !self
-            ._native_metadata
-            .as_ref()
-            .is_some_and(|custody| custody.work().shares_ledger(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native journal sharing requires its original funded metadata",
-            });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        let mut body = work
-            .claim(
-                std::mem::size_of::<Self>() as u64,
-                0,
-                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
-            )
-            .map_err(Error::from)?;
-        self._native_metadata
-            .as_mut()
-            .ok_or_else(|| io.invalid("original funded journal metadata is missing"))?
-            .absorb(&mut body)
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: Some(body),
-            })?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(self))
-    }
-
     pub(super) fn require_operation(
         &self,
         operation: OperationId,
@@ -121,7 +85,7 @@ where
 
     /// Binds the journal with optional original preparation IO.
     pub fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
         binding: super::super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
@@ -187,6 +151,7 @@ where
             input_verifier: None,
             bound_selection: None,
             preceding_request: None,
+            preceding_working_context: None,
             stop: None,
             clock: None,
             boundary: None,
@@ -200,21 +165,6 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,
         })
-    }
-
-    /// Sets a separate finite work/byte allowance for cold canonical deltas.
-    pub fn with_history_read_limits(
-        mut self,
-        limits: crate::store::HistoryReadLimits,
-    ) -> Result<Self> {
-        if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
-            return Err(Error::Invalid(
-                "cold history read bounds must be positive".into(),
-            ));
-        }
-        self.history_read_limits = Some(limits);
-        self.invalidate_execution_caches();
-        Ok(self)
     }
 
     /// Binds the only selection this journal's turn may dispatch: the agent
@@ -285,6 +235,15 @@ where
         Ok(self)
     }
 
+    pub(in crate::filesystem) fn with_preceding_working_context(
+        mut self,
+        context: Option<crate::executor::WorkingContextPrefix>,
+    ) -> Self {
+        self.preceding_working_context = context;
+        self.invalidate_execution_caches();
+        self
+    }
+
     /// Cancels model calls, tools and pending platform checkpoints when `stop` fires.
     #[must_use]
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
@@ -331,7 +290,7 @@ where
     #[cfg(test)]
     pub(super) fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             crate::distributed::execution_path(operation_id, &mut None)?.as_str(),
         )
         .map_err(|error| Error::Invalid(error.to_string()))

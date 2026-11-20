@@ -1,11 +1,11 @@
 use super::*;
+use crate::test_support::{number, text};
 use acyclic_harness_core::{
     agent::AgentId,
     machines::MACHINE_BINDING_VERSION,
     resources::{ProviderRef, SandboxRef},
 };
 use acyclic_stream::{IdempotencyKey, MemoryStream, Stream};
-use arrow_array::{Array, StringArray, UInt64Array};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
@@ -21,28 +21,6 @@ fn binding(namespace: &str) -> Result<MachineBinding> {
         )?,
         forked_from: Some(acyclic_machines::MachineId::from_digest([2; 32])),
     })
-}
-
-fn text<'a>(batch: &'a Batch, name: &str) -> &'a str {
-    batch
-        .data
-        .column_by_name(name)
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap()
-        .value(0)
-}
-
-fn number(batch: &Batch, name: &str) -> u64 {
-    batch
-        .data
-        .column_by_name(name)
-        .unwrap()
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .unwrap()
-        .value(0)
 }
 
 async fn at(stream: &Stream<MemoryStream>, from: u64) -> Result<Record> {

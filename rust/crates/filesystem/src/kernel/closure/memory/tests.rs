@@ -233,8 +233,12 @@ fn refused_proof_map_admission_retires_nested_guards_outside_the_meter()
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = CancellationToken::new();
-            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(error, _)| error)?;
+            let original = crate::NativeMaterializationWork::root(
+                budget,
+                &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| error)?;
             let meter = ProofMeter::Native {
                 original: &original,
                 cancellation: &cancellation,
@@ -300,8 +304,12 @@ fn denied_native_first_slot_never_allocates() -> Result<(), Box<dyn std::error::
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.allocation_operations = 1; // The native ledger consumes this one.
-    let original =
-        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    let original = crate::NativeMaterializationWork::root(
+        budget,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(cause, _)| cause)?;
     // Read the existing ledger before probing a new volume. This also initializes
     // the debug lock-order observer's per-thread storage outside measurement.
     let before = original.receipt().unwrap();

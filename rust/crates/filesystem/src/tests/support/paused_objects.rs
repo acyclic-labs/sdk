@@ -1,5 +1,5 @@
 use super::*;
-use crate::AuthorityWork;
+use acyclic_fs::AuthorityWork;
 use std::sync::{Arc, Mutex};
 
 // Pause the actual store result, including its physical byte owner, at the
@@ -49,7 +49,7 @@ impl AsyncObjectStore for PausedStore {
 
     async fn put_hashed(
         &self,
-        object: crate::HashedObject,
+        object: acyclic_fs::HashedObject,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.inner.put_hashed(object, work).await?;
@@ -58,7 +58,7 @@ impl AsyncObjectStore for PausedStore {
 
     async fn put_many(
         &self,
-        writes: &[crate::storage::ObjectWrite],
+        writes: &[acyclic_fs::storage::ObjectWrite],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.inner.put_many(writes, work).await?;
@@ -67,7 +67,7 @@ impl AsyncObjectStore for PausedStore {
 
     async fn put_many_hashed(
         &self,
-        objects: &[crate::HashedObject],
+        objects: &[acyclic_fs::HashedObject],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.inner.put_many_hashed(objects, work).await?;
@@ -89,7 +89,7 @@ impl AsyncObjectStore for PausedStore {
         &self,
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+    ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), ObjectStoreError> {
         let reads = self.inner.read_many(requests, work).await?;
         self.pause().await?;
         Ok(reads)

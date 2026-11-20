@@ -24,7 +24,7 @@ pub(super) fn inspect(
                         .map_err(native)?;
                     cancellation.check()?;
                     #[cfg(test)]
-                    #[cfg(all(loom))]
+                    #[cfg(loom)]
                     if super::name_model::omit_plan_charge() {
                         return state.admit(delta).map_err(native).map_err(Into::into);
                     }

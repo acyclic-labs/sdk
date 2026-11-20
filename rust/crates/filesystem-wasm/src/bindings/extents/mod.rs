@@ -57,21 +57,7 @@ impl BrowserCheckout {
             self,
             plan_file_extents(&path, ByteRange { offset, length }, maximum_spans,)
         )?;
-        let result = match receipt.value {
-            None => BrowserExtentPlanResult::Inline {
-                work: browser_work(receipt.work),
-            },
-            Some(plan) => BrowserExtentPlanResult::Sparse {
-                spans: plan
-                    .spans
-                    .iter()
-                    .map(encode_extent_span)
-                    .collect::<Result<_, _>>()?,
-                retained_allocation_bytes: plan.retained_allocation_bytes,
-                work: browser_work(receipt.work),
-            },
-        };
-        ts(result)
+        encode_extent_plan(receipt.value, receipt.work)
     }
 
     #[wasm_bindgen(js_name = planFileExtentsById)]
@@ -89,21 +75,7 @@ impl BrowserCheckout {
             self,
             plan_file_extents(file_id, ByteRange { offset, length }, maximum_spans,)
         )?;
-        let result = match receipt.value {
-            None => BrowserExtentPlanResult::Inline {
-                work: browser_work(receipt.work),
-            },
-            Some(plan) => BrowserExtentPlanResult::Sparse {
-                spans: plan
-                    .spans
-                    .iter()
-                    .map(encode_extent_span)
-                    .collect::<Result<_, _>>()?,
-                retained_allocation_bytes: plan.retained_allocation_bytes,
-                work: browser_work(receipt.work),
-            },
-        };
-        ts(result)
+        encode_extent_plan(receipt.value, receipt.work)
     }
 
     #[wasm_bindgen(js_name = seekFileExtent)]
@@ -137,6 +109,26 @@ impl BrowserCheckout {
             work: browser_work(receipt.work),
         })
     }
+}
+
+pub(in crate::bindings) fn encode_extent_plan(
+    plan: Option<acyclic_fs::kernel::ExtentPlan>,
+    work: acyclic_fs_work::performance::WorkCounters,
+) -> Result<Ts<BrowserExtentPlanResult>, JsValue> {
+    ts(match plan {
+        None => BrowserExtentPlanResult::Inline {
+            work: browser_work(work),
+        },
+        Some(plan) => BrowserExtentPlanResult::Sparse {
+            spans: plan
+                .spans
+                .iter()
+                .map(encode_extent_span)
+                .collect::<Result<_, _>>()?,
+            retained_allocation_bytes: plan.retained_allocation_bytes,
+            work: browser_work(work),
+        },
+    })
 }
 
 pub(in crate::bindings) fn encode_extent_span(

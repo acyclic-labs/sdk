@@ -10,7 +10,7 @@ use acyclic_stream::OwnedBytes;
 use proptest::prelude::*;
 use std::error::Error;
 
-use crate::{append::stage, transaction::commit};
+use crate::workspace_append::{append::stage, transaction::commit};
 
 #[tokio::test]
 async fn append_segments_preserve_prefix_and_share_one_publication() -> Result<(), Box<dyn Error>> {

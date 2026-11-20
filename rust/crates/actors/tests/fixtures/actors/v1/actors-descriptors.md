@@ -185,3 +185,7 @@ the independent Buf 1.75.0 output is
 `680c9a279e769dcd25ba970356536e70533bfe48b49cffaf2876d6887d541dbf`.
 Both were regenerated with the commands above, and
 `scripts/check-compatibility-digests.mjs write` recorded the descriptor digest.
+
+The 2026-11-18 Buf 1.75.0 refresh captures the current imported
+`validation/v1/options.proto`. The canonical Buf fixture has SHA-256
+`acb1bea180a103956a094ec3e6a285d4d92b3d4b1da59faff3a7390d60b5b163`.

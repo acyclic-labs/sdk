@@ -26,8 +26,6 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Structured Rust-owned error metadata shared by connection, operation, and
 /// follow results.
 #[napi(object)]
@@ -42,7 +40,8 @@ pub struct NativeStreamErrorMetadata {
     pub refusal: Option<NativeRefusal>,
 }
 
-/// Typed unary operation result. Exactly one of `value` and `error` is set.
+/// Typed result envelope for a unary operation or one follow read. At most one
+/// of `value` and `error` is set; neither means the follow cursor ended.
 #[napi(object)]
 pub struct NativeStreamOperationResult {
     /// Canonical protobuf response bytes on success.
@@ -55,6 +54,13 @@ impl NativeStreamOperationResult {
     fn success(value: Buffer) -> Self {
         Self {
             value: Some(value),
+            error: None,
+        }
+    }
+
+    fn end() -> Self {
+        Self {
+            value: None,
             error: None,
         }
     }
@@ -121,38 +127,6 @@ impl NativeStreamFollowResult {
     }
 }
 
-/// Result of one cancellable follow read.
-#[napi(object)]
-pub struct NativeStreamNextResult {
-    /// Encoded `ReadResponse` when a record was available.
-    pub value: Option<Buffer>,
-    /// Structured Rust error on failure.
-    pub error: Option<NativeStreamErrorMetadata>,
-}
-
-impl NativeStreamNextResult {
-    fn value(value: Buffer) -> Self {
-        Self {
-            value: Some(value),
-            error: None,
-        }
-    }
-
-    fn end() -> Self {
-        Self {
-            value: None,
-            error: None,
-        }
-    }
-
-    fn failure(error: NativeStreamErrorMetadata) -> Self {
-        Self {
-            value: None,
-            error: Some(error),
-        }
-    }
-}
-
 fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
     NativeStreamErrorMetadata {
         code: error.code().to_owned(),
@@ -197,14 +171,6 @@ impl From<NativeStreamErrorMetadata> for OperationError {
 impl From<OperationError> for NativeStreamErrorMetadata {
     fn from(error: OperationError) -> Self {
         *error.0
-    }
-}
-
-impl std::ops::Deref for OperationError {
-    type Target = NativeStreamErrorMetadata;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
@@ -296,16 +262,9 @@ struct FollowState {
 
 /// Monotonic cancellation handle for native Stream calls.
 #[napi]
+#[derive(Default)]
 pub struct NativeStreamCancellation {
     token: CancellationToken,
-}
-
-impl Default for NativeStreamCancellation {
-    fn default() -> Self {
-        Self {
-            token: CancellationToken::new(),
-        }
-    }
 }
 
 #[napi]
@@ -320,12 +279,6 @@ impl NativeStreamCancellation {
     #[napi]
     pub fn cancel(&self) {
         self.token.cancel();
-    }
-
-    /// Whether cancellation has been requested.
-    #[napi(getter)]
-    pub fn cancelled(&self) -> bool {
-        self.token.is_cancelled()
     }
 }
 
@@ -342,17 +295,17 @@ impl NativeStreamFollow {
     /// Session recovery belongs to the provider. Every terminal error, including
     /// `Unavailable`, is returned in the result envelope.
     #[napi]
-    pub async fn next_result(&self) -> Result<NativeStreamNextResult> {
+    pub async fn next_result(&self) -> Result<NativeStreamOperationResult> {
         if self.state.closed.load(Ordering::Acquire) {
-            return Ok(NativeStreamNextResult::end());
+            return Ok(NativeStreamOperationResult::end());
         }
         let mut records = self.state.records.lock().await;
         if self.state.closed.load(Ordering::Acquire) {
             records.take();
-            return Ok(NativeStreamNextResult::end());
+            return Ok(NativeStreamOperationResult::end());
         }
         let Some(stream) = records.as_mut() else {
-            return Ok(NativeStreamNextResult::end());
+            return Ok(NativeStreamOperationResult::end());
         };
         let next = run_with_cancellation(
             async { Ok(stream.next().await) },
@@ -363,30 +316,30 @@ impl NativeStreamFollow {
             Ok(Some(Ok(bytes))) => {
                 if self.state.closed.load(Ordering::Acquire) {
                     records.take();
-                    return Ok(NativeStreamNextResult::end());
+                    return Ok(NativeStreamOperationResult::end());
                 }
-                Ok(NativeStreamNextResult::value(Buffer::from(bytes)))
+                Ok(NativeStreamOperationResult::success(Buffer::from(bytes)))
             }
             Ok(Some(Err(error))) => {
                 if self.state.closed.load(Ordering::Acquire) {
                     records.take();
-                    return Ok(NativeStreamNextResult::end());
+                    return Ok(NativeStreamOperationResult::end());
                 }
-                Ok(NativeStreamNextResult::failure(stream_error(&error)))
+                Ok(NativeStreamOperationResult::failure(stream_error(&error)))
             }
             Ok(None) => {
                 records.take();
-                Ok(NativeStreamNextResult::end())
+                Ok(NativeStreamOperationResult::end())
             }
             Err(error) => {
                 if self.state.closed.load(Ordering::Acquire) {
                     records.take();
-                    return Ok(NativeStreamNextResult::end());
+                    return Ok(NativeStreamOperationResult::end());
                 }
                 if self.state.token.is_cancelled() {
                     records.take();
                 }
-                Ok(NativeStreamNextResult::failure(error.into()))
+                Ok(NativeStreamOperationResult::failure(error.into()))
             }
         }
     }
@@ -503,37 +456,12 @@ impl NativeStreamClient {
         })
     }
 
-    /// Uses a request-local credential while retaining the existing TLS channel.
-    #[napi(js_name = "withCredential")]
-    pub fn with_credential(&self, token: String) -> Result<Self> {
-        let client = self.provider.with_credential(&token);
-        // N-API requires an owned string. Release that raw credential before
-        // constructing the returned wrapper around the validated client.
-        drop(token);
-        client
-            .map(Self::from_client)
-            .map_err(|error| napi_error(&connect_error(&error)))
-    }
-
     /// Abandons pending handshakes before cancelling their credential work.
     #[napi]
     pub fn abandon_session_attempts(&self) -> Result<()> {
         self.provider
             .abandon_session_attempts()
             .map_err(|error| napi_error(&stream_error(&error)))
-    }
-
-    /// Connects using the canonical Rust native gRPC transport.
-    #[napi(factory)]
-    pub async fn connect(
-        endpoint: String,
-        token: String,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<Self> {
-        let result = connect_native(endpoint, token, None, cancellation_state(cancellation))
-            .await
-            .map_err(|error| napi_error(&error))?;
-        Ok(Self::from_client(result))
     }
 
     /// Connects and returns a structured success/error envelope.
@@ -548,25 +476,6 @@ impl NativeStreamClient {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
             Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
-    }
-
-    /// Connects trusting exclusively the caller-pinned private PEM CA certificate.
-    #[napi(factory, js_name = "connectWithCa")]
-    pub async fn connect_with_ca(
-        endpoint: String,
-        token: String,
-        ca_certificate_pem: Buffer,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<Self> {
-        let result = connect_native(
-            endpoint,
-            token,
-            Some(ca_certificate_pem.to_vec()),
-            cancellation_state(cancellation),
-        )
-        .await
-        .map_err(|error| napi_error(&error))?;
-        Ok(Self::from_client(result))
     }
 
     /// Connects with a pinned CA and returns a structured result.
@@ -588,12 +497,6 @@ impl NativeStreamClient {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
             Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
-    }
-
-    /// Returns the native bridge package version.
-    #[napi]
-    pub fn version() -> String {
-        PACKAGE_VERSION.to_owned()
     }
 
     /// Returns the transport selected by this native client.

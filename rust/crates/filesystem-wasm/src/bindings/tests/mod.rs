@@ -136,17 +136,6 @@ fn result_dtos_preserve_bytes_bigints_and_work_counters() -> Result<(), JsValue>
     Ok(())
 }
 
-#[wasm_bindgen_test]
-fn oversized_transaction_array_is_rejected_before_decode() {
-    let operations = Array::new();
-    operations.set_length(2_049);
-    let config = VolumeConfig {
-        profile: FilesystemProfile::Posix,
-        ..VolumeConfig::portable(Lifecycle::Ephemeral)
-    };
-    assert!(decode_authored_transactions(operations.into(), config).is_err());
-}
-
 #[wasm_bindgen_test(async)]
 async fn transaction_results_preserve_commits_and_conflicting_rebases() -> Result<(), JsValue> {
     let cache = ObjectCacheOptions {

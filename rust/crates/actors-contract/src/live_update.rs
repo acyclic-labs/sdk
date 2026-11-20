@@ -524,42 +524,6 @@ impl Publication {
     }
 }
 
-/// A publication with its content identity derived once. Deriving the identity
-/// decodes every schema descriptor and hashes the whole document, so hosts and
-/// handlers hold this instead of re-deriving it for each Actor they serve.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AdmittedPublication {
-    publication: Publication,
-    version: Version,
-    schema: [u8; 32],
-}
-
-impl AdmittedPublication {
-    /// Validate the publication and fix its identity and contract digest.
-    pub fn new(publication: Publication) -> Result<Self, Error> {
-        Ok(Self {
-            version: publication.version().clone(),
-            schema: publication.schema_digest(),
-            publication,
-        })
-    }
-
-    /// The validated immutable upload.
-    pub const fn publication(&self) -> &Publication {
-        &self.publication
-    }
-
-    /// Content identity of [`Self::publication`].
-    pub const fn version(&self) -> &Version {
-        &self.version
-    }
-
-    /// Digest of the declared RPC and message schemas, shared by every artifact.
-    pub const fn schema(&self) -> [u8; 32] {
-        self.schema
-    }
-}
-
 /// Host-bound provenance on every Actor RPC/message and retained reply. Copying
 /// or supplying this envelope never authorizes code selection or effects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -610,8 +574,8 @@ impl CallEnvelope {
     }
 }
 
-/// Public durable-message header containing the same v1 call envelope as RPCs.
-pub const MESSAGE_HEADER: &str = "acyclic.actors.deployment";
+/// Durable-message header containing the same v1 call envelope as RPCs.
+const MESSAGE_HEADER: &str = "acyclic.actors.deployment";
 
 /// Read original message provenance, retained by Streams through replay/fork.
 /// Hosts authenticate the caller and require this field for deployment traffic.
@@ -626,7 +590,7 @@ pub fn message_envelope(
     let attribute = attributes
         .get(index)
         .ok_or(Error::Invalid("message headers"))?;
-    decode_envelope(&attribute.value).map(Some)
+    decode_envelope(attribute.value).map(Some)
 }
 
 /// Admit the original call's structural scope before retaining its provenance.
@@ -769,17 +733,6 @@ pub struct RolloutStatus {
     #[ts(type = "string | null")]
     pub rollback_epoch: Option<NonZeroU64>,
 }
-
-/// Deployment-volume paths, relative to the admitted deployment root.
-pub const SELECTION_FILE: &str = "deployment/selection.json";
-/// Immutable publication files are named by the monotonically assigned version.
-pub const VERSIONS_DIRECTORY: &str = "deployment/versions";
-/// Follow this file through the existing live query to observe wave/guard changes.
-pub const STATUS_FILE: &str = "deployment/rollout.json";
-/// Promotion/rollback controls use the admitted volume's ordinary write path.
-pub const SELECTION_REQUEST_FILE: &str = "deployment/selection.request.json";
-/// The SLI policy is observed through the same deployment live query.
-pub const POLICY_FILE: &str = "deployment/rollout-policy.json";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

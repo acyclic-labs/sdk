@@ -1,7 +1,17 @@
-//! Real public commit-path benchmark. Run one named case per invocation with
-//! `cargo test --release -p acyclic-fs --test main fs_concurrency_bench::CASE -- --exact --nocapture`.
+//! Real public commit-path benchmark of the publication combiner. Run one named
+//! case per invocation with
+//! `cargo test --release -p acyclic-fs --test fs_concurrency_bench CASE -- --exact --nocapture`.
 //! The driver also builds unchanged on the pre-combiner revision.
-use acyclic_fs::model::{GenerationSelector, Lifecycle, VolumeConfig};
+//!
+//! The volume uses serialized authority, the only concurrency contract under
+//! which disjoint private-overlay proposals are composed, so every case measures
+//! the combiner. Optimistic volumes never enter it: their contract is a typed
+//! conflict and an explicit bounded client rebase, proved by
+//! `checkout_publication`'s `only_serialized_non_pinned_overlays_compose_disjoint_publications`
+//! and `manual_refresh_is_explicit_bounded_and_never_discards_mutations`.
+#![cfg(not(loom))]
+
+use acyclic_fs::model::GenerationSelector;
 use acyclic_stream::{OwnedBytes, StreamProvider};
 use futures::TryStreamExt;
 use std::collections::BTreeSet;
@@ -28,6 +38,9 @@ use allow_publication::allow;
 #[path = "support/checkout_manual.rs"]
 mod checkout_manual;
 use checkout_manual::writable_manual;
+#[path = "support/checkout_serialized.rs"]
+mod checkout_serialized;
+use checkout_serialized::serialized_config;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Volume =
@@ -37,12 +50,15 @@ type Checkout =
 const B: WorkBudget = WorkBudget::UNBOUNDED;
 
 fn path(parts: &[String]) -> Result<NamespacePath> {
-    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let config = serialized_config();
     Ok(NamespacePath::new(
         parts
             .iter()
-            .map(|part| LogicalName::new(NameEncoding::Utf8, part.as_bytes().to_vec()))
-            .collect::<std::result::Result<Vec<_>, _>>()?,
+            .map(|part| {
+                LogicalName::new(NameEncoding::Utf8, part.as_bytes().to_vec())
+                    .map_err(Box::<dyn std::error::Error>::from)
+            })
+            .collect::<Result<Vec<_>>>()?,
         config.limits,
     )?)
 }
@@ -55,13 +71,12 @@ struct Worker {
 }
 
 async fn run(writers: usize, same_file: bool) -> Result {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let cancel = CancellationToken::new();
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();
     let fs = Fs::from_memory_providers(Arc::clone(&stream), Arc::new(objects));
     let volume = fs
-        .create_volume(VolumeConfig::portable(Lifecycle::Ephemeral), B, &cancel)
+        .create_volume(serialized_config(), B, &cancel)
         .await?
         .value;
     let (paths, base) = seed_volume(&volume, same_file, &cancel).await?;

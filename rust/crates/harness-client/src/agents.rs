@@ -335,10 +335,10 @@ impl AgentClient {
     }
 
     /// Borrow the exact shared records of the selected conversation.
-    pub fn conversation(&self) -> &StreamView {
+    pub fn conversation(&self) -> Result<&StreamView, AgentClientError> {
         self.session
             .view(&self.conversation)
-            .expect("selected conversation owns a view")
+            .ok_or_else(|| WireSessionError::NotOpen.into())
     }
 
     /// Decode only the displayed turn requested by the renderer. Reading a

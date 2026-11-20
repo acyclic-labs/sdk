@@ -1,0 +1,24 @@
+[package]
+name = "acyclic-harness-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Harness wire messages and canonical protocol descriptor"
+include = ["Cargo.toml", "build.rs", "src/**", "proto/**"]
+
+[package.metadata.bazel]
+build-script-inputs = ["proto"]
+
+[dependencies]
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+prost.workspace = true
+
+[build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+blake3.workspace = true
+prost-build.workspace = true
+
+[lints]
+workspace = true

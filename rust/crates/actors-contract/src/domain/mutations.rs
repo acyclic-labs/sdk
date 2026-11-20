@@ -378,17 +378,21 @@ impl AddSubscriptionRequest {
         subscription: SubscriptionSpec,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        crate::contract::validate_idempotency_key(&idempotency_key)?;
-        Ok(Self {
+        let request = Self {
             namespace: None,
             account_id: Vec::new(),
             actor_id,
             subscription,
             idempotency_key,
-        })
+        };
+        request.validate_from_proto()?;
+        Ok(request)
     }
 
     fn validate_from_proto(&self) -> Result<(), DomainError> {
+        if !crate::contract::declared_subscription_id(self.subscription.subscription_id()) {
+            return Err(DomainError::InvalidSubscription);
+        }
         crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
 

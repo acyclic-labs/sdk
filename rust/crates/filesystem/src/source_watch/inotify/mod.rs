@@ -7,7 +7,8 @@ use super::{
     Delivery, HostChange, arc_control_bytes, cancel_cleanup_credits, record_cleanup_credits,
     reserve_cleanup_credits,
 };
-use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::demand::{DemandError, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::ledger::DemandWork;
 use crate::native_host::NativeHostWork;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use std::ffi::{CString, OsStr};

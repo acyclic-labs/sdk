@@ -60,12 +60,10 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     // existing CLI fixtures; actual Cargo still packages and compiles sources.
     let curl_source = transport.join("fixture-curl.rs");
     fs::write(&curl_source,"fn main() { let root=std::env::current_exe().unwrap();print!(\"{}\\n200\",std::fs::read_to_string(root.parent().unwrap().join(\"release.json\")).unwrap()); }\n").unwrap();
-    let rustc = cargo
-        .parent()
-        .unwrap()
-        .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+    let mut rustc = sdk_docs::command(compiler::binary("rustc"));
+    acyclic_test_support::fixture_compiler::configure_rustc(&mut rustc);
     command_output(
-        sdk_docs::command(rustc)
+        rustc
             .args(["--edition=2021"])
             .arg(&curl_source)
             .arg("-o")
@@ -465,14 +463,10 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         &unused_archive,
     )
     .unwrap();
-    command_output(
-        sdk_docs::command("tar")
-            .arg("-xf")
-            .arg(&unused_archive)
-            .arg("-C")
-            .arg(producer_dir.join("dependencies")),
-    )
-    .unwrap();
+    let archive_input = fs::File::open(&unused_archive).unwrap();
+    tar::Archive::new(flate2::read::GzDecoder::new(archive_input))
+        .unpack(producer_dir.join("dependencies"))
+        .unwrap();
     let mut unused_records = dependencies.clone();
     unused_records.push(ProducerDependencyArchive {
         package: "docs-unused-dependency".into(),

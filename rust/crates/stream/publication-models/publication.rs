@@ -8,17 +8,17 @@
 
 mod error {
     use thiserror::Error;
-    include!("../src/lib/error.rs");
+    include!("../../stream-contract-core/src/lib/error.rs");
 }
-pub use error::StreamError;
-#[path = "../src/change.rs"]
+pub use error::{StreamCategory, StreamError};
+#[path = "../../stream-contract-core/src/change.rs"]
 mod change;
-#[path = "../src/interest.rs"]
+#[path = "../../stream-contract-core/src/interest.rs"]
 mod interest;
 mod probe;
-#[path = "../src/pull.rs"]
+#[path = "../../stream-contract-core/src/pull.rs"]
 mod pull;
-#[path = "../src/query_sync.rs"]
+#[path = "../../stream-contract-core/src/query_sync.rs"]
 pub mod query_sync;
 #[test]
 fn lock_admission_and_cancellation_match_tokio() {

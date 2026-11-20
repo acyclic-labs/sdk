@@ -351,7 +351,7 @@ fn receipt_backpressure_retires_instead_of_losing_publication()
     let mut closed = false;
     // Deliberately withhold receipt reads. Physical device reads are the event
     // barrier for each publication; no elapsed-time readiness probe is used.
-    for _ in 0..maximum {
+    for publication in 0..maximum {
         if let Err(error) = source.write_all(&reply) {
             assert!(matches!(
                 error.kind(),
@@ -361,7 +361,12 @@ fn receipt_backpressure_retires_instead_of_losing_publication()
             break;
         }
         let mut physical = [0; OUTPUT_HEADER];
-        let length = kernel.read(&mut physical)?;
+        let length = kernel.read(&mut physical).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("physical publication {publication}: {error}"),
+            )
+        })?;
         if length == 0 {
             closed = true;
             break;

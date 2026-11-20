@@ -77,11 +77,6 @@ impl File {
         })
     }
 
-    /// Feed this into the Reader's existing follow selection for a live file.
-    pub fn stream(&self) -> &StreamPath {
-        &self.source.stream
-    }
-
     /// Plan only the next requested page on the original Reader.
     pub fn want(&self, count: NonZeroU32) -> Result<Want, Error<'static>> {
         self.source.want_page(self.next, count)
@@ -143,6 +138,3 @@ impl File {
         Ok(admitted)
     }
 }
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;

@@ -256,7 +256,7 @@ pub fn host_path_to_namespace(
 
 /// Converts one exact namespace path to a host-relative path without lossy text projection.
 pub fn namespace_to_host_path(path: &NamespacePath) -> Result<PathBuf, CaptureError> {
-    let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+    let mut work = crate::ledger::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     namespace_to_host_path_with_work(path, &mut work)
         .map(|(path, _allocation)| path)
         .map_err(|error| match error {

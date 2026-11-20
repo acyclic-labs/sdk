@@ -23,12 +23,8 @@ pub fn validate_deployment_operation(
     Ok(())
 }
 
-pub(super) fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
-}
-
 pub(super) fn validate_idempotency_key(value: &str) -> Result<(), ContractError> {
-    valid_idempotency_key(value)
+    (!value.is_empty() && value.len() <= 256)
         .then_some(())
         .ok_or(ContractError::InvalidArgument)
 }
@@ -79,6 +75,32 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
             .is_some_and(|start| domain::SubscriptionStart::try_from(start.clone()).is_ok())
 }
 
+pub(crate) fn declared_subscription_id(id: &str) -> bool {
+    !id.is_empty() && id != crate::invocation::HOST_INBOX
+}
+
+/// Validate an actor manifest's initial bindings, including the host-reserved
+/// invocation ID, unique declared IDs and at most one placement anchor.
+pub fn validate_subscription_manifest(
+    subscriptions: &[wire::SubscriptionSpec],
+) -> Result<(), ContractError> {
+    let mut names = HashSet::new();
+    let mut anchors = 0;
+    for item in subscriptions {
+        if !declared_subscription_id(&item.subscription_id) || !subscription(item) {
+            return Err(ContractError::InvalidArgument);
+        }
+        if !names.insert(&item.subscription_id) {
+            return Err(ContractError::DuplicateName);
+        }
+        anchors += usize::from(item.placement_anchor);
+    }
+    if anchors > 1 {
+        return Err(ContractError::InvalidArgument);
+    }
+    Ok(())
+}
+
 fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
     source.is_none_or(|source| {
         source.entry == name
@@ -114,7 +136,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     }
     if !valid_jurisdiction(&request.jurisdiction, request.worker_limits.is_some())
         || domain::CodeSha256::new(&request.code_sha256).is_err()
-        || !valid_idempotency_key(&request.idempotency_key)
+        || validate_idempotency_key(&request.idempotency_key).is_err()
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
             (Some(limits), None) => {
@@ -131,21 +153,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut names = HashSet::new();
-    let mut anchors = 0;
-    for item in &request.subscriptions {
-        if !subscription(item) {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.subscription_id) {
-            return Err(ContractError::DuplicateName);
-        }
-        anchors += usize::from(item.placement_anchor);
-    }
-    if anchors > 1 {
-        return Err(ContractError::InvalidArgument);
-    }
-    drop(names);
+    validate_subscription_manifest(&request.subscriptions)?;
     validate_configuration(
         &request.bindings,
         &request.secrets,
@@ -158,7 +166,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
 pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), ContractError> {
     if crate::addressing::NamespaceId::validate_deployment(request.namespace_id.as_bytes()).is_err()
         || domain::CodeSha256::new(&request.code_sha256).is_err()
-        || !valid_idempotency_key(&request.idempotency_key)
+        || validate_idempotency_key(&request.idempotency_key).is_err()
         || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
         || !request
             .limits
@@ -222,8 +230,10 @@ pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
     if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id)
-        || !valid_idempotency_key(&request.idempotency_key)
-        || !request.subscription.as_ref().is_some_and(subscription)
+        || validate_idempotency_key(&request.idempotency_key).is_err()
+        || !request.subscription.as_ref().is_some_and(|spec| {
+            declared_subscription_id(&spec.subscription_id) && subscription(spec)
+        })
     {
         return Err(ContractError::InvalidArgument);
     }
@@ -321,24 +331,8 @@ mod generated {
     )]
 
     #[allow(
-        dead_code,
-        reason = "Public semantic constructors and accessors are consumed by SDK bridges"
-    )]
-    #[allow(
-        unexpected_cfgs,
-        reason = "Kani supplies the cfg predicate during formal verification"
-    )]
-    #[allow(
         clippy::needless_pass_by_value,
         reason = "Contract derivation conversion signatures preserve owned semantic values"
-    )]
-    #[allow(
-        clippy::redundant_closure,
-        reason = "Contract derivation conversion attributes require closure-shaped validators"
-    )]
-    #[allow(
-        clippy::unnecessary_fallible_conversions,
-        reason = "Contract derivation conversion attributes preserve fallible ingress boundaries"
     )]
     pub mod domain {
         include!("domain/mod.rs");
@@ -349,10 +343,6 @@ mod generated {
 }
 
 pub(crate) use generated::ActorsFile;
-#[allow(
-    unused_imports,
-    reason = "The semantic domain module is a public bridge namespace for SDK consumers"
-)]
 pub use generated::domain;
 
 /// Renders the canonical Actors protobuf input for the maintained prost/tonic
@@ -360,10 +350,6 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
     ActorsFile::render(root.as_ref())
 }
 
-#[allow(
-    unused_imports,
-    reason = "These generated Proto aliases are consumed by the native and WASM bridges"
-)]
 pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
@@ -381,57 +367,7 @@ pub use generated::{
 };
 
 /// Actors service operations generated from the protobuf contract.
-#[allow(
-    unused_imports,
-    reason = "The generated service descriptor is consumed by transport adapters"
-)]
 pub use generated::ActorsService;
 
 #[cfg(test)]
-mod tests {
-    use super::render_proto_files;
-    use std::{
-        fs, io,
-        path::{Path, PathBuf},
-    };
-
-    fn snapshot(root: &Path, directory: &Path) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                entries.extend(snapshot(root, &path)?);
-            } else {
-                entries.push((
-                    path.strip_prefix(root)
-                        .map_err(io::Error::other)?
-                        .to_owned(),
-                    fs::read(path)?,
-                ));
-            }
-        }
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(entries)
-    }
-
-    #[test]
-    fn render_proto_files_is_byte_deterministic() {
-        let root = std::env::temp_dir().join(format!(
-            "acyclic-actors-contract-determinism-{}",
-            std::process::id()
-        ));
-        let first = root.join("first");
-        let second = root.join("second");
-        let _ = fs::remove_dir_all(&root);
-
-        render_proto_files(&first).expect("first contract render");
-        render_proto_files(&second).expect("second contract render");
-
-        assert_eq!(
-            snapshot(&first, &first).expect("first generated snapshot"),
-            snapshot(&second, &second).expect("second generated snapshot")
-        );
-        fs::remove_dir_all(root).expect("remove deterministic-render fixture");
-    }
-}
+mod tests;

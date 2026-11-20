@@ -1069,7 +1069,7 @@ async fn a_new_owner_settles_the_participant_a_dead_owner_left_unsettled() -> Re
     assert_eq!(provider.inner.tail(custody).await?, 1);
     let actors = std::slice::from_ref(&actor);
     assert!(
-        super::super::tests::orphans(&store, actors)
+        super::super::oracle::orphans(&store, actors)
             .await?
             .is_empty()
     );
@@ -1079,7 +1079,7 @@ async fn a_new_owner_settles_the_participant_a_dead_owner_left_unsettled() -> Re
     orphaned.join(store.deadline(&ghost, 60_000)?)?;
     PreparedPublish::settle(&provider.inner.commit(orphaned.into_request()?).await?)?;
     assert_eq!(
-        super::super::tests::orphans(&store, actors).await?.len(),
+        super::super::oracle::orphans(&store, actors).await?.len(),
         1,
         "the oracle must report an entry without a live owner"
     );
@@ -1138,13 +1138,7 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
 #[tokio::test]
 async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_actor_state()
 -> Result<(), Failure> {
-    activation_extensions([3, 4, 5]).await
-}
-
-pub(super) async fn activation_extensions(
-    modes: impl IntoIterator<Item = u8>,
-) -> Result<(), Failure> {
-    for mode in modes {
+    for mode in [3, 4, 5] {
         let provider = Arc::new(Faulty {
             inner: MemoryStream::default(),
             plan: Vec::new(),

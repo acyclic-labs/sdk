@@ -1,0 +1,716 @@
+//! The account-scoped blob contract every provider implements.
+use crate::{ByteRange, Digest, Error, Kind, Manifest, Sealed, wire};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{ObjectsNativeRequest, ObjectsPutReceipt};
+use acyclic_stream_contract::{OwnedBytes, Revision};
+
+/// Requests a default batch keeps in flight: one round trip covers a window
+/// instead of one request, and a batch never holds more pending work.
+pub const BATCH_WINDOW: usize = 64;
+
+/// A digest and length compared with the stored envelope in the caller's own
+/// account, under the grant that admitted the call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Verified {
+    /// The stored digest.
+    pub digest: Digest,
+    /// Its logical length.
+    pub length: u64,
+    /// A revision of the account covering this blob's commit, when the
+    /// provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+/// Outcome of a put.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Put {
+    /// This call stored the blob.
+    Created {
+        /// The new blob.
+        verified: Verified,
+    },
+    /// The account already held identical bytes with identical references.
+    AlreadyExists {
+        /// The existing blob.
+        verified: Verified,
+    },
+    /// The outcome is unknown. Repeating the identical put is always safe.
+    Unknown,
+}
+
+impl Put {
+    /// The durable blob, unless the outcome is unknown.
+    #[must_use]
+    pub const fn verified(&self) -> Option<&Verified> {
+        match self {
+            Self::Created { verified } | Self::AlreadyExists { verified } => Some(verified),
+            Self::Unknown => None,
+        }
+    }
+
+    /// This outcome stamped with the revision committing it, when durable.
+    #[must_use]
+    pub fn committed_at(mut self, revision: Option<Revision>) -> Self {
+        if let Self::Created { verified } | Self::AlreadyExists { verified } = &mut self {
+            verified.revision = revision;
+        }
+        self
+    }
+}
+
+/// One blob's envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Head {
+    /// Its digest.
+    pub digest: Digest,
+    /// Plain blob or manifest.
+    pub kind: Kind,
+    /// Logical length.
+    pub length: u64,
+    /// Outgoing references recorded outside the payload.
+    pub references: Vec<Digest>,
+    /// Publisher-declared SHA-256 for a manifest's logical body. The
+    /// declaration is not verified by Objects; consumers must verify bytes.
+    pub sha256: Option<[u8; 32]>,
+    /// The applied revision this read was served at, when the provider
+    /// issues revisions.
+    pub revision: Option<Revision>,
+}
+
+/// A delete's outcome and the account revision covering it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deletion {
+    /// What the delete did.
+    pub outcome: Delete,
+    /// Outgoing references unlinked by this deletion, from the exact removed
+    /// envelope. Empty when nothing was removed. These identify newly eligible
+    /// children; another holder may still retain them.
+    pub references: Vec<Digest>,
+    /// A revision covering the outcome, when the provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+impl PartialEq<Delete> for Deletion {
+    fn eq(&self, other: &Delete) -> bool {
+        self.outcome == *other
+    }
+}
+
+/// Whether a release dropped any batch, and the account revision covering it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Released {
+    /// The root held at least one batch.
+    pub existed: bool,
+    /// A revision covering the release, when the provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+impl PartialEq<bool> for Released {
+    fn eq(&self, other: &bool) -> bool {
+        self.existed == *other
+    }
+}
+
+/// Outcome of a delete. A referenced blob is never deleted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Delete {
+    /// This call removed the blob.
+    Deleted,
+    /// The account holds no such blob.
+    Absent,
+    /// A retained root or another blob references it; nothing changed.
+    Referenced,
+}
+
+/// One page of the account's digests in ascending order.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Page {
+    /// Digests strictly after the request's cursor.
+    pub digests: Vec<Digest>,
+    /// The last inspected digest, including an incomplete put omitted from
+    /// `digests`; `None` only at the end. Continue even when `digests` is empty.
+    pub next: Option<Digest>,
+    /// The applied revision this page was served at, when the provider
+    /// issues revisions.
+    pub revision: Option<Revision>,
+}
+
+/// A retained root's identity, typically one stream's retained records.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RootId(Vec<u8>);
+
+impl RootId {
+    /// Builds a nonempty identity in reusable storage from a fixed prefix and suffix.
+    #[must_use]
+    pub fn from_prefix<const N: usize>(
+        prefix: &[u8; N],
+        suffix: &[u8],
+        mut bytes: Vec<u8>,
+    ) -> Self {
+        const { assert!(N > 0) };
+        bytes.clear();
+        bytes.extend_from_slice(prefix);
+        bytes.extend_from_slice(suffix);
+        Self(bytes)
+    }
+
+    /// Wraps a nonempty identity.
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, Error> {
+        let bytes = bytes.into();
+        if bytes.is_empty() {
+            return Err(wire::ErrorCode::InvalidArgument.into());
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The identity bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// An atomically appended reference batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Retained {
+    /// Distinct references in the batch.
+    pub references: u64,
+    /// The committed revision of the batch, when the provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+/// One completed mark/sweep pass.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Collection {
+    /// The collection epoch this pass began.
+    pub epoch: u64,
+    /// Blobs reachable from retained roots or admitted after the previous cut.
+    pub marked: u64,
+    /// Blobs removed.
+    pub swept: u64,
+    /// Stored bytes removed.
+    pub swept_bytes: u64,
+    /// A revision covering the sweep, when the provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+/// The account's unique stored bytes; every digest counts once.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Usage {
+    /// Distinct blobs.
+    pub blobs: u64,
+    /// Their stored bytes.
+    pub unique_bytes: u64,
+}
+
+/// One selected logical range and the envelope it was read under.
+#[derive(Debug)]
+pub struct Object {
+    head: Head,
+    start: u64,
+    body: OwnedBytes,
+    #[cfg(not(target_arch = "wasm32"))]
+    _custody: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+impl Object {
+    /// Pairs selected bytes with their envelope.
+    #[must_use]
+    pub fn new(head: Head, start: u64, body: OwnedBytes) -> Self {
+        Self {
+            head,
+            start,
+            body,
+            #[cfg(not(target_arch = "wasm32"))]
+            _custody: None,
+        }
+    }
+
+    /// Retains the metadata claim a native producer funded.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn new_native(
+        head: Head,
+        start: u64,
+        body: OwnedBytes,
+        custody: Option<acyclic_native_runtime::ReadAllocation>,
+    ) -> Self {
+        Self {
+            head,
+            start,
+            body,
+            _custody: custody,
+        }
+    }
+
+    /// Keeps the metadata allocation charged to the caller's meter.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn retain_metadata(self, custody: acyclic_native_runtime::ReadAllocation) -> Self {
+        Self::new_native(self.head, self.start, self.body, Some(custody))
+    }
+
+    /// The envelope.
+    #[must_use]
+    pub const fn head(&self) -> &Head {
+        &self.head
+    }
+
+    /// The applied revision this read was served at.
+    #[must_use]
+    pub const fn revision(&self) -> Option<&Revision> {
+        self.head.revision.as_ref()
+    }
+
+    /// Records the applied revision this read was served at.
+    #[must_use]
+    pub fn served_at(mut self, revision: Option<Revision>) -> Self {
+        self.head.revision = revision;
+        self
+    }
+
+    /// Logical offset of the first selected byte.
+    #[must_use]
+    pub const fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// The selected bytes.
+    #[must_use]
+    pub const fn body(&self) -> &OwnedBytes {
+        &self.body
+    }
+
+    /// Moves the selected bytes out.
+    #[must_use]
+    pub fn into_body(self) -> OwnedBytes {
+        self.body
+    }
+}
+
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        self.head == other.head && self.start == other.start && self.body == other.body
+    }
+}
+
+/// Account-scoped content-addressed blobs.
+///
+/// The provider's account is the entire namespace; nothing here can name,
+/// dedupe against or disclose another account's blobs.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Blobs: acyclic_stream_contract::ProviderPlatform {
+    /// Registers exact-key physical availability invalidations in this account.
+    /// Subscribe before verifying; changes racing verification remain pending.
+    /// Reconnect requires a fresh subscribe/verify handshake. Events certify no
+    /// bytes or durability. A provider without an original physical producer
+    /// refuses `Unsupported`, rather than returning a healthy empty stream.
+    /// Observe a closure through its exact selected member identities.
+    async fn availability(&self, _digest: Digest) -> Result<crate::Availability, Error> {
+        Err(wire::ErrorCode::Unsupported.into())
+    }
+
+    /// Stores `body` with envelope `references`, each of which must already exist.
+    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error>;
+
+    /// Stores a manifest after checking every part's length and every edge's existence.
+    async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error>;
+
+    /// Publishes and flushes a blob before acknowledging it. Providers with a
+    /// collector must exclude collection for the whole operation.
+    async fn put_durable(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        let put = self.put_sealed(body, references).await?;
+        flush_put(self, &put).await?;
+        Ok(put)
+    }
+
+    /// Publishes and flushes a manifest under the same collection exclusion.
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        let put = self.put_manifest(manifest).await?;
+        flush_put(self, &put).await?;
+        Ok(put)
+    }
+
+    /// Publishes an ordered batch, then flushes its successful members once,
+    /// excluding collection throughout. A failed flush fails every verified
+    /// member it covered; unknown outcomes and member failures stay unchanged.
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        let mut outcomes = self.put_batch_sealed(requests).await;
+        flush_puts(self, &mut outcomes).await;
+        outcomes
+    }
+
+    /// Reads one logical range of at most `maximum_bytes`. A manifest's range
+    /// selects only the intersecting parts.
+    async fn get(
+        &self,
+        digest: Digest,
+        range: ByteRange,
+        maximum_bytes: u64,
+    ) -> Result<Object, Error>;
+
+    /// Reads the envelope without payload bytes.
+    async fn head(&self, digest: Digest) -> Result<Head, Error>;
+
+    /// Deletes an unreferenced blob; a referenced one is refused, never broken.
+    /// Returns the exact removed envelope's outgoing references without a
+    /// separate read. Absent or referenced outcomes release no references.
+    async fn delete(&self, digest: Digest) -> Result<Deletion, Error>;
+
+    /// Lists digests strictly after `after` in ascending order. A blob present
+    /// for the whole traversal appears exactly once. `limit` bounds inspected
+    /// candidates, so pending puts may produce a short or empty nonterminal page.
+    async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error>;
+
+    /// Makes the blobs in the closure of `only`, or every blob, survive a
+    /// crash. A put alone may not: a commit referencing blobs calls this
+    /// first. A provider durable on every acknowledged put does nothing.
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error>;
+
+    /// Atomically appends one reference batch to `root` after verifying every
+    /// reference exists, durably. Repeating the same batch is a no-op.
+    async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error>;
+
+    /// Drops every ordinary batch of `root`. Repeating it is a no-op; an
+    /// overlapping or later ordinary retain may establish another batch.
+    async fn release(&self, root: &RootId) -> Result<Released, Error>;
+
+    /// Retains a batch for one fenced intent. Once a terminal release through
+    /// this fence commits, this or a delayed retain at a lower fence fails
+    /// with [`wire::ErrorCode::TerminalFence`]. Higher fences may retain.
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error>;
+
+    /// Durably closes the fenced intent through `fence` and releases those
+    /// batches. Repeating a terminal release never reopens an older fence.
+    /// Ordinary roots and their non-terminal releases remain independent.
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error>;
+
+    /// Marks from every retained root, then sweeps each other blob that the
+    /// pass before the previous one already found unreferenced: a put has
+    /// one whole pass to be referenced. An incomplete root scan sweeps nothing.
+    async fn collect(&self) -> Result<Collection, Error>;
+
+    /// Unique stored bytes in this account.
+    async fn usage(&self) -> Result<Usage, Error>;
+
+    /// The applied-revision authority this account's reads are served from,
+    /// when the provider issues revisions. Servers park request minima on it
+    /// before dispatch, including mutations.
+    async fn revisions(&self) -> Result<Option<&acyclic_stream_contract::AppliedRevisions>, Error> {
+        Ok(None)
+    }
+
+    /// Drops the participants of `minimum` the provider proves are already
+    /// visible, such as writes another instance over the same storage
+    /// committed. Servers park a request only on what remains.
+    async fn admitted(
+        &self,
+        minimum: acyclic_stream_contract::RevisionCut,
+    ) -> Result<acyclic_stream_contract::RevisionCut, Error> {
+        Ok(minimum)
+    }
+
+    /// Ordered, individually atomic puts, at most [`BATCH_WINDOW`] in flight.
+    /// A put that references or repeats an earlier put of the batch starts
+    /// only once that put completed, so outcomes never depend on timing.
+    async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
+        let sealed = requests
+            .into_iter()
+            .map(|(body, references)| (Sealed::new(body), references))
+            .collect();
+        self.put_batch_sealed(sealed).await
+    }
+
+    /// [`Blobs::put`] of bytes already sealed: a provider that names or
+    /// verifies a blob by its digest reuses the seal's instead of hashing
+    /// again.
+    async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        self.put(body.into_bytes(), references).await
+    }
+
+    /// [`Blobs::put_batch`] of bytes already sealed.
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        let mut results = Vec::with_capacity(requests.len());
+        let driven = crate::batch::drive(
+            requests.into_iter(),
+            BATCH_WINDOW,
+            |_| Ok::<_, std::convert::Infallible>(()),
+            |(body, references)| self.put_sealed(body, references),
+            |put| results.push(put),
+        )
+        .await;
+        let Ok(()) = driven;
+        results
+    }
+
+    /// Ordered, individually bounded reads, at most [`BATCH_WINDOW`] in flight.
+    async fn get_batch(
+        &self,
+        requests: Vec<(Digest, ByteRange, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        let mut results = Vec::with_capacity(requests.len());
+        let driven = crate::batch::drive(
+            requests.into_iter(),
+            BATCH_WINDOW,
+            |_| Ok::<_, std::convert::Infallible>(()),
+            |(digest, range, maximum)| self.get(digest, range, maximum),
+            |object| results.push(object),
+        )
+        .await;
+        let Ok(()) = driven;
+        results
+    }
+
+    /// Checks complete blob presence under the caller's original meter.
+    /// Every physical read is admitted before dispatch; cancellation and
+    /// physical failures remain errors. Only absence returns `false`.
+    /// Temporary head metadata retires within the call.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        _request: ObjectsNativeRequest<Digest>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
+    /// Reads under the caller's original allocation owner.
+    /// Decoded metadata is admitted before allocation and retains its original
+    /// credit through the returned object's lifetime. Body aliases retain
+    /// their independent original backing credit.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_native(
+        &self,
+        _request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
+    /// Reads a batch under the caller's original allocation owner.
+    /// Each returned object retains its decoded metadata as in [`Blobs::get_native`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_batch_native(
+        &self,
+        _requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
+    /// Stores under the caller's original allocation owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_native(
+        &self,
+        _request: ObjectsNativeRequest<(Sealed, Vec<Digest>)>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
+    /// Stores a batch under the caller's original allocation owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_batch_native(
+        &self,
+        _requests: ObjectsNativeRequest<Vec<(Sealed, Vec<Digest>)>>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
+    /// Retains a batch under `root` within the caller's original work: every
+    /// medium operation is admitted to, and every buffer charged on, its
+    /// meter, and the call observes its cancellation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        _request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+}
+
+/// Flushes the one blob a put published, when it published one.
+pub async fn flush_put<B: Blobs + ?Sized>(blobs: &B, put: &Put) -> Result<(), Error> {
+    match put.verified() {
+        Some(verified) => blobs.flush(Some(&[verified.digest])).await,
+        None => Ok(()),
+    }
+}
+
+/// Flushes every blob the batch published, when it published any.
+pub async fn flush_puts<B: Blobs + ?Sized>(blobs: &B, outcomes: &mut [Result<Put, Error>]) {
+    let durable: Vec<Digest> = outcomes
+        .iter()
+        .flatten()
+        .filter_map(|put| put.verified().map(|verified| verified.digest))
+        .collect();
+    if !durable.is_empty()
+        && let Err(error) = blobs.flush(Some(&durable)).await
+    {
+        for outcome in outcomes {
+            if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {
+                *outcome = Err(error.clone());
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        (**self).availability(digest).await
+    }
+
+    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+        (**self).put(body, references).await
+    }
+    async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        (**self).put_sealed(body, references).await
+    }
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        (**self).put_batch_sealed(requests).await
+    }
+    async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
+        (**self).put_manifest(manifest).await
+    }
+    async fn put_durable(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        (**self).put_durable(body, references).await
+    }
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        (**self).put_manifest_durable(manifest).await
+    }
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        (**self).put_batch_durable(requests).await
+    }
+    async fn get(
+        &self,
+        digest: Digest,
+        range: ByteRange,
+        maximum_bytes: u64,
+    ) -> Result<Object, Error> {
+        (**self).get(digest, range, maximum_bytes).await
+    }
+    async fn head(&self, digest: Digest) -> Result<Head, Error> {
+        (**self).head(digest).await
+    }
+    async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
+        (**self).delete(digest).await
+    }
+    async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
+        (**self).list(after, limit).await
+    }
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        (**self).flush(only).await
+    }
+    async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
+        (**self).retain(root, references).await
+    }
+    async fn release(&self, root: &RootId) -> Result<Released, Error> {
+        (**self).release(root).await
+    }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        (**self).retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        (**self).release_terminal(root, fence).await
+    }
+    async fn collect(&self) -> Result<Collection, Error> {
+        (**self).collect().await
+    }
+    async fn usage(&self) -> Result<Usage, Error> {
+        (**self).usage().await
+    }
+    async fn revisions(&self) -> Result<Option<&acyclic_stream_contract::AppliedRevisions>, Error> {
+        (**self).revisions().await
+    }
+    async fn admitted(
+        &self,
+        minimum: acyclic_stream_contract::RevisionCut,
+    ) -> Result<acyclic_stream_contract::RevisionCut, Error> {
+        (**self).admitted(minimum).await
+    }
+    async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
+        (**self).put_batch(requests).await
+    }
+    async fn get_batch(
+        &self,
+        requests: Vec<(Digest, ByteRange, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        (**self).get_batch(requests).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: ObjectsNativeRequest<Digest>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        (**self).contains_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_native(
+        &self,
+        request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        (**self).get_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_batch_native(
+        &self,
+        requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        (**self).get_batch_native(requests, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_native(
+        &self,
+        request: ObjectsNativeRequest<(Sealed, Vec<Digest>)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        (**self).put_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_batch_native(
+        &self,
+        requests: ObjectsNativeRequest<Vec<(Sealed, Vec<Digest>)>>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        (**self).put_batch_native(requests, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
+        (**self).retain_native(request, meter)
+    }
+}

@@ -43,6 +43,13 @@ proptest::proptest! {
         proptest::prop_assert!(display_text_prefix(&malformed, false).is_err());
         proptest::prop_assert!(display_text_prefix(&malformed, true).is_err());
         let visible = display_text(&text);
+        let ordinary = !text.chars().any(|character| {
+            (character.is_control() && character != '\t')
+                || matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        });
+        if ordinary {
+            proptest::prop_assert!(matches!(visible, Cow::Borrowed(_)));
+        }
         for character in visible.chars() {
             proptest::prop_assert!(!character.is_control() || character == '\t');
             proptest::prop_assert!(!matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'), "hidden character: {:?}", character);
@@ -53,10 +60,4 @@ proptest::proptest! {
             proptest::prop_assert_eq!(visible.as_ref(), text.as_str());
         }
     }
-}
-
-#[test]
-fn ordinary_emoji_and_combining_clusters_are_borrowed() {
-    let text = "日本語 é 👩‍💻\t";
-    assert!(matches!(display_text(text), Cow::Borrowed(value) if value == text));
 }

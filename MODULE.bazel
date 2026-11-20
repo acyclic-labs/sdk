@@ -8,6 +8,15 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "toolchains_llvm", version = "1.13.0")
 bazel_dep(name = "toolchains_musl", version = "0.2.0")
 
+# Let the compiler and each build select the C++ dialect. An unconditional
+# toolchain flag also becomes CXXFLAGS for Cargo build scripts, where it would
+# override the standard chosen by cc-rs.
+single_version_override(
+    module_name = "toolchains_musl",
+    patches = ["//:toolchains_musl-archive-patches.patch"],
+    patch_strip = 1,
+)
+
 # rules_rust 0.75.0 from acyclic-labs/rules_rust, whose commits on the release:
 # - a transitive module's crate lockfile labels resolve in that module's repository;
 # - rust_check_aspect type-checks crates to metadata, as cargo check does;
@@ -18,6 +27,12 @@ bazel_dep(name = "toolchains_musl", version = "0.2.0")
 #   Cargo's do with RUSTFLAGS, so cc-rs compiles C for the static CRT a crt-static target links;
 # - the exec-root patch below makes `${exec_root}` the action's working directory, its execution root under
 #   every sandbox, so a path derived from it names the action's own inputs and outputs.
+# - the reproducible-crates patch below stages clippy.toml for clippy-driver at a remapped path of the action's
+#   own, so no checkout path enters a crate hash; the process wrapper's own crates, which compile without
+#   it, compile with rustc.
+# - the codegen-units-resources patch below books a compile at half its codegen units (rules_rust books all of
+#   them): its front end is one thread and only code generation is parallel, so that is the parallelism a
+#   compile really keeps busy (measured, eight units: 2.6 to 3.5 cores over a whole compile).
 git_override(
     module_name = "rules_rust",
     remote = "https://github.com/acyclic-labs/rules_rust.git",
@@ -25,6 +40,8 @@ git_override(
     patches = [
         "//:rules_rust-clippy-driver.patch",
         "//:rules_rust-exec-root.patch",
+        "//:rules_rust-reproducible-crates.patch",
+        "//:rules_rust-codegen-units-resources.patch",
     ],
     patch_strip = 1,
 )
@@ -60,9 +77,24 @@ node = use_extension("//:node_repo.bzl", "node")
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
 
+# Policy tests parse TOML and Starlark with one pinned CPython on every host, never the host's own. Not a dev
+# dependency: node_test (scripts/policy/node_test.bzl) takes this toolchain, and consumers (Cloud) load node_test.
+bazel_dep(name = "rules_python", version = "1.7.0")
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.13", is_default = True)
+
 bun = use_extension("//:bun_repo.bzl", "bun", dev_dependency = True)
 use_repo(bun, "bunjs")
 # The source-policy package's parser runtime, at its bun.lock integrity pin.
+# The pinned cloud-hypervisor the real-VMM guest cases boot. The prepare script verifies this
+# digest again before it copies the binary into the guest artifacts.
+cloud_hypervisor = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+cloud_hypervisor(
+    name = "cloud_hypervisor",
+    urls = ["https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v54.1/cloud-hypervisor-static"],
+    sha256 = "f9ffb9646783233d1f0fb09e77db1fca66499d1041e63bc011b90683c0d49933",
+)
+
 typescript_parser = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 typescript_parser(
     name = "typescript_parser",

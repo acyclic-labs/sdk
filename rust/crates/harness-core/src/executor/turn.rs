@@ -276,8 +276,12 @@ impl StockExecution<'_> {
                         return Err(error);
                     }
                 };
-                self.retire_working_history(&mut prior_messages, Some(&mut steering))
-                    .await?;
+                self.retire_working_history(
+                    input.operation_id,
+                    &mut prior_messages,
+                    Some(&mut steering),
+                )
+                .await?;
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
@@ -338,6 +342,8 @@ impl StockExecution<'_> {
                     .map(|io| io.guard_owned(key.capacity() as u64))
                     .transpose()?;
                 let append = crate::conversation::BoundedContentFuture::new(self.io, || async {
+                    // The summary producer can hold a claim at this same journal tail.
+                    let _writer = self.journal_writes.lock().await;
                     journal
                         .append(
                             input.operation_id,
@@ -538,6 +544,8 @@ impl StockExecution<'_> {
                     metadata,
                     steps,
                     transcript,
+                    working_context: Box::pin(self.working_context_at_settlement(journal, input))
+                        .await?,
                 }))
             }
             ExecutionProgress::Controlled(control) => Ok(ExecutionProgress::Controlled(control)),

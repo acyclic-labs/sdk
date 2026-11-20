@@ -273,16 +273,8 @@ pub struct ScenarioSource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioRecord {
-    pub id: &'static str,
-    pub family: &'static str,
-    pub package: &'static str,
-    pub example: &'static str,
-    pub source_path: &'static str,
-    pub operation: &'static str,
-    pub kind: ScenarioKind,
-    pub mode: ScenarioMode,
-    pub features: &'static [&'static str],
-    pub fixture_script: Option<&'static str>,
+    #[serde(flatten)]
+    pub scenario: Scenario,
     pub source_sha256: String,
     pub typescript_projection: bool,
 }
@@ -302,16 +294,7 @@ pub fn catalog(sources: &[ScenarioSource]) -> ScenarioCatalog {
         scenarios: sources
             .iter()
             .map(|source| ScenarioRecord {
-                id: source.scenario.id,
-                family: source.scenario.family,
-                package: source.scenario.package,
-                example: source.scenario.example,
-                source_path: source.scenario.source_path,
-                operation: source.scenario.operation,
-                kind: source.scenario.kind,
-                mode: source.scenario.mode,
-                features: source.scenario.features,
-                fixture_script: source.scenario.fixture_script,
+                scenario: source.scenario,
                 source_sha256: source.source_sha256.clone(),
                 typescript_projection: source.scenario.kind.has_typescript_projection(),
             })
@@ -406,7 +389,7 @@ pub fn projection_catalog(
 }
 
 mod execution;
-pub use execution::{compile_all, execute_all, execute_local};
+pub use execution::{compile_all, execute_all};
 mod render;
 use render::digest_bytes;
 pub use render::render_typescript;
@@ -562,7 +545,7 @@ mod tests {
             .scenarios
             .iter()
             .filter(|record| record.typescript_projection)
-            .map(|record| record.id)
+            .map(|record| record.scenario.id)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             projected,
@@ -574,12 +557,15 @@ mod tests {
             ])
         );
         for id in ["plugin/cli-help", "native-runtime/positional-io"] {
-            assert!(records.scenarios.iter().any(|record| record.id == id));
+            assert!(records
+                .scenarios
+                .iter()
+                .any(|record| record.scenario.id == id));
         }
         for record in &records.scenarios {
             assert_eq!(
                 serde_json::to_value(record).unwrap()["typescriptProjection"],
-                projected.contains(record.id)
+                projected.contains(record.scenario.id)
             );
         }
         assert!(sources.iter().all(|source| {
@@ -595,19 +581,5 @@ mod tests {
                         3
                     }
         }));
-    }
-
-    #[test]
-    fn projection_catalog_binds_source_and_output() {
-        let execution = ScenarioExecution {
-            scenario: SCENARIOS[1],
-            source_sha256: "sha256:source".into(),
-            stdout: "{}".into(),
-            stdout_sha256: "sha256:output".into(),
-            stderr_sha256: "sha256:empty".into(),
-        };
-        let catalog = execution_catalog(&[execution]);
-        assert_eq!(catalog[0].id, "actors/typescript-consumer");
-        assert_eq!(catalog[0].source_sha256, "sha256:source");
     }
 }

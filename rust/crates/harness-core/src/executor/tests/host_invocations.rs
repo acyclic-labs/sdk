@@ -495,24 +495,8 @@ async fn concurrent_host_starts_share_one_parent_binding() -> Result<()> {
     );
     let execution = StockExecution::ordinary(&executor);
     let parent = OperationId::new();
-    let first = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "first".into(),
-        name: "write".into(),
-        arguments: json!({"path":"first.txt"}),
-    };
-    let second = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "second".into(),
-        name: "write".into(),
-        arguments: json!({"path":"second.txt"}),
-    };
-    execution
-        .ensure_host_started(&journal, parent, &first)
-        .await?;
-    execution
-        .ensure_host_started(&journal, parent, &second)
-        .await?;
+    execution.ensure_host_started(&journal, parent).await?;
+    execution.ensure_host_started(&journal, parent).await?;
     let records = journal.0.replay(parent, 0, 64, None)?.await?;
     assert_eq!(
         records
@@ -559,14 +543,8 @@ async fn host_start_replay_releases_its_records() -> Result<()> {
         io: Some(&io),
         ..StockExecution::ordinary(&executor)
     };
-    let invocation = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "first".into(),
-        name: "write".into(),
-        arguments: json!({"path":"first.txt"}),
-    };
     execution
-        .ensure_host_started(journal.as_ref(), parent, &invocation)
+        .ensure_host_started(journal.as_ref(), parent)
         .await?;
     assert_eq!(
         io.owned_bytes()?,

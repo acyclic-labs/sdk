@@ -60,8 +60,12 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                     CachedObjectStore::new(PausedStore::new(inner, Some(receiver)), options())?;
                 let peer = cache.share_cache_with(())?;
                 let cancel = CancellationToken::new();
-                let original = crate::NativeMaterializationWork::new(B, &cancel)
-                    .map_err(|(error, _)| error)?;
+                let original = crate::NativeMaterializationWork::root(
+                    B,
+                    &cancel,
+                    &crate::services::ServicesInitialized::for_kernel_tests(),
+                )
+                .map_err(|(error, _)| error)?;
                 let baseline = original.live_allocation_bytes().unwrap();
                 let mut accounting = if native {
                     KernelAccounting::native(&original, &cancel)

@@ -103,15 +103,17 @@ pub(super) fn validate_published_coverage(
 pub(super) fn canonical(path: &Path) -> Result<PathBuf, CliError> {
     absolute(path)?.canonicalize().map_err(io_error)
 }
+pub(super) fn command_root() -> Result<PathBuf, CliError> {
+    sdk_docs::command_directory()
+        .map(Ok)
+        .unwrap_or_else(env::current_dir)
+        .map_err(io_error)
+}
 pub(super) fn absolute(path: &Path) -> Result<PathBuf, CliError> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
-        Ok(sdk_docs::command_directory()
-            .map(Ok)
-            .unwrap_or_else(env::current_dir)
-            .map_err(io_error)?
-            .join(path))
+        Ok(command_root()?.join(path))
     }
 }
 pub(super) fn profile_error(error: impl std::fmt::Display) -> CliError {
@@ -562,27 +564,8 @@ fn collect_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Resul
     Ok(())
 }
 
-pub(super) fn source_file_hashes(
-    root: &Path,
-    output: &Path,
-) -> Result<BTreeMap<String, String>, CliError> {
-    let mut files = Vec::new();
-    collect_source_files(root, root, output, &mut files)?;
-    files.sort();
-    let mut result = BTreeMap::new();
-    for path in files {
-        let relative = path.strip_prefix(root).unwrap_or(&path);
-        result.insert(path_string(relative), sha256_file(&path)?);
-    }
-    Ok(result)
-}
-
-pub(super) fn imported_source_file_hashes(
-    root: &Path,
-    output: &Path,
-) -> Result<BTreeMap<String, String>, CliError> {
-    let mut files = Vec::new();
-    collect_source_files_inner(root, root, output, &mut files, true)?;
+/// Every collected path is under `root`, so its logical name is its relative path.
+fn hashes(root: &Path, mut files: Vec<PathBuf>) -> Result<BTreeMap<String, String>, CliError> {
     files.sort();
     files
         .into_iter()
@@ -598,6 +581,24 @@ pub(super) fn imported_source_file_hashes(
         .collect()
 }
 
+pub(super) fn source_file_hashes(
+    root: &Path,
+    output: &Path,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let mut files = Vec::new();
+    collect_source_files(root, root, output, &mut files, false)?;
+    hashes(root, files)
+}
+
+pub(super) fn imported_source_file_hashes(
+    root: &Path,
+    output: &Path,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let mut files = Vec::new();
+    collect_source_files(root, root, output, &mut files, true)?;
+    hashes(root, files)
+}
+
 pub(super) fn digest_map(files: &BTreeMap<String, String>) -> String {
     let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
     for (path, digest) in files {
@@ -610,15 +611,6 @@ pub(super) fn digest_map(files: &BTreeMap<String, String>) -> String {
 }
 
 pub(super) fn collect_source_files(
-    root: &Path,
-    current: &Path,
-    output: &Path,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), CliError> {
-    collect_source_files_inner(root, current, output, files, false)
-}
-
-pub(super) fn collect_source_files_inner(
     root: &Path,
     current: &Path,
     output: &Path,
@@ -641,7 +633,7 @@ pub(super) fn collect_source_files_inner(
                 ));
             }
             if metadata.is_dir() {
-                collect_source_files_inner(root, &path, output, files, true)?;
+                collect_source_files(root, &path, output, files, true)?;
             } else if metadata.is_file() {
                 files.push(path);
             } else {
@@ -665,7 +657,7 @@ pub(super) fn collect_source_files_inner(
             ) {
                 continue;
             }
-            collect_source_files_inner(root, &path, output, files, false)?;
+            collect_source_files(root, &path, output, files, false)?;
         } else if path.is_file() {
             let relative = path.strip_prefix(root).unwrap_or(&path);
             let components = relative.components().collect::<Vec<_>>();
@@ -748,7 +740,6 @@ pub(super) fn collect_source_files_inner(
             }
         }
     }
-    let _ = root;
     Ok(())
 }
 

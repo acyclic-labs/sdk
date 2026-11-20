@@ -1,5 +1,5 @@
 use super::*;
-use crate::materializer::NativeMaterializationWork;
+use crate::ledger::NativeMaterializationWork;
 use crate::storage::{HashedObject, ObjectKind};
 use crate::{CancellationToken, WorkBudget};
 
@@ -209,8 +209,8 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
     let original = CancellationToken::new();
     let argument = CancellationToken::new();
     let budget = budget();
-    let work = crate::materializer::NativeMaterializationWork::new(budget, &original)
-        .expect("original ledger");
+    let work =
+        crate::ledger::NativeMaterializationWork::new(budget, &original).expect("original ledger");
     original.cancel();
     let before = work.receipt();
     let (schedule, _events) = Schedule::new();

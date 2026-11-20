@@ -14,7 +14,6 @@ pub(crate) fn events(
     step: &Step,
     input_tokens: u64,
     cached: Cached,
-    completed_text: Option<&str>,
 ) -> Option<Vec<String>> {
     let mut output = Vec::new();
     // Cache tokens are part of the request's input; never more than it.
@@ -43,7 +42,7 @@ pub(crate) fn events(
     }
     match path {
         "responses" => {
-            responses(step, &usage, completed_text, &mut output);
+            responses(step, &usage, &mut output);
         }
         "chat/completions" => {
             for text in &step.text {
@@ -110,7 +109,7 @@ pub(crate) fn events(
     Some(output)
 }
 
-fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &mut Vec<String>) {
+fn responses(step: &Step, usage: &Value, output: &mut Vec<String>) {
     output.push(sse(
         json!({"type":"response.created","response":{"id":"mock-response","status":"in_progress"}}),
     ));
@@ -118,8 +117,8 @@ fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &
         output.push(sse(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":text})));
     }
     let mut items = Vec::new();
-    if (!step.text.is_empty() || completed_text.is_some()) && !step.hold {
-        let text = completed_text.map_or_else(|| step.text.concat(), str::to_owned);
+    if !step.text.is_empty() && !step.hold {
+        let text = step.text.concat();
         let item = json!({"type":"message","id":"mock-message","role":"assistant",
             "content":[{"type":"output_text","text":text}]});
         output.push(sse(
@@ -127,7 +126,7 @@ fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &
         ));
         items.push(item);
     }
-    let tool_offset = usize::from(!step.text.is_empty() || completed_text.is_some());
+    let tool_offset = usize::from(!step.text.is_empty());
     for (index, tool) in step.tools.iter().enumerate() {
         let index = index + tool_offset;
         let arguments = tool.arguments.to_string();

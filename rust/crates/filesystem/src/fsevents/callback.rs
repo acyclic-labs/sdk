@@ -4,15 +4,16 @@ use super::*;
 /// `Copy`: a batch is only shared borrows, so a handler may iterate it more
 /// than once without re-reading framework memory it does not own.
 #[derive(Clone, Copy)]
-pub(crate) struct EventBatch<'a> {
+pub struct EventBatch<'a> {
     pub(super) paths: &'a [*const c_char],
     pub(super) flags: &'a [u32],
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) ids: &'a [u64],
 }
 
 impl<'a> EventBatch<'a> {
-    pub(crate) fn iter(self) -> impl ExactSizeIterator<Item = (&'a Path, u32)> {
+    /// Iterates the file paths and native flags in delivery order.
+    pub fn iter(self) -> impl ExactSizeIterator<Item = (&'a Path, u32)> {
         self.paths.iter().zip(self.flags).map(|(&path, &flags)| {
             // SAFETY: the callback guarantees a live NUL-terminated string for
             // each path. No owned path or scratch buffer is created here.
@@ -22,13 +23,14 @@ impl<'a> EventBatch<'a> {
     }
 
     /// Each event's id, in delivery order.
-    #[cfg(test)]
-    pub(crate) fn ids(&self) -> &'a [u64] {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ids(&self) -> &'a [u64] {
         self.ids
     }
 }
 
-pub(crate) type BorrowedEventHandlerFn =
+/// A handler borrowing event paths through a single callback invocation.
+pub type BorrowedEventHandlerFn =
     dyn for<'a> Fn(Result<EventBatch<'a>, Arc<DemandError>>) + Send + Sync;
 
 thread_local! {

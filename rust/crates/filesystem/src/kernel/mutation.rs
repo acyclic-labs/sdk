@@ -702,8 +702,12 @@ mod original_controls {
     fn original_planner_refuses_index_before_allocating_on_another_ledger()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;
@@ -734,8 +738,12 @@ mod original_controls {
     fn original_planner_index_retains_only_its_actual_paid_capacity()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;

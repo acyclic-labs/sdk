@@ -3,18 +3,46 @@ use super::*;
 use serde::{Serializer, ser::SerializeMap};
 
 pub(super) struct Canonical<'a>(pub(super) &'a FileRef);
-struct Descriptor<'a>(&'a FileDescriptor);
 
 impl Serialize for Canonical<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.0.identity_view().serialize(serializer)
+    }
+}
+
+pub(crate) struct FileIdentity<'a> {
+    pub(crate) volume: &'a VolumeRef,
+    pub(crate) path: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) descriptor: &'a FileDescriptor,
+    pub(crate) display_name: &'a str,
+}
+
+impl FileIdentity<'_> {
+    pub(crate) fn validate(
+        &self,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<()> {
+        self.volume.validate(work)?;
+        validate_content_path(self.path, work)?;
+        validate_label(self.version, work)?;
+        validate_label(self.display_name, work)?;
+        self.descriptor.validate(work)
+    }
+}
+
+struct Descriptor<'a>(&'a FileDescriptor);
+
+impl Serialize for FileIdentity<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut fields = serializer.serialize_map(Some(5))?;
-        fields.serialize_entry("descriptor", &Descriptor(&self.0.descriptor))?;
-        fields.serialize_entry("display_name", &self.0.display_name)?;
-        fields.serialize_entry("path", &self.0.path)?;
-        fields.serialize_entry("version", &self.0.version)?;
+        fields.serialize_entry("descriptor", &Descriptor(self.descriptor))?;
+        fields.serialize_entry("display_name", self.display_name)?;
+        fields.serialize_entry("path", self.path)?;
+        fields.serialize_entry("version", self.version)?;
         fields.serialize_entry(
             "volume",
-            &super::super::volumes::canonical::Canonical(&self.0.volume),
+            &super::super::volumes::canonical::Canonical(self.volume),
         )?;
         fields.end()
     }

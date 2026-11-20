@@ -28,7 +28,7 @@ use crate::{
 };
 use acyclic_log_frame::LogFrame;
 use acyclic_native_runtime::{PersistenceKey, spawn_persistence};
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::ops::{Bound, Range};

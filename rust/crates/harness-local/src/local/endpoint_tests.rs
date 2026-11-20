@@ -277,7 +277,10 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 selected
                     .execute(&AgentCommand::Read {
                         agent: child.clone(),
-                        target: ReadTarget::File { file: entry.output },
+                        target: ReadTarget::Conversation {
+                            sequence: record.sequence,
+                            file: entry.output,
+                        },
                         offset: 0,
                     })
                     .await?,
@@ -611,8 +614,8 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .await
         .map_err(storage)?;
     assert!(page.children.is_empty());
-    // A selected view lists only its own subtree: neither a directory-selected
-    // root nor a selected child reaches another tree's or its parent's children.
+    // A selected view only exposes rows from its subtree. The original stream
+    // discovery operation may project its child row from the parent's page.
     let children_of = |parent: &AgentPath| -> Result<acyclic_stream::ChildrenPageRequest> {
         Ok(acyclic_stream::ChildrenPageRequest {
             offset: 0,
@@ -630,11 +633,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .children_page(children_of(&child)?)
         .await
         .map_err(storage)?;
-    for (view, foreign) in [
-        (&session, &connection.root),
-        (&child_view, &connection.root),
-        (&child_view, &session.root),
-    ] {
+    for (view, foreign) in [(&session, &connection.root), (&child_view, &session.root)] {
         assert_eq!(
             view.session
                 .read_provider()
@@ -648,6 +647,25 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
             foreign.as_str()
         );
     }
+    let child_reader = child_view.session.read_provider();
+    let parent_page = child_reader
+        .children_page(children_of(&connection.root)?)
+        .await
+        .map_err(storage)?;
+    assert!(
+        parent_page
+            .children
+            .iter()
+            .all(|row| row.path.as_str() == child.as_str()),
+        "the selected child observed an ungranted sibling"
+    );
+    assert_eq!(
+        child_reader
+            .head(connection.root.status().map_err(storage)?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
+    );
     assert_eq!(
         reader
             .head(session.root.status().map_err(storage)?)

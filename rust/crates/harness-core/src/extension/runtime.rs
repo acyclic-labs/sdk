@@ -32,13 +32,6 @@ impl ExtensionRuntime {
             .map_err(|_| Error::Storage("extension admission gate poisoned".into()))? = false;
         Ok(())
     }
-    /// Whether this composition accepts new admissions.
-    pub fn accepts_new_admissions(&self) -> bool {
-        *self
-            .accepting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
     /// Iterates dependency-ordered retained identities.
     pub fn selected(&self) -> impl ExactSizeIterator<Item = &ExtensionIdentity> {
         self.retained.iter().map(ExtensionLease::identity)

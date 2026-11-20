@@ -4,7 +4,7 @@
 //! and delete on an observed ETag (`If-Match`), read-after-write consistency,
 //! ranged GETs and lexical listing with a start-after offset.
 use crate::{Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion};
-use acyclic_stream::OwnedBytes;
+use acyclic_stream_contract::OwnedBytes;
 use futures::TryStreamExt as _;
 use object_store::multipart::MultipartStore;
 use object_store::signer::{SignedUrlOptions, Signer};

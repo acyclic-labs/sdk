@@ -19,20 +19,24 @@ FEATURES = [
         "runner-request",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-sdk-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-sdk-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_library(
     name = "acyclic_sdk_fuzz",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","fuzz_targets/client_files.rs","fuzz_targets/experiment_files.rs","fuzz_targets/file_tool_inputs.rs","fuzz_targets/git_argv.rs","fuzz_targets/git_path.rs","fuzz_targets/grpc_codegen.rs","fuzz_targets/harness_admission.rs","fuzz_targets/inbox_record.rs","fuzz_targets/local_hotpath_options.rs","fuzz_targets/native_claim_record.rs","fuzz_targets/native_hooks.rs","fuzz_targets/native_owner_record.rs","fuzz_targets/native_report_port.rs","fuzz_targets/native_runner_request.rs","fuzz_targets/native_signing_reference.rs","fuzz_targets/observation_slo.rs","fuzz_targets/process_host_arguments.rs","fuzz_targets/proto_descriptors.rs","local_hotpath_options.rs","support/grpc_codegen.rs","support/observation_slo.rs"], allow_empty = True) + [
         "//rust/crates/conformance:benches/local_hotpath/options.rs",
         "//rust/crates/conformance:benches/local_hotpath/quantiles.rs",
+        "local_hotpath_options.rs",
+        "support/grpc_codegen.rs",
+        "support/observation_slo.rs",
         "tests/grpc_codegen.rs",
         "tests/local_hotpath_options.rs",
         "tests/local_hotpath_quantiles.rs",
         "tests/observation_slo.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -44,6 +48,7 @@ rust_library(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -81,11 +86,11 @@ rust_test(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//arrayvec-0.7.8",
         "@sdk_crates//proptest-1.12.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -93,7 +98,11 @@ rust_test(
         "//rust/fuzz:tree/corpus/local_hotpath_options",
         "//rust/fuzz:tree/corpus/observation_slo",
     ],
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -120,8 +129,10 @@ isolated_test(
 rust_binary(
     name = "client_files",
     crate_root = "fuzz_targets/client_files.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/client_files.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -133,6 +144,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -162,8 +174,10 @@ rust_binary(
 rust_binary(
     name = "experiment_files",
     crate_root = "fuzz_targets/experiment_files.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/experiment_files.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -175,6 +189,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -204,8 +219,10 @@ rust_binary(
 rust_binary(
     name = "file_tool_inputs",
     crate_root = "fuzz_targets/file_tool_inputs.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/file_tool_inputs.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -217,6 +234,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -246,8 +264,10 @@ rust_binary(
 rust_binary(
     name = "git_argv",
     crate_root = "fuzz_targets/git_argv.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/git_argv.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -259,6 +279,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -288,10 +309,11 @@ rust_binary(
 rust_binary(
     name = "git_path",
     crate_root = "fuzz_targets/git_path.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/harness-core:src/tools/git/path.rs",
+        "fuzz_targets/git_path.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -303,6 +325,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -332,8 +355,11 @@ rust_binary(
 rust_binary(
     name = "grpc_codegen",
     crate_root = "fuzz_targets/grpc_codegen.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/grpc_codegen.rs",
+        "support/grpc_codegen.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -345,6 +371,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -374,8 +401,10 @@ rust_binary(
 rust_binary(
     name = "harness_admission",
     crate_root = "fuzz_targets/harness_admission.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/harness_admission.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -387,6 +416,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -416,8 +446,10 @@ rust_binary(
 rust_binary(
     name = "inbox_record",
     crate_root = "fuzz_targets/inbox_record.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/inbox_record.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -429,6 +461,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -458,10 +491,15 @@ rust_binary(
 rust_binary(
     name = "local_hotpath_options",
     crate_root = "fuzz_targets/local_hotpath_options.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/conformance:benches/local_hotpath/options.rs",
+        "fuzz_targets/local_hotpath_options.rs",
+        "local_hotpath_options.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = [
+        "corpus/local_hotpath_options/accepted-minimum",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -473,6 +511,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -502,11 +541,12 @@ rust_binary(
 rust_binary(
     name = "native_claim_record",
     crate_root = "fuzz_targets/native_claim_record.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/native-runtime:src/claim/record.rs",
+    srcs = [
+        "//rust/crates/native-claim:src/record.rs",
         "//rust/crates/native-runtime:tests/claim_codec/oracle.rs",
+        "fuzz_targets/native_claim_record.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -518,6 +558,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -547,11 +588,14 @@ rust_binary(
 rust_binary(
     name = "native_hooks",
     crate_root = "fuzz_targets/native_hooks.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/native_hooks.rs",
+    ],
+    compile_data = [
         "//rust/crates/harness:fixtures/hosts/codex-0.146.0.stdout",
         "//rust/crates/harness:fixtures/hosts/codex-0.164.0.stdout",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -563,6 +607,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -592,10 +637,11 @@ rust_binary(
 rust_binary(
     name = "native_owner_record",
     crate_root = "fuzz_targets/native_owner_record.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/native-runtime:tests/owner_codec/oracle.rs",
+        "fuzz_targets/native_owner_record.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -607,6 +653,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -636,12 +683,14 @@ rust_binary(
 rust_binary(
     name = "native_report_port",
     crate_root = "fuzz_targets/native_report_port.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/native-runtime:tests/report_port/oracle.rs",
+        "fuzz_targets/native_report_port.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    compile_data = [
         "//rust/crates/native-runtime:tests/report_port/corpus/request",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -653,6 +702,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -682,8 +732,10 @@ rust_binary(
 rust_binary(
     name = "native_runner_request",
     crate_root = "fuzz_targets/native_runner_request.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/native_runner_request.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -695,6 +747,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -724,10 +777,11 @@ rust_binary(
 rust_binary(
     name = "native_signing_reference",
     crate_root = "fuzz_targets/native_signing_reference.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/native-runtime:tests/signing_reference/oracle.rs",
+        "fuzz_targets/native_signing_reference.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -739,6 +793,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -768,8 +823,11 @@ rust_binary(
 rust_binary(
     name = "observation_slo",
     crate_root = "fuzz_targets/observation_slo.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/observation_slo.rs",
+        "support/observation_slo.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -781,6 +839,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -810,13 +869,15 @@ rust_binary(
 rust_binary(
     name = "process_host_arguments",
     crate_root = "fuzz_targets/process_host_arguments.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/native-runtime:src/process_tree/external_host/arguments.rs",
+        "fuzz_targets/process_host_arguments.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    compile_data = [
         "//rust/crates/native-runtime:src/process_tree/external_host/corpus/linux-arguments.json",
         "//rust/crates/native-runtime:src/process_tree/external_host/corpus/linux-endpoints.json",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -828,6 +889,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -857,8 +919,10 @@ rust_binary(
 rust_binary(
     name = "proto_descriptors",
     crate_root = "fuzz_targets/proto_descriptors.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/proto_descriptors.rs",
+    ],
+    compile_data = [
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",
         "//compatibility:descriptors/filesystem-v2.bin",
@@ -868,6 +932,7 @@ rust_binary(
         "//compatibility:descriptors/objects-v1.bin",
         "//compatibility:descriptors/stream-v1.bin",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -879,6 +944,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -909,10 +975,11 @@ rust_binary(
     name = "capture_native_claim_example",
     crate_root = "examples/capture_native_claim.rs",
     srcs = [
-        "//rust/crates/native-runtime:src/claim/record.rs",
+        "//rust/crates/native-claim:src/record.rs",
         "//rust/crates/native-runtime:tests/claim_codec/oracle.rs",
         "examples/capture_native_claim.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -924,6 +991,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -938,7 +1006,6 @@ rust_binary(
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//arrayvec-0.7.8",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//proptest-1.12.0",
@@ -957,6 +1024,7 @@ rust_binary(
     srcs = [
         "examples/capture_native_hooks.rs",
     ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -968,6 +1036,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -982,7 +1051,6 @@ rust_binary(
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//arrayvec-0.7.8",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//proptest-1.12.0",

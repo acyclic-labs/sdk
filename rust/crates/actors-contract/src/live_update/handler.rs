@@ -1,6 +1,4 @@
-use super::{
-    AdmittedPublication, CallEnvelope, DurableAwait, Error, Pin, Selection, SelectionFence,
-};
+use super::{CallEnvelope, DurableAwait, Error, Pin, Publication, Selection, SelectionFence};
 use crate::guest::{
     CancellationToken, Checkpoint, Delivery, GuestError, GuestFuture, Handler, Manifest, Transition,
 };
@@ -21,10 +19,9 @@ impl VersionedHandler {
     /// The host separately authenticates and admits that immutable publication.
     pub fn new(
         handler: Arc<dyn Handler>,
-        admitted: &AdmittedPublication,
+        publication: &Publication,
         namespace: &str,
     ) -> Result<Self, Error> {
-        let publication = admitted.publication();
         let artifact = publication
             .artifacts()
             .get(namespace)
@@ -37,7 +34,7 @@ impl VersionedHandler {
         Ok(Self {
             handler,
             deployment: publication.deployment().clone(),
-            version: admitted.version().clone(),
+            version: publication.version().clone(),
             schema: artifact.schema,
             handoff: publication.compatibility().handoff.clone(),
         })

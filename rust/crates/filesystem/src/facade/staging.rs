@@ -31,6 +31,35 @@ impl StagedContent {
     }
 }
 
+/// The objects a record itself names: the roots of its closure. A retention
+/// batch holds these, and each root's envelope chain holds everything the
+/// record reaches, so a publication's reference set is bounded by the records
+/// it makes durable, never by the closure's size or the volume's history.
+struct RecordRoots(Vec<ObjectId>);
+
+impl RecordRoots {
+    fn of(records: &[FileRecord]) -> Self {
+        let mut roots = Vec::with_capacity(records.len() * 3);
+        for record in records {
+            roots.push(record.metadata);
+            roots.extend(record.bindings);
+            roots.extend(payload_root(&record.payload));
+        }
+        Self(roots)
+    }
+}
+
+/// The object a payload's own closure hangs from, when it has one.
+fn payload_root(payload: &FilePayload) -> Option<ObjectId> {
+    match payload {
+        FilePayload::Regular { extents, .. } => Some(*extents),
+        FilePayload::Directory { entries } => Some(*entries),
+        FilePayload::SymbolicLink { target, .. } => Some(*target),
+        FilePayload::ReparsePoint { payload, .. } => Some(*payload),
+        FilePayload::InlineRegular(_) | FilePayload::Empty | FilePayload::Device { .. } => None,
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(super) async fn flush_publication(
         &self,
@@ -71,20 +100,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .prove_record_closure(records)
                 .await?
             };
+            // The proof authenticates every object the records reach. The
+            // batch holds only the roots the records themselves name, whose
+            // envelope chains hold the rest, so the retain request is bounded
+            // by the records and never by the closure's size.
+            drop(closure);
+            let roots = RecordRoots::of(records);
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
                         root: None,
                         related_root: None,
                         related_objects: &[],
-                        objects: &closure,
+                        objects: &roots.0,
                         proven_at,
                     },
                     &mut accounting,
                     cancellation,
                 )
                 .await;
-            drop(closure);
+            drop(roots);
             drop(allocation);
             result
         }
@@ -442,5 +477,166 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
 impl AsRef<[u8]> for crate::kernel::Owned<Vec<u8>> {
     fn as_ref(&self) -> &[u8] {
         &self.value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{Child, TreeEntry};
+    use crate::test_support::{put_file_metadata, put_tree_page};
+    use std::sync::{Arc, Mutex};
+
+    /// Records the reference count of every retain request the store issues.
+    struct Counting<S> {
+        inner: S,
+        requests: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl<S: AsyncObjectStore> AsyncObjectStore for Counting<S> {
+        crate::async_storage::forward_object_store!(self => self.inner;
+            put,
+            read,
+            read_many,
+            contains,
+        );
+
+        fn flush_before_publish(
+            &self,
+            scope: crate::PublicationScope<'_>,
+            context: &mut crate::async_storage::AuthorityWork<'_>,
+        ) -> impl std::future::Future<Output = Result<crate::PublicationHold, ObjectStoreError>>
+        + acyclic_stream::ProviderTask {
+            // Exactly the reference set `retention` builds for this scope.
+            let count = usize::from(scope.root.is_some())
+                + usize::from(scope.related_root.is_some())
+                + if scope.root.is_none() {
+                    scope.objects.len()
+                } else {
+                    0
+                }
+                + if scope.related_root.is_none() {
+                    scope.related_objects.len()
+                } else {
+                    0
+                };
+            self.requests.lock().unwrap().push(count);
+            self.inner.flush_before_publish(scope, context)
+        }
+    }
+
+    fn config() -> VolumeConfig {
+        VolumeConfig::portable(Lifecycle::Ephemeral)
+    }
+
+    /// A directory record whose tree holds `entries` names, one per leaf page,
+    /// so its authenticated closure grows with the number of names.
+    async fn directory_record<S: AsyncObjectStore>(
+        store: &S,
+        entries: usize,
+    ) -> Result<FileRecord, Box<dyn std::error::Error>> {
+        let metadata = put_file_metadata(store, FileMetadata::default()).await?;
+        let mut children = Vec::with_capacity(entries);
+        for index in 0..entries {
+            let name =
+                LogicalName::new(NameEncoding::Utf8, format!("file-{index:04}").into_bytes())?;
+            let leaf = put_tree_page(
+                store,
+                &TreePage::Leaf(vec![TreeEntry {
+                    name: name.clone(),
+                    file_id: FileId::from_bytes([index as u8; 16]),
+                    kind: FileKind::Regular,
+                }]),
+                1,
+            )
+            .await?;
+            children.push(Child {
+                first: name,
+                page: leaf,
+            });
+        }
+        let tree = put_tree_page(
+            store,
+            &TreePage::Internal(children),
+            u32::try_from(entries)?,
+        )
+        .await?;
+        Ok(FileRecord {
+            bindings: None,
+            file_id: FileId::from_bytes([0; 16]),
+            kind: FileKind::Directory,
+            link_count: 1,
+            metadata,
+            payload: FilePayload::Directory { entries: tree },
+        })
+    }
+
+    /// The number of objects the record's authenticated closure reaches.
+    async fn closure_size<S: AsyncObjectStore>(store: &S, record: &FileRecord) -> usize {
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut frame = crate::async_storage::AuthorityFrame::borrow(&mut accounting).unwrap();
+        let meter =
+            crate::kernel::closure::ProofMeter::from_accounting(frame.accounting()).unwrap();
+        let (closure, guard) =
+            crate::kernel::closure::ProofContext::new(store, closure_limits(config()), meter)
+                .prove_record_closure(std::slice::from_ref(record))
+                .await
+                .unwrap();
+        let size = closure.len();
+        drop(closure);
+        drop(guard);
+        size
+    }
+
+    /// A publication's retain request is bounded by the records it makes
+    /// durable, not by the closure they reach, so it cannot grow with the
+    /// volume's history.
+    #[tokio::test]
+    async fn retain_request_is_bounded_by_the_records_not_the_closure() {
+        let mut requests = Vec::new();
+        let mut closures = Vec::new();
+        for entries in [1, 10, 100] {
+            let recorded = Arc::new(Mutex::new(Vec::new()));
+            let store = Counting {
+                inner: crate::LogicalObjectStore::new(Arc::new(
+                    acyclic_objects::MemoryObjects::memory(),
+                )),
+                requests: Arc::clone(&recorded),
+            };
+            let fs = Fs::new(
+                crate::distributed::StreamAuthorityStore::new(acyclic_stream::ProviderOwner::new(
+                    acyclic_stream::MemoryStream::default(),
+                )),
+                store,
+                crate::EmbeddedCapabilities::MEMORY,
+            );
+            let record = directory_record(fs.objects(), entries).await.unwrap();
+            let cancellation = CancellationToken::new();
+            let hold = fs
+                .make_records_durable(
+                    config(),
+                    std::slice::from_ref(&record),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .unwrap();
+            drop(hold);
+            let issued = recorded.lock().unwrap().clone();
+            assert_eq!(issued.len(), 1, "one retain per publication");
+            requests.push(issued[0]);
+            closures.push(closure_size(fs.objects(), &record).await);
+        }
+        assert!(
+            closures[0] < closures[1] && closures[1] < closures[2],
+            "the closure grows with the volume's history: {closures:?}"
+        );
+        assert_eq!(
+            requests,
+            [2, 2, 2],
+            "the retain request is bounded by the record: {requests:?}"
+        );
     }
 }

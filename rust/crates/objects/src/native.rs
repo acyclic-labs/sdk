@@ -5,7 +5,7 @@ use crate::{
     Observation, Observed, Retained, RootId, native_future, native_input_meter,
 };
 use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter, ReadAllocation};
-use acyclic_stream::{OwnedBytes, ProviderPlatform};
+use acyclic_stream_contract::{OwnedBytes, ProviderPlatform};
 use std::ops::{Deref, Range};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -17,8 +17,8 @@ type Meter = Arc<dyn NativeReadMeter>;
 /// Temporary engine allocations remain charged for the call.
 /// Canonical payload bytes belong to the caller's logical-object accounting;
 /// medium envelopes, index keys and listings are neither source nor output bytes.
-pub(crate) struct Metered<'a, M> {
-    inner: &'a M,
+pub(crate) struct Metered<'a> {
+    inner: &'a dyn Medium,
     meter: Meter,
     held: Mutex<ReadAllocation>,
     refusal: Mutex<Option<std::io::Error>>,
@@ -26,8 +26,8 @@ pub(crate) struct Metered<'a, M> {
     reserved: Mutex<u64>,
 }
 
-impl<'a, M> Metered<'a, M> {
-    fn new(inner: &'a M, meter: Meter) -> Self {
+impl<'a> Metered<'a> {
+    fn new(inner: &'a dyn Medium, meter: Meter) -> Self {
         Self {
             held: Mutex::new(ReadAllocation::empty(&meter)),
             inner,
@@ -78,10 +78,7 @@ impl<'a, M> Metered<'a, M> {
         self.charge(grown)
     }
 
-    fn retain_read(&self, bytes: OwnedBytes) -> Result<OwnedBytes, MediumError>
-    where
-        M: Medium,
-    {
+    fn retain_read(&self, bytes: OwnedBytes) -> Result<OwnedBytes, MediumError> {
         let allocated = self.inner.read_allocation_bytes(&bytes);
         if allocated == 0 {
             return Ok(bytes);
@@ -105,7 +102,7 @@ impl<'a, M> Metered<'a, M> {
 }
 
 #[async_trait::async_trait]
-impl<M: Medium> Medium for Metered<'_, M> {
+impl Medium for Metered<'_> {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         self.admit_write(false)?;
         self.inner.create(key, bytes).await
@@ -231,8 +228,8 @@ impl<M: Medium> Medium for Metered<'_, M> {
         self.charge(
             OwnedBytes::from_vec_with_guard(bytes, allocation, Arc::clone(&self.meter)).map_err(
                 |failure| match failure.into_error() {
-                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
-                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                    acyclic_stream_contract::PreparedOwnedBytesError::Admission(error) => error,
+                    acyclic_stream_contract::PreparedOwnedBytesError::NotFullyInitialized => {
                         std::io::ErrorKind::InvalidData.into()
                     }
                 },
@@ -251,7 +248,7 @@ impl<M: Medium> Medium for Metered<'_, M> {
     }
 }
 
-impl<M> Drop for Metered<'_, M> {
+impl Drop for Metered<'_> {
     /// Returns what the call's reservation did not spend.
     fn drop(&mut self) {
         let operations = *self
@@ -284,15 +281,16 @@ fn results<T>(
     Ok((values, allocation))
 }
 
-fn checked<T, M>(
-    medium: &Metered<'_, M>,
+fn checked<T>(
+    medium: &Metered<'_>,
     value: Result<T, crate::Error>,
 ) -> Result<T, NativeObjectsError> {
     medium.meter.check()?;
     value.map_err(|error| medium.cause(error))
 }
 
-pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+/// Retains `references` under `root` through the metered native boundary.
+pub fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
     meter: &Meter,
@@ -311,7 +309,8 @@ pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     })
 }
 
-pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+/// Reports whether the account holds `digest`, through the metered native boundary.
+pub fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<Digest>,
     meter: &Meter,
@@ -331,7 +330,8 @@ pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     })
 }
 
-pub(crate) fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+/// Reads one blob range through the metered native boundary.
+pub fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
     meter: &Meter,
@@ -348,7 +348,8 @@ pub(crate) fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     })
 }
 
-pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+/// Reads a batch of blob ranges through the metered native boundary.
+pub fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
     meter: &Meter,
@@ -381,7 +382,8 @@ pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     })
 }
 
-pub(crate) fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+/// Publishes one blob through the metered native boundary.
+pub fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
     meter: &Meter,
@@ -400,7 +402,8 @@ pub(crate) fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     })
 }
 
-pub(crate) fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+/// Publishes a batch of blobs through the metered native boundary.
+pub fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
     meter: &Meter,
@@ -409,7 +412,7 @@ pub(crate) fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 }
 
 /// [`put_batch`] with `window` members in flight.
-pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+pub fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
     meter: &Meter,

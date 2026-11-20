@@ -500,7 +500,7 @@ impl RetainedAllocation {
 /// The value is destroyed before the lease that funds its backing. Access is
 /// borrowed so moving the value cannot silently discard its credit.
 pub struct Retained<T> {
-    pub(crate) value: T,
+    pub value: T,
     pub(crate) allocation: RetainedAllocation,
 }
 
@@ -773,9 +773,12 @@ mod tests {
         for invocation_cancelled in [false, true] {
             let invocation = crate::CancellationToken::new();
             let caller_cancel = crate::CancellationToken::new();
-            let original =
-                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &invocation)
-                    .map_err(|(error, _)| crate::FsError::from(error))?;
+            let original = crate::NativeMaterializationWork::root(
+                WorkBudget::UNBOUNDED,
+                &invocation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| crate::FsError::from(error))?;
             let caller = KernelAccounting::native(&original, &caller_cancel);
             let before = original.receipt()?;
             let mut reader = ReadOwner::new(caller, || ())?;
@@ -1043,9 +1046,12 @@ mod tests {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancel = crate::CancellationToken::new();
-            let original =
-                crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-                    .map_err(|(error, _)| crate::FsError::from(error))?;
+            let original = crate::NativeMaterializationWork::root(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancel,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
+            )
+            .map_err(|(error, _)| crate::FsError::from(error))?;
             retained_bytes_outlive_caller(
                 KernelAccounting::native(&original, &cancel),
                 &cancel,
@@ -1243,7 +1249,7 @@ mod tests {
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let native = crate::NativeMaterializationWork::new(budget, &cancel).unwrap();
+                let native = crate::NativeMaterializationWork::root(budget, &cancel, &crate::services::ServicesInitialized::for_kernel_tests()).unwrap();
                 check_retained_growth(count, refuse, &mut KernelAccounting::native(&native, &cancel))
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
             }

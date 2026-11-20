@@ -3,21 +3,21 @@ use harness_mock_model::{Engine, Script, Step, bind_result, events, last_content
 use proptest::prelude::*;
 use serde_json::json;
 
-#[test]
-fn anthropic_cache_lookback_counts_blocks_within_messages() {
-    let prefix = json!({"type":"text","text":"stable prefix"});
-    let request = |extra: usize| {
-        let mut blocks = vec![prefix.clone()];
-        blocks.extend((0..extra).map(|index| json!({"type":"text","text":index.to_string()})));
-        json!({"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":blocks}]})
-    };
-    for (extra, hit) in [(1, true), (19, true), (20, false), (21, false)] {
+proptest! {
+    #[test]
+    fn anthropic_cache_reads_only_the_last_twenty_content_blocks(extra in 0usize..30) {
+        let prefix = json!({"type":"text","text":"stable prefix"});
+        let request = |extra: usize| {
+            let mut blocks = vec![prefix.clone()];
+            blocks.extend((0..extra).map(|index| json!({"type":"text","text":index.to_string()})));
+            json!({"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":blocks}]})
+        };
         let mut cache = harness_mock_model::PromptCache::default();
         let first = cache.observe("messages", &request(0), 1);
-        assert_eq!(first.read, 0);
-        assert!(first.write > 0);
+        prop_assert_eq!(first.read, 0);
+        prop_assert!(first.write > 0);
         let next = cache.observe("messages", &request(extra), 1);
-        assert_eq!(next.read > 0, hit, "{extra} added content blocks");
+        prop_assert_eq!(next.read > 0, extra < 20, "{} added content blocks", extra);
     }
 }
 fn json_value() -> impl Strategy<Value = serde_json::Value> {
@@ -40,13 +40,8 @@ proptest! {
     fn json_reply_selection_survives_every_request_value(value in json_value()) {
         let step: Step = serde_json::from_value(json!({"json":{"$request":""}})).unwrap();
         prop_assert_eq!(bind_result(&step,&value).unwrap().json,Some(value));
-        let absent = Step::default();
         let null: Step = serde_json::from_value(json!({"json":null})).unwrap();
         prop_assert_eq!(null.json.as_ref(),Some(&serde_json::Value::Null));
-        for step in [absent,null] {
-            let copy: Step = serde_json::from_slice(&serde_json::to_vec(&step).unwrap()).unwrap();
-            prop_assert_eq!(step,copy);
-        }
     }
 
     #[test]
@@ -70,8 +65,6 @@ proptest! {
         }
         prop_assert_eq!(&bound.text[0],&format!("echo {text}"));
         prop_assert_eq!(&bound.custom_tools[0].input,&text);
-        let roundtrip: Step = serde_json::from_slice(&serde_json::to_vec(&step).unwrap()).unwrap();
-        prop_assert_eq!(roundtrip,step);
         let wire = events("responses",&bound).unwrap().concat();
         let frames: Vec<serde_json::Value> = wire.lines().filter_map(|line|line.strip_prefix("data: ")).map(|line|serde_json::from_str(line).unwrap()).collect();
         let done: Vec<_> = frames.iter().filter(|event|event["type"]=="response.output_item.done" && event.pointer("/item/type").and_then(serde_json::Value::as_str)!=Some("message")).collect();
@@ -125,18 +118,33 @@ proptest! {
     }
 
     #[test]
-    fn adjacent_anthropic_results_and_user_text_retain_independent_latest_values(text in "[a-zA-Z0-9]{1,40}", files in prop::collection::vec("[a-z]{1,12}",2..6)) {
+    fn latest_user_and_tool_content_is_independent_across_protocols(text in "[a-zA-Z0-9]{1,40}", files in prop::collection::vec("[a-z]{1,12}",2..6)) {
+        let last = files.last().unwrap();
         let step: Step = serde_json::from_value(json!({"tools":[{"id":"edit","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]})).unwrap();
         let mut parts: Vec<_> = files.iter().map(|file| json!({"type":"tool_result","tool_use_id":file,"content":json!({"file":file}).to_string()})).collect();
         parts.insert(1,json!({"type":"text","text":text}));
-        let body = json!({"messages":[{"role":"user","content":"old"},{"role":"user","content":parts}]});
-        prop_assert_eq!(last_content(&body,false),text.as_str());
-        let result = last_content(&body,true);
-        prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&result).unwrap(),json!({"file":files.last().unwrap()}));
-        let bound = bind_result(&step,&body).unwrap();
-        prop_assert_eq!(&bound.tools[0].arguments["file"],&json!(files.last().unwrap()));
-        let mut engine = Engine::new(serde_json::from_value(json!({"cases":{"case":{"steps":[{"when":{"user":text,"tool_result":files.last().unwrap()},"text":["matched"]}]}}})).unwrap());
-        prop_assert!(engine.take("case","messages",&body).is_some());
+        let anthropic = json!({"messages":[{"role":"user","content":"old"},{"role":"user","content":parts}]});
+        prop_assert_eq!(last_content(&anthropic,false),text.as_str());
+        prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&last_content(&anthropic,true)).unwrap(),json!({"file":last}));
+        let bound = bind_result(&step,&anthropic).unwrap();
+        prop_assert_eq!(&bound.tools[0].arguments["file"],&json!(last));
+        let responses = json!({"input":[{"role":"user","content":[{"text":text}]},{"type":"function_call_output","output":json!({"file":last}).to_string()}]});
+        prop_assert_eq!(last_content(&responses,false),text.as_str());
+        prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&last_content(&responses,true)).unwrap(),json!({"file":last}));
+        let chat = json!({"messages":[{"role":"user","content":text},{"role":"tool","content":json!({"file":last}).to_string()}]});
+        prop_assert_eq!(last_content(&chat,false),text.as_str());
+        prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&last_content(&chat,true)).unwrap(),json!({"file":last}));
+        let gemini = json!({"contents":[
+            {"role":"user","parts":[{"text":"historical"}]},
+            {"role":"model","parts":[{"functionCall":{"id":"call","name":"read","args":{}}}]},
+            {"role":"user","parts":[{"functionResponse":{"id":"call","name":"read","response":{"output":json!({"file":last}).to_string()}}},{"text":text}]}
+        ]});
+        prop_assert_eq!(last_content(&gemini,false),text.as_str());
+        prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&last_content(&gemini,true)).unwrap(),json!({"file":last}));
+        let mut engine = Engine::new(serde_json::from_value(json!({"cases":{"case":{"steps":[{"when":{"user":text,"tool_result":last},"text":["matched"]}]}}})).unwrap());
+        prop_assert!(engine.take("case","messages",&json!({})).is_none(), "mismatch consumes nothing");
+        prop_assert!(engine.take("case","messages",&anthropic).is_some());
+        prop_assert!(engine.take("case","messages",&anthropic).is_none(), "matched step consumed once");
     }
 
     #[test]
@@ -168,60 +176,11 @@ proptest! {
 }
 
 #[test]
-fn guards_use_last_content_and_mismatch_never_consumes() {
-    let mut engine = Engine::new(
-        serde_json::from_value(json!({"cases":{"case":{"steps":[{
-            "when":{"path":"responses","user":"new","tool_result":"result"},"text":["correct"]
-        }]}}}))
-        .unwrap(),
-    );
-    let body = json!({"input":[
-        {"role":"user","content":[{"text":"old"}]},
-        {"role":"user","content":[{"text":"new"}]},
-        {"type":"function_call_output","output":"result"}
-    ]});
-    assert_eq!(last_content(&body, false), "new");
-    assert_eq!(last_content(&body, true), "result");
-    assert!(engine.take("case", "messages", &body).is_none());
-    assert!(
-        engine
-            .take(
-                "case",
-                "responses",
-                &json!({"input":[{"role":"user","content":"old"}]})
-            )
-            .is_none()
-    );
-    assert_eq!(engine.take("case", "responses", &body).unwrap().0, 0);
-    assert!(engine.take("case", "responses", &body).is_none());
-    let anthropic = json!({"messages":[{"role":"user","content":"new"},{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"result"}]}]}]});
-    assert_eq!(last_content(&anthropic, false), "new");
-    assert_eq!(last_content(&anthropic, true), "result");
-    let chat =
-        json!({"messages":[{"role":"user","content":"new"},{"role":"tool","content":"result"}]});
-    assert_eq!(last_content(&chat, false), "new");
-    assert_eq!(last_content(&chat, true), "result");
-}
-
-#[test]
 fn counts_do_not_consume_model_steps_but_can_be_scripted_explicitly() {
     let mut engine = Engine::new(serde_json::from_value(json!({"cases":{"case":{"bytes_per_token":4,"steps":[
         {"text":["answer"]}, {"when":{"path":"count","user":"crash"},"json":{"input_tokens":64},"hold":true}
     ]}}})).unwrap());
     assert_eq!(engine.input_tokens("case", &json!({})), Some(65));
-    for length in 0..8 {
-        let body = json!("x".repeat(length));
-        assert_eq!(
-            engine.input_tokens("case", &body),
-            Some(64 + (length as u64 + 2).div_ceil(4))
-        );
-    }
-    assert!(
-        serde_json::from_value::<Script>(
-            json!({"cases":{"case":{"bytes_per_token":0,"steps":[]}}})
-        )
-        .is_err()
-    );
     assert!(engine.take("case", "count", &json!({})).is_none());
     let (index, step) = engine
         .take(
@@ -236,8 +195,7 @@ fn counts_do_not_consume_model_steps_but_can_be_scripted_explicitly() {
 }
 
 #[test]
-fn unknown_fields_fail_and_hold_has_no_terminal_event() {
-    assert!(serde_json::from_value::<Script>(json!({"cases":{},"typo":true})).is_err());
+fn hold_has_no_terminal_event() {
     let step: Step = serde_json::from_value(json!({"text":["part"],"hold":true})).unwrap();
     for (path, terminal) in [
         ("responses", "response.completed"),

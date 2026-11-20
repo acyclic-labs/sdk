@@ -63,41 +63,89 @@ fn both_mcp_dialects_pin_batch_launchers_from_the_configured_search_environment(
 
 // Property: changing only ambient variables preserves revisions; resolving the same
 // configured name to a different absolute executable changes them. Resolution is idempotent.
-proptest! {
-    #[test]
-    fn explicit_binding_ignores_ambient_environment_and_pins_path(
-        first_term in "[a-z]{0,20}", second_term in "[a-z]{0,20}", argument in "[a-z ]{0,24}",
-    ) {
-        let root = tempfile::tempdir().unwrap();
-        let a = root.path().join("a");
-        let b = root.path().join("b");
-        std::fs::create_dir(&a).unwrap();
-        std::fs::create_dir(&b).unwrap();
-        let name = if cfg!(windows) { "mcp-fixture.exe" } else { "mcp-fixture" };
-        for directory in [&a, &b] {
-            executable_file(&directory.join(name));
-        }
-        let config = server(json!({"command":"mcp-fixture", "args":[argument], "env":{"KEY":"explicit"}}), Dialect::Codex).unwrap();
-        let command = |directory: &Path, term: &str| native::command_for(&config, root.path(), |key| match key {
-            "PATH" => Some(directory.as_os_str().to_owned()), "TERM" => Some(term.into()), _ => None,
-        }, &Default::default()).unwrap();
-        let original = command(&a, &first_term);
-        let ambient = command(&a, &second_term);
-        let replaced = command(&b, &first_term);
-        prop_assert!(Path::new(original.get_program()).is_absolute());
-        prop_assert_eq!(Path::new(original.get_program()), a.join(name));
-        prop_assert_eq!(Path::new(replaced.get_program()), b.join(name));
-        prop_assert_eq!(acyclic_executable_search::ExecutableSearch::from_environment(root.path(), |_| None).resolve(original.get_program()).unwrap(), Path::new(original.get_program()));
-        let revision = |command| {
-            let binding = native::command_binding(command, &config);
-            let (tools, _) = register("fixture".into(), &config, Connected {
-                transport: Arc::new(Remote::default()), tools: advertised(&["read"]), binding, generation: 0,
-            }, McpClientLimits::default(), &|| Ok(())).unwrap();
-            tools.get("mcp.fixture.read", None, None).unwrap().unwrap().definition.revision.clone()
-        };
-        prop_assert_eq!(revision(&original), revision(&ambient));
-        prop_assert_ne!(revision(&original), revision(&replaced));
+#[test]
+fn explicit_binding_ignores_ambient_environment_and_pins_path() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let name = if cfg!(windows) {
+        "mcp-fixture.exe"
+    } else {
+        "mcp-fixture"
+    };
+    for directory in [&a, &b] {
+        std::fs::create_dir(directory).unwrap();
+        executable_file(&directory.join(name));
     }
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::explicit_binding_ignores_ambient_environment_and_pins_path"
+        )),
+        ..ProptestConfig::default()
+    });
+    runner
+        .run(
+            &("[a-z]{0,20}", "[a-z]{0,20}", "[a-z ]{0,24}"),
+            |(first_term, second_term, argument)| {
+                let config = server(
+                    json!({"command":"mcp-fixture", "args":[argument], "env":{"KEY":"explicit"}}),
+                    Dialect::Codex,
+                )
+                .unwrap();
+                let command = |directory: &Path, term: &str| {
+                    native::command_for(
+                        &config,
+                        root.path(),
+                        |key| match key {
+                            "PATH" => Some(directory.as_os_str().to_owned()),
+                            "TERM" => Some(term.into()),
+                            _ => None,
+                        },
+                        &Default::default(),
+                    )
+                    .unwrap()
+                };
+                let original = command(&a, &first_term);
+                let ambient = command(&a, &second_term);
+                let replaced = command(&b, &first_term);
+                prop_assert!(Path::new(original.get_program()).is_absolute());
+                prop_assert_eq!(Path::new(original.get_program()), a.join(name));
+                prop_assert_eq!(Path::new(replaced.get_program()), b.join(name));
+                let search = acyclic_executable_search::ExecutableSearch::from_environment(
+                    root.path(),
+                    |_| None,
+                );
+                prop_assert_eq!(
+                    search.resolve(original.get_program()).unwrap(),
+                    Path::new(original.get_program())
+                );
+                let revision = |command| {
+                    let binding = native::command_binding(command, &config)
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    let (tools, _) = register(
+                        "fixture".into(),
+                        &config,
+                        Connected {
+                            transport: Arc::new(Remote::default()),
+                            tools: advertised(&["read"]),
+                            binding,
+                            generation: 0,
+                        },
+                        McpClientLimits::default(),
+                        &|| Ok(()),
+                    )
+                    .unwrap();
+                    let tool = tools.get("mcp.fixture.read", None, None).unwrap().unwrap();
+                    Ok::<_, TestCaseError>(tool.definition.revision.clone())
+                };
+                prop_assert_eq!(revision(&original)?, revision(&ambient)?);
+                prop_assert_ne!(revision(&original)?, revision(&replaced)?);
+                Ok(())
+            },
+        )
+        .unwrap();
 }
 
 #[cfg(unix)]
@@ -147,8 +195,8 @@ fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
     )?;
     assert_eq!(Path::new(absolute.get_program()), launcher);
     assert_eq!(
-        native::command_binding(&command, &searched),
-        native::command_binding(&absolute, &searched)
+        native::command_binding(&command, &searched)?,
+        native::command_binding(&absolute, &searched)?
     );
     for path in [bin.as_os_str(), std::ffi::OsStr::new(".venv/bin")] {
         let found = native::command_for(
@@ -159,8 +207,8 @@ fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
         )?;
         assert_eq!(Path::new(found.get_program()), launcher);
         assert_eq!(
-            native::command_binding(&command, &searched),
-            native::command_binding(&found, &searched)
+            native::command_binding(&command, &searched)?,
+            native::command_binding(&found, &searched)?
         );
     }
     let real = native::command_for(
@@ -170,8 +218,8 @@ fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
         &Default::default(),
     )?;
     assert_ne!(
-        native::command_binding(&command, &searched),
-        native::command_binding(&real, &searched)
+        native::command_binding(&command, &searched)?,
+        native::command_binding(&real, &searched)?
     );
     Ok(())
 }

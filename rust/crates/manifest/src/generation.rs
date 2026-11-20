@@ -9,6 +9,7 @@ pub fn json_schema() -> Result<String, serde_json::Error> {
 pub fn typescript() -> Result<String, String> {
     let mut output = String::from("// Generated from acyclic_manifest. Do not edit.\n");
     // Imported JSON shapes come from their existing descriptors, not replicas.
+    let mut seen = HashSet::new();
     for source in [
         wire::typescript::<Binding>()?,
         wire::typescript::<ActorLimits>()?,
@@ -17,11 +18,6 @@ pub fn typescript() -> Result<String, String> {
         wire::typescript::<ResourceGrant>()?,
         wire::typescript::<Limits>()?,
     ] {
-        let mut seen = output
-            .lines()
-            .filter(|line| line.starts_with("export type "))
-            .map(str::to_owned)
-            .collect::<HashSet<_>>();
         let mut include = true;
         for line in source.lines() {
             if line.starts_with("export type ") {
@@ -47,7 +43,6 @@ pub fn typescript() -> Result<String, String> {
         VolumeProvider,
         WorkerLimits,
         EntryAsset,
-        AssetRole,
         FetchBinding,
         HostFetch,
         HostCredential,

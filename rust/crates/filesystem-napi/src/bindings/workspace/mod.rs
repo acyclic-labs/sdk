@@ -6,15 +6,6 @@ pub struct NativeWorkspace {
     pub(in crate::bindings) inner: Workspace<LocalAuthorityBackend, LocalObjectBackend>,
 }
 
-/// Terminal result of advancing a fork onto its source workspace.
-#[napi(object)]
-pub struct NativeWorkspaceRebaseResult {
-    pub status: String,
-    pub generation_id: Option<Buffer>,
-    pub conflicts: Vec<NativeMergeConflict>,
-    pub truncated: bool,
-}
-
 /// Terminal workspace publication outcome.
 #[napi(object)]
 pub struct NativeWorkspaceCommit {
@@ -49,17 +40,10 @@ pub struct NativeWorkspaceMetadata {
     pub has_security_descriptor: bool,
 }
 
-/// One exact encoded directory name.
-#[napi(object)]
-pub struct NativeWorkspaceName {
-    pub encoding: String,
-    pub bytes: Buffer,
-}
-
 /// One child in a bounded directory page.
 #[napi(object)]
 pub struct NativeWorkspaceDirectoryEntry {
-    pub name: NativeWorkspaceName,
+    pub name: NativePathComponent,
     pub file_id: Buffer,
     pub kind: FileKind,
 }
@@ -355,7 +339,7 @@ impl NativeWorkspace {
         maximum_generations: Option<NapiU32>,
         maximum_changes: Option<NapiU32>,
         maximum_conflicts: Option<NapiU32>,
-    ) -> Result<NativeWorkspaceRebaseResult> {
+    ) -> Result<NativeRebaseOutcome> {
         let maximum_generations = maximum_generations.map(NapiU32::into_inner);
         let maximum_changes = maximum_changes.map(NapiU32::into_inner);
         let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
@@ -471,9 +455,9 @@ impl NativeWorkspace {
     }
 }
 
-pub(in crate::bindings) fn native_workspace_rebase_result(
+fn native_workspace_rebase_result(
     outcome: WorkspaceRebase<LocalAuthorityBackend, LocalObjectBackend>,
-) -> NativeWorkspaceRebaseResult {
+) -> NativeRebaseOutcome {
     let (status, generation) = match outcome {
         WorkspaceRebase::Rebased(value) => ("rebased", Some(value)),
         WorkspaceRebase::AlreadyRebased(value) => ("already-rebased", Some(value)),
@@ -484,7 +468,7 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
             truncated,
             allocation: _allocation,
         } => {
-            return NativeWorkspaceRebaseResult {
+            return NativeRebaseOutcome {
                 status: "conflicted".to_owned(),
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
@@ -494,7 +478,7 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
         WorkspaceRebase::Fenced => ("fenced", None),
         WorkspaceRebase::IdempotencyConflict => ("idempotency-conflict", None),
     };
-    NativeWorkspaceRebaseResult {
+    NativeRebaseOutcome {
         status: status.to_owned(),
         generation_id: generation.map(|value| native_generation_buffer(value.id())),
         conflicts: Vec::new(),
@@ -502,9 +486,7 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
     }
 }
 
-pub(in crate::bindings) fn native_workspace_metadata(
-    value: WorkspaceMetadata,
-) -> NativeWorkspaceMetadata {
+fn native_workspace_metadata(value: WorkspaceMetadata) -> NativeWorkspaceMetadata {
     NativeWorkspaceMetadata {
         posix_mode: value.posix_mode,
         posix_uid: value.posix_uid,
@@ -535,25 +517,6 @@ pub(in crate::bindings) fn native_workspace_stat(value: WorkspaceStat) -> Native
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "consumes the JavaScript name it validates"
-)]
-pub(in crate::bindings) fn native_workspace_name(
-    value: NativeWorkspaceName,
-) -> Result<LogicalName> {
-    let encoding = NameEncoding::from_public_str(&value.encoding)
-        .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
-    LogicalName::new(encoding, value.bytes.to_vec()).map_err(napi_error)
-}
-
-pub(in crate::bindings) fn native_workspace_name_value(name: &LogicalName) -> NativeWorkspaceName {
-    NativeWorkspaceName {
-        encoding: name.encoding().as_str().to_owned(),
-        bytes: Buffer::from(name.as_bytes().to_vec()),
-    }
-}
-
 pub(in crate::bindings) fn native_workspace_directory_page(
     value: DirectoryPage,
 ) -> NativeWorkspaceDirectoryPage {
@@ -562,7 +525,7 @@ pub(in crate::bindings) fn native_workspace_directory_page(
             .entries
             .into_iter()
             .map(|entry| NativeWorkspaceDirectoryEntry {
-                name: native_workspace_name_value(&entry.name),
+                name: encode_name_component(&entry.name),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
                 kind: entry.kind,
             })

@@ -423,5 +423,5 @@ fn invalid() -> GuestError {
     GuestError::Decode("invalid fenced reservation".into())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(runtime_tests)))]
 mod tests;

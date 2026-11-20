@@ -4,7 +4,7 @@
 use super::*;
 
 #[cfg(test)]
-#[cfg(all(unix))]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

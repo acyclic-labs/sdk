@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 impl<T> MountTable<T> {
     /// One JSON map of visible native workspace names to paths for this target.
-    /// A command's table names that command's private volume views.
+    /// A command's table names that command's private volume views. Paths use
+    /// the same host-facing spelling as the command's working directory.
     pub fn environment(&self) -> Result<BTreeMap<String, String>> {
         let mut workspaces = BTreeMap::new();
         for (relative, path, mount) in self.native_mounts() {
@@ -16,7 +17,8 @@ impl<T> MountTable<T> {
                     .or_else(|| relative.strip_prefix("volume://"))
                     .ok_or_else(|| Error::Invalid("invalid volume address".into()))?
             };
-            let path = path
+            let host_path = acyclic_host_platform::paths::strip_verbatim(path);
+            let path = host_path
                 .to_str()
                 .ok_or_else(|| Error::Invalid("task mount path is not UTF-8".into()))?;
             if workspaces

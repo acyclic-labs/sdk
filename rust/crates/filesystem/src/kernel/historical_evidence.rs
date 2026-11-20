@@ -213,7 +213,7 @@ pub fn decode_historical_generation_evidence(
     )
 }
 
-pub(crate) fn decode_historical_generation_evidence_observed<E>(
+pub fn decode_historical_generation_evidence_observed<E>(
     evidence: &HistoricalGenerationEvidence,
     authority_id: AuthorityId,
     record: &DurableCommit,

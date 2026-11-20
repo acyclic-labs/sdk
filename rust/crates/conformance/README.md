@@ -29,7 +29,7 @@ The retained `mutations/backend_human_approval_identity.patch` restores the
 endpoint-principal policy and must fail with
 `principal is not the active approval stage`. Build `graphcoder` with
 `acyclic-native-runtime/test-support`, then run
-`cargo test -p acyclic-conformance --features graphcoder-backends --test graphcoder_backends graphcoder_runs_one_scenario_identically_on_every_backend -- --exact`.
+`cargo test -p acyclic-conformance --features graphcoder-backends --test main graphcoder_backends::graphcoder_runs_one_scenario_identically_on_every_backend -- --exact`.
 
 The `inference` feature supplies real-capture adapters for the eight `ModelProvider` vectors published at `acyclic_harness_core::model::conformance`: streaming, cancellation, paired tools/results, exact usage, typed refusals and deterministic replay. The public module exposes `Backend`, `verify`, `bench`, `suite!` and the shared `Counted` dispatch wrapper through `counted(provider)`. `inference-qualify` validates complete response families and their provenance; see [composition and qualification](../../../docs/backends/inference.md). This model seam is separate from the customer Inference context/run client. The host suite also includes cached OIDC identity admission and zero-read refusal vectors, with [local Dex qualification](../../../docs/backends/oidc.md).
 

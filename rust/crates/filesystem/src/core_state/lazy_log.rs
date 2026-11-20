@@ -6,7 +6,7 @@ impl LocalCoreStateStore {
         id: WorkspaceId,
         expected: u64,
         replacement: LazyWorkspaceState,
-        work: crate::materializer::NativeMaterializationWork,
+        work: crate::ledger::NativeMaterializationWork,
     ) -> Result<bool, LocalCoreStateStoreError> {
         native_records::transaction!(self, work, |root, log, work| {
             let current = log

@@ -3,13 +3,6 @@ use acyclic_fs::{CancellationToken, Fs, IdempotencyKey, TransactionCommit, Works
 use acyclic_fs_work::performance::WorkBudget;
 use bytes::Bytes;
 use std::error::Error;
-use {
-    acyclic_fs::{
-        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
-        TransactionCommit, WorkspaceError,
-    },
-    acyclic_fs_work::performance::WorkBudget,
-};
 
 #[macro_use]
 #[path = "../support/unbounded.rs"]

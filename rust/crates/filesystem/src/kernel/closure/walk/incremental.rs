@@ -90,16 +90,14 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         let mut logical_bytes = previous.logical_file_bytes;
         for change in &diff.0.files {
             self.examine(1)?;
-            let Some(after) = change.after else {
-                return Ok(None);
-            };
             logical_bytes = logical_bytes
                 .checked_sub(change.before.map_or(0, file_bytes))
-                .and_then(|bytes| bytes.checked_add(file_bytes(after)))
+                .and_then(|bytes| bytes.checked_add(change.after.map_or(0, file_bytes)))
                 .ok_or(ClosureError::LogicalBytesOverflow)?;
-            if change.before.is_none() {
-                file_count = file_count.checked_add(1).ok_or(WorkError::Overflow)?;
-            }
+            file_count = file_count
+                .checked_sub(u64::from(change.after.is_none()))
+                .and_then(|count| count.checked_add(u64::from(change.before.is_none())))
+                .ok_or(WorkError::Overflow)?;
         }
         self.collect_pages::<crate::kernel::file_table_mutation::FileTableFormat>(
             root.file_table,
@@ -108,7 +106,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         .await?;
         for change in &diff.0.files {
             let Some(record) = change.after else {
-                return Ok(None);
+                continue;
             };
             if change.before.is_none() {
                 self.prove_bindings(&record).await?;
@@ -143,41 +141,41 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         &self,
         diff: &crate::GenerationDiff,
     ) -> Result<bool, crate::FsError> {
+        use crate::kernel::FileKind::{Directory, Regular};
+
         // File changes arrive in FileId order from the authenticated file-table diff.
         let mut links = ProofVec::new(&self.meter);
         for change in &diff.files {
             self.examine(1)?;
-            let Some(after) = change.after else {
-                return Ok(false);
+            let anchored = match (change.before, change.after) {
+                (Some(before), None) if before.kind == Regular && before.link_count == 1 => false,
+                (before, Some(after))
+                    if after.link_count == 1
+                        && matches!(after.kind, Directory | Regular)
+                        && before.is_none_or(|before| {
+                            before.kind == after.kind
+                                && before.link_count == 1
+                                && before.bindings == after.bindings
+                        }) =>
+                {
+                    before.is_some()
+                }
+                _ => return Ok(false),
             };
-            if after.link_count != 1
-                || !matches!(
-                    after.kind,
-                    crate::kernel::FileKind::Directory | crate::kernel::FileKind::Regular
-                )
-                || change.before.is_some_and(|before| {
-                    before.kind != after.kind
-                        || before.link_count != 1
-                        || before.bindings != after.bindings
-                })
-            {
-                return Ok(false);
-            }
             links.push(IncrementLink {
                 parent: None,
-                anchored: change.before.is_some(),
+                anchored,
                 visiting: false,
             })?;
         }
         for binding in &diff.bindings {
             self.examine(1)?;
-            let Some(after) = &binding.after else {
-                return Ok(false);
+            let (entry, adding) = match (&binding.before, &binding.after) {
+                (None, Some(after)) => (after, true),
+                (Some(before), None) => (before, false),
+                _ => return Ok(false),
             };
-            if binding.before.is_some() {
-                return Ok(false);
-            }
-            let Some(child) = self.increment_file(&diff.files, after.file_id)? else {
+            let Some(child) = self.increment_file(&diff.files, entry.file_id)? else {
                 return Ok(false);
             };
             let Some(parent) = self.increment_file(&diff.files, binding.directory_id)? else {
@@ -187,14 +185,23 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 .files
                 .get(child)
                 .ok_or(crate::ObjectStoreError::Corrupt)?;
-            if change.before.is_some()
-                || !change.after.is_some_and(|record| record.kind == after.kind)
-                || !diff
-                    .files
-                    .get(parent)
-                    .ok_or(crate::ObjectStoreError::Corrupt)?
+            let parent_change = diff
+                .files
+                .get(parent)
+                .ok_or(crate::ObjectStoreError::Corrupt)?;
+            // The previous proof authenticates a removed regular file's sole
+            // binding. Its parent must survive, and that exact edge must be gone.
+            let (edge_record, opposite_record) = if adding {
+                (change.after, change.before)
+            } else {
+                (change.before, change.after)
+            };
+            if opposite_record.is_some()
+                || !edge_record.is_some_and(|record| record.kind == entry.kind)
+                || (!adding && parent_change.before.is_none())
+                || !parent_change
                     .after
-                    .is_some_and(|record| record.kind == crate::kernel::FileKind::Directory)
+                    .is_some_and(|record| record.kind == Directory)
                 || links
                     .values
                     .get_mut(child)

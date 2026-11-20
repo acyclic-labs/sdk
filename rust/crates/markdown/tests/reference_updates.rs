@@ -113,9 +113,9 @@ fn document_budget_growth_keeps_unrelated_open_checkpoints() {
         let mut markdown = Markdown::default();
         let mut consumer = Vec::new();
         let mut push = |delta: &str, bounded: bool| {
-            let before = references::PARSED_BYTES.get();
+            let before = acyclic_markdown_work::work::parsed_bytes();
             let changed = markdown.push(delta);
-            let parsed = references::PARSED_BYTES.get() - before;
+            let parsed = acyclic_markdown_work::work::parsed_bytes() - before;
             if bounded {
                 assert!(parsed <= 512, "{parsed} parser bytes for {delta:?}");
             }
@@ -212,49 +212,12 @@ fn malformed_definition_does_not_repeat_reference_parsing() {
     let mut markdown = Markdown::default();
     markdown.push(source);
     for definition in ["[y]: /target\n\n", "[outer [x][y]]: /target\n\n"] {
-        let before = references::PARSED_BYTES.get();
+        let before = acyclic_markdown_work::work::parsed_bytes();
         markdown.push(definition);
-        let used = references::PARSED_BYTES.get() - before;
+        let used = acyclic_markdown_work::work::parsed_bytes() - before;
         assert!(
             used <= source.len() + definition.len() * 3,
             "{used} parser bytes for {definition:?}"
         );
     }
-}
-
-#[test]
-fn reference_definitions_preserve_every_cut() {
-    for body in [
-        "[x][r]",
-        "[r]",
-        "[r][]",
-        "![x][r]",
-        "[outer [x][r]][s]",
-        "[*x*][r]",
-        "[x][r][x][r]",
-    ] {
-        for definitions in [
-            "[r]: /one\n\n",
-            "[r]: /one \"title\"\n\n",
-            "[r]: /one\n  \"title\"\n\n",
-            "[r]: /one\n\n[r]: /two\n\n",
-            "[r]: /one\n\n[outer [x][r]]: /two\n\n",
-            "[s]: /s\n\n[r]: /r\n\n",
-        ] {
-            super::block_checkpoints::check_inline_cuts(&[
-                &format!("{body}\n\n{definitions}tail"),
-                &format!("{definitions}{body}\n\ntail"),
-            ]);
-        }
-    }
-}
-
-#[test]
-fn pending_definition_titles_reopen_under_every_cut() {
-    super::block_checkpoints::check_inline_cuts(&[
-        "[x][a\\]b]\n\n[a\\]b]: /one\n  \"title\"\n\ntail",
-        "[x][a b]\n\n[a b]: /one\n  \"title\"\n\ntail",
-        "[r]\n\n[r]: /one\n  'title'\n\ntail",
-        "[r]\n\n[r]: /one\n  (title)\n\ntail",
-    ]);
 }

@@ -41,15 +41,12 @@ pub struct BrowserNamedAttributeNameResult {
     pub(in crate::bindings) name: Vec<u8>,
 }
 
-#[wasm_bindgen]
 impl BrowserCheckout {
-    #[wasm_bindgen(js_name = readMetadata)]
-    pub async fn read_metadata(
+    async fn metadata_value<F: acyclic_fs::ContentFile>(
         &mut self,
-        path: String,
+        file: F,
     ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
-        let path = browser_path(&path, self.engine.volume_config())?;
-        let receipt = browser_call!(self, read_metadata(&path,))?;
+        let receipt = browser_call!(self, read_metadata(file,))?;
         ts(BrowserMetadataResult {
             canonical_bytes: encode_file_metadata(
                 receipt.value,
@@ -61,22 +58,41 @@ impl BrowserCheckout {
         })
     }
 
+    async fn set_attributes_value<F: acyclic_fs::ContentFile>(
+        &mut self,
+        file: F,
+        canonical_bytes: Vec<u8>,
+        logical_bytes: Option<u64>,
+    ) -> Result<Ts<BrowserMutationResult>, JsValue> {
+        let metadata = decode_file_metadata(
+            &canonical_bytes,
+            DecodeLimits::for_volume(self.engine.volume_config()),
+            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+        )
+        .map_err(js_error)?;
+        let receipt = browser_call!(self, set_attributes(file, metadata, logical_bytes,))?;
+        mutation_value(receipt.work)
+    }
+}
+
+#[wasm_bindgen]
+impl BrowserCheckout {
+    #[wasm_bindgen(js_name = readMetadata)]
+    pub async fn read_metadata(
+        &mut self,
+        path: String,
+    ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
+        let path = browser_path(&path, self.engine.volume_config())?;
+        self.metadata_value(path).await
+    }
+
     #[wasm_bindgen(js_name = readMetadataById)]
     pub async fn read_metadata_by_id(
         &mut self,
         file_id: Vec<u8>,
     ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let receipt = browser_call!(self, read_metadata(file_id,))?;
-        ts(BrowserMetadataResult {
-            canonical_bytes: encode_file_metadata(
-                receipt.value,
-                |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-            )
-            .map_err(js_error)?,
-            work: browser_work(receipt.work),
-        })
+        self.metadata_value(file_id).await
     }
 
     #[wasm_bindgen(js_name = setMetadata)]
@@ -109,14 +125,8 @@ impl BrowserCheckout {
         canonical_bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            &canonical_bytes,
-            DecodeLimits::for_volume(self.engine.volume_config()),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(js_error)?;
-        let receipt = browser_call!(self, set_attributes(file_id, metadata, None,))?;
-        mutation_value(receipt.work)
+        self.set_attributes_value(file_id, canonical_bytes, None)
+            .await
     }
 
     #[wasm_bindgen(js_name = setAttributes)]
@@ -127,14 +137,8 @@ impl BrowserCheckout {
         logical_bytes: Option<u64>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let metadata = decode_file_metadata(
-            &canonical_bytes,
-            DecodeLimits::for_volume(self.engine.volume_config()),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(js_error)?;
-        let receipt = browser_call!(self, set_attributes(path, metadata, logical_bytes,))?;
-        mutation_value(receipt.work)
+        self.set_attributes_value(path, canonical_bytes, logical_bytes)
+            .await
     }
 
     #[wasm_bindgen(js_name = setAttributesById)]
@@ -145,14 +149,8 @@ impl BrowserCheckout {
         logical_bytes: Option<u64>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            &canonical_bytes,
-            DecodeLimits::for_volume(self.engine.volume_config()),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(js_error)?;
-        let receipt = browser_call!(self, set_attributes(file_id, metadata, logical_bytes,))?;
-        mutation_value(receipt.work)
+        self.set_attributes_value(file_id, canonical_bytes, logical_bytes)
+            .await
     }
 
     #[wasm_bindgen(js_name = readNamedAttribute)]
@@ -198,7 +196,9 @@ impl BrowserCheckout {
                 .entries
                 .into_iter()
                 .map(|entry| BrowserNamedAttributeNameResult {
-                    attribute_class: browser_attribute_class_name(entry.name.class()),
+                    attribute_class: acyclic_fs::binding_contract::attribute_class_name(
+                        entry.name.class(),
+                    ),
                     name: entry.name.as_bytes().to_vec(),
                 })
                 .collect(),
@@ -218,7 +218,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
         let name = browser_attribute_name(&attribute_class, name)?;
-        let mode = browser_attribute_write_mode(&mode)?;
+        let mode = acyclic_fs::binding_contract::attribute_write_mode(&mode).map_err(js_error)?;
         let receipt = browser_call!(
             self,
             change_named_attribute(path, &name, Some((bytes.as_slice(), mode)),)
@@ -240,25 +240,13 @@ impl BrowserCheckout {
     }
 }
 
-pub(in crate::bindings) fn browser_attribute_class(value: &str) -> Result<AttributeClass, JsValue> {
-    acyclic_fs::binding_contract::attribute_class(value).map_err(js_error)
-}
-
-pub(in crate::bindings) const fn browser_attribute_class_name(
-    value: AttributeClass,
-) -> &'static str {
-    acyclic_fs::binding_contract::attribute_class_name(value)
-}
-
 pub(in crate::bindings) fn browser_attribute_name(
     class: &str,
     name: Vec<u8>,
 ) -> Result<AttributeName, JsValue> {
-    AttributeName::new(browser_attribute_class(class)?, name).map_err(js_error)
-}
-
-pub(in crate::bindings) fn browser_attribute_write_mode(
-    value: &str,
-) -> Result<NamedAttributeWriteMode, JsValue> {
-    acyclic_fs::binding_contract::attribute_write_mode(value).map_err(js_error)
+    AttributeName::new(
+        acyclic_fs::binding_contract::attribute_class(class).map_err(js_error)?,
+        name,
+    )
+    .map_err(js_error)
 }

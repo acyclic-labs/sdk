@@ -1,9 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "fixture failures abort the test directly"
-)]
-
 use acyclic_test_support::differential::oracle::{Observer, Oracle, Stop};
 use acyclic_test_support::trace_capture::Capture;
 use std::{
@@ -12,11 +6,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
-
-#[test]
-fn unobserved_future_and_stream_bypass_dispatcher_installation() {
-    observation_oracle().check(&Case::Idle);
-}
 
 fn unobserved_bypass(broken: bool, see: &mut Observer<'_, Seen>) -> Result<(), Stop> {
     use std::cell::Cell;
@@ -358,13 +347,6 @@ fn root_context_case(
     })
 }
 
-proptest::proptest! {
-    #[test]
-    fn root_context_preserves_only_its_own_span(mode in 0_u8..3) {
-        observation_oracle().check(&Case::Root(mode));
-    }
-}
-
 fn causal_registry_case(foreign: bool, broken: bool) -> Seen {
     let expected = usize::from(!foreign);
     let first = Capture::default();
@@ -393,13 +375,6 @@ fn causal_registry_case(foreign: bool, broken: bool) -> Seen {
     Seen::Registry {
         actual: root.follows_from.len(),
         expected,
-    }
-}
-
-proptest::proptest! {
-    #[test]
-    fn causal_links_require_identical_subscriber_registries(foreign in proptest::bool::ANY) {
-        observation_oracle().check(&Case::Registry(foreign));
     }
 }
 

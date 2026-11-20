@@ -1,10 +1,32 @@
 use super::*;
 use crate::kernel::{Child, lookup_path_refs};
 
+/// One authenticated one-edge binding page, built directly like the tree and
+/// file-table pages below: the fixture needs a valid generation, not the
+/// mutation machinery that would spend a btree transaction per record.
+async fn put_binding_page(
+    store: &MemoryObjectStore,
+    parent: FileId,
+    name: &crate::kernel::types::LogicalName,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let binding = crate::kernel::bindings::Binding {
+        parent,
+        name: name.clone(),
+    };
+    let page = crate::kernel::persistent_btree::PageRef::Leaf(std::slice::from_ref(&binding));
+    let bytes = crate::kernel::bindings::encode_binding_page(
+        &page,
+        8,
+        |_| Ok::<(), crate::kernel::codec::CanonicalDecodeError>(()),
+        |_| crate::kernel::codec::CanonicalDecodeError::AllocationFailed,
+    )?;
+    crate::test_support::put_object(store, ObjectKind::BindingPage, bytes).await
+}
+
 async fn deep_directory_fixture(
     store: &MemoryObjectStore,
     depth: usize,
-) -> Result<(GenerationRoot, ObjectId), Box<dyn std::error::Error>> {
+) -> Result<(GenerationRoot, ObjectId, FileRecord), Box<dyn std::error::Error>> {
     let component = name("d")?;
     let metadata = put_file_metadata(store, FileMetadata::default()).await?;
     let empty_tree = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
@@ -32,7 +54,7 @@ async fn deep_directory_fixture(
         let bindings = if index == 0 {
             None
         } else {
-            Some(stored_bindings(store, &[(identity(index - 1)?, "d")]).await?)
+            Some(put_binding_page(store, identity(index - 1)?, &component).await?)
         };
         records.push(FileRecord {
             bindings,
@@ -43,6 +65,7 @@ async fn deep_directory_fixture(
             payload: FilePayload::Directory { entries },
         });
     }
+    let deepest_record = *records.get(depth).ok_or("missing deepest record")?;
     let mut level = Vec::new();
     for records in records.chunks(8) {
         let first = records.first().ok_or("empty file-table leaf")?.file_id;
@@ -66,7 +89,7 @@ async fn deep_directory_fixture(
         parents: Vec::new(),
         required_features: 0,
     };
-    Ok((generation, metadata))
+    Ok((generation, metadata, deepest_record))
 }
 
 #[tokio::test]
@@ -74,7 +97,7 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let depth = usize::from(u16::MAX) + 1;
-    let (generation, metadata) = deep_directory_fixture(&store, depth).await?;
+    let (generation, metadata, deepest_record) = deep_directory_fixture(&store, depth).await?;
     let component = name("d")?;
     let config = config();
     let identity = |index: usize| -> Result<FileId, Box<dyn std::error::Error>> {
@@ -84,27 +107,15 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
     let mut child = deepest.components().to_vec();
     child.push(name("child")?);
     let child = NamespacePath::new(child, config.limits)?;
-    let mut renamed = vec![component; depth - 1];
-    renamed.push(name("renamed")?);
-    let renamed = NamespacePath::new(renamed, config.limits)?;
     let cancellation = CancellationToken::new();
-    let lookup = lookup_path(
-        &store,
-        &generation,
-        &deepest,
-        config,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(lookup.resolved_components, usize_to_u64(depth));
-    assert_eq!(
-        lookup.record.map(|record| record.file_id),
-        Some(identity(depth)?)
-    );
-    // The real transaction authenticates both the existing depth-65,536
-    // directory and its absent child in one shared batch. Either count being
-    // truncated makes the corresponding rename or create fail MissingParent.
+    // The transaction authenticates the depth-65,536 directory and its absent
+    // child in one shared batch, so it resolves 65,536 and 65,537 components.
+    // The kernel accepts a base parent only when its resolved count equals the
+    // path depth exactly, so a truncated or over-counted component count fails
+    // MissingParent instead of resolving the wrong directory. One path keeps
+    // the shared batch walk to a single frontier per level; the rename and
+    // remove kinds are covered at ordinary depths by the tree-mutation suites,
+    // and they resolve through this same counter.
     let child_id = identity(depth + 1)?;
     let receipt = apply_generation_mutations(
         &store,
@@ -118,47 +129,53 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
                 path: child,
                 expected_file_id: MetadataField::Value(child_id),
             },
-            Mutation::Rename {
-                source: deepest.clone(),
-                destination: renamed.clone(),
-                replace: false,
-            },
-            Mutation::Remove {
-                path: renamed.clone(),
-                expected_file_id: MetadataField::Value(identity(depth)?),
-            },
         ],
         config,
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .await?;
-    // Both removed names are gone from the deepest surviving directory. Its
-    // record and entries are read by identity in logarithmic work: the counts
-    // above already crossed the 16-bit boundary, and a second complete walk to
-    // depth 65,535 (which equals u16::MAX, so it could not detect saturation
-    // anyway) would only repeat that work.
+    // The created child is gone again and the deepest directory still binds
+    // the one component that reaches it. Both records are read by identity in
+    // logarithmic work: the counts above already crossed the 16-bit boundary,
+    // and a second complete walk to depth 65,535 (which equals u16::MAX, so it
+    // could not detect saturation anyway) would only repeat that work.
+    let deepest_after = candidate_record(&store, &receipt.root, identity(depth)?).await?;
+    let FilePayload::Directory { entries } = deepest_after.payload else {
+        return Err("the deepest record is not a directory".into());
+    };
+    let entry = crate::kernel::lookup_tree_entry(
+        &store,
+        entries,
+        &name("child")?,
+        DecodeLimits::for_volume(config),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(entry.value, None);
     let parent = candidate_record(&store, &receipt.root, identity(depth - 1)?).await?;
     let FilePayload::Directory { entries } = parent.payload else {
         return Err("the deepest surviving record is not a directory".into());
     };
-    for removed in [name("d")?, name("renamed")?] {
-        let entry = crate::kernel::lookup_tree_entry(
-            &store,
-            entries,
-            &removed,
-            DecodeLimits::for_volume(config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        assert_eq!(entry.value, None);
-    }
+    let entry = crate::kernel::lookup_tree_entry(
+        &store,
+        entries,
+        &component,
+        DecodeLimits::for_volume(config),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(
+        entry.value.map(|entry| entry.file_id),
+        Some(identity(depth)?)
+    );
     // Check the pinned original record through its immutable file-table root,
     // without repeating the complete 65,536-component namespace walk.
     assert_eq!(
-        Some(candidate_record(&store, &generation, identity(depth)?).await?),
-        lookup.record,
+        candidate_record(&store, &generation, identity(depth)?).await?,
+        deepest_record,
     );
     Ok(())
 }
@@ -171,7 +188,7 @@ async fn a_batched_path_reads_each_object_once_like_a_single_path()
     // would read file-table pages again that the single path reads once.
     let store = MemoryObjectStore::default();
     let depth = 8_192;
-    let (generation, _) = deep_directory_fixture(&store, depth).await?;
+    let (generation, _, _) = deep_directory_fixture(&store, depth).await?;
     let config = config();
     let path = NamespacePath::new(vec![name("d")?; depth], config.limits)?;
     let cancellation = CancellationToken::new();

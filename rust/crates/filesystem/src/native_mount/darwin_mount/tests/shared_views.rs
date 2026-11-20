@@ -33,7 +33,7 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
         &second_work,
     )?;
     let target = CallbackTarget::Shared(Arc::clone(&views));
-    let address = &target as *const CallbackTarget as usize;
+    let address = target.address();
     let create = |name: &CStr, context: &DarwinMountContext| {
         let mut handle = 0;
         // SAFETY: the target, terminated name and output live through the call.
@@ -58,8 +58,8 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
         (c"/first/same", first_handle, b"first".as_slice()),
         (c"/second/same", second_handle, b"second".as_slice()),
     ] {
-        // SAFETY: the target and input bytes live through the callback.
         assert_eq!(
+            // SAFETY: the target, terminated name and input bytes live through the callback.
             unsafe {
                 acyclic_fs_darwin_mount_write(
                     address,
@@ -89,11 +89,13 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
         first_handle
     };
     assert_eq!(
+        // SAFETY: the target and terminated path are live. The provider validates the handle.
         unsafe { acyclic_fs_darwin_mount_fsync(address, c"/second/same".as_ptr(), foreign) },
         -libc::EXDEV,
         "foreign handle crossed a view boundary"
     );
     assert_eq!(
+        // SAFETY: the target and both terminated paths live through the callback.
         unsafe {
             acyclic_fs_darwin_mount_rename(
                 address,
@@ -106,18 +108,20 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
     first.retire();
     assert!(views.route(Some(c"/first/same"), 0).is_err());
     assert_eq!(
+        // SAFETY: the live target validates the retired handle without a path.
         unsafe { acyclic_fs_darwin_mount_fsync(address, ptr::null(), first_handle) },
         -libc::ESTALE
     );
     assert_eq!(
+        // SAFETY: the live target validates the second view's handle without a path.
         unsafe { acyclic_fs_darwin_mount_fsync(address, ptr::null(), second_handle) },
         0
     );
     assert_eq!(views.listed_from(1, 64).len(), 1);
     views.close();
-    // SAFETY: the retained target and handle remain allocated, but the
-    // provider's closed admission must prevent a pathless callback entering.
     assert_eq!(
+        // SAFETY: the target remains live after closing admission. It validates
+        // the handle before dispatching the pathless callback.
         unsafe { acyclic_fs_darwin_mount_fsync(address, ptr::null(), second_handle) },
         -libc::ESTALE
     );
@@ -166,9 +170,9 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
         owners.push(views.insert(number.to_string().into_bytes(), source.clone(), true, &work)?);
     }
     let target = CallbackTarget::Shared(Arc::clone(&views));
-    let address = &target as *const CallbackTarget as usize;
-    // SAFETY: the root exposes no named attributes; size probes need no buffer.
+    let address = target.address();
     assert_eq!(
+        // SAFETY: the target and terminated path are live. This size probe needs no buffer.
         unsafe {
             super::super::attribute_ops::acyclic_fs_darwin_mount_listxattr(
                 address,
@@ -180,6 +184,7 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
         0
     );
     assert_eq!(
+        // SAFETY: the target and both terminated strings are live. This size probe needs no buffer.
         unsafe {
             acyclic_fs_darwin_mount_getxattr(
                 address,
@@ -192,8 +197,8 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
         -libc::ENOATTR
     );
     let mut output: Vec<(Vec<u8>, i64)> = Vec::new();
-    // SAFETY: the typed target, output vector and filler live through the call.
     assert_eq!(
+        // SAFETY: the typed target, terminated path, output vector and filler live through the call.
         unsafe {
             super::super::directory::acyclic_fs_darwin_mount_readdir(
                 address,
@@ -212,8 +217,8 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
     );
     let after = output.last().ok_or("empty listing")?.1;
     output.clear();
-    // SAFETY: same live owner and buffer, now resumed from its last cookie.
     assert_eq!(
+        // SAFETY: the target, terminated path, output vector and filler still live through the call.
         unsafe {
             super::super::directory::acyclic_fs_darwin_mount_readdir(
                 address,
@@ -255,8 +260,30 @@ fn task_views_share_one_real_nfs_session_and_retire_independently() -> TestResul
     let physical = Arc::clone(&first_driver.unmount);
     let first_path = first_name.path().join("same");
     let second_path = second_name.path().join("same");
-    std::fs::write(&first_path, b"first")?;
-    std::fs::write(&second_path, b"second")?;
+    let directory = std::fs::metadata(first_name.path()).map_err(|error| {
+        format!(
+            "reading attached NFS view metadata {} from process {}: {error}",
+            first_name.path().display(),
+            std::process::id()
+        )
+    })?;
+    assert_ne!(
+        directory.dev(),
+        std::fs::metadata(namespace.path())?.dev(),
+        "the shared view must be on the attached NFS filesystem"
+    );
+    for (path, value) in [
+        (&first_path, b"first".as_slice()),
+        (&second_path, b"second"),
+    ] {
+        std::fs::write(path, value).map_err(|error| {
+            format!(
+                "writing attached NFS view {} from process {}: {error}",
+                path.display(),
+                std::process::id()
+            )
+        })?;
+    }
     assert_eq!(std::fs::read(&first_path)?, b"first");
     assert_eq!(std::fs::read(&second_path)?, b"second");
     assert_ne!(

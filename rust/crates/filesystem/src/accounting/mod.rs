@@ -117,7 +117,8 @@ pub struct AccountingFact {
 
 /// One contiguous page ending at a pinned authority head.
 pub struct AccountingPage {
-    pub(crate) facts: Retained<Vec<AccountingFact>>,
+    /// Proven facts borrowed from the page that retains their original funding.
+    pub facts: Retained<Vec<AccountingFact>>,
     /// Exact cursor after the last fact.
     pub next: AccountingCursor,
     /// Last sequence at the pinned read head.

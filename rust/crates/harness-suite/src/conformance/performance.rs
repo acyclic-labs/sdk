@@ -1,8 +1,9 @@
 //! On-demand AgentHost workloads shared by native, guest and hosted adapters.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{AgentHost, AgentId, Delivered};
+use acyclic_stream::ProviderOwner;
 use acyclic_stream::testing::{RequestClass, Requests};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 const DELIVERIES: usize = 64;
 
@@ -141,7 +142,7 @@ async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measuremen
     )?;
     // `storage` owns the durable domain until the final observation completes.
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::counters(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::counters(storage.open().await?));
     let host = vectors::host(backend, provider.clone())?;
     let active = host
         .create(&vectors::intent("bench-active")?, fixtures::adopted())

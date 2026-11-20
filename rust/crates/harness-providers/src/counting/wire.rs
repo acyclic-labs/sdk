@@ -1,49 +1,15 @@
 use crate::{Adapter, invalid};
 use acyclic_harness_core::Result;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-/// Declarative counting endpoint on the provider's own origin.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
-pub struct TokenCounterSpec {
-    /// Relative path; {model} expands to the selected model name.
-    pub path: String,
-    /// Input dialect understood by the count endpoint. Must match generation:
-    /// counting borrows that exact projected input rather than translating it.
-    #[cfg_attr(
-        all(target_arch = "wasm32", feature = "browser"),
-        tsify(type = "Family")
-    )]
-    pub adapter: Adapter,
-    /// Typed response field containing the nonnegative integral count.
-    pub response_field: TokenCountField,
-    /// Configured bound for input framing not included in that endpoint's count.
-    pub framing_tokens: u32,
-}
-
-/// Count response fields decoded directly as integers, without Value normalization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
-pub enum TokenCountField {
-    /// OpenAI/Anthropic input token count.
-    #[serde(rename = "input_tokens")]
-    InputTokens,
-    /// Gemini prompt token count.
-    #[serde(rename = "totalTokens")]
-    TotalTokens,
-    /// Tokenizer endpoints such as vLLM.
-    #[serde(rename = "count")]
-    Count,
-}
+pub use crate::{TokenCountField, TokenCounterSpec};
 
 pub(crate) fn endpoint(
     config: &crate::ProviderSpec,
     model: &str,
     spec: &TokenCounterSpec,
 ) -> Result<String> {
-    let mut base =
-        crate::registry::validate_url(&config.base_url, config.allow_http_host.as_deref())?;
+    let mut base = crate::spec::validate_url(&config.base_url, config.allow_http_host.as_deref())?;
     let root = format!("{}/", base.path().trim_end_matches('/'));
     base.set_path(&root);
     let mut path = spec.path.clone();

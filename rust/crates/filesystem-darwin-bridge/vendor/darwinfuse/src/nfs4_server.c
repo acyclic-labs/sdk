@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -75,7 +76,7 @@ struct darwinfuse_server {
     darwinfuse_config_t config;
     int                 listen_fd;
     /* A private (0700) directory holding the listening socket */
-    char                socket_dir[32];
+    char                socket_dir[sizeof(((struct sockaddr_un *)0)->sun_path)];
     char                socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     int                 wakeup_pipe[2]; /* self-pipe for stop signal */
     volatile int        running;
@@ -478,10 +479,26 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config)
     set_nonblocking(srv->wakeup_pipe[0]);
     set_nonblocking(srv->wakeup_pipe[1]);
 
-    /* Listen on a local socket in a directory only this user can enter.
-     * (A short /tmp path: sun_path holds barely a hundred bytes.) */
-    strlcpy(srv->socket_dir, config->acyclic_owner
-        ? "/tmp/acyclic-fs.XXXXXXXX" : "/tmp/darwinfuse.XXXXXXXX", sizeof(srv->socket_dir));
+    /* Listen in a private directory owned by the caller's temporary root. */
+    const char *temporary = getenv("TMPDIR");
+    if (temporary == NULL || *temporary == '\0') temporary = "/tmp";
+    char absolute[PATH_MAX];
+    if (*temporary != '/') {
+        temporary = realpath(temporary, absolute);
+        if (temporary == NULL) {
+            DFUSE_ERR("Resolve TMPDIR: %s", strerror(errno));
+            goto fail;
+        }
+    }
+    const char *separator = temporary[strlen(temporary) - 1] == '/' ? "" : "/";
+    const char *name = config->acyclic_owner ? "acyclic-fs" : "darwinfuse";
+    int directory_len = snprintf(srv->socket_dir, sizeof(srv->socket_dir),
+                                 "%s%s%s.XXXXXXXX", temporary, separator, name);
+    if (directory_len < 0 || (size_t)directory_len + sizeof("/nfs") > sizeof(srv->socket_path)) {
+        DFUSE_ERR("TMPDIR leaves insufficient space for the NFS socket path");
+        srv->socket_dir[0] = '\0';
+        goto fail;
+    }
     if (!mkdtemp(srv->socket_dir)) {
         DFUSE_ERR("mkdtemp: %s", strerror(errno));
         srv->socket_dir[0] = '\0';

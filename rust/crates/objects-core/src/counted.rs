@@ -1,0 +1,187 @@
+//! Request accounting over the exact public blob boundary. Native arguments
+//! and results keep their original work and custody owners.
+use crate::{
+    Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
+    RootId, Usage,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{
+    NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
+};
+use acyclic_stream_contract::OwnedBytes;
+use acyclic_stream_contract::testing::{Counted, RequestClass};
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl<P: Blobs> Blobs for Counted<P> {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.record(RequestClass::Data);
+        self.inner().availability(digest).await
+    }
+
+    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put(body, references).await
+    }
+    async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_sealed(body, references).await
+    }
+    async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_manifest(manifest).await
+    }
+    async fn put_durable(
+        &self,
+        body: crate::Sealed,
+        references: Vec<Digest>,
+    ) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_durable(body, references).await
+    }
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_manifest_durable(manifest).await
+    }
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        self.record(RequestClass::Data);
+        self.inner().put_batch_durable(requests).await
+    }
+    async fn get(
+        &self,
+        digest: Digest,
+        range: ByteRange,
+        maximum_bytes: u64,
+    ) -> Result<Object, Error> {
+        self.record(RequestClass::Data);
+        self.inner().get(digest, range, maximum_bytes).await
+    }
+    async fn head(&self, digest: Digest) -> Result<Head, Error> {
+        self.record(RequestClass::Head);
+        self.inner().head(digest).await
+    }
+    async fn delete(&self, digest: Digest) -> Result<crate::Deletion, Error> {
+        self.record(RequestClass::Data);
+        self.inner().delete(digest).await
+    }
+    async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
+        self.record(RequestClass::List);
+        self.inner().list(after, limit).await
+    }
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        self.inner().flush(only).await
+    }
+    async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
+        self.record(RequestClass::Data);
+        self.inner().retain(root, references).await
+    }
+    async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
+        self.record(RequestClass::Data);
+        self.inner().release(root).await
+    }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        self.record(RequestClass::Data);
+        self.inner().retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        self.record(RequestClass::Data);
+        self.inner().release_terminal(root, fence).await
+    }
+    async fn collect(&self) -> Result<Collection, Error> {
+        self.record(RequestClass::Data);
+        self.inner().collect().await
+    }
+    async fn usage(&self) -> Result<Usage, Error> {
+        self.record(RequestClass::Metadata);
+        self.inner().usage().await
+    }
+    async fn revisions(&self) -> Result<Option<&acyclic_stream_contract::AppliedRevisions>, Error> {
+        self.inner().revisions().await
+    }
+    async fn admitted(
+        &self,
+        minimum: acyclic_stream_contract::RevisionCut,
+    ) -> Result<acyclic_stream_contract::RevisionCut, Error> {
+        self.inner().admitted(minimum).await
+    }
+    async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
+        self.record(RequestClass::Data);
+        self.inner().put_batch(requests).await
+    }
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        self.record(RequestClass::Data);
+        self.inner().put_batch_sealed(requests).await
+    }
+    async fn get_batch(
+        &self,
+        requests: Vec<(Digest, ByteRange, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        self.record(RequestClass::Data);
+        self.inner().get_batch(requests).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: ObjectsNativeRequest<Digest>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        self.record(RequestClass::Head);
+        self.inner().contains_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_native(
+        &self,
+        request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        self.record(RequestClass::Data);
+        self.inner().get_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_batch_native(
+        &self,
+        requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        self.record(RequestClass::Data);
+        self.inner().get_batch_native(requests, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_native(
+        &self,
+        request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        self.record(RequestClass::Data);
+        self.inner().put_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_batch_native(
+        &self,
+        requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        self.record(RequestClass::Data);
+        self.inner().put_batch_native(requests, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
+        self.record(RequestClass::Data);
+        self.inner().retain_native(request, meter)
+    }
+}

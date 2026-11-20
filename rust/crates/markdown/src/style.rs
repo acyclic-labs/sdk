@@ -75,7 +75,7 @@ impl Line {
             return;
         }
         #[cfg(test)]
-        crate::work::copy(text.len());
+        acyclic_markdown_work::work::copy(text.len());
         if let Some(last) = self.spans.last_mut()
             && last.syntax.is_none()
             && last.style == style
@@ -87,7 +87,7 @@ impl Line {
         {
             acyclic_markdown_work::record!(span_copy(text.len()));
             #[cfg(test)]
-            crate::work::grow(text.len());
+            acyclic_markdown_work::work::grow(text.len());
             last.text.push_str(text);
         } else {
             self.push_new(text, style, link);
@@ -98,7 +98,7 @@ impl Line {
         if !text.is_empty() {
             acyclic_markdown_work::record!(span_copy(text.len()));
             #[cfg(test)]
-            crate::work::grow(std::mem::size_of::<Span>());
+            acyclic_markdown_work::work::grow(std::mem::size_of::<Span>());
             if self.spans.len() == self.spans.capacity() {
                 // Most display rows contain one or two spans. Keep geometric
                 // growth without Vec's four-element minimum allocation.

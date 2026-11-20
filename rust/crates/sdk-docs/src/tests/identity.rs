@@ -1,5 +1,4 @@
 use super::*;
-use proptest::prelude::*;
 
 proptest! {
     // Distinct POSIX component sequences remain distinct, including literal

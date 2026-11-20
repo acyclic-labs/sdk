@@ -140,14 +140,17 @@ fn decode<T: for<'de> Deserialize<'de> + Serialize>(
     Ok((header, packet.body))
 }
 
+/// Only Send and SetAttachment own body bytes.
+fn owns_body(command: &SocketCommand) -> bool {
+    matches!(
+        command,
+        SocketCommand::Send { .. } | SocketCommand::SetAttachment { .. }
+    )
+}
+
 /// Encode an original guest request. Only Send and SetAttachment own body bytes.
 pub fn encode_socket_request(command: &SocketCommand, body: Bytes) -> Result<Bytes, GuestError> {
-    if !body.is_empty()
-        && !matches!(
-            command,
-            SocketCommand::Send { .. } | SocketCommand::SetAttachment { .. }
-        )
-    {
+    if !body.is_empty() && !owns_body(command) {
         return Err(GuestError::Encode("socket operation has no body".into()));
     }
     encode(command, body)
@@ -171,12 +174,7 @@ pub fn dispatch_socket_request(
     bytes: &[u8],
 ) -> Result<Bytes, GuestError> {
     let (command, body) = decode::<SocketCommand>(bytes)?;
-    if !body.is_empty()
-        && !matches!(
-            command,
-            SocketCommand::Send { .. } | SocketCommand::SetAttachment { .. }
-        )
-    {
+    if !body.is_empty() && !owns_body(&command) {
         return Err(GuestError::Decode("socket operation has no body".into()));
     }
     let mut output = Bytes::new();

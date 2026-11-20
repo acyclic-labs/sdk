@@ -2072,6 +2072,13 @@ mod tests {
         view.cancel(&conversation).await?;
         assert_eq!(view.cancelling, Some(active));
         let settlement = conversation.settle("later", later, &mut events).await?;
+        let entries = conversation
+            .entries(0, conversation.settled().await?)
+            .await?;
+        let active_outcome = entries
+            .iter()
+            .find(|entry| entry.inbox == active)
+            .map(|entry| &entry.outcome);
         assert!(
             matches!(
                 &settlement,
@@ -2079,7 +2086,8 @@ mod tests {
                     acyclic_harness::agent::Reply::Answered { entry, .. }
                 ) if entry.inbox == later && entry.outcome == TurnOutcome::Completed
             ),
-            "later input did not complete independently: {settlement:?}"
+            "later input did not complete independently: {settlement:?}; active input outcome: {active_outcome:?}; model requests: {}",
+            provider.request_count()
         );
         if let acyclic_harness::local::agent_conversation::Settlement::Reply(
             acyclic_harness::agent::Reply::Answered {
@@ -2092,14 +2100,7 @@ mod tests {
                 "later answer"
             );
         }
-        let entries = conversation
-            .entries(0, conversation.settled().await?)
-            .await?;
-        assert!(
-            entries
-                .iter()
-                .any(|entry| entry.inbox == active && entry.outcome == TurnOutcome::Cancelled)
-        );
+        assert_eq!(active_outcome, Some(&TurnOutcome::Cancelled));
         assert_eq!(provider.request_count(), 2);
         assert_eq!(conversation.cancel().await?, None);
 

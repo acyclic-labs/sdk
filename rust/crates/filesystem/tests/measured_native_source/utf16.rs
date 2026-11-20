@@ -87,7 +87,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         .err()
         .ok_or("native UTF16 path/read allocation exceeded allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    failure.work.verify(limited)?;
+    failure.work?.verify(limited)?;
     let reopened = NativeDemandSource::open(
         std::borrow::Cow::Owned(std::path::Path::new(directory.path()).to_path_buf()),
         FilesystemProfile::Windows,

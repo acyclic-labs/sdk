@@ -5,7 +5,7 @@ use acyclic_harness_client::{
     AgentReply, ConnectionOptions, Delivered, IntentId, ModelContent, PreparedCommand, ReadTarget,
     Reply,
 };
-use acyclic_stream::session::Client;
+use acyclic_stream::{StreamCategory, session::Client};
 use serde::{Deserialize, Serialize};
 
 /// A disposable endpoint's model task and its independent answer oracle.
@@ -154,7 +154,8 @@ pub async fn verify_with_reply_wait(
     .await
     {
         Err(AgentExchangeError::Control(error)) if error.code() == "no_such_agent" => {}
-        Err(AgentExchangeError::Session(acyclic_stream::StreamError::AccessDenied)) => {}
+        Err(AgentExchangeError::Session(error))
+            if error.category() == StreamCategory::AccessDenied => {}
         Err(error) => return Err(exchange_failure("tree_admission", error)),
         Ok(_) => return Err(failure("tree_admission", "endpoint exposed a foreign tree")),
     }
@@ -262,6 +263,13 @@ pub async fn verify_with_reply_wait(
         .map_err(|error| failure("output", error))?;
     let output: acyclic_harness_core::executor::TurnOutput =
         serde_json::from_slice(&bytes).map_err(|error| failure("output", error))?;
+    if !entry.outcome.is_completed() {
+        return Err(Failure {
+            case: "model_turn",
+            detail: format!("committed turn settled with {:?}", entry.outcome),
+            cause: Some(Cause::Turn(entry.outcome)),
+        });
+    }
     if !output.text.contains(&scenario.expected_text) {
         return Err(failure(
             "model_turn",

@@ -269,10 +269,10 @@ fn finish(span: &mut Option<Span>, terminal: Result<u8, &'static str>) {
         match terminal {
             Ok(code) => {
                 span.record("rpc.code", code);
-                acyclic_observability::record_outcome(&span, (code != 0).then_some("status"));
+                acyclic_observability_core::record_outcome(&span, (code != 0).then_some("status"));
             }
             Err(kind) => {
-                acyclic_observability::record_outcome(&span, Some(kind));
+                acyclic_observability_core::record_outcome(&span, Some(kind));
             }
         }
     }

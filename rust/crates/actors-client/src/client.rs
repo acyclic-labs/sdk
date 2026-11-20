@@ -1,0 +1,849 @@
+//! Shared authenticated Actors client over a tonic transport.
+
+use crate::domain;
+use crate::wire;
+
+mod validation;
+pub use acyclic_auth::credential::CredentialProvider;
+use prost::Message;
+use std::future::Future;
+use tokio_util::sync::CancellationToken;
+use tonic::metadata::{Ascii, MetadataValue};
+pub(crate) use validation::{validate_operation, validate_operation_request};
+
+/// Sensitive bearer metadata applied to each generated RPC.
+#[derive(Clone)]
+pub struct BearerAuth(Option<MetadataValue<Ascii>>);
+impl BearerAuth {
+    /// Validates an opaque bearer credential and marks its metadata sensitive.
+    pub fn new(token: &str) -> Result<Self, Error> {
+        let value = acyclic_auth::credential::bearer_metadata(token)
+            .map_err(|_| Error::Configuration("invalid bearer credential".to_owned()))?;
+        Ok(Self(Some(value)))
+    }
+}
+impl tonic::service::Interceptor for BearerAuth {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        let mut request = request;
+        let authorization = request
+            .extensions_mut()
+            .remove::<Self>()
+            .unwrap_or_else(|| self.clone());
+        let authorization = authorization
+            .0
+            .ok_or_else(|| tonic::Status::unauthenticated("missing request credential"))?;
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
+        Ok(request)
+    }
+}
+
+/// Maximum encoded request or response accepted by the Actors client.
+pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Error returned by the platform Actors client.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Endpoint, credential, or caller-supplied trust configuration is invalid.
+    #[error("Actors client configuration failed: {0}")]
+    Configuration(String),
+    /// The current credential callback failed or returned an invalid credential.
+    #[error("Actors credential renewal failed")]
+    Credential(#[from] acyclic_auth::credential::CredentialError),
+    /// A selected transport could not be constructed or reached.
+    #[error("Actors transport failure: {0}")]
+    Transport(String),
+    /// The service rejected an operation and may have supplied semantic detail.
+    #[error("{message}")]
+    Service {
+        /// Numeric gRPC status code.
+        grpc_code: i32,
+        /// Original product response metadata in the shared refusal envelope.
+        refusal: Option<acyclic_auth::refusal::Refusal>,
+        /// Original gRPC status message.
+        message: String,
+        /// Exact gRPC status detail bytes, including malformed payloads.
+        raw_details: Vec<u8>,
+        /// Rust-owned semantic error detail, when present.
+        detail: Option<wire::Error>,
+    },
+    /// The wire payload could not be admitted as the typed Actors model.
+    #[error("Actors semantic contract rejected the payload: {0}")]
+    Semantic(#[from] domain::DomainError),
+    /// The caller cancelled the operation before the transport completed.
+    #[error("Actors operation cancelled")]
+    Cancelled,
+    /// The caller's original absolute budget or cancellation ended the wait.
+    #[error(transparent)]
+    Stopped(#[from] acyclic_auth::operation::Stopped),
+}
+
+/// Lossless Rust-owned diagnostic projection shared by both JavaScript bridges.
+#[derive(Clone, Debug, Default, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", optional_fields = nullable)]
+pub struct ErrorMetadata {
+    /// Stable SDK error category.
+    pub code: String,
+    /// Original status message or canonical admission diagnostic.
+    pub message: String,
+    /// Numeric gRPC status reported by the maintained transport.
+    pub grpc_code: Option<i32>,
+    /// Canonical gRPC category.
+    pub grpc_name: Option<String>,
+    /// Authenticated remote credential rejection, distinct from local freshness
+    /// refusal. Only this verdict can invalidate an exact request lease.
+    pub credential_rejected: bool,
+    /// Decoded int32 service code, including future values unknown to this SDK version.
+    pub service_code: Option<i32>,
+    /// Decoded service diagnostic, separate from the gRPC status message.
+    pub service_message: Option<String>,
+    /// Original producer attribution, independent of the service code or message.
+    pub cause: Option<acyclic_auth::refusal::Cause>,
+    /// Original status and product metadata, including duplicate and opaque values.
+    pub refusal: Option<acyclic_auth::refusal::Parts>,
+    /// Canonical admission category, when applicable.
+    pub contract_code: Option<String>,
+    /// Exact detail bytes for service failures, including empty details.
+    #[serde(with = "serde_bytes")]
+    #[ts(optional, type = "Uint8Array | null")]
+    pub raw_details: Option<Vec<u8>>,
+}
+
+impl Error {
+    /// Project diagnostics without discarding transport or service information.
+    #[must_use]
+    pub fn metadata(self) -> ErrorMetadata {
+        let code = self.code_name().to_owned();
+        let mut metadata = ErrorMetadata {
+            code: code.clone(),
+            ..ErrorMetadata::default()
+        };
+        match self {
+            Self::Configuration(message) | Self::Transport(message) => {
+                metadata.message = message;
+            }
+            Self::Service {
+                grpc_code,
+                refusal,
+                detail,
+                raw_details,
+                message,
+            } => {
+                metadata.cause = refusal
+                    .as_ref()
+                    .and_then(|refusal| refusal.cause())
+                    .cloned();
+                metadata.refusal = refusal.and_then(|refusal| refusal.original().cloned());
+                metadata.message = message;
+                metadata.grpc_code = Some(grpc_code);
+                metadata.grpc_name = Some(code);
+                metadata.credential_rejected = grpc_code == 16;
+                if let Some(detail) = detail {
+                    metadata.service_code = Some(detail.code);
+                    metadata.service_message = Some(detail.message);
+                    metadata.cause = acyclic_auth::refusal::Cause::reported(
+                        detail.component,
+                        detail.reason,
+                        detail.request_id,
+                    )
+                    .or(metadata.cause);
+                }
+                metadata.raw_details = Some(raw_details);
+            }
+            Self::Credential(_) => {
+                metadata.message = "Actors credential renewal failed".into();
+                metadata.grpc_code = Some(16);
+                metadata.grpc_name = Some(code);
+            }
+            Self::Cancelled => {
+                metadata.message = String::from("Actors operation cancelled");
+                metadata.grpc_code = Some(1);
+                metadata.grpc_name = Some(code);
+            }
+            Self::Stopped(reason) => {
+                metadata.message = reason.to_string();
+                metadata.grpc_code = Some(match reason {
+                    acyclic_auth::operation::Stopped::Deadline => 4,
+                    acyclic_auth::operation::Stopped::Cancelled => 1,
+                });
+                metadata.grpc_name = Some(code);
+            }
+            Self::Semantic(domain::DomainError::Contract(error)) => {
+                metadata.message = error.to_string();
+                metadata.contract_code = Some(code);
+            }
+            Self::Semantic(error) => metadata.message = error.to_string(),
+        }
+        metadata
+    }
+
+    /// Returns the stable cross-platform error code exposed by SDK bridges.
+    #[must_use]
+    pub const fn code_name(&self) -> &'static str {
+        match self {
+            Self::Configuration(_) => "invalid_argument",
+            Self::Transport(_) => "unavailable",
+            Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
+            Self::Semantic(error) => error.code_name(),
+            Self::Cancelled | Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => {
+                "cancelled"
+            }
+            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_exceeded",
+            Self::Credential(_) => "unauthenticated",
+        }
+    }
+
+    /// Maps a gRPC status number to the canonical SDK error code.
+    #[must_use]
+    const fn grpc_code_name(code: i32) -> &'static str {
+        match code {
+            0 => "ok",
+            1 => "cancelled",
+            3 => "invalid_argument",
+            4 => "deadline_exceeded",
+            5 => "not_found",
+            6 => "already_exists",
+            7 => "permission_denied",
+            8 => "resource_exhausted",
+            9 => "failed_precondition",
+            10 => "aborted",
+            11 => "out_of_range",
+            12 => "unimplemented",
+            13 => "internal",
+            14 => "unavailable",
+            15 => "data_loss",
+            16 => "unauthenticated",
+            _ => "unknown",
+        }
+    }
+}
+
+impl From<std::convert::Infallible> for Error {
+    fn from(value: std::convert::Infallible) -> Self {
+        match value {}
+    }
+}
+
+impl From<tonic::Status> for Error {
+    fn from(status: tonic::Status) -> Self {
+        Self::Service {
+            grpc_code: status.code() as i32,
+            refusal: acyclic_auth::refusal::Refusal::capture(
+                status.code() as i32,
+                status.message(),
+                status.details(),
+                status.metadata().as_ref(),
+                acyclic_auth::refusal::Canonical {
+                    code: status.code() as i32,
+                    message: status.message(),
+                    details: status.details(),
+                    owned: &[],
+                    cause_is_embedded: true,
+                },
+                None,
+            ),
+            message: status.message().to_owned(),
+            raw_details: status.details().to_vec(),
+            detail: if status.details().is_empty() {
+                None
+            } else {
+                wire::Error::decode(status.details()).ok()
+            },
+        }
+    }
+}
+
+async fn request_error(
+    status: tonic::Status,
+    lease: Option<&acyclic_auth::credential::ResolvedCredential>,
+) -> Error {
+    if std::error::Error::source(&status)
+        .is_some_and(|source| source.is::<acyclic_auth::credential::CredentialError>())
+    {
+        return Error::Credential(acyclic_auth::credential::CredentialError::Provider(
+            Box::new(status),
+        ));
+    }
+    if status.code() == tonic::Code::Unauthenticated
+        && let Some(lease) = lease
+        && let Err(error) = lease.reject().await
+    {
+        return Error::Credential(error);
+    }
+    status.into()
+}
+
+/// Connected Actors client whose operation methods are shared by all targets.
+pub struct Client {
+    credential: Option<CredentialProvider>,
+    context: Option<acyclic_auth::operation::Context>,
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: crate::grpc::Client,
+    #[cfg(target_arch = "wasm32")]
+    inner: wire::actors_service_client::ActorsServiceClient<
+        tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, BearerAuth>,
+    >,
+}
+
+impl Client {
+    /// Bind all operation stages to the caller's original absolute budget.
+    /// Reusing this client retains that same budget; no stage starts a timer.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    /// Adopt an authenticated member/SVID channel without opening a connection.
+    /// The caller owns peer verification and mutual TLS. Each request still
+    /// resolves and retains its own credential lease through reply admission.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_channel(
+        channel: tonic::transport::Channel,
+        credential: CredentialProvider,
+    ) -> Self {
+        Self {
+            inner: crate::grpc::over(channel, BearerAuth(None)),
+            credential: Some(credential),
+            context: None,
+        }
+    }
+
+    async fn stage<T>(&self, work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+        let mut work = std::pin::pin!(work);
+        match &self.context {
+            Some(context) => context.run(work.as_mut()).await?,
+            None => work.await,
+        }
+    }
+
+    async fn dispatch<T, U, V, R>(
+        &self,
+        body: T,
+        authorization: Option<BearerAuth>,
+        send: impl FnOnce(tonic::Request<T>) -> R,
+        admit: impl FnOnce(U) -> Result<V, Error>,
+    ) -> Result<V, Error>
+    where
+        R: Future<Output = Result<tonic::Response<U>, tonic::Status>>,
+    {
+        let (request, lease) = self.request(body, authorization).await?;
+        let response = self
+            .stage(async {
+                match send(request).await {
+                    Ok(response) => Ok(response.into_inner()),
+                    Err(status) => Err(request_error(status, lease.as_ref()).await),
+                }
+            })
+            .await?;
+        self.stage(async {
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            let result = admit(response)?;
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            Ok(result)
+        })
+        .await
+    }
+
+    /// Resolve a current request credential without changing the shared transport.
+    pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
+        self.credential = Some(credential);
+        self
+    }
+
+    async fn request<T>(
+        &self,
+        body: T,
+        authorization: Option<BearerAuth>,
+    ) -> Result<
+        (
+            tonic::Request<T>,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
+        let mut lease = None;
+        let authorization = if authorization.is_some() {
+            authorization
+        } else if let Some(provider) = &self.credential {
+            let token = provider.resolve().await?;
+            token.check().await?;
+            let authorization = Some(BearerAuth::new(&token)?);
+            lease = Some(token);
+            authorization
+        } else {
+            None
+        };
+        let mut request = tonic::Request::new(body);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(lease) = &lease {
+            request.extensions_mut().insert(lease.clone());
+        }
+        if let Some(authorization) = authorization {
+            request.extensions_mut().insert(authorization);
+        }
+        Ok((request, lease))
+    }
+
+    /// Returns `grpc` for native transport and `grpc-web` for browser transport.
+    #[must_use]
+    pub const fn transport(&self) -> &'static str {
+        if cfg!(target_arch = "wasm32") {
+            "grpc-web"
+        } else {
+            "grpc"
+        }
+    }
+}
+
+/// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
+pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<Client, Error> {
+    connect_authorized(endpoint, BearerAuth::new(token)?, ca).await
+}
+
+/// Connect with no static bearer; each operation must resolve its callback first.
+pub async fn connect_with_credential(
+    endpoint: &str,
+    credential: CredentialProvider,
+    ca: Option<&[u8]>,
+) -> Result<Client, Error> {
+    Ok(connect_authorized(endpoint, BearerAuth(None), ca)
+        .await?
+        .with_credential_provider(credential))
+}
+
+async fn connect_authorized(
+    endpoint: &str,
+    authorization: BearerAuth,
+    ca: Option<&[u8]>,
+) -> Result<Client, Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let inner = crate::grpc::connect_authorized(endpoint, authorization, ca)
+            .await
+            .map_err(|error| match error {
+                crate::grpc::ConnectError::InsecureEndpoint => {
+                    Error::Configuration("Actors endpoints must use https".into())
+                }
+                crate::grpc::ConnectError::InvalidCredential => {
+                    Error::Configuration("invalid Actors bearer credential".into())
+                }
+                crate::grpc::ConnectError::InvalidCaCertificate => {
+                    Error::Configuration("invalid Actors private CA certificate".into())
+                }
+                crate::grpc::ConnectError::PlatformVerifier(error) => {
+                    Error::Transport(error.to_string())
+                }
+                crate::grpc::ConnectError::Transport(error) => {
+                    Error::Transport(format!("{error:?}"))
+                }
+            })?;
+        Ok(Client {
+            inner,
+            credential: None,
+            context: None,
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if ca.is_some() {
+            return Err(Error::Configuration(
+                "caller-provided CA certificates are unsupported in browser builds".into(),
+            ));
+        }
+        let endpoint = url::Url::parse(endpoint).map_err(|_| {
+            Error::Configuration(
+                "Actors endpoint must be a valid HTTPS URL; HTTP is limited to loopback tests"
+                    .into(),
+            )
+        })?;
+        let host = endpoint.host_str().ok_or_else(|| {
+            Error::Configuration(
+                "Actors endpoint must include a host; HTTP is limited to loopback tests".into(),
+            )
+        })?;
+        let loopback = host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+        let valid_scheme = match endpoint.scheme() {
+            "https" => true,
+            "http" => loopback,
+            _ => false,
+        };
+        if !valid_scheme
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(Error::Configuration(
+                "Actors endpoint must use HTTPS; HTTP is limited to loopback tests and userinfo, query, and fragment are forbidden".into(),
+            ));
+        }
+        let transport = tonic_web_wasm_client::Client::new_with_options(
+            endpoint.as_str().trim_end_matches('/').to_owned(),
+            tonic_web_wasm_client::options::FetchOptions::new()
+                .redirect(tonic_web_wasm_client::options::Redirect::Error)
+                .response_limits(tonic_web_wasm_client::limits::UnaryResponseLimits::new(
+                    MAX_MESSAGE_BYTES,
+                )),
+        );
+        let inner = wire::actors_service_client::ActorsServiceClient::with_interceptor(
+            transport,
+            authorization,
+        )
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        Ok(Client {
+            inner,
+            credential: None,
+            context: None,
+        })
+    }
+}
+
+/// Runs an Actors operation until it completes or its monotonic cancellation token is cancelled.
+pub async fn run_with_cancellation<T, Operation>(
+    operation: Operation,
+    cancellation: Option<CancellationToken>,
+) -> Result<T, Error>
+where
+    Operation: Future<Output = Result<T, Error>>,
+{
+    let Some(cancellation) = cancellation else {
+        return operation.await;
+    };
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(Error::Cancelled),
+        result = operation => result,
+    }
+}
+
+macro_rules! client_operations {
+    ($(($name:literal, $method:ident, $index:literal, $input:ident, $output:ident)),* $(,)?) => {
+        impl Client {
+            /// Methods emitted with this client's canonical operation table.
+            pub const RPC_METHODS: &[&str] = &[$(stringify!($method)),*];
+            $(
+            #[doc = concat!("Consumes the admitted request for the semantic ", $name, " operation.")]
+            pub async fn $method(&self, request: domain::$input) -> Result<domain::$output, Error> {
+                self.stage(async {
+                    let input = wire::$input::from(request);
+                    validate_operation_request!($input, $name, &input)?;
+                    self.dispatch(input, None, |input| async move {
+                        self.inner.clone().$method(input).await
+                    }, |response| Ok(response.try_into()?)).await
+                }).await
+            }
+            )*
+
+            /// Dispatches bounded protobuf bytes through the semantic client.
+            pub async fn call(&self, method: &str, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+                self.call_with_authorization(method, bytes, None).await
+            }
+
+            /// Dispatches one request with a fresh credential without changing connection state.
+            pub async fn call_with_credential(&self, method: &str, bytes: &[u8], token: &str) -> Result<Vec<u8>, Error> {
+                self.call_with_authorization(method, bytes, Some(token)).await
+            }
+
+            async fn call_with_authorization(&self, method: &str, bytes: &[u8], token: Option<&str>) -> Result<Vec<u8>, Error> {
+                self.stage(async {
+                let authorization = token.map(BearerAuth::new).transpose()?;
+                if bytes.len() > MAX_MESSAGE_BYTES {
+                    return Err(Error::Configuration("request exceeds message ceiling".into()));
+                }
+                match method {
+                    $( $name => {
+                        let input = wire::$input::decode(bytes)
+                            .map_err(|error| Error::Configuration(error.to_string()))?;
+                        let input = domain::$input::try_from(input)
+                            .map_err(|error| Error::Configuration(error.to_string()))?;
+                        let input = wire::$input::from(input);
+                        validate_operation_request!($input, $name, &input)?;
+                        self.dispatch(input, authorization, |input| async move {
+                            self.inner.clone().$method(input).await
+                        }, |response| {
+                            let output = domain::$output::try_from(response)?;
+                            Ok(wire::$output::from(output).encode_to_vec())
+                        }).await
+                    }, )*
+                    _ => Err(Error::Configuration("unknown Actors service method".into())),
+                }
+                }).await
+            }
+        }
+    };
+}
+acyclic_actors_inventory::native_operations!(client_operations);
+
+#[cfg(all(test, not(runtime_tests)))]
+mod tests {
+    use super::*;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    struct MustNotPoll {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Future for MustNotPoll {
+        type Output = Result<(), Error>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_operation_is_never_polled() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let polls = Arc::new(AtomicUsize::new(0));
+
+        let result = run_with_cancellation(
+            MustNotPoll {
+                polls: Arc::clone(&polls),
+            },
+            Some(cancellation),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    struct CancelOnPoll {
+        cancellation: CancellationToken,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Future for CancelOnPoll {
+        type Output = Result<(), Error>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            self.cancellation.cancel();
+            Poll::Pending
+        }
+    }
+
+    impl Drop for CancelOnPoll {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_a_pending_operation() {
+        let cancellation = CancellationToken::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+
+        let result = run_with_cancellation(
+            CancelOnPoll {
+                cancellation: cancellation.clone(),
+                dropped: Arc::clone(&dropped),
+            },
+            Some(cancellation),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn service_metadata_preserves_status_message_and_lossless_detail_bytes() {
+        use tonic::Code::{PermissionDenied, Unknown};
+
+        let encoded = |code, message: &str| {
+            let detail = wire::Error {
+                code,
+                message: message.to_owned(),
+                ..Default::default()
+            };
+            (detail.encode_to_vec(), Some(detail))
+        };
+        for (status_code, name, (bytes, detail)) in [
+            (
+                PermissionDenied,
+                "permission_denied",
+                encoded(0, "detail-0"),
+            ),
+            (Unknown, "unknown", encoded(99, "detail-99")),
+            (
+                PermissionDenied,
+                "permission_denied",
+                encoded(99, "future service detail"),
+            ),
+            (PermissionDenied, "permission_denied", (Vec::new(), None)),
+            (PermissionDenied, "permission_denied", (vec![255, 0], None)),
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.append(
+                "acyclic-unserved-reason",
+                http::HeaderValue::from_static("future_reason"),
+            );
+            headers.append(
+                "acyclic-unserved-reason",
+                http::HeaderValue::from_bytes(b"future\xff").unwrap(),
+            );
+            headers.append(
+                "acyclic-unserved-reason",
+                http::HeaderValue::from_static(""),
+            );
+            headers.append("acyclic-future-bin", http::HeaderValue::from_static("AP8="));
+            let product_headers = headers.clone();
+            headers.insert(
+                "x-unrelated",
+                http::HeaderValue::from_static("not a product diagnostic"),
+            );
+            let status = tonic::Status::with_details_and_metadata(
+                status_code,
+                "original grpc diagnostic",
+                bytes.clone().into(),
+                tonic::metadata::MetadataMap::from_headers(headers),
+            );
+            let error = Error::from(status);
+            let Error::Service {
+                grpc_code,
+                detail: actual,
+                message,
+                raw_details,
+                ..
+            } = &error
+            else {
+                panic!("expected structured service error, got {error:?}");
+            };
+            assert_eq!(message, "original grpc diagnostic");
+            assert_eq!(raw_details, &bytes);
+            assert_eq!(*grpc_code, status_code as i32);
+            assert_eq!(actual, &detail);
+            let metadata = error.metadata();
+            let refusal = metadata
+                .refusal
+                .as_ref()
+                .expect("original product metadata");
+            assert_eq!(refusal.code, status_code as i32);
+            assert_eq!(refusal.message, "original grpc diagnostic");
+            assert_eq!(refusal.details.as_ref(), bytes);
+            assert_eq!(refusal.metadata, product_headers);
+            let foreign = serde_json::to_value(&metadata).expect("foreign diagnostic projection");
+            assert_eq!(foreign["refusal"]["status"], status_code as i32);
+            assert_eq!(foreign["refusal"]["details"], serde_json::json!(bytes));
+            let entries = foreign["refusal"]["metadata"].as_array().unwrap();
+            let retained = entries
+                .iter()
+                .filter(|entry| entry[0] == "acyclic-unserved-reason")
+                .map(|entry| entry[1].clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                retained,
+                [
+                    serde_json::json!(b"future_reason"),
+                    serde_json::json!(b"future\xff"),
+                    serde_json::json!([])
+                ]
+            );
+            assert_eq!(metadata.code, name);
+            assert_eq!(metadata.message, "original grpc diagnostic");
+            assert_eq!(metadata.grpc_name.as_deref(), Some(name));
+            assert_eq!(metadata.grpc_code, Some(status_code as i32));
+            assert_eq!(metadata.raw_details, Some(bytes));
+            assert_eq!(
+                metadata.service_code,
+                detail.as_ref().map(|value| value.code)
+            );
+            assert_eq!(metadata.service_message, detail.map(|value| value.message));
+        }
+    }
+
+    #[test]
+    fn foreign_metadata_retains_header_attribution_without_original_status_parts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_auth::refusal::{Canonical, Cause, Refusal};
+        let header_cause = Cause::new("actor.owner", "unavailable");
+        let body_cause = Cause::new("actor.delivery", "interrupted");
+        let parts = Refusal::encode(
+            Some(&Refusal::caused(header_cause.clone())),
+            Canonical {
+                code: 14,
+                message: "owner unavailable",
+                details: &[],
+                owned: &[],
+                cause_is_embedded: false,
+            },
+        )?;
+        for body in 0..3 {
+            let details = match body {
+                0 => Vec::new(),
+                _ => wire::Error {
+                    code: wire::ErrorCode::DependencyUnavailable as i32,
+                    message: "delivery unavailable".into(),
+                    component: if body == 2 {
+                        body_cause.component.clone()
+                    } else {
+                        String::new()
+                    },
+                    reason: if body == 2 {
+                        body_cause.reason.clone()
+                    } else {
+                        String::new()
+                    },
+                    request_id: if body == 2 {
+                        body_cause.request_id.clone()
+                    } else {
+                        String::new()
+                    },
+                }
+                .encode_to_vec(),
+            };
+            let status = tonic::Status::with_details_and_metadata(
+                tonic::Code::Unavailable,
+                &parts.message,
+                details.into(),
+                tonic::metadata::MetadataMap::from_headers(parts.metadata.clone()),
+            );
+            let error = Error::from(status);
+            let metadata = error.metadata();
+            assert!(
+                metadata.refusal.is_none(),
+                "canonical status parts must not hide the regression"
+            );
+            let expected = if body == 2 {
+                &body_cause
+            } else {
+                &header_cause
+            };
+            assert_eq!(metadata.cause.as_ref(), Some(expected));
+            assert_eq!(
+                serde_json::to_value(metadata).unwrap()["cause"],
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(runtime_tests)))]
+#[cfg(not(target_arch = "wasm32"))]
+mod request_path_tests;
+
+#[cfg(all(test, not(runtime_tests)))]
+#[cfg(not(target_arch = "wasm32"))]
+mod credential_tests;

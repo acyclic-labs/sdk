@@ -709,10 +709,11 @@ async fn duplicate_close_persists_expiry_of_the_remaining_lease() {
 mod streams;
 
 #[tokio::test]
-async fn lease_admission_waits_through_contention_without_a_retry_ceiling() {
+async fn competing_lease_admissions_surface_contention_and_publish_one_lease()
+-> Result<(), Box<dyn std::error::Error>> {
     struct ContendedStore {
         inner: MemoryOperationWindowStore,
-        remaining: AtomicU64,
+        ready: tokio::sync::Barrier,
     }
     impl OperationWindowStore for ContendedStore {
         type Error = MemoryOperationWindowStoreError;
@@ -730,32 +731,36 @@ async fn lease_admission_waits_through_contention_without_a_retry_ceiling() {
             expected: u64,
             replacement: OperationWindowSnapshot,
         ) -> Result<bool, Self::Error> {
-            if self
-                .remaining
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
-                return Ok(false);
-            }
+            self.ready.wait().await;
             self.inner.compare_and_swap(id, expected, replacement).await
         }
     }
     let coordinator = OperationWindowCoordinator::new(ContendedStore {
         inner: MemoryOperationWindowStore::new(),
-        remaining: AtomicU64::new(100),
+        ready: tokio::sync::Barrier::new(2),
     });
     let id = WorkspaceId::from_bytes([97; 16]);
-    let lease = coordinator
-        .begin(id, generation(3), "contended", 1, 1000)
-        .await
-        .expect("eventually admitted");
+    let (a, b) = tokio::join!(
+        coordinator.begin(id, generation(3), "first", 1, 1000),
+        coordinator.begin(id, generation(4), "second", 1, 1000),
+    );
+    let ((Ok(lease), Err(OperationWindowError::Contended))
+    | (Err(OperationWindowError::Contended), Ok(lease))) = (a, b)
+    else {
+        return Err("one admission must win and one must report contention".into());
+    };
     assert_eq!(lease.workspace_id, id);
-    assert_eq!(coordinator.store().remaining.load(Ordering::SeqCst), 0);
-    let snapshot = coordinator.snapshot(id).await.expect("published lease");
-    let OperationWindowPhase::Active { leases, .. } = snapshot.phase else {
+    let snapshot = coordinator.snapshot(id).await?;
+    let OperationWindowPhase::Active {
+        leases,
+        pinned_parent,
+        ..
+    } = snapshot.phase
+    else {
         panic!("active lease");
     };
+    assert_eq!(pinned_parent, lease.pinned_parent);
+    assert_eq!(leases.len(), 1);
     assert!(leases.contains_key(&lease.lease_id));
+    Ok(())
 }

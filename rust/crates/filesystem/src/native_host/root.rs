@@ -128,6 +128,19 @@ impl HostRoot {
         let (directory, identity) = open_root_directory(path, work)?;
         Ok(Self::from_parts(directory, identity))
     }
+
+    /// Holds an ambient parent through aliases. Callers must open or verify
+    /// the actual destination leaf relative to this capability.
+    pub(crate) fn open_ambient_parent<W: NativeHostWork>(
+        path: &Path,
+        work: &mut W,
+    ) -> Result<Self, W::Error> {
+        let directory =
+            open_root_directory_handle(path, DirectoryAccess::Read, DirectoryLinks::Follow, work)?;
+        let identity = directory_identity(&directory, work)?;
+        Ok(Self::from_parts(directory, identity))
+    }
+
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
     }
@@ -153,7 +166,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<crate::NativeRootIncarnation, DemandError> {
         #[cfg(test)]
-        #[cfg(all(target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         if stat_probe::duplicate() {
             directory_identity(&self.directory(), work)?;
         }
@@ -313,7 +326,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<HostStat, DemandError> {
         #[cfg(test)]
-        #[cfg(all(windows))]
+        #[cfg(windows)]
         if stat_probe::old() {
             return self.stat_source(path, work);
         }
@@ -357,12 +370,12 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<HostStat, W::Error> {
         #[cfg(test)]
-        #[cfg(all(any(target_os = "linux", windows)))]
+        #[cfg(any(target_os = "linux", windows))]
         if stat_probe::duplicate() {
             self.stat_file(file, work)?;
         }
         #[cfg(test)]
-        #[cfg(all(windows))]
+        #[cfg(windows)]
         if stat_probe::old() {
             return self.stat_file(file, work);
         }

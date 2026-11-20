@@ -11,9 +11,6 @@ use super::{Reader, RecordBytes, Want};
 use acyclic_stream::StreamPath;
 use std::num::NonZeroU32;
 
-#[cfg(test)]
-mod tests;
-
 /// Request-span files over this same original reader and shared projection.
 pub mod trace;
 

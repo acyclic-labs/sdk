@@ -64,7 +64,7 @@ pub fn work_counters_json(work: &WorkCounters) -> Result<String, serde_json::Err
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

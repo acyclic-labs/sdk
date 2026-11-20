@@ -65,10 +65,8 @@ async fn a_dead_provider_is_preserved_under_held_recovery_custody()
         .env(READY, name.to_string());
     let mut child = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
     // SAFETY: the owned event remains live through the bounded readiness wait.
-    assert_eq!(
-        unsafe { WaitForSingleObject(HANDLE(ready.as_raw_handle()), 3_000) },
-        WAIT_OBJECT_0
-    );
+    let ready_result = unsafe { WaitForSingleObject(HANDLE(ready.as_raw_handle()), 3_000) };
+    assert_eq!(ready_result, WAIT_OBJECT_0);
     let volume = crate::VolumeId::from_bytes(
         std::fs::read(root.path().join("volume"))?
             .try_into()

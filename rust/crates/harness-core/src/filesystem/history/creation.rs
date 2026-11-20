@@ -4,7 +4,9 @@ use crate::agent::InboxRecord;
 #[cfg(test)]
 mod tests;
 
-pub(in crate::filesystem) async fn capture_creation<P, O>(
+/// Publishes the creation cut that adopts a new agent into the canonical
+/// history stream.
+pub async fn capture_creation<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     agent: &AgentPath,
     prepared: impl Iterator<

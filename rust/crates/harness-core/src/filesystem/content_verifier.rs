@@ -569,6 +569,9 @@ where
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("generation-bound range", range.offset, range.length));
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let owned = PreparationScope::new(io)?;
+            let original = io;
+            let io = owned.io();
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -615,11 +618,15 @@ where
                 quota.transfer();
                 Ok::<_, Error>(selected)
             })?;
-            let hold = io
-                .map(|io| io.guard_owned(selection.logical_owned_bytes()?))
-                .transpose()?;
             drop(grant);
             drop(grant_hold);
+            let hold = if let Some(original) = original {
+                let bytes = selection.logical_owned_bytes()?;
+                owned.finish(bytes)?;
+                Some(original.guard_owned(bytes)?)
+            } else {
+                None
+            };
             Ok((selection, bytes, hold))
         })
     }
@@ -862,91 +869,6 @@ where
             });
         }
         Ok(())
-    }
-
-    /// Lists under both the signed provider subtree and the current dispatch owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exact owner, subtree and immutable pagination"
-    )]
-    pub fn list_private_directory_with_native_work<'a>(
-        &'a self,
-        context: &'a crate::runtime::ToolContext,
-        volume: &'a VolumeRef,
-        granted_prefix: &'a str,
-        path: &'a str,
-        expected_generation: Option<&'a GenerationRef>,
-        after: Option<&'a [u8]>,
-        maximum_entries: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (PrivateDirectoryPage, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
-        self.supports_native_directory_list(volume, work)?;
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let mut observer = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            let grant = ContentGrant::verify_directory_read(
-                self.authority.verifier(),
-                self.authority.scope(),
-                volume,
-                granted_prefix,
-                &mut Some(&mut observer),
-            )?;
-            let grant_custody = observer.into_custody()?;
-            if context
-                .effective_scope()
-                .limits()
-                .path_bytes
-                .is_some_and(|maximum| path.len() > maximum.get())
-                || (after.is_some() && expected_generation.is_none())
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "directory cursor or path exceeds its issued task boundary",
-                });
-            }
-            let result = self
-                .host
-                .list_private_directory_guarded_with_native_work(
-                    host::DirectoryListing {
-                        volume,
-                        grant: &grant,
-                        path,
-                        generation: expected_generation,
-                        after,
-                        maximum_entries,
-                        ceiling: Some(context.effective_scope().grants()),
-                    },
-                    work,
-                    || async {
-                        self.supports_native_directory_list(volume, work)?;
-                        let io = PreparationIo::from_native_work(work)?;
-                        if !crate::core::directory_read_granted_with_work(
-                            context.effective_scope().grants(),
-                            volume,
-                            granted_prefix,
-                            &mut Some(&mut io.history_io()),
-                        )? {
-                            return Err(Error::NativeBoundary {
-                                code: crate::wire::ErrorCode::Unauthorized,
-                                reason: "issued task scope does not retain this directory read",
-                            });
-                        }
-                        Ok(())
-                    },
-                )
-                .await;
-            drop(grant);
-            drop(grant_custody);
-            result
-        })
     }
 }
 

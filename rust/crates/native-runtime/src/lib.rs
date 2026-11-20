@@ -14,16 +14,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, LazyLock, Weak};
 use std::task::{Context, Poll, Waker};
-// Source-root identity is a compiler input: a shared target must not reuse
-// native owner metadata from another checkout. This has no runtime storage.
-const _: Option<&str> = option_env!("ACYCLIC_BUILD_SOURCE_ROOT");
-
 mod delivery;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 mod host_index;
-mod sync;
-pub use sync::{Condvar as InlineCondvar, Mutex as InlineMutex, MutexGuard as InlineMutexGuard};
-use sync::{Mutex, Mutex as CompletionMutex};
+use acyclic_native_file::sync;
+pub use acyclic_native_file::sync::{
+    Condvar as InlineCondvar, Mutex as InlineMutex, MutexGuard as InlineMutexGuard,
+};
+use acyclic_native_file::sync::{Mutex, Mutex as CompletionMutex};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -92,16 +90,22 @@ pub use process_tree::{
 };
 
 mod file;
-mod io_progress;
+use acyclic_native_file::io_progress;
 /// Kernel-authenticated identities for owner-confined local connections.
 #[cfg(any(unix, windows))]
 pub mod ipc;
 #[cfg(all(target_os = "linux", not(any(test, feature = "test-support"))))]
-mod kernel_keyring;
+use acyclic_native_file::kernel_keyring;
 pub mod owner_record;
 pub mod private_file;
+
+/// The standard Linux FUSE helpers, in preference order.
+#[cfg(target_os = "linux")]
+pub use linux::FUSE_MOUNT_HELPERS;
 /// Injected, native or private-file custody for store-owned authority signing seeds.
 pub mod signing_key;
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub use file::file_identity_from_metadata;
 #[cfg(unix)]
 pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -113,15 +117,13 @@ pub use file::{
     write_file, write_file_all, write_file_with,
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-pub(crate) use file::{FileIdentity, file_identity};
+pub use file::{FileIdentity, file_identity};
 #[cfg(windows)]
 pub use file::{NativeControlCompletion, device_control_in_place};
 pub(crate) use file::{
     is_uncertain_io_error, validate_prepared_read_range, validate_write_batch, with_file_admission,
     with_file_scope, write_bounded_in_place,
 };
-mod claim;
-pub use claim::{ClaimCheck, StoreClaim, StoreClaimRelease, StoreHandle};
 mod descriptor;
 pub use descriptor::{
     ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
@@ -133,11 +135,10 @@ pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;
 pub use file_lock::{FileLock, FileLockMode};
 mod recovery;
+pub use acyclic_native_file::directory::remove_child_directory;
 pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
-mod directory;
-pub use directory::remove_child_directory;
 mod namespace;
-pub use namespace::{RenameMode, durable_rename, publish_new};
+pub use namespace::{RenameMode, durable_rename, open_read_encoded, publish_new};
 #[cfg(windows)]
 mod executable;
 /// Host-authorized native execution capabilities and their OS enforcement.
@@ -153,7 +154,7 @@ mod meter;
 pub use meter::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
     NativeOperationReservation, NativeReadMeter, ReadAllocation, ReadAllocationReservation,
-    arc_allocation_bytes,
+    arc_allocation_bytes, read_operation,
 };
 mod wake;
 pub use wake::NativeWake;
@@ -168,6 +169,9 @@ mod task;
 pub use blocking_future::blocking_future;
 #[cfg(feature = "test-support")]
 pub mod testing;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_fixtures;
 pub use blocking::{InlineBlocking, run_blocking_io, wait_native_future};
 pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
@@ -175,16 +179,9 @@ pub(crate) use blocking::{
 };
 pub use task::{
     AbortHandle, OwnedFuture, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
-    persistence_syscall, retain_future, spawn, spawn_blocking, spawn_eager, spawn_owned,
-    spawn_persistence, try_spawn,
+    coordination_runtime, persistence_syscall, retain_future, spawn, spawn_blocking, spawn_eager,
+    spawn_owned, spawn_persistence, try_spawn,
 };
-
-/// Creates the coordination executor after admitting the process's descriptor allowance.
-/// Native worker startup uses the same process-wide allowance initialization.
-pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
-    raise_descriptor_limit();
-    task::coordination_runtime()
-}
 
 mod completion;
 #[cfg(any(windows, target_os = "linux"))]

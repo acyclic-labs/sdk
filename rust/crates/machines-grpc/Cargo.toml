@@ -12,7 +12,7 @@ unit-test-only-sources = ["src/credential_tests.rs", "src/tests/**"]
 
 [features]
 javascript = ["dep:js-sys", "dep:prost", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-test-support = ["acyclic-machines/test-support"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -40,6 +40,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["test-support"] }
+acyclic-machines-conformance = { version = "=0.2.0", path = "../machines-conformance" }
 acyclic-test-support = { path = "../test-support" }
 prost.workspace = true
 proptest.workspace = true

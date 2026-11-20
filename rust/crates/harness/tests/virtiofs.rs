@@ -4,7 +4,7 @@
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::hosting::LocalGuestEnrollment,
+    hosting::LocalGuestEnrollment,
     local::host_owner::HostWorkspaceOwner,
     resources::ProviderRef,
 };
@@ -158,7 +158,13 @@ fn standalone_daemon_readiness_requires_the_original_socket_and_reports_startup_
 
 #[test]
 fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
-    let artifacts = PathBuf::from(std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or("step=select guest artifacts; recovery: python3 -B scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest --vmm /path/to/cloud-hypervisor --vmm-sha256 <sha256>; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-harness --features test-support --test main -- virtiofs:: --include-ignored --nocapture")?);
+    let artifacts = std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS")
+        .expect("Bazel sets ACYCLIC_FS_GUEST_ARTIFACTS to the prepared guest artifacts");
+    let artifacts = PathBuf::from(artifacts);
+    let artifacts = std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").map_or_else(
+        || artifacts.clone(),
+        |root| Path::new(&root).join(&artifacts),
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

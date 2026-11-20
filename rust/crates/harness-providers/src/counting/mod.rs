@@ -1,20 +1,8 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
 pub(crate) mod wire;
-use crate::{HttpRequest, ResolvedModel, admission::Event, dispatch, projection};
+use crate::{HttpRequest, ResolvedModel, admission::Event, boundary, dispatch, projection};
 use acyclic_harness_core::{Error, Result, context::ModelTokenCount};
 use futures::StreamExt as _;
-
-fn boundary(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if work.is_some() {
-        return Error::NativeBoundary {
-            code: acyclic_harness_core::wire::ErrorCode::Invalid,
-            reason,
-        };
-    }
-    let _ = work;
-    crate::invalid(reason)
-}
 
 pub(crate) fn specification<'a>(
     config: &'a crate::ProviderSpec,
@@ -98,8 +86,8 @@ pub(crate) fn count<'a>(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            crate::native::reserve_request(
-                provider,
+            crate::allocation::reserve_request(
+                provider.files.maximum_bytes,
                 request,
                 (auth.0.as_deref(), auth.1.as_deref()),
                 work,
@@ -133,7 +121,7 @@ pub(crate) fn count<'a>(
     .await;
     #[cfg(not(target_arch = "wasm32"))]
     let prepared = match admission.as_mut() {
-        Some(hold) => crate::native::diagnostic(prepared, hold),
+        Some(hold) => crate::allocation::diagnostic(prepared, hold),
         None => prepared,
     };
     // Declare custody before the count so cancellation drops the DTO first.
@@ -179,7 +167,7 @@ pub(crate) fn count<'a>(
                 .iter()
                 .map(|(key, value)| key.capacity() + value.capacity())
                 .sum::<usize>();
-        crate::native::retain(hold, retained as u64)?;
+        crate::allocation::retain(hold, retained as u64)?;
     }
     #[cfg(target_arch = "wasm32")]
     let body = bytes.into();
@@ -230,7 +218,7 @@ fn local(
     let result = projection::plan(provider, request, tokens);
     #[cfg(not(target_arch = "wasm32"))]
     let result = match custody.as_mut() {
-        Some(hold) => crate::native::diagnostic(result, hold),
+        Some(hold) => crate::allocation::diagnostic(result, hold),
         None => result,
     };
     Ok((result?, custody))
@@ -276,7 +264,7 @@ async fn read_count(
     let verified = wire::response(&body.bytes, spec);
     #[cfg(not(target_arch = "wasm32"))]
     let verified = match body.custody.as_mut() {
-        Some(hold) => crate::native::diagnostic(verified, hold),
+        Some(hold) => crate::allocation::diagnostic(verified, hold),
         None => verified,
     };
     verified

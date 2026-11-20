@@ -15,9 +15,12 @@ fn key(index: u32) -> [u8; 32] {
 fn dormant_volume_history_retires_actors_and_index_nodes_on_the_original_ledger()
 -> Result<(), crate::FsError> {
     let cancel = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::performance::BOUNDARY_BUDGET,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancel);
     let baseline = original.live_allocation_bytes().unwrap();
     let registry = Registry::new(&mut accounting)?;
@@ -190,12 +193,13 @@ fn refused_index_admission_retires_the_unregistered_actor_before_its_funding()
     // Native control + retained volume backing fit; the first index node does not. The new
     // actor has no registration until insertion succeeds, so its destructor
     // must not attempt to reacquire the registry lock during this refusal.
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 3,
             ..crate::performance::BOUNDARY_BUDGET
         },
         &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
@@ -223,9 +227,12 @@ fn refused_index_admission_retires_the_unregistered_actor_before_its_funding()
 fn retained_actor_and_dead_registry_backing_stay_funded_after_owner_retirement()
 -> Result<(), crate::FsError> {
     let cancel = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::performance::BOUNDARY_BUDGET,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancel);
     let baseline = original.live_allocation_bytes().unwrap();
     let registry = Registry::new(&mut accounting)?;

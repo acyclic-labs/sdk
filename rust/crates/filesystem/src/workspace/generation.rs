@@ -52,10 +52,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
 
     /// Retains this generation until its owning volume ends, reusing durable
     /// published history when available. Unpublished generations receive an
-    /// independent pin. Explicit named pins continue to use `pin`.
-    pub async fn retain_if_unpublished<W: crate::facade::FsWork>(
+    /// independent pin. Builds its identity on the same ledger only when a
+    /// pin is needed. Explicit named pins continue to use `pin`.
+    pub async fn retain_if_unpublished<W: crate::facade::FsWork, S: AsRef<str>>(
         &self,
-        identity: impl AsRef<str>,
+        identity: impl FnOnce(&mut KernelAccounting<'_>) -> Result<S, WorkspaceError>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
@@ -74,6 +75,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                 )
                 .await?
             {
+                let identity = identity(&mut accounting)?;
                 self.pin_with_accounting(identity.as_ref(), &mut accounting, cancellation)
                     .await?;
             }
@@ -306,7 +308,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, false, false, None, work, cancellation)
+        self.compare_file(
+            original,
+            path,
+            read_core::ContentMatch::Bytes { prefix: None },
+            false,
+            work,
+            cancellation,
+        )
     }
 
     /// Compares optional regular-file bytes independently of storage layout.
@@ -320,7 +329,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, false, true, None, work, cancellation)
+        self.compare_file(
+            original,
+            path,
+            read_core::ContentMatch::Bytes { prefix: None },
+            true,
+            work,
+            cancellation,
+        )
     }
 
     /// Compares the exact file identity, kind and payload without reading bodies.
@@ -332,7 +348,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, true, false, None, work, cancellation)
+        self.compare_file(
+            original,
+            path,
+            read_core::ContentMatch::Payload,
+            false,
+            work,
+            cancellation,
+        )
+    }
+
+    /// Compares an existing file's identity, kind, payload and one named
+    /// attribute at two pinned cuts, without reading the file or attribute bodies.
+    pub fn matches_file_publication<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        attribute: &crate::kernel::AttributeName,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
+        self.compare_file(
+            original,
+            path,
+            read_core::ContentMatch::Publication(attribute),
+            false,
+            work,
+            cancellation,
+        )
     }
 
     /// Compares an optional file's exact identity, kind and payload without
@@ -345,7 +388,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
-        self.compare_file(original, path, true, true, None, work, cancellation)
+        self.compare_file(
+            original,
+            path,
+            read_core::ContentMatch::Payload,
+            true,
+            work,
+            cancellation,
+        )
     }
 
     /// Compare exactly the first `bytes` of two regular files, independently
@@ -362,9 +412,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         self.compare_file(
             original,
             path,
+            read_core::ContentMatch::Bytes {
+                prefix: Some(bytes),
+            },
             false,
-            false,
-            Some(bytes),
             work,
             cancellation,
         )
@@ -374,9 +425,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         &self,
         original: &Self,
         path: &str,
-        exact_payload: bool,
+        comparison: read_core::ContentMatch<'_>,
         allow_absent: bool,
-        prefix: Option<u64>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
@@ -391,13 +441,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             return work.finish(Err(WorkspaceError::ForeignGeneration), &accounting);
         }
         matches_content(
-            &self.workspace,
-            self.id,
+            self,
             original.id,
             path,
-            exact_payload,
+            comparison,
             allow_absent,
-            prefix,
             work,
             cancellation,
         )

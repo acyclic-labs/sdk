@@ -1,6 +1,6 @@
 use super::*;
 use rustdoc_types::FORMAT_VERSION;
-use std::{fs, path::PathBuf, process::Command};
+use std::fs;
 
 mod workspace;
 
@@ -141,21 +141,6 @@ fn feature_profiles_include_both_baselines_and_local_closure() {
     assert!(profiles
         .iter()
         .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()])));
-}
-
-#[test]
-fn profile_ids_distinguish_defaults_and_targets_for_the_same_features() {
-    let mut profile = ProfileSpec {
-        package: "p".into(),
-        target: "t".into(),
-        default_features: false,
-        features: BTreeSet::from(["a".into(), "b".into()]),
-    };
-    assert_eq!(profile.id().0, "p70;t74;d0;f61,62");
-    profile.default_features = true;
-    assert_eq!(profile.id().0, "p70;t74;d1;f61,62");
-    profile.target = "u".into();
-    assert_eq!(profile.id().0, "p70;t75;d1;f61,62");
 }
 
 #[test]

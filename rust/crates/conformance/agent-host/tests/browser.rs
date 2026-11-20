@@ -3,7 +3,9 @@
 
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
-use acyclic_stream::{BoxProviderFuture, BrowserStream, BrowserStreamLimits, StreamProvider};
+use acyclic_stream::{
+    BoxProviderFuture, BrowserStream, BrowserStreamLimits, ProviderOwner, StreamProvider,
+};
 use std::sync::Arc;
 use wasm_bindgen_test::*;
 
@@ -16,12 +18,11 @@ impl Storage for Database {
         Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
     }
 
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
+    fn open(&self) -> BoxProviderFuture<'_, Result<ProviderOwner<dyn StreamProvider>>> {
         Box::pin(async move {
-            Ok(
-                Arc::new(BrowserStream::open(&self.0, BrowserStreamLimits::default()).await?)
-                    as Arc<dyn StreamProvider>,
-            )
+            Ok(ProviderOwner::new(
+                BrowserStream::open(&self.0, BrowserStreamLimits::default()).await?,
+            ) as ProviderOwner<dyn StreamProvider>)
         })
     }
 }

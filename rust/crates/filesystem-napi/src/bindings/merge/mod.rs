@@ -97,13 +97,7 @@ pub(in crate::bindings) fn native_merge_selection_conflict(
                 .name
                 .as_ref()
                 .ok_or_else(|| Error::new(Status::InvalidArg, "binding selection lacks name"))?;
-            let encoding = NameEncoding::from_public_str(&name.encoding).ok_or_else(|| {
-                Error::new(
-                    Status::InvalidArg,
-                    "binding selection has an invalid name encoding",
-                )
-            })?;
-            let name = LogicalName::new(encoding, name.bytes.to_vec()).map_err(napi_error)?;
+            let name = decode_name_component(name)?;
             Ok(MergeConflict::Binding { directory_id, name })
         }
         _ => Err(Error::new(

@@ -74,7 +74,7 @@ test("selected entry admission snapshots intrinsic array extents", () => {
   const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
   entry.artifactSha256 = sha256(artifact);
   entry.assets = [{ path: "selected.wasm", sha256: sha256(asset), size: asset.length,
-    mediaType: "application/wasm", role: "module" }];
+    mediaType: "application/wasm" }];
   const encoded = JSON.stringify(manifest);
   const admit = (code, bytes, paths = ["selected.wasm"]) =>
     verifyArtifact(encoded, "production", "agent", code, paths, bytes);

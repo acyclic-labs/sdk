@@ -3,13 +3,16 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"sdk-docs-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"sdk-docs-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_binary(
     name = "metadata_output",
     crate_root = "fuzz_targets/metadata_output.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/metadata_output.rs",
+        "metadata_output.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -21,6 +24,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
@@ -36,11 +40,15 @@ rust_binary(
 rust_binary(
     name = "rustdoc_adapter",
     crate_root = "fuzz_targets/rustdoc_adapter.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/sdk-docs:src/public_api/decode.rs",
+    srcs = [
+        "fuzz_targets/rustdoc_adapter.rs",
+        "relative_spans.rs",
         "//rust/crates/sdk-docs:src/relative_spans.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = [
+        "corpus/rustdoc_adapter/valid.json",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -52,6 +60,7 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [

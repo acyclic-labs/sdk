@@ -15,6 +15,10 @@ use sha2::{Digest, Sha256};
 const HEADER: &str = "acyclic.actor.invoke";
 const VERSION: &[u8] = b"1";
 
+/// Host-owned input for public actor invocation. Deployment manifests reserve
+/// this ID so an authored subscription such as `inbox` keeps its own binding.
+pub const HOST_INBOX: &str = "_invoke";
+
 #[derive(Clone, PartialEq, prost::Message)]
 struct RequestWire {
     #[prost(bytes = "bytes", tag = "1")]

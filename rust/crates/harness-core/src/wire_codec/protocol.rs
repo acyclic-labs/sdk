@@ -1,15 +1,5 @@
 use super::*;
 #[doc(hidden)]
-pub const COMPILED_PROTOCOL: (&str, &str) =
-    (PROTOCOL_VERSION, crate::build_metadata::DESCRIPTOR_DIGEST);
-#[doc(hidden)]
-pub fn protocol_identity() -> wire::ProtocolIdentity {
-    wire::ProtocolIdentity {
-        version: COMPILED_PROTOCOL.0.into(),
-        descriptor_digest: COMPILED_PROTOCOL.1.into(),
-    }
-}
-#[doc(hidden)]
 pub fn validate_protocol(
     protocol: Option<&wire::ProtocolIdentity>,
     expected: (&str, &str),

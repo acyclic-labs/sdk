@@ -28,13 +28,14 @@ fn race<const BROKEN: bool>(maximum: u64, resource: bool) {
             bytes_copied: maximum,
             ..WorkBudget::UNBOUNDED
         };
-        let original = crate::NativeMaterializationWork::new(
+        let original = crate::NativeMaterializationWork::root(
             if resource {
                 WorkBudget::UNBOUNDED
             } else {
                 budget
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap();
         let work = if resource {

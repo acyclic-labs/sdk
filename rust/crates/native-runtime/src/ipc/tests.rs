@@ -107,11 +107,14 @@ fn listener_refuses_public_directory_custody() -> io::Result<()> {
 proptest::proptest! {
     #[test]
     fn stray_writes_ignored(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4096)) {
+        // One coordination runtime for every case: building the process-wide executor per
+        // case spawned a worker thread per CPU for each of proptest's cases.
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let runtime = RUNTIME.get_or_init(|| crate::coordination_runtime().unwrap());
         let directory = tempfile::tempdir().unwrap();
         let endpoint = directory.path().join("node.sock");
         std::fs::write(&endpoint, &bytes).unwrap();
         let owner = PeerCredentials::current().unwrap();
-        let runtime = crate::coordination_runtime().unwrap();
         let (bound, connected) = runtime.block_on(async {
             (UnixListener::bind(&endpoint).is_ok(), owner.connect_unix(&endpoint).await.is_ok())
         });

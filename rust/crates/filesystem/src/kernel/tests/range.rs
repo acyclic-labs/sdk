@@ -1,6 +1,5 @@
 use super::*;
 use crate::kernel::Extent;
-use crate::memory::MemoryObjectStore;
 use crate::test_support::OwnedReadObjectStore;
 use std::sync::atomic::Ordering;
 

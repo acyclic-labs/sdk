@@ -2,7 +2,9 @@ use acyclic_fs::kernel::{
     CanonicalDecodeError, CheckpointError, CheckpointRequest, DecodeLimits, GenerationRoot,
     build_checkpoint, decode_generation_root,
 };
-use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore};
+use acyclic_fs::{
+    AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore, ObjectStoreError,
+};
 use acyclic_fs_format::{
     identity::{Digest, FileId, VolumeId},
     object_reference::{GenerationId, ObjectId, ObjectKind},

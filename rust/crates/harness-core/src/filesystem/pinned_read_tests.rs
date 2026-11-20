@@ -84,6 +84,7 @@ async fn read(
 }
 
 use crate::test_support::accounted::accounted;
+use acyclic_fs_work::performance::WorkCounters;
 use acyclic_test_support::differential;
 
 fn exact_unmetered_allocation(
@@ -103,6 +104,84 @@ fn exact_unmetered_allocation(
     Ok(())
 }
 
+fn equivalent_work(
+    original: WorkCounters,
+    mut candidate: WorkCounters,
+) -> proptest::test_runner::TestCaseResult {
+    // The shipping frame and earlier buffer retirement can reduce concurrent
+    // residency. All other measured work must remain identical.
+    prop_assert!(
+        candidate.peak_allocation_bytes <= original.peak_allocation_bytes,
+        "candidate peak {} exceeded original peak {}",
+        candidate.peak_allocation_bytes,
+        original.peak_allocation_bytes,
+    );
+    candidate.peak_allocation_bytes = original.peak_allocation_bytes;
+    prop_assert_eq!(original, candidate);
+    Ok(())
+}
+
+fn refused_work_is_a_prefix(
+    original: WorkCounters,
+    candidate: WorkCounters,
+    complete: WorkCounters,
+    allowance: u64,
+) -> proptest::test_runner::TestCaseResult {
+    // A smaller frame can admit another step before the same allocation
+    // refusal. Both prefixes must stay within the allowance, and the later
+    // refusal must not perform more work than the fully funded original.
+    prop_assert!(original.peak_allocation_bytes <= allowance);
+    prop_assert!(candidate.peak_allocation_bytes <= allowance);
+    prop_assert!(candidate.checked_sub_cumulative(&original).is_ok());
+    prop_assert!(complete.checked_sub_cumulative(&candidate).is_ok());
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Refusal {
+    PeakAllocation { observed: u64, maximum: u64 },
+    Other(String),
+}
+
+struct CompletedRead {
+    result: std::result::Result<Vec<u8>, Refusal>,
+    local: WorkCounters,
+    native: WorkCounters,
+    trace: Vec<(&'static str, u64)>,
+}
+
+fn refusal(error: &Error) -> Refusal {
+    use acyclic_fs::{FsError, WorkspaceError};
+    use acyclic_fs_work::performance::{WorkError, WorkObservationError};
+    let filesystem_budget = |source: &FsError| match source {
+        FsError::Work(cause) | FsError::WorkObservation(WorkObservationError::Work(cause)) => {
+            Some(*cause)
+        }
+        _ => None,
+    };
+    let budget = match error {
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
+            ..
+        } => Some(*cause),
+        Error::NativeWorkspace { source, .. } => match source.as_ref() {
+            WorkspaceError::Work(cause) => Some(*cause),
+            WorkspaceError::Filesystem(source) => filesystem_budget(source),
+            _ => None,
+        },
+        Error::NativeFilesystem { source, .. } => filesystem_budget(source),
+        _ => None,
+    };
+    match budget {
+        Some(WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes",
+            observed,
+            maximum,
+        }) => Refusal::PeakAllocation { observed, maximum },
+        _ => Refusal::Other(error.to_string()),
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
@@ -112,7 +191,12 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let initialize = || {
-            let (host, mut file) = runtime.block_on(fixture(&bytes)).unwrap();
+            // Build independent stores with identical generated identities and index
+            // layout before comparing the two readers' allocation receipts.
+            let (host, mut file) =
+                acyclic_native_runtime::testing::seeded_test(0x5049_4e4e, || fixture(&bytes))
+                    .unwrap()
+                    .unwrap();
             if tamper {
                 let mut digest = *file.descriptor().sha256();
                 digest[0] ^= 1;
@@ -169,13 +253,74 @@ proptest! {
         prop_assert!(padded.0.1.bytes_total > after.0.1.bytes_total);
         prop_assert!(exact_unmetered_allocation(before.0.1, padded.0.1, saved).is_err(),
             "retained inline factory padding passed the exact byte guard");
-        for allowance in [budget, 64 * 1024 * 1024] {
-            for native in [false, true] {
+        for native in [false, true] {
+            let baseline = if native {
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+            } else {
+                0
+            };
+            let mut complete: Option<CompletedRead> = None;
+            for allowance in [64 * 1024 * 1024, budget] {
                 let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old|
-                    accounted(native, allowance, cancelled, |io|
-                        runtime.block_on(read(&host, &file, maximum, Some(io), old))
-                            .map(|bytes| bytes.as_ref().to_vec()).map_err(|e| e.to_string())));
-                prop_assert_eq!(before, after, "native {}", native);
+                    accounted(native, allowance, cancelled, |io| {
+                        let result = runtime.block_on(read(&host, &file, maximum, Some(io), old))
+                            .map(|bytes| bytes.as_ref().to_vec()).map_err(|error| refusal(&error));
+                        // A longer admitted prefix can warm more backend pages.
+                        // Retire the owning fixture before sampling escaped custody.
+                        drop(host);
+                        result
+                    }));
+                if let (Ok(original), Ok(candidate)) = (&before.0, &after.0) {
+                    if let Err(Refusal::PeakAllocation { observed, maximum }) = &original.0 {
+                        // Smaller custody can admit more of the same read with
+                        // the same original credit. The funded read authenticates
+                        // both the refused prefix and any newly admitted result.
+                        prop_assert!(*maximum <= allowance && *observed > *maximum);
+                        let Some(funded) = &complete else {
+                            return Err(proptest::test_runner::TestCaseError::fail(
+                                "the fully funded read refused its allocation",
+                            ));
+                        };
+                        prop_assert!(
+                            after.1.starts_with(&before.1) && funded.trace.starts_with(&after.1),
+                            "allocation refusal diverged from the original read trace: native {}",
+                            native
+                        );
+                        refused_work_is_a_prefix(original.1, candidate.1, funded.local, allowance)?;
+                        refused_work_is_a_prefix(original.3, candidate.3, funded.native, allowance)?;
+                        if let Err(Refusal::PeakAllocation { observed, maximum }) = &candidate.0 {
+                            prop_assert!(*maximum <= allowance && *observed > *maximum);
+                        } else {
+                            prop_assert_eq!(&candidate.0, &funded.result);
+                            prop_assert_eq!(&after.1, &funded.trace);
+                            equivalent_work(funded.local, candidate.1)?;
+                            equivalent_work(funded.native, candidate.3)?;
+                        }
+                    } else {
+                        prop_assert_eq!(&before.1, &after.1, "native {}", native);
+                        prop_assert_eq!(&original.0, &candidate.0, "native {}", native);
+                        equivalent_work(original.1, candidate.1)?;
+                        equivalent_work(original.3, candidate.3)?;
+                        complete.get_or_insert_with(|| CompletedRead {
+                            result: original.0.clone(),
+                            local: original.1,
+                            native: original.3,
+                            trace: before.1.clone(),
+                        });
+                    }
+                    // The original standalone factory kept the buffer's charge on
+                    // the caller after returning it. The shipping output releases
+                    // that charge when the returned bytes are dropped.
+                    prop_assert_eq!(candidate.2, 0, "native {}", native);
+                    if native {
+                        prop_assert_eq!(original.2, candidate.2);
+                    }
+                    prop_assert_eq!((original.4, original.5), (baseline, baseline), "native {}", native);
+                    prop_assert_eq!((candidate.4, candidate.5), (baseline, baseline), "native {}", native);
+                } else {
+                    prop_assert_eq!(&before.1, &after.1, "native {}", native);
+                    prop_assert_eq!(before.0, after.0, "native {}", native);
+                }
             }
         }
     }

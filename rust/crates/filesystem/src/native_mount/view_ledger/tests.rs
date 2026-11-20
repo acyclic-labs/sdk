@@ -5,8 +5,8 @@ use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::VolumeLimits;
 use std::sync::{Arc, Mutex};
 
-fn work() -> crate::demand::DemandWork {
-    crate::demand::DemandWork::new(
+fn work() -> crate::ledger::DemandWork {
+    crate::ledger::DemandWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
@@ -281,7 +281,7 @@ fn failed_record_cannot_vouch_for_an_old_lookup() -> Result<(), Box<dyn std::err
         }
         let stamp = ledger.stamp();
         let node = FileId::new();
-        let mut denied = crate::demand::DemandWork::new(
+        let mut denied = crate::ledger::DemandWork::new(
             crate::WorkBudget {
                 allocation_operations: 0,
                 ..crate::WorkBudget::UNBOUNDED

@@ -1,5 +1,40 @@
 use super::*;
 
+type ArchiveIdentity = sdk_docs::historical::ReleasedPackage;
+type ArchiveVerification = (ArchiveIdentity, BTreeMap<String, String>);
+type ArchiveClosure = (
+    Vec<ArchiveIdentity>,
+    BTreeMap<String, String>,
+    BTreeSet<String>,
+);
+
+/// Verify every retained registry archive against its captured identity and
+/// return the sorted release identities, the archive source closure and the
+/// exact archive inventory.
+fn retained_archive_closure(
+    output: &Path,
+    verify: impl Fn(&historical::RegistryVersion, &Path) -> Result<ArchiveVerification, CliError>,
+) -> Result<ArchiveClosure, CliError> {
+    let releases: Vec<historical::RegistryVersion> = serde_json::from_slice(
+        &fs::read(output.join("sdk-docs-registry-releases.v1.json")).map_err(io_error)?,
+    )
+    .map_err(|e| CliError(e.to_string()))?;
+    let mut identities = Vec::new();
+    let mut archive_files = BTreeMap::new();
+    let mut inventory = BTreeSet::new();
+    for release in &releases {
+        let name = format!("{}-{}.crate", release.package, release.num);
+        if !inventory.insert(name.clone()) {
+            return Err(CliError("duplicate retained registry archive".into()));
+        }
+        let (identity, files) = verify(release, &output.join("registry-archives").join(name))?;
+        identities.push(identity);
+        archive_files.extend(files);
+    }
+    identities.sort_by(|a, b| a.package.cmp(&b.package));
+    Ok((identities, archive_files, inventory))
+}
+
 pub(super) fn drift(
     (root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf),
     stdout: &mut dyn Write,
@@ -130,39 +165,22 @@ pub(super) fn drift(
                 "registry archive scope has another source authority".into(),
             ));
         };
-        let releases: Vec<historical::RegistryVersion> = serde_json::from_slice(
-            &fs::read(output.join("sdk-docs-registry-releases.v1.json")).map_err(io_error)?,
-        )
-        .map_err(|e| CliError(e.to_string()))?;
-        let mut identities = Vec::new();
-        let mut archive_files = BTreeMap::new();
-        let mut inventory = BTreeSet::new();
-        for release in &releases {
-            let identity = archives
-                .iter()
-                .find(|archive| {
-                    archive.package == release.package && archive.version == release.num
-                })
-                .ok_or_else(|| {
-                    CliError(
-                        "retained registry owner is absent from captured archive identity".into(),
-                    )
-                })?;
-            let name = format!("{}-{}.crate", release.package, release.num);
-            if !inventory.insert(name.clone()) {
-                return Err(CliError("duplicate retained registry archive".into()));
-            }
-            let (publisher, files) = historical::verify_imported_archive(
-                &root,
-                release,
-                &output.join("registry-archives").join(name),
-                identity,
-            )
-            .map_err(CliError)?;
-            identities.push(publisher);
-            archive_files.extend(files);
-        }
-        identities.sort_by(|a, b| a.package.cmp(&b.package));
+        let (identities, archive_files, inventory) =
+            retained_archive_closure(&output, |release, archive| {
+                let identity = archives
+                    .iter()
+                    .find(|identity| {
+                        identity.package == release.package && identity.version == release.num
+                    })
+                    .ok_or_else(|| {
+                        CliError(
+                            "retained registry owner is absent from captured archive identity"
+                                .into(),
+                        )
+                    })?;
+                historical::verify_imported_archive(&root, release, archive, identity)
+                    .map_err(CliError)
+            })?;
         if identities.len() != archives.len()
             || &identities != released_packages
             || archive_files != source_files
@@ -190,26 +208,11 @@ pub(super) fn drift(
     {
         let cargo = documentation_cargo(&root, true)?;
         let metadata = load_metadata(&root, Some(&cargo))?;
-        let releases: Vec<historical::RegistryVersion> = serde_json::from_slice(
-            &fs::read(output.join("sdk-docs-registry-releases.v1.json")).map_err(io_error)?,
-        )
-        .map_err(|e| CliError(e.to_string()))?;
-        let mut identities = Vec::new();
-        let mut archive_files = BTreeMap::new();
-        let mut inventory = BTreeSet::new();
-        for release in &releases {
-            let name = format!("{}-{}.crate", release.package, release.num);
-            if !inventory.insert(name.clone()) {
-                return Err(CliError("duplicate retained registry archive".into()));
-            }
-            let archive = output.join("registry-archives").join(name);
-            let (identity, files) =
-                historical::verify_archive(&metadata, &root, &manifest.revision, release, &archive)
-                    .map_err(CliError)?;
-            identities.push(identity);
-            archive_files.extend(files);
-        }
-        identities.sort_by(|a, b| a.package.cmp(&b.package));
+        let (identities, archive_files, inventory) =
+            retained_archive_closure(&output, |release, archive| {
+                historical::verify_archive(&metadata, &root, &manifest.revision, release, archive)
+                    .map_err(CliError)
+            })?;
         if &identities != released_packages
             || archive_files.keys().cloned().collect::<Vec<_>>() != *archive_source_paths
         {

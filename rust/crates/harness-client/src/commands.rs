@@ -25,7 +25,7 @@ pub const DEFAULT_COMMANDS_JSON: &[u8] = include_bytes!("commands.json");
 
 /// Where project prompt commands live, in precedence order: a name both
 /// define is a conflict.
-pub const PROMPT_DIRECTORIES: [&str; 2] = [".claude/commands", ".codex/prompts"];
+const PROMPT_DIRECTORIES: [&str; 2] = [".claude/commands", ".codex/prompts"];
 
 /// Small argument vocabulary shared by help and validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

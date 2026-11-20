@@ -593,8 +593,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         issuer,
         TurnAdmission::LocalRoot,
         Arc::new(turns),
-        LIMITS,
-        Default::default(),
+        (LIMITS, Default::default()),
     ));
     let host = committing(&stream, &files, driver)?;
     let mut adoption = adopted(id(32));
@@ -821,8 +820,10 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                 issuer,
                 TurnAdmission::LocalRoot,
                 Arc::new(turns),
-                LIMITS,
-                acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+                (
+                    LIMITS,
+                    acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+                ),
             )
             .with_clock(clock.clone()),
         );

@@ -4,7 +4,7 @@ use acyclic_fs_work::performance::{OperationFailure, OperationReceipt, WorkBudge
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::creation_budget::{FINITE_BUDGET, READ_ONLY_BUDGET};
+use crate::creation::creation_budget::{FINITE_BUDGET, READ_ONLY_BUDGET};
 
 #[tokio::test]
 async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()

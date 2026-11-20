@@ -124,7 +124,7 @@ impl<T> Owned<Vec<T>> {
         accounting.perform(copied, || self.value.push(value))
     }
 
-    pub(crate) fn allocate(
+    pub fn allocate(
         count: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {

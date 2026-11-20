@@ -3,7 +3,9 @@
 
 pub mod identity;
 pub mod metadata;
+pub mod model;
 pub mod object_reference;
+pub mod path;
 pub mod s3_limits;
 
 #[cfg(test)]

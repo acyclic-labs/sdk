@@ -88,7 +88,7 @@ impl CommandJournal for LocalPort {
                     while cursor < head && entries.len() < page {
                         let frame = read_frame(file, head - cursor)
                             .map_err(|error| {
-                                stream.inner.fail(LocalStreamFailure::local(
+                                stream.inner.fail(local_failure(
                                     "read_frame",
                                     &error,
                                     stream.work.as_deref(),

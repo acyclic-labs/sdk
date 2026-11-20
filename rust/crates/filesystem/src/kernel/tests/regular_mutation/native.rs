@@ -5,12 +5,13 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     let store = MemoryObjectStore::default();
     let content = blob(&store, b"native source").await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             bytes_copied: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();
@@ -39,8 +40,12 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     assert_eq!(original.receipt().unwrap(), before);
     assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let written = (apply_regular_mutation_with_accounting(
         &store,
@@ -64,12 +69,13 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     assert!(original.receipt().unwrap().bytes_copied >= 3);
 
     let store = MemoryObjectStore::default();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             page_writes: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);

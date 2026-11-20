@@ -160,7 +160,7 @@ pub(crate) fn long_path_wide<W: NativeHostWork>(
 
 /// The 8.3 short form of a path, for tests that reach a directory by it.
 #[cfg(test)]
-#[cfg(all(windows))]
+#[cfg(windows)]
 pub(crate) fn short_path(path: &std::path::Path) -> io::Result<std::path::PathBuf> {
     use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
     use windows::{Win32::Storage::FileSystem::GetShortPathNameW, core::PCWSTR};
@@ -502,7 +502,7 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
 }
 
 #[cfg(test)]
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};

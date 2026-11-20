@@ -31,10 +31,6 @@ impl<T> Scoped<T> {
             context,
         }
     }
-    /// Borrows the producer before pinning.
-    pub fn inner_mut(&mut self) -> Option<&mut T> {
-        self.inner.as_mut()
-    }
     /// Retains a producer under an originating dispatcher.
     pub fn new(inner: T, dispatch: Dispatch) -> Self {
         let mut result = Self::with_context(inner, None);

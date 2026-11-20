@@ -248,13 +248,13 @@ impl YieldingFile {
             };
             let mut operations =
                 NativeOperationReservation::new(meter, NativeOperationKind::Read, 2)
-                    .map_err(crate::demand::native_demand_error)?;
+                    .map_err(crate::ledger::native_demand_error)?;
             let length = destination.len().min(u32::MAX as usize);
             let destination = destination
                 .get_mut(..length)
                 .ok_or(DemandError::InvalidRequest)?;
             let mut bytes = NativeByteReservation::new(meter, NativeOperationKind::Read, length)
-                .map_err(crate::demand::native_demand_error)?;
+                .map_err(crate::ledger::native_demand_error)?;
             let held = self
                 .held
                 .file
@@ -291,7 +291,7 @@ impl YieldingFile {
                 let handles = [*event, *cancellation.0];
                 let status = meter
                     .examine(1, 0)
-                    .map_err(crate::demand::native_demand_error)
+                    .map_err(crate::ledger::native_demand_error)
                     .map(|()| {
                         // SAFETY: the event remains owned by this live read through the wait.
                         unsafe { WaitForMultipleObjects(&handles, false, INFINITE) }
@@ -301,7 +301,7 @@ impl YieldingFile {
                         interrupted = Some(DemandError::Io(io::Error::last_os_error()));
                     }
                     Err(error) => interrupted = Some(error),
-                    _ => interrupted = meter.check().err().map(crate::demand::native_demand_error),
+                    _ => interrupted = meter.check().err().map(crate::ledger::native_demand_error),
                 }
                 if interrupted.is_some() {
                     // SAFETY: the live request belongs to this held handle.
@@ -327,13 +327,13 @@ impl YieldingFile {
                 (started, Ok(()))
             };
             let recorded = bytes.record(transferred as usize);
-            start_charge.map_err(crate::demand::native_demand_error)?;
-            completion_charge.map_err(crate::demand::native_demand_error)?;
-            recorded.map_err(crate::demand::native_demand_error)?;
+            start_charge.map_err(crate::ledger::native_demand_error)?;
+            completion_charge.map_err(crate::ledger::native_demand_error)?;
+            recorded.map_err(crate::ledger::native_demand_error)?;
             if let Some(error) = interrupted {
                 return Err(error);
             }
-            meter.check().map_err(crate::demand::native_demand_error)?;
+            meter.check().map_err(crate::ledger::native_demand_error)?;
             match read {
                 Ok(()) => Ok(transferred as usize),
                 Err(error) if error.code() == ERROR_HANDLE_EOF.to_hresult() => Ok(0),

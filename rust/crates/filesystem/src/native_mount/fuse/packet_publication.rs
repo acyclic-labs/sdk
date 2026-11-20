@@ -29,14 +29,21 @@ impl PacketSession {
         response: &mut [u8],
         publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
     ) -> Result<bool, PacketFailure> {
-        self.publish_or_defer_with_outcome(request, response, publish, |_, _| Ok(false))
+        self.publish_or_defer_with_outcome(
+            request,
+            response,
+            |reply| publish(reply).map(Some),
+            |_, _| Ok(false),
+        )
     }
 
     pub(super) fn publish_or_defer_with_outcome(
         &self,
         request: &PacketRequest<'_>,
         response: &mut [u8],
-        publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
+        publish: impl FnOnce(
+            PacketResponse<'_>,
+        ) -> Result<Option<PacketDevicePublication>, NativeMountError>,
         defer: impl FnOnce(
             &mut super::packet_session::PacketReply<'_>,
             &[u8],
@@ -44,8 +51,14 @@ impl PacketSession {
     ) -> Result<bool, PacketFailure> {
         match self.dispatch(request, response) {
             Ok(mut reply) => {
-                if reply.completion().attributes_before_reply && defer(&mut reply, response)? {
-                    return Ok(true);
+                if reply.completion().attributes_before_reply {
+                    match defer(&mut reply, response) {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(error) => {
+                            reply.refuse(request, response, super::callback_errno(&error))?;
+                        }
+                    }
                 }
                 // On failure the pending reply closes the session before its
                 // original work and projection leases can be released.
@@ -53,7 +66,8 @@ impl PacketSession {
                     response,
                     reply.length(),
                     reply.payload(),
-                )?)?;
+                )?)?
+                .ok_or(PacketFailure::TransportClosed)?;
                 match outcome {
                     PacketDevicePublication::Published => reply.delivered(),
                     // A rejected frame published no bytes. Complete this
@@ -82,14 +96,17 @@ impl PacketSession {
     }
 
     /// Complete a refused request through the same transport boundary.
+    /// A publisher returns `None` when its transport is already stopping.
     pub(super) fn reject(
         &self,
         request: &PacketRequest<'_>,
         response: &mut [u8],
         errno: i32,
-        publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
+        publish: impl FnOnce(
+            PacketResponse<'_>,
+        ) -> Result<Option<PacketDevicePublication>, NativeMountError>,
     ) -> Result<(), PacketFailure> {
-        let result = (|| {
+        let result = (|| -> Result<Option<()>, NativeMountError> {
             let length = if matches!(request.opcode, 2 | 42) {
                 None
             } else {
@@ -97,17 +114,19 @@ impl PacketSession {
                 Some(OUTPUT_HEADER)
             };
             match publish(PacketResponse::new(response, length, None)?)? {
-                PacketDevicePublication::Published
-                | PacketDevicePublication::Rejected(libc::ENOENT) => {}
-                PacketDevicePublication::Rejected(errno) => return Err(errno.into()),
+                Some(
+                    PacketDevicePublication::Published
+                    | PacketDevicePublication::Rejected(libc::ENOENT),
+                ) => Ok(Some(())),
+                Some(PacketDevicePublication::Rejected(errno)) => Err(errno.into()),
+                None => Ok(None),
             }
-            Ok(())
         })();
-        if result.is_err() {
+        if !matches!(result, Ok(Some(()))) {
             // A negative reply can also have uncertain delivery. The caller
             // must retire this session rather than reuse it for another try.
             self.close();
         }
-        result
+        result?.ok_or(PacketFailure::TransportClosed)
     }
 }

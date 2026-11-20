@@ -6,7 +6,7 @@ use serde::Deserialize;
 mod codec;
 pub(crate) mod transport;
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
+pub(crate) const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 
 /// Exa's typed POST /search adapter.
 pub struct Exa(HttpSearch);
@@ -63,11 +63,22 @@ impl HttpSearch {
                 ..Default::default()
             })?;
         }
+        let headers = [
+            (
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http::header::HeaderName::from_static("x-api-key"),
+                self.key.clone(),
+            ),
+        ];
         let mut failure = None;
         let exchange = transport::send(
+            transport::Kind::Search,
             method,
             endpoint,
-            &self.key,
+            &headers,
             body,
             self.tls.as_ref(),
             work,
@@ -77,7 +88,12 @@ impl HttpSearch {
         if let Some(error) = failure {
             return Err(error);
         }
-        result
+        match result? {
+            transport::Response::Content { bytes, held, .. } => Ok((bytes, held)),
+            transport::Response::Redirect { .. } => {
+                Err(crate::error(work, "search transport returned a redirect"))
+            }
+        }
     }
 }
 
@@ -200,7 +216,7 @@ fn request_body(
         .map_err(|_| super::error(work, "cannot encode search request"))
 }
 
-async fn await_io<F: std::future::Future>(
+pub(crate) async fn await_io<F: std::future::Future>(
     future: F,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<F::Output> {
@@ -242,42 +258,51 @@ struct ExaResult {
     highlights: Vec<String>,
 }
 
-impl SearchProvider for Exa {
-    fn search<'a>(
-        &'a self,
-        request: &'a SearchRequest,
-    ) -> BoxProviderFuture<'a, Result<SearchResponse>> {
-        Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
-    }
+macro_rules! search_provider {
+    ($($provider:ty),+ $(,)?) => { $(
+        impl SearchProvider for $provider {
+            fn search<'a>(
+                &'a self,
+                request: &'a SearchRequest,
+            ) -> BoxProviderFuture<'a, Result<SearchResponse>> {
+                Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
+            }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn search_with_native_work<'a>(
-        &'a self,
-        request: &'a SearchRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (SearchResponse, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let (response, held) = self.run(request, Some(work)).await?;
-            Ok((
-                response,
-                held.ok_or_else(|| {
-                    super::error(Some(work), "native search response lacks custody")
-                })?,
-            ))
-        })
-    }
+            #[cfg(not(target_arch = "wasm32"))]
+            fn supports_native_search(
+                &self,
+                work: &acyclic_fs::NativeMaterializationWork,
+            ) -> Result<bool> {
+                work.remaining()?;
+                Ok(true)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            fn search_with_native_work<'a>(
+                &'a self,
+                request: &'a SearchRequest,
+                work: &'a acyclic_fs::NativeMaterializationWork,
+            ) -> Result<
+                acyclic_fs::NativeFutureBundle<
+                    'a,
+                    (SearchResponse, acyclic_fs::NativeAllocation),
+                    crate::Error,
+                >,
+            > {
+                acyclic_fs::NativeFutureBundle::new(work, || async move {
+                    let (response, held) = self.run(request, Some(work)).await?;
+                    Ok((
+                        response,
+                        held.ok_or_else(|| {
+                            super::error(Some(work), "native search response lacks custody")
+                        })?,
+                    ))
+                })
+            }
+        }
+    )+ };
 }
+
+search_provider!(Exa, TinyFish);
 
 #[derive(Deserialize, crate::HeapLayout)]
 struct TinyFishResponse {
@@ -303,43 +328,6 @@ pub fn decode_search_http_response(
         codec::exa(bytes, maximum, work)
     } else {
         codec::tinyfish(bytes, maximum, work)
-    }
-}
-
-impl SearchProvider for TinyFish {
-    fn search<'a>(
-        &'a self,
-        request: &'a SearchRequest,
-    ) -> BoxProviderFuture<'a, Result<SearchResponse>> {
-        Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn search_with_native_work<'a>(
-        &'a self,
-        request: &'a SearchRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (SearchResponse, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let (response, held) = self.run(request, Some(work)).await?;
-            Ok((
-                response,
-                held.ok_or_else(|| {
-                    super::error(Some(work), "native search response lacks custody")
-                })?,
-            ))
-        })
     }
 }
 

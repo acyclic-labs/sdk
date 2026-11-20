@@ -7,11 +7,12 @@
 //! `select!` order and time come from the seed.
 use std::collections::BTreeMap;
 
-const HARNESS_SOURCES: [&str; 4] = [
+const HARNESS_SOURCES: [&str; 5] = [
     "rust/crates/harness/src/",
     "rust/crates/harness-local/src/",
-    "rust/crates/harness-hosting/src/",
+    "rust/crates/harness-hosting/",
     "rust/crates/harness-suite/src/",
+    "rust/crates/harness-workspace/src/",
 ];
 
 /// The one named opt-out: a test that needs host entropy says why on the line
@@ -19,26 +20,34 @@ const HARNESS_SOURCES: [&str; 4] = [
 const HOST_ENTROPY: &str = "// host entropy:";
 
 /// Unconverted tests, per file. This list only shrinks: converting a test
-/// lowers its count, and the last one removes the file. An unseeded test in a
-/// file that isn't listed, or beyond its count, fails the policy.
-const NOT_YET_SEEDED: [(&str, usize); 64] = [
-    ("rust/crates/harness-hosting/src/hosting_tests.rs", 3),
+/// lowers its count, and the last one removes the file. A file that moves
+/// keeps its count at its new path. An unseeded test in a file that isn't
+/// listed, or beyond its count, fails the policy.
+const NOT_YET_SEEDED: [(&str, usize); 65] = [
+    ("rust/crates/harness-hosting/tests/editor_input/cases.rs", 1),
     (
-        "rust/crates/harness-hosting/src/hosting_tests/editor_input.rs",
+        "rust/crates/harness-hosting/tests/hosted_sessions/merge.rs",
         1,
     ),
     (
-        "rust/crates/harness-hosting/src/hosting_tests/machine_results.rs",
-        1,
-    ),
-    ("rust/crates/harness-hosting/src/hosting_tests/merge.rs", 1),
-    (
-        "rust/crates/harness-hosting/src/hosting_tests/peer_delivery.rs",
+        "rust/crates/harness-hosting/tests/hosted_sessions/peer_delivery.rs",
         1,
     ),
     (
-        "rust/crates/harness-hosting/src/hosting_tests/session_pages.rs",
+        "rust/crates/harness-hosting/tests/hosted_sessions/session_pages.rs",
         1,
+    ),
+    (
+        "rust/crates/harness-hosting/tests/machine_results/cases.rs",
+        1,
+    ),
+    (
+        "rust/crates/harness-hosting/tests/session_commands/cases.rs",
+        1,
+    ),
+    (
+        "rust/crates/harness-hosting/tests/session_reads/cases.rs",
+        2,
     ),
     (
         "rust/crates/harness-local/src/local/agent_conversation/pending_tests.rs",
@@ -55,43 +64,43 @@ const NOT_YET_SEEDED: [(&str, usize); 64] = [
     ("rust/crates/harness-local/src/local/agent_settings.rs", 4),
     ("rust/crates/harness-local/src/local/agents.rs", 1),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/capture/tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/capture.rs",
         20,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/git.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/checkout_git.rs",
         3,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/hooks.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/hooks.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/publisher/mount_tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/publisher_mount.rs",
         5,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/publisher/tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/publisher.rs",
         14,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/publisher/tests/admission_cost.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/publisher/admission_cost.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/publisher/tests/granted.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/publisher/granted.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/publisher/tests/observed_cost.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/publisher/observed_cost.rs",
         9,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/publisher/tests/recovery.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/publisher/recovery.rs",
         8,
     ),
     (
-        "rust/crates/harness-local/src/local/checkout_tools/shell/job/tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/shell_job.rs",
         4,
     ),
     ("rust/crates/harness-local/src/local/config.rs", 6),
@@ -120,7 +129,7 @@ const NOT_YET_SEEDED: [(&str, usize); 64] = [
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/host_workspace/tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/host_workspace.rs",
         5,
     ),
     (
@@ -153,7 +162,7 @@ const NOT_YET_SEEDED: [(&str, usize); 64] = [
         1,
     ),
     ("rust/crates/harness-local/src/local/tests/platform.rs", 2),
-    ("rust/crates/harness-local/src/local/tests/programs.rs", 3),
+    ("rust/crates/harness-local/src/local/tests/programs.rs", 2),
     ("rust/crates/harness-local/src/local/tests/questions.rs", 5),
     ("rust/crates/harness-local/src/local/tests/replay.rs", 2),
     ("rust/crates/harness-local/src/local/tests/settings.rs", 12),
@@ -166,35 +175,35 @@ const NOT_YET_SEEDED: [(&str, usize); 64] = [
     ("rust/crates/harness-local/src/local/tool_output.rs", 1),
     ("rust/crates/harness-local/src/local/web/tests.rs", 6),
     (
-        "rust/crates/harness-local/src/local/workspace/bootstrap/tests.rs",
+        "rust/crates/harness-workspace/src/workspace/bootstrap/tests.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/git/tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/git.rs",
         2,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/performance_tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/performance.rs",
         3,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/source_tests.rs",
+        "rust/crates/harness-workspace/src/workspace/source_tests.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/task_views/concurrency_tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/task_views_concurrency.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/task_views/tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/task_views.rs",
         4,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/volumes/publication_tests.rs",
+        "rust/crates/harness-local/src/local/tests/workspace/volumes_publication.rs",
         9,
     ),
     (
-        "rust/crates/harness-local/src/local/workspace/volumes/recovery_tests.rs",
+        "rust/crates/harness-workspace/src/workspace/volumes/recovery_tests.rs",
         1,
     ),
     ("rust/crates/harness-local/src/server/tls_tests.rs", 3),

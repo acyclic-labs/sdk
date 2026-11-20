@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-auth-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-auth-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 extract_cargo_lints(
     name = "lints",
@@ -14,8 +14,10 @@ extract_cargo_lints(
 rust_binary(
     name = "addressing",
     crate_root = "fuzz_targets/addressing.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/addressing.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -27,7 +29,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -42,10 +43,11 @@ rust_binary(
 rust_binary(
     name = "authorization",
     crate_root = "fuzz_targets/authorization.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/authorization.rs",
         "//rust/crates/contract-derive:src/authorization.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -57,7 +59,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -72,8 +73,10 @@ rust_binary(
 rust_binary(
     name = "capability",
     crate_root = "fuzz_targets/capability.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/capability.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -85,7 +88,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -100,8 +102,10 @@ rust_binary(
 rust_binary(
     name = "credential",
     crate_root = "fuzz_targets/credential.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/credential.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -113,7 +117,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -128,8 +131,10 @@ rust_binary(
 rust_binary(
     name = "holder_snapshot",
     crate_root = "fuzz_targets/holder_snapshot.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/holder_snapshot.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -141,7 +146,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -156,8 +160,10 @@ rust_binary(
 rust_binary(
     name = "secret_ref",
     crate_root = "fuzz_targets/secret_ref.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/secret_ref.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -169,7 +175,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -184,10 +189,21 @@ rust_binary(
 rust_binary(
     name = "trust_record",
     crate_root = "fuzz_targets/trust_record.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/trust_record.rs",
         "//rust/crates/auth:tests/common/trust_record.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = [
+        "corpus/trust_record/environment-bootstrap",
+        "corpus/trust_record/environment-rotation",
+        "corpus/trust_record/environment-successor",
+        "corpus/trust_record/foreign-checkpoint",
+        "corpus/trust_record/foreign-keyring",
+        "corpus/trust_record/selected-epoch",
+        "corpus/trust_record/snapshot-retiring",
+        "corpus/trust_record/snapshot-unbounded",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -199,7 +215,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
@@ -214,10 +229,11 @@ rust_binary(
 rust_binary(
     name = "verifier",
     crate_root = "fuzz_targets/verifier.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/verifier.rs",
         "//rust/crates/auth:tests/common/trust.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -229,7 +245,6 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "//rust/crates/auth-wasm:acyclic_auth_wasm",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",

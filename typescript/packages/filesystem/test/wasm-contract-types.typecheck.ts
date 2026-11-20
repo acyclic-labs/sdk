@@ -190,11 +190,11 @@ export type _CheckoutTransactionInputUsesGeneratedDto = AssertExtends<
 >;
 export type _CheckoutBatchPathInputsUseGeneratedDto = AssertExtends<
   Parameters<WasmRawCheckout["lookupBatchNoFollow"]>,
-  [paths: GeneratedWasm.BrowserPathBatch]
+  [paths: string[]]
 >;
 export type _CheckoutResolvePathInputUsesGeneratedDto = AssertExtends<
   Parameters<WasmRawCheckout["resolveFiles"]>,
-  [paths: GeneratedWasm.BrowserPathBatch]
+  [paths: string[]]
 >;
 export type _TransferUsesGeneratedDtos = AssertExtends<
   Awaited<ReturnType<WasmRawFs["exportGenerationBatch"]>>,

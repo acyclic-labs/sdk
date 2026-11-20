@@ -88,6 +88,6 @@ impl From<crate::WorkObservationError> for NativeTreeMaterializationError {
 impl NativeTreeMaterializationError {
     /// Recovers the original typed runtime failure.
     pub fn from_runtime_error(error: std::io::Error) -> Self {
-        Self::from(crate::demand::native_demand_error(error))
+        Self::from(crate::ledger::native_demand_error(error))
     }
 }

@@ -9,6 +9,7 @@ mod implementation_methods;
 mod message;
 mod options;
 mod registration;
+mod schema;
 
 /// Derive a method inventory from the same implementation rustc checks.
 /// The associated constant has no independently maintained method list.

@@ -186,6 +186,7 @@ mod tests {
             attachments: Vec::new(),
             metadata: Value::Null,
             steps: 2,
+            working_context: None,
             transcript: vec![
                 calls,
                 // Results arrive out of call order; each pairs by identity.

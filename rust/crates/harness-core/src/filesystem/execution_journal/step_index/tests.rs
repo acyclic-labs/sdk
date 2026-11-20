@@ -493,17 +493,21 @@ async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<(
                 maximum: Some(1),
                 select: &|_| true,
             };
-            let result = if protected {
+            let rejected = if protected {
                 journal
                     .indexed_records(query, Some(original))?
                     .ok_or_else(|| invalid(Some(original)))?
                     .await
+                    .is_err()
             } else {
                 // The former unguarded entry point abandons a copied Started
                 // record when the second selected record exceeds the bound.
-                journal.indexed_step_inner(query, Some(original)).await
+                journal
+                    .indexed_step_inner(query, Some(original))
+                    .await
+                    .is_err()
             };
-            assert!(result.is_err());
+            assert!(rejected);
             if protected {
                 assert_eq!(
                     original.owned_bytes()?,

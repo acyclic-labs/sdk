@@ -26,7 +26,7 @@ fn block_scan_and_competing_admission_share_the_real_leaf() -> std::io::Result<(
         let scan = view.clone();
         let scanner = loom::thread::spawn(move || block_has_data(&[1], &scan).is_ok());
         let writer = loom::thread::spawn(move || {
-            view.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            view.charge(crate::ledger::NativeResourceCredit::Items.delta(1))
                 .is_ok()
         });
         let (scanned, admitted) = (scanner.join().unwrap(), writer.join().unwrap());
@@ -46,7 +46,7 @@ fn model_rejects_split_admission_and_recording() -> std::io::Result<()> {
                 NativeMaterializationWork::new(limits(1), &CancellationToken::new()).unwrap();
             let threads = [root.clone(), root.clone()].map(|work| {
                 loom::thread::spawn(move || {
-                    let item = crate::materializer::NativeResourceCredit::Items.delta(1);
+                    let item = crate::ledger::NativeResourceCredit::Items.delta(1);
                     // Deliberately broken: release the real original leaf after
                     // admission, allowing both scans to spend its single item.
                     if work.admit(item).is_ok() {
@@ -86,7 +86,7 @@ fn cancellation_preserves_completed_items_and_returns_unused_credit() -> std::io
                     // Deliberately broken: abandon accepted credit without
                     // completing or refunding it when cancellation wins.
                     let _ = scan.with_original_leaf(|work| {
-                        work.reserve(crate::materializer::NativeResourceCredit::Items.delta(2))?;
+                        work.reserve(crate::ledger::NativeResourceCredit::Items.delta(2))?;
                         loom::thread::yield_now();
                         work.check()
                     });

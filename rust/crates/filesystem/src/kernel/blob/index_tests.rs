@@ -69,8 +69,12 @@ fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn s
         };
         let original = if native {
             Some(
-                crate::NativeMaterializationWork::new(budget, &cancellation)
-                    .map_err(|(error, _)| error)?,
+                crate::NativeMaterializationWork::root(
+                    budget,
+                    &cancellation,
+                    &crate::services::ServicesInitialized::for_kernel_tests(),
+                )
+                .map_err(|(error, _)| error)?,
             )
         } else {
             None

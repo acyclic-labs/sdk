@@ -88,10 +88,11 @@ pub(super) fn replay_responses_with(
     ) -> bool,
 ) -> acyclic_harness_core::Result<Vec<serde_json::Value>> {
     use super::wire::{Item, Message};
-    let raw: Vec<_> = items
+    let raw = items
         .iter()
-        .map(|item| serde_json::to_vec(item).unwrap())
-        .collect();
+        .map(serde_json::to_vec)
+        .collect::<serde_json::Result<Vec<_>>>()
+        .map_err(|error| crate::invalid(error.to_string()))?;
     let mut messages = Vec::new();
     for (item, bytes) in items.iter().zip(&raw) {
         let next = match validated(Adapter::Responses, bytes) {
@@ -106,10 +107,11 @@ pub(super) fn replay_responses_with(
         )?;
     }
     super::sequence::finish(Adapter::Responses, &mut messages, false)?;
-    let encoded = serde_json::to_vec(&messages).unwrap();
-    match acyclic_harness_provider_response::json(&encoded).unwrap() {
+    let encoded =
+        serde_json::to_vec(&messages).map_err(|error| crate::invalid(error.to_string()))?;
+    match acyclic_harness_provider_response::json(&encoded)? {
         serde_json::Value::Array(output) => Ok(output),
-        _ => unreachable!("a message list encodes as an array"),
+        _ => Err(crate::invalid("a message list must encode as an array")),
     }
 }
 

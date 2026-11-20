@@ -1,5 +1,5 @@
 use super::*;
-use crate::materializer::NativeMaterializationWork;
+use crate::ledger::NativeMaterializationWork;
 use crate::workspace_context::{WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
 
 pub(super) fn finite_budget() -> crate::WorkBudget {

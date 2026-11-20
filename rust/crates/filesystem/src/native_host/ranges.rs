@@ -65,7 +65,7 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
             kind,
             Some(meter),
         )
-        .map_err(crate::demand::native_demand_error)
+        .map_err(crate::ledger::native_demand_error)
     })
 }
 
@@ -300,7 +300,7 @@ fn fill_windows_ranges<W: SourceDemandReadWork>(
 }
 
 #[cfg(test)]
-#[cfg(all(unix))]
+#[cfg(unix)]
 mod range_capability_tests {
     use super::*;
     use proptest::prelude::*;
@@ -314,7 +314,7 @@ mod range_capability_tests {
         ) {
             let codes = [libc::ENOTTY, libc::ENOTSUP, libc::EINVAL];
             let cancellation = crate::CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(crate::WorkBudget {
+            let mut work = crate::ledger::DemandWork::new(crate::WorkBudget {
                 allocation_operations: 1, peak_allocation_bytes: 4096, backend_read_operations: 8,
                 items_examined: 16, bytes_copied: 4096,
                 ..crate::WorkBudget::default()
@@ -346,7 +346,7 @@ mod range_capability_tests {
             let length = prior_ranges as u64 * 2 + 8;
             let codes = [libc::ENOTTY, libc::ENOTSUP, libc::EINVAL];
             let cancellation = crate::CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(crate::WorkBudget {
+            let mut work = crate::ledger::DemandWork::new(crate::WorkBudget {
                 allocation_operations: 1, peak_allocation_bytes: 4096, backend_read_operations: 16,
                 items_examined: 64, bytes_copied: 4096,
                 ..crate::WorkBudget::default()

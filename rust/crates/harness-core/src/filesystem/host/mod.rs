@@ -44,6 +44,19 @@ impl<A, O> FilesystemHost<A, O> {
         self.clock.clone()
     }
 
+    /// The host's filesystem facade, for compositions that live above the
+    /// engine and act under the same admission as its turns.
+    #[must_use]
+    pub fn filesystem(&self) -> &Fs<A, O> {
+        &self.filesystem
+    }
+
+    /// The provider identity of the host's volumes.
+    #[must_use]
+    pub fn provider(&self) -> &ProviderRef {
+        &self.provider
+    }
+
     /// The same host, with every access decision evaluated on `clock`.
     #[must_use]
     pub fn with_clock(&self, clock: Arc<dyn acyclic_stream::UnixMillisClock>) -> Arc<Self> {
@@ -276,8 +289,9 @@ mod creation_authority;
 mod journal_policy;
 mod volumes;
 mod workspaces;
-pub(in crate::filesystem) use keys::content_metadata_key_io;
-pub(crate) use keys::{content_path, map_error};
+pub use keys::content_metadata_key_io;
+pub(crate) use keys::content_path;
+pub use keys::map_error;
 pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use metadata::read_file_annotation;
 pub(in crate::filesystem) use publication::decode_content_metadata;

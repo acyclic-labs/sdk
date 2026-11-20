@@ -415,9 +415,9 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
     Ok(())
 }
 
-// Two harness publications to one volume (a turn's journal and a prompt's
-// staged input) each add a receipt beside the other's. Losing the race to
-// the other must rebase the proven-disjoint candidate on every adapter.
+// An input publication and another writer add different files to one volume.
+// The input publication must rebase its proven-disjoint candidate on every
+// adapter, retaining its original receipt.
 #[tokio::test]
 async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()> {
     for adapter in 0..3 {
@@ -456,7 +456,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
             Box::pin(async move {
                 if armed {
                     workspace
-                        .write_text("/.system/harness-uploads/racer", "racer")
+                        .write_text("/inputs/racer", "racer")
                         .await
                         .unwrap();
                 }
@@ -489,7 +489,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
             b"input"
         );
         assert_eq!(
-            host.read(&workspace, None, "/.system/harness-uploads/racer", 64, None)
+            host.read(&workspace, None, "/inputs/racer", 64, None)
                 .await?
                 .as_ref(),
             b"racer"
@@ -958,7 +958,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 create_access,
                 Some(&check_parent),
             )?
-            .await?;
+            .await
+            .inspect_err(|_| {
+                eprintln!("conditional publication: create batch (adapter {adapter})")
+            })?;
         assert_eq!(
             parent_checks.load(std::sync::atomic::Ordering::Relaxed),
             1,
@@ -1033,7 +1036,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         ));
         let observed = host
             .observe_changes(&volume, &write, &key, Some(receipt_bytes), create_access)?
-            .await?
+            .await
+            .inspect_err(|_| {
+                eprintln!("conditional publication: recover receipt (adapter {adapter})")
+            })?
             .ok_or_else(|| proof_io.invalid("conditional receipt absent"))?;
         assert_eq!(observed.generation, original.generation);
         assert_eq!(
@@ -1059,7 +1065,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 create_access,
                 None,
             )?
-            .await?;
+            .await
+            .inspect_err(|_| {
+                eprintln!("conditional publication: replay batch (adapter {adapter})")
+            })?;
         assert_eq!(replay.generation, original.generation);
         assert!(
             host.original_changes_progress(&volume, &replay, None)
@@ -1246,6 +1255,9 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     None,
                 )?
                 .await
+                .inspect_err(|_| {
+                    eprintln!("conditional publication: delete {index} (adapter {adapter})");
+                })
                 .expect("a delete-only ceiling must publish deletions");
             assert_eq!(removed.members.len(), 1);
             assert_eq!(removed.files().count(), 0);

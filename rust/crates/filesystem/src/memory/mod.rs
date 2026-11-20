@@ -5,11 +5,10 @@ use crate::foundation::{
     ProposedCommit, Sequence, authority_commit_digest,
 };
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-use crate::performance::{WorkBudget, WorkCounters};
+use crate::performance::WorkCounters;
 use crate::storage::{
-    AppendOutcome, AuthorityFailure, AuthorityStoreError, CreateAuthorityOutcome, ObjectFailure,
-    ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, ObjectWrite, ReplayLimit,
-    object_digest,
+    AppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, ObjectId, ObjectRead,
+    ObjectReadRetention, ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
 use crate::sync::Mutex;
 use crate::{AuthorityWork, FsError, WorkError};

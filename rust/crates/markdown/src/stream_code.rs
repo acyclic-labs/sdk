@@ -224,7 +224,7 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
         let mut inside = false;
         acyclic_markdown_work::record!(scan(source.len()));
         #[cfg(test)]
-        references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+        acyclic_markdown_work::work::parsed(source.len());
         for event in Parser::new_ext(&source, options()) {
             acyclic_markdown_work::record!(node());
             match event {
@@ -248,7 +248,7 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
             let source = format!("{}{line}", fence.parser_opening);
             acyclic_markdown_work::record!(scan(source.len()));
             #[cfg(test)]
-            references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+            acyclic_markdown_work::work::parsed(source.len());
             let text = Parser::new_ext(&source, options())
                 .filter_map(|event| {
                     acyclic_markdown_work::record!(node());
@@ -271,7 +271,7 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
     let mut text = String::new();
     acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
-    references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+    acyclic_markdown_work::work::parsed(source.len());
     for (event, range) in Parser::new_ext(&source, options()).into_offset_iter() {
         acyclic_markdown_work::record!(node());
         match event {

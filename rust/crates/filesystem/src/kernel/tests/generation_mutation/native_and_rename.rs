@@ -67,8 +67,12 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let source = [Mutation::File {
@@ -143,12 +147,13 @@ async fn original_root_clone_denial_releases_parents_without_copy()
     assert_eq!(standalone.spent().unwrap(), before);
     held.retire(&mut standalone)?;
     assert_eq!(standalone.standalone_parts().unwrap().0.live_bytes(), 0);
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             bytes_copied: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();

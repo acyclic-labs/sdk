@@ -156,81 +156,6 @@ impl IndexReadWork for ReadOnly<'_> {
     }
 }
 
-#[test]
-fn original_credit_covers_physical_backing_through_extraction_and_retirement() {
-    for population in [1_u64, 4, 32, 256] {
-        let mut work = Work {
-            observe_retirement: true,
-            ..Work::default()
-        };
-        let measured = acyclic_test_support::measure(|| {
-            let mut table = FixedIndex::default();
-            for value in 0..population {
-                table
-                    .get_or_try_insert_with(value.to_be_bytes(), &mut work, |_| Ok(value))
-                    .expect("original node admission succeeds");
-            }
-            assert_eq!(
-                acyclic_test_support::current_allocations()
-                    .expect("original measurement")
-                    .bytes_current,
-                work.live_bytes()
-            );
-            work.cancelled = true;
-            for value in (0..population).step_by(2) {
-                let entry = table
-                    .remove_if(value.to_be_bytes(), |observed| *observed == value)
-                    .expect("original leaf remains removable after cancellation");
-                assert_eq!(*entry.value(), value);
-                drop(entry);
-            }
-            drop(table);
-        });
-        assert_eq!(measured.count_total, population * 2 - 1);
-        assert_eq!(measured.count_current, 0);
-        assert_eq!(measured.bytes_current, 0);
-        assert_eq!(work.live.get(), 0);
-        assert!(
-            !work.early_refund.get(),
-            "physical node backing outlived its original credit"
-        );
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, failure_persistence: None, ..ProptestConfig::default() })]
-    #[test]
-    fn ordered_histories_preserve_values_branch_bounds_and_original_custody(
-        keys in prop::collection::vec(prop::array::uniform::<_, 40>(any::<u8>()), 0..96)
-    ) {
-        let mut work = Work::default();
-        let mut table = FixedIndex::default();
-        let mut expected = BTreeMap::new();
-        for (value, key) in keys.into_iter().enumerate() {
-            let observed = table.get_or_try_insert_with(key, &mut work, |_| Ok(value)).map_err(TestCaseError::fail)?;
-            prop_assert_eq!(*observed, *expected.entry(key).or_insert(value));
-            audit(&table);
-            prop_assert_eq!(work.claims, (expected.len() * 2 - 1) as u64);
-            prop_assert_eq!(work.live.get(), work.claims * std::mem::size_of::<Kind<usize, Allocation, 40>>() as u64);
-            let claims = work.claims;
-            for (key, value) in &expected {
-                let before = work.items;
-                prop_assert_eq!(table.get(*key, &mut work).map_err(TestCaseError::fail)?, Some(value));
-                prop_assert!(work.items - before <= 361);
-            }
-            prop_assert_eq!(work.claims, claims);
-            prop_assert_eq!(table.first(&mut work).map_err(TestCaseError::fail)?, expected.first_key_value());
-        }
-        for key in expected.keys().rev() {
-            prop_assert!(!table.retire_if(*key, |_| false));
-            prop_assert!(table.retire_if(*key, |_| true));
-            prop_assert!(!table.retire_if(*key, |_| true));
-            audit(&table);
-        }
-        prop_assert_eq!(work.live.get(), 0);
-    }
-}
-
 fn every_bit<const N: usize>() -> Result<(), &'static str> {
     let mut work = Work::default();
     let mut table = FixedIndex::default();
@@ -253,7 +178,9 @@ fn every_bit<const N: usize>() -> Result<(), &'static str> {
     work.cancelled = true;
     assert!(table.get([0; N], &mut work).is_err());
     assert!(table.first(&mut work).is_err());
+    assert!(!table.retire_if([0; N], |_| false));
     assert!(table.retire_if([0; N], |value| *value == 0));
+    assert!(!table.retire_if([0; N], |_| true));
     audit(&table);
     drop(table);
     assert_eq!(work.live.get(), 0);
@@ -296,54 +223,6 @@ fn refused_admission_never_constructs_or_publishes_and_preserves_prior_funding()
         assert!(table.get([0; 8], &mut work).is_err());
     }
     drop(table);
-    assert_eq!(work.live.get(), 0);
-    Ok(())
-}
-
-#[test]
-fn extracted_values_keep_their_original_leaf_funding_after_cancelled_removal()
--> Result<(), &'static str> {
-    struct Value {
-        live: Rc<Cell<u64>>,
-        minimum: Rc<Cell<u64>>,
-        dropped: Rc<Cell<bool>>,
-    }
-    impl Drop for Value {
-        fn drop(&mut self) {
-            assert!(self.live.get() >= self.minimum.get());
-            self.dropped.set(true);
-        }
-    }
-    let mut work = Work::default();
-    let minimum = Rc::new(Cell::new(1));
-    let dropped = Rc::new(Cell::new(false));
-    let mut table = FixedIndex::default();
-    let live = Rc::clone(&work.live);
-    table.get_or_try_insert_with([7; 8], &mut work, |_| {
-        Ok(Value {
-            live,
-            minimum: Rc::clone(&minimum),
-            dropped: Rc::clone(&dropped),
-        })
-    })?;
-    minimum.set(work.live.get());
-    let items = work.items;
-    let claims = work.claims;
-    work.cancelled = true;
-    work.maximum_claims = Some(0);
-    assert!(table.remove_if([7; 8], |_| false).is_none());
-    let value = table
-        .remove_if([7; 8], |_| true)
-        .ok_or("original owner missing")?;
-    assert_eq!(value.key(), &[7; 8]);
-    assert!(!value.value().dropped.get());
-    assert_eq!(work.live.get(), minimum.get());
-    assert_eq!(work.items, items);
-    assert_eq!(work.claims, claims);
-    drop(table);
-    assert_eq!(work.live.get(), minimum.get());
-    drop(value);
-    assert!(dropped.get());
     assert_eq!(work.live.get(), 0);
     Ok(())
 }

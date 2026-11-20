@@ -1,130 +1,14 @@
 //! Integration behaviour tests.
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod native_cut_custody;
+//!
+//! The behaviour suites live in their own binaries (`codec`, `native`, `engine`, `checkout`,
+//! `workspace`, `git`, `wire`), so a test edit recompiles and relinks one small binary. This root
+//! keeps the loom models, which the `--config=loom` leg names as `:main`, and the modules that
+//! need the crate-root `native_sync` or `sync` shims.
 #[cfg(loom)]
 use acyclic_fs::NativeMountError;
-#[cfg(all(
-    not(loom),
-    not(target_arch = "wasm32"),
-    any(target_os = "linux", windows)
-))]
-mod native_watch_events;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
-
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod computed_folds;
-#[cfg(not(loom))]
-mod core_group_commit;
-#[cfg(not(loom))]
-mod distributed;
-#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "test-support"))]
-mod hosted_sources;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(loom))]
-mod linux_ext4_perf;
-#[cfg(not(loom))]
-mod logical_objects;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(loom))]
-mod macos_apfs_perf;
-#[cfg(not(loom))]
-mod measured_fork;
-#[cfg(not(loom))]
-mod merge_lineage;
-#[cfg(not(loom))]
-mod recovery_concurrency;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/projfs_enumeration.rs"]
-#[cfg(not(loom))]
-mod projfs_enumeration;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/projfs_profile.rs"]
-#[cfg(not(loom))]
-mod projfs_profile;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/projfs_metadata/mod.rs"]
-#[cfg(not(loom))]
-mod projfs_metadata;
-
-#[path = "cases/access.rs"]
-#[cfg(not(loom))]
-mod access;
-
-#[path = "cases/path_properties.rs"]
-#[cfg(not(loom))]
-mod path_properties;
-
-#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
-#[path = "cases/directory_cursor.rs"]
-mod directory_cursor;
-
-#[cfg(feature = "fuzzing")]
-#[path = "cases/workspace_names.rs"]
-#[cfg(not(loom))]
-mod workspace_names;
-
-#[path = "cases/cloud_contract.rs"]
-#[cfg(not(loom))]
-mod cloud_contract;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/native_owner_retirement.rs"]
-#[cfg(not(loom))]
-mod native_owner_retirement;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/projfs_names.rs"]
-#[cfg(not(loom))]
-mod projfs_names;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/projfs_paths.rs"]
-#[cfg(not(loom))]
-mod projfs_paths;
-
-#[path = "cases/accounting_reconciliation.rs"]
-#[cfg(not(loom))]
-mod accounting_reconciliation;
-
-#[path = "cases/accounting_layout.rs"]
-#[cfg(not(loom))]
-mod accounting_layout;
-
-#[path = "cases/workspace_reads.rs"]
-#[cfg(not(loom))]
-mod workspace_reads;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/native_owner_notifications.rs"]
-#[cfg(not(loom))]
-mod native_owner_notifications;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "cases/native_source_watch_custody.rs"]
-#[cfg(not(loom))]
-mod native_source_watch_custody;
-
-#[path = "cases/session_fs.rs"]
-#[cfg(not(loom))]
-mod session_fs;
-
-// Included production regressions use these crate-root API imports.
-#[cfg(all(windows, not(target_arch = "wasm32")))]
-#[cfg(not(loom))]
-use {
-    acyclic_fs::{PublicationPermit, WorkspaceError, kernel},
-    acyclic_fs_work::performance::{OperationReceipt, WorkCounters},
-};
-
-#[cfg(all(feature = "conformance", not(target_arch = "wasm32")))]
-#[path = "cases/conformance.rs"]
-#[cfg(not(loom))]
-mod public_conformance;
 
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "../src/sync.rs"]
@@ -134,21 +18,26 @@ mod sync;
 #[path = "../src/native_sync.rs"]
 mod native_sync;
 
-#[cfg(not(loom))]
-mod fs_concurrency_bench;
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod materialization_bootstrap;
-#[cfg(not(loom))]
-mod mount_qualification;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_binding_model;
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod native_view_table_loom;
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod package_install;
+#[cfg(feature = "model-checking")]
+#[path = "operation_claim_model.rs"]
+mod operation_claim_model;
 #[cfg(all(loom, feature = "model-checking"))]
 mod session_fs_model;
-#[cfg(not(loom))]
-mod shared_storage_contract;
-#[cfg(all(not(loom), windows, not(target_arch = "wasm32")))]
-mod windows_ntfs_perf;
+
+#[cfg(all(not(loom), any(target_os = "linux", target_os = "macos", windows)))]
+#[path = "../src/native_sync/locks.rs"]
+mod native_sync;
+
+#[path = "native_view_table.rs"]
+mod native_view_table;
+
+#[cfg(feature = "browser")]
+#[path = "browser_blob_custody.rs"]
+mod browser_blob_custody;
+#[cfg(feature = "browser")]
+#[path = "browser_commit.rs"]
+mod browser_commit;

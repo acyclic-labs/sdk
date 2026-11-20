@@ -21,6 +21,36 @@ pub(in crate::filesystem) fn decode_record<T: PreparationRecord>(
 }
 
 impl PreparationIo {
+    pub(crate) fn publication_evidence_seal(
+        &self,
+        value: &impl Serialize,
+    ) -> Result<acyclic_fs::workspace::PublicationEvidenceSeal> {
+        use crate::store::HistoryIo as _;
+        type Seal = acyclic_fs::workspace::PublicationEvidenceSeal;
+        let remaining = self.remaining()?;
+        let mut observer = self.history_io();
+        observer.hashed_bytes(Seal::DOMAIN.len() as u64)?;
+        let mut digest = blake3::Hasher::new();
+        digest.update(Seal::DOMAIN);
+        let bytes = crate::executor::json::borrowed_update_with_work(
+            value,
+            JsonBounds {
+                maximum_bytes: Some(remaining.bytes_encoded),
+                maximum_items: Some(remaining.items_examined),
+                maximum_depth: RECORD_MAXIMUM_DEPTH,
+            },
+            self.original_native_work()
+                .is_some()
+                .then_some(crate::wire::ErrorCode::Invalid),
+            &mut observer,
+            &mut digest,
+        )?;
+        Ok(Seal {
+            bytes,
+            digest: acyclic_fs_format::identity::Digest::from_bytes(*digest.finalize().as_bytes()),
+        })
+    }
+
     pub(crate) fn canonical_sequence_digests<T: Serialize>(
         &self,
         values: &[T],
@@ -73,14 +103,12 @@ impl PreparationIo {
         let diagnostics = code
             .map(|_| self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes()))
             .transpose()?;
-        let result = crate::executor::with_history_io(Some(self), |work| {
-            crate::executor::json::canonical_digest_with_work(
-                value,
-                bounds,
-                code,
-                work.as_deref_mut().expect("preparation history observer"),
-            )
-        });
+        let result = crate::executor::json::canonical_digest_with_work(
+            value,
+            bounds,
+            code,
+            &mut self.history_io(),
+        );
         #[cfg(not(target_arch = "wasm32"))]
         let result = match diagnostics {
             Some(guard) => finish_encoding(guard, result),
@@ -97,10 +125,17 @@ impl PreparationIo {
         })
     }
 
-    pub(crate) fn encoded_matches<T: Serialize>(&self, value: &T, bytes: &[u8]) -> Result<bool> {
+    pub(crate) fn encoded_matches<T: Serialize>(
+        &self,
+        value: &T,
+        bytes: &[u8],
+        maximum_bytes: Option<u64>,
+    ) -> Result<bool> {
         let remaining = self.remaining()?;
         let bounds = JsonBounds {
-            maximum_bytes: Some((bytes.len() as u64).min(remaining.bytes_encoded)),
+            maximum_bytes: Some(maximum_bytes.map_or(remaining.bytes_encoded, |maximum| {
+                maximum.min(remaining.bytes_encoded)
+            })),
             maximum_items: Some(remaining.items_examined),
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
@@ -112,12 +147,13 @@ impl PreparationIo {
         let diagnostics = code
             .map(|_| self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes()))
             .transpose()?;
+        let mut charge = |event| self.codec_charge(event, true);
         let result = crate::executor::json::json_bytes_match_bounded(
             value,
             bytes,
             bounds,
             code,
-            &mut |charge| self.codec_charge(charge, true),
+            &mut charge,
         );
         #[cfg(not(target_arch = "wasm32"))]
         let result = match diagnostics {

@@ -3,8 +3,12 @@ use super::*;
 fn handoff_model<const EARLY_RETIREMENT: bool>() {
     loom::model(|| {
         let cancellation = CancellationToken::new();
-        let original =
-            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .unwrap();
         let resource = original.native_volume_work(exact_budget(1)).unwrap();
         // Keep root/resource storage owners until join. The synchronization
         // exercised here is the production crate::sync leaf/resource mutexes

@@ -342,12 +342,13 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
     let store = MemoryObjectStore::default();
     let (generation, file_id, _) = fixture(&store, None).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             backend_read_operations: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let store = PanicProbeStore {
@@ -387,8 +388,12 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
     assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     let store = store.store;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let store = PanicProbeStore {
         store,
         original: &original,
@@ -466,8 +471,12 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
         [],
     )?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
@@ -563,8 +572,12 @@ fn stack_dependency_denial_precedes_array_encoding() -> Result<(), Box<dyn std::
 fn original_stack_encoding_retains_completed_prefix_on_late_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = capture_stack_state_with_accounting(

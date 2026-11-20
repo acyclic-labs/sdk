@@ -16,7 +16,6 @@ prost = "0.14.4"
 serde_json.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 acyclic-auth = { path = "..", features = ["test-support"] }
-acyclic-auth-wasm = { path = "../../auth-wasm" }
 ed25519-dalek = "=3.0.0"
 
 [[bin]]

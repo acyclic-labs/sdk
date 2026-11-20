@@ -3,11 +3,9 @@ load("//rust/crates/test-runner:isolated_test.bzl", "isolated_test")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-FEATURES = [
-        "model-checking",
-    ]
+FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"sdk-generation","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"sdk-generation","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
     name = "lints",
@@ -17,7 +15,7 @@ extract_cargo_lints(
 rust_library(
     name = "sdk_generation",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/main.rs","tests/support/registry_transport.rs"], allow_empty = True) + [
         "//rust/crates/sdk-generation/fuzz:archive_members.rs",
         "//rust/crates/sdk-generation/fuzz:git_layout.rs",
         "//rust/crates/sdk-generation/fuzz:identity_record.rs",
@@ -31,13 +29,14 @@ rust_library(
         "//rust/crates/sdk-generation/fuzz:corpus/archive_members/native-package",
         "//rust/crates/sdk-generation/fuzz:corpus/fixture_replay/git-layout",
     ],
+    tags = ["resources:memory:512"],
     edition = "2021",
     version = "0.1.0",
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\"))",
+        "--check-cfg=cfg(feature, values())",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
@@ -69,11 +68,12 @@ rust_test(
     crate_features = FEATURES,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\"))",
+        "--check-cfg=cfg(feature, values())",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/sdk-docs:sdk_docs",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//hex-0.4.3",
@@ -109,17 +109,26 @@ rust_test(
         "//rust/crates/sdk-generation:tree",
         "//rust/crates/stream:conformance/stream.json",
         "src/lib.rs",
+    ] + [
+        "@sdk_compilers//:cargo",
+        "@sdk_compilers//:rustc",
+        "@sdk_compilers//:rustup",
     ],
-    tags = ["manual"],
+    env = {"CARGO_BIN_EXE_CARGO":"$(rootpath @sdk_compilers//:cargo)","CARGO_BIN_EXE_rustc":"$(rootpath @sdk_compilers//:rustc)","CARGO_BIN_EXE_rustup":"$(rootpath @sdk_compilers//:rustup)"},
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
+    binaries = {"@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation",
     exclude = ["::full_cloud::"],
-    workers = 1,
+    workers = 2,
     limit_seconds = 10,
     env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
 )
@@ -127,12 +136,12 @@ isolated_test(
 isolated_test(
     name = "sdk_generation_test_full-cloud",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    binaries = {"@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-generation",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
-    workers = 1,
+    workers = 2,
     limit_seconds = 10,
     env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
     tags = ["manual"],
@@ -141,17 +150,17 @@ isolated_test(
 rust_binary(
     name = "registry-transport-fixture",
     crate_root = "tests/support/registry_transport.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "tests/support/registry_transport.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.1.0",
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\"))",
+        "--check-cfg=cfg(feature, values())",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
@@ -174,15 +183,17 @@ rust_binary(
 rust_binary(
     name = "sdk-generation",
     crate_root = "src/main.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "src/main.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2021",
     version = "0.1.0",
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\"))",
+        "--check-cfg=cfg(feature, values())",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
@@ -255,13 +266,14 @@ rust_test(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\"))",
+        "--check-cfg=cfg(feature, values())",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
     deps = [
         ":sdk_generation",
     ] + [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/sdk-docs/file-identity:sdk_file_identity",
         "//rust/crates/sdk-docs:sdk_docs",
         "//rust/crates/test-support:acyclic_test_support",
@@ -309,17 +321,28 @@ rust_test(
         "src/lib.rs",
         "src/main.rs",
         "//rust/proofs/sdk-rustdoc-fixtures:feature_profiles",
+    ] + [
+        ":registry-transport-fixture",
+        ":sdk-generation",
+        "@sdk_compilers//:cargo",
+        "@sdk_compilers//:rustc",
+        "@sdk_compilers//:rustup",
     ],
-    tags = ["manual"],
+    env = {"CARGO_BIN_EXE_registry-transport-fixture":"$(rootpath :registry-transport-fixture)","CARGO_BIN_EXE_sdk-generation":"$(rootpath :sdk-generation)","CARGO_BIN_EXE_CARGO":"$(rootpath @sdk_compilers//:cargo)","CARGO_BIN_EXE_rustc":"$(rootpath @sdk_compilers//:rustc)","CARGO_BIN_EXE_rustup":"$(rootpath @sdk_compilers//:rustup)"},
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
     name = "main",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation::main",
     exclude = ["::full_cloud::"],
-    workers = 1,
+    workers = 2,
     limit_seconds = 10,
     env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
 )
@@ -327,12 +350,12 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-generation::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
-    workers = 1,
+    workers = 2,
     limit_seconds = 10,
     env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
     tags = ["manual"],

@@ -113,7 +113,7 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             // fields. Those nested checks cover the same outstanding effects;
             // only the deficit above existing credit needs another reservation.
             #[cfg(test)]
-            #[cfg(all(loom))]
+            #[cfg(loom)]
             let reuse = !model_checking::additive_reservation();
             #[cfg(not(all(test, loom)))]
             let reuse = true;

@@ -37,6 +37,7 @@ pub(super) struct SharedViews {
     pub(super) root_attr: FileAttr,
     pending: Mutex<PendingInvalidations>,
     invalidation: Condvar,
+    retired: Condvar,
     #[cfg(test)]
     pub(super) retirement_thread: OnceLock<std::thread::ThreadId>,
 }
@@ -62,7 +63,9 @@ impl PendingInvalidations {
 
 enum PendingInvalidation {
     View,
-    RetiredName(Vec<u8>),
+    RetiredName(Vec<u8>, bool),
+    Retiring,
+    Retired(std::io::Result<()>),
 }
 
 /// Wakes the shared invalidator for one view; held by that view's core.
@@ -90,18 +93,48 @@ impl SharedWake {
         }
     }
 
-    fn retire(&self, views: &SharedViews, name: Vec<u8>) {
+    fn retire(
+        &self,
+        views: &SharedViews,
+        name: Vec<u8>,
+        wait_for_invalidation: bool,
+    ) -> Result<(), NativeMountError> {
         self.queued.store(true, Ordering::Release);
         let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
         if pending.stopping {
             let removed = pending.ready.remove(self.serial);
             pending.check(removed);
-        } else if let Some(work) = pending.ready.get_mut(self.serial) {
-            *work = PendingInvalidation::RetiredName(name);
-            let scheduled = pending.ready.schedule(self.serial);
-            pending.check(scheduled);
-            drop(pending);
+            return Err(NativeMountError::FuseShutdownFailed);
+        }
+        let work = pending
+            .ready
+            .get_mut(self.serial)
+            .ok_or(NativeMountError::FuseShutdownFailed)?;
+        *work = PendingInvalidation::RetiredName(name, wait_for_invalidation);
+        let scheduled = pending.ready.schedule(self.serial);
+        if pending.check(scheduled).is_none() {
+            views.retired.notify_all();
             views.invalidation.notify_one();
+            return Err(NativeMountError::FuseShutdownFailed);
+        }
+        views.invalidation.notify_one();
+        if !wait_for_invalidation {
+            return Ok(());
+        }
+        let mut pending = views
+            .retired
+            .wait_while(pending, |pending| {
+                !pending.stopping
+                    && matches!(
+                        pending.ready.get_mut(self.serial),
+                        Some(PendingInvalidation::RetiredName(..) | PendingInvalidation::Retiring)
+                    )
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        let removed = pending.ready.remove(self.serial);
+        match pending.check(removed).flatten() {
+            Some(PendingInvalidation::Retired(result)) => result.map_err(NativeMountError::from),
+            _ => Err(NativeMountError::FuseShutdownFailed),
         }
     }
 }
@@ -143,7 +176,7 @@ impl SharedViewEntry {
     }
 
     /// Retires the view; returns whether this call retired it.
-    pub(super) fn retire(&mut self) -> Result<bool, NativeMountError> {
+    pub(super) fn retire(&mut self, wait_for_invalidation: bool) -> Result<bool, NativeMountError> {
         // Close admission, then stop queued and blocked requests before
         // waiting for every request already admitted.
         let core = &self.core;
@@ -157,7 +190,7 @@ impl SharedViewEntry {
         if let Some(wake) = core.shared_wake.get() {
             // Retire admission before queueing the name. The existing notifier
             // owns the physical write; a request/cleanup caller never does.
-            wake.retire(&self.views, name);
+            wake.retire(&self.views, name, wait_for_invalidation)?;
         }
         Ok(true)
     }
@@ -165,7 +198,7 @@ impl SharedViewEntry {
 
 impl Drop for SharedViewEntry {
     fn drop(&mut self) {
-        if let Err(error) = self.retire() {
+        if let Err(error) = self.retire(false) {
             tracing::error!(%error, "shared view retirement failed during drop");
         }
     }
@@ -195,6 +228,7 @@ impl SharedViews {
             },
             pending: Mutex::new(PendingInvalidations::default()),
             invalidation: Condvar::new(),
+            retired: Condvar::new(),
             #[cfg(test)]
             retirement_thread: OnceLock::new(),
         })
@@ -249,6 +283,7 @@ impl SharedViews {
             .unwrap_or_else(PoisonError::into_inner)
             .stopping = true;
         self.invalidation.notify_all();
+        self.retired.notify_all();
     }
 
     pub(super) fn view(&self, inode: INodeNo) -> Result<ViewLease<FuseProjection>, i32> {
@@ -282,6 +317,7 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifi
             let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
             loop {
                 if pending.stopping {
+                    views.retired.notify_all();
                     return;
                 }
                 let next = pending
@@ -289,17 +325,17 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifi
                     .pop()
                     .map(|work| work.map(|(serial, _)| serial));
                 let Some(next) = pending.check(next) else {
+                    views.retired.notify_all();
                     return;
                 };
                 if let Some(serial) = next {
-                    if matches!(
-                        pending.ready.get_mut(serial),
-                        Some(PendingInvalidation::RetiredName(_))
-                    ) {
-                        let removed = pending.ready.remove(serial);
-                        break pending.check(removed).flatten().map(|work| (serial, work));
-                    }
-                    break Some((serial, PendingInvalidation::View));
+                    let work = match pending.ready.get_mut(serial) {
+                        Some(work @ PendingInvalidation::RetiredName(..)) => {
+                            std::mem::replace(work, PendingInvalidation::Retiring)
+                        }
+                        _ => PendingInvalidation::View,
+                    };
+                    break (serial, work);
                 }
                 pending = views
                     .invalidation
@@ -307,9 +343,25 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifi
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
-        let Some((serial, work)) = next else { continue };
-        if let PendingInvalidation::RetiredName(name) = work {
-            let _ = notifier.inval_entry(ROOT_INODE, &name);
+        let (serial, work) = next;
+        if let PendingInvalidation::RetiredName(name, wait_for_invalidation) = work {
+            let result = notifier.inval_entry(ROOT_INODE, &name).or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            });
+            let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if wait_for_invalidation {
+                if let Some(work) = pending.ready.get_mut(serial) {
+                    *work = PendingInvalidation::Retired(result);
+                }
+                views.retired.notify_all();
+            } else {
+                let removed = pending.ready.remove(serial);
+                pending.check(removed);
+            }
             continue;
         }
         let Some(view) = views.views.enter(serial) else {

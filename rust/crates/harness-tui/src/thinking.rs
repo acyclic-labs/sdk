@@ -1,10 +1,7 @@
 use crate::config::{ThemeRole, ThemeStyles};
 use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::Widget,
 };
 
 #[cfg(test)]
@@ -63,11 +60,5 @@ impl<'a> Thinking<'a> {
                 })
                 .collect::<Vec<_>>(),
         )
-    }
-}
-
-impl Widget for Thinking<'_> {
-    fn render(self, area: Rect, buffer: &mut Buffer) {
-        self.line().render(area, buffer);
     }
 }

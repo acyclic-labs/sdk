@@ -24,9 +24,12 @@ fn original_extent_decode_records_only_the_completed_item_prefix()
     )?;
     let _ = bytes.pop();
     let cancellation = crate::CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let error =

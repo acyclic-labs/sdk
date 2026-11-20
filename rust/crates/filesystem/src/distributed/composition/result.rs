@@ -2,7 +2,7 @@
 use super::*;
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// A provider result retaining its original backing capacity.

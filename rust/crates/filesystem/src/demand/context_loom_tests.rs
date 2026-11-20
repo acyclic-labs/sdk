@@ -96,7 +96,10 @@ fn previous_custody_inspection_deadlocks_the_real_leaf() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "demand::context_loom_tests::previous_custody_inspection_deadlocks_the_real_leaf",
+            acyclic_test_support::unit_test_name!(
+                previous_custody_inspection_deadlocks_the_real_leaf
+            )
+            .as_str(),
             "--nocapture",
         ])
         .env(BROKEN, "1")

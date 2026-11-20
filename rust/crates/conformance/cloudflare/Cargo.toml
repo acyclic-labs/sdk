@@ -12,18 +12,17 @@ crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 acyclic-hosted-actors-conformance = { path = "../hosted-actors" }
-acyclic-agent-host-conformance = { path = "../agent-host" }
 acyclic-actors = { path = "../../actors", features = ["conformance"] }
 acyclic-auth = { path = "../../auth", features = ["test-support"] }
 acyclic-harness-core = { path = "../../harness-core" }
 acyclic-harness-client = { path = "../../harness-client", features = ["wasm"] }
+acyclic-harness-suite = { path = "../../harness-suite" }
 acyclic-fs = { path = "../../filesystem", default-features = false }
 acyclic-stream = { path = "../../stream", default-features = false, features = ["wasm-journal", "wasm", "conformance"] }
 serde.workspace = true
 serde_json.workspace = true
 serde-wasm-bindgen.workspace = true
 bytes.workspace = true
-base64 = "0.23.1"
 prost.workspace = true
 futures.workspace = true
 js-sys.workspace = true

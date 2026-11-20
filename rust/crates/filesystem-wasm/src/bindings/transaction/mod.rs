@@ -326,7 +326,7 @@ pub(in crate::bindings) fn browser_transaction_conflict(
         DependencyRegion::DirectoryName { directory_id, name } => {
             result.region = BrowserTransactionConflictRegion::DirectoryName;
             result.directory_id = Some(directory_id.into_bytes().to_vec().into());
-            result.name = Some(browser_workspace_name_value(name));
+            result.name = Some(browser_workspace_name_value(&name));
         }
         DependencyRegion::DirectoryRange {
             directory_id,
@@ -335,7 +335,7 @@ pub(in crate::bindings) fn browser_transaction_conflict(
         } => {
             result.region = BrowserTransactionConflictRegion::DirectoryRange;
             result.directory_id = Some(directory_id.into_bytes().to_vec().into());
-            result.name = after.map(browser_workspace_name_value);
+            result.name = after.as_ref().map(browser_workspace_name_value);
             result.maximum_entries = Some(maximum_entries);
         }
     }

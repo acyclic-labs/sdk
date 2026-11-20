@@ -4,7 +4,6 @@ use std::process::Command;
 use super::*;
 use sha2::{Digest, Sha256};
 
-#[path = "source_attestation_tests.rs"]
 mod source_attestation;
 
 #[test]
@@ -48,7 +47,11 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
         .write(true)
         .open(output.join(".sdk-docs-versions.v1.lock"))
         .unwrap();
-    lock.lock().unwrap();
+    let lock = acyclic_native_runtime::FileLock::acquire(
+        lock,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    )
+    .unwrap();
     write(
         &output,
         "assets/.profile-build/qualified-example.txt",

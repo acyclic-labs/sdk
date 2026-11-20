@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-test-support","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-test-support","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
     name = "lints",
@@ -19,6 +19,7 @@ cargo_build_script(
         "build.rs",
         "src/module_cases.rs",
     ],
+    tags = ["resources:memory:256"],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-test-support",
@@ -39,6 +40,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -72,11 +74,14 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(
@@ -120,13 +125,16 @@ rust_test(
     ] + [
         "//rust/crates/differential:acyclic_differential",
         "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

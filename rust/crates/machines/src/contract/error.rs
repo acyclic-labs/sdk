@@ -69,7 +69,9 @@ pub enum ProviderError {
     #[error("operation failed")]
     Failed,
     /// A terminal fork failure retains every child created before it stopped.
-    /// Pass this cut to [`crate::results::cleanup`], also after recovery.
+    /// Every failure after child creation begins takes this shape, including one
+    /// before the first birth (an empty cut), and recovery replays it. Pass this
+    /// cut to [`crate::results::cleanup`], also after recovery.
     #[error("fork {phase:?}; cleanup original children using {results:?}")]
     ForkFailed {
         phase: OperationPhase,

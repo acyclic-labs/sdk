@@ -315,13 +315,14 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), Box<dyn std::err
     #[cfg(not(target_arch = "wasm32"))]
     let original = (mode != 0)
         .then(|| {
-            crate::NativeMaterializationWork::new(
+            crate::NativeMaterializationWork::root(
                 if mode == 2 || mode == 4 {
                     WorkBudget::UNBOUNDED
                 } else {
                     budget
                 },
                 &cancellation,
+                &crate::services::ServicesInitialized::for_kernel_tests(),
             )
             .map_err(|(error, _)| error)
         })

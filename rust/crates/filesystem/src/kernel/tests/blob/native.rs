@@ -3,8 +3,12 @@
 async fn original_blob_custom_source_rejects_before_io_without_a_fresh_meter()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mut source = ScriptedSource {
@@ -46,8 +50,12 @@ async fn original_blob_partial_reads_retain_source_failure_and_cancellation_pref
 -> Result<(), Box<dyn std::error::Error>> {
     for cancelled in [false, true] {
         let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let mut source = NativePartialBlobSource {

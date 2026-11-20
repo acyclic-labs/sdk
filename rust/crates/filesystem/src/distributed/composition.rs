@@ -14,7 +14,7 @@ mod result;
 pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "composition_custody_tests.rs"]
 mod custody_tests;
 

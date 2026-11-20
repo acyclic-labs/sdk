@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/host_hooks.rs
-+++ b/rust/crates/harness/src/host_hooks.rs
+--- a/rust/crates/harness-cli/src/host_hooks.rs
++++ b/rust/crates/harness-cli/src/host_hooks.rs
 @@ -104,7 +104,7 @@
              if event == "PermissionRequest" && key == "matcher" {
                  actual.get(key).is_some_and(Value::is_string)

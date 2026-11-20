@@ -56,15 +56,15 @@ fn file_name(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 fn path(value: &str) -> bool {
-    value.starts_with('/')
-        && (value == "/" || !value.ends_with('/'))
-        && !value.contains(['%', '?', '#', '\\'])
-        && !value.chars().any(char::is_control)
-        && value
-            .split('/')
-            .skip(1)
-            .all(|p| !p.is_empty() && p != "." && p != "..")
-        || value == "/"
+    value == "/"
+        || value.starts_with('/')
+            && !value.ends_with('/')
+            && !value.contains(['%', '?', '#', '\\'])
+            && !value.chars().any(char::is_control)
+            && value
+                .split('/')
+                .skip(1)
+                .all(|p| !p.is_empty() && p != "." && p != "..")
 }
 fn index<'a, T>(
     items: &'a [T],
@@ -365,9 +365,7 @@ fn validate_entries<'a>(
                     && asset_paths.insert(asset.path.as_str())
                     && digest(&asset.sha256)
                     && asset.size > 0
-                    && match asset.role {
-                        AssetRole::Module => asset.media_type == "application/wasm",
-                    },
+                    && asset.media_type == "application/wasm",
                 &ep,
                 "entry-asset",
             )?;

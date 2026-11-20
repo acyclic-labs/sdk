@@ -14,6 +14,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(kani)");
     println!("cargo:rustc-check-cfg=cfg(loom)");
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
+    println!("cargo:rustc-check-cfg=cfg(unit_test_split)");
+    for area in [
+        "mount",
+        "mount_driver",
+        "mount_lazy",
+        "mount_adapter",
+        "mount_adapter_namespace",
+        "mount_views",
+        "mount_watch",
+        "host",
+        "workspace",
+        "workspace_accounting",
+        "workspace_merge",
+        "workspace_recovery",
+        "materializer",
+        "facade",
+        "facade_checkout",
+        "publication",
+        "kernel",
+        "foundation",
+    ] {
+        println!("cargo:rustc-check-cfg=cfg(unit_test_{area})");
+    }
     case_fold::generate()?;
     if std::env::var_os("CARGO_FEATURE_NAPI_TYPES").is_some() {
         // napi-derive emits the shared enums into this external directory.

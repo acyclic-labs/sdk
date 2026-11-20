@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::deterministic::next;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ByteKind {
@@ -185,13 +186,6 @@ fn apply_reference(
     Ok(())
 }
 
-fn next(seed: &mut u64) -> u64 {
-    *seed = seed
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
-    *seed
-}
-
 #[tokio::test]
 async fn generated_sparse_histories_match_independent_byte_model()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -348,12 +342,13 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
     let store = MemoryObjectStore::default();
     let root = put(&store, &ExtentPage::Leaf(vec![hole(0, 16)]), 8).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             bytes_copied: 0,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes().unwrap();
@@ -384,8 +379,12 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
     assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
     assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let receipt = (apply_extent_mutations_with_accounting(
         &store,

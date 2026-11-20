@@ -342,10 +342,3 @@ pub struct ActorDefinition<State, Bindings> {
         &'a GuestContext<Bindings>,
     ) -> GuestFuture<'a, GuestStreamingResponse>,
 }
-
-/// Preserve the inferred actor type without introducing an execution runtime.
-pub const fn define_actor<State, Bindings>(
-    definition: ActorDefinition<State, Bindings>,
-) -> ActorDefinition<State, Bindings> {
-    definition
-}

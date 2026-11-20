@@ -1,0 +1,1110 @@
+//! Production filesystem discovery, reload, and lazy body boundaries.
+
+use acyclic_fs::Fs;
+use acyclic_harness::{
+    AgentId, Capabilities, Error, IdempotencyKey, Result,
+    context::{
+        ContextDiscovery, ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextInput,
+        ContextPipeline, ContextPlacement, ContextReloadPolicy, ContextRoot, ContextSource,
+        InstructionScope, parse_skill_metadata,
+    },
+    conversation::{
+        ContentGrant, ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef,
+    },
+    core::{AggregateKind, Authority, AuthorityRoot},
+    filesystem::{FilesystemContentVerifier, FilesystemHost},
+    model::{ModelContent, ModelEvent},
+    resources::ProviderRef,
+    test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+struct CountingReader<'a> {
+    inner: &'a dyn ContentResidencyVerifier,
+    reads: AtomicUsize,
+    prefix: std::sync::Mutex<Option<acyclic_stream::OwnedBytes>>,
+}
+
+impl ContentResidencyVerifier for CountingReader<'_> {
+    fn capture_private_path<'a>(
+        &'a self,
+        capture: acyclic_harness::conversation::ContentCapture<'a>,
+        maximum_bytes: Option<u64>,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::CapturedContent<'a>,
+        >,
+    > {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .capture_private_path(capture, maximum_bytes, access)
+    }
+    fn read_private_range<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        range: acyclic_fs::ByteRange,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_harness::conversation::FilePathSelection,
+                acyclic_harness::conversation::Custody,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let read = self.inner.read_private_range(
+            volume,
+            granted_prefix,
+            path,
+            generation,
+            range,
+            access,
+        )?;
+        acyclic_harness::conversation::BoundedContentFuture::new(None, || async move {
+            let (selected, bytes, hold) = read.await?;
+            *self
+                .prefix
+                .lock()
+                .map_err(|error| Error::Storage(error.to_string()))? = Some(bytes.bytes().clone());
+            Ok((selected, bytes, hold))
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        reference: &'a acyclic_harness::conversation::FileRef,
+        maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::Custody,
+        >,
+    > {
+        self.inner.read(reference, maximum_bytes, ceiling, io)
+    }
+
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        maximum_bytes: Option<u64>,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            Option<(
+                acyclic_harness::conversation::FileRef,
+                acyclic_harness::conversation::Custody,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            )>,
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        let acyclic_harness::conversation::ContentAccess { ceiling, io } = access;
+
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.read_private_path(
+            volume,
+            granted_prefix,
+            path,
+            expected_generation,
+            maximum_bytes,
+            acyclic_harness::conversation::ContentAccess { ceiling, io },
+        )
+    }
+}
+
+#[tokio::test]
+async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let path = "skills/inspect/SKILL.md";
+    let original = b"---\nname: inspect\ndescription: Original description\n---\noriginal body";
+    fixture.put(path, original, "initial-skill").await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let original_skill = first_skill(&captured)?;
+    let root = &original_skill.source.root;
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
+    };
+    for unrelated in [
+        "plans/current.md",
+        "skills/inspect/notes.md",
+        "skills/inspect/nested/SKILL.md",
+        "skills-extra/inspect/SKILL.md",
+        "skills/SKILL.md",
+    ] {
+        assert!(
+            root.skill_metadata_at(
+                &reader,
+                unrelated,
+                &original_skill.source.generation,
+                "SKILL.md",
+                declaration.limits,
+            )
+            .await?
+            .is_none()
+        );
+    }
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 0);
+    let workspace = acyclic_harness::filesystem::workspace_ref(
+        fixture.volume.provider().clone(),
+        &fixture.volume.storage_name(&mut None)?,
+    )?;
+    let mut replacement = b"---\nname: inspect\ndescription: Revised description\n---\n".to_vec();
+    replacement.resize(100_000, b'x');
+    fixture.put(path, &replacement, "revised-skill").await?;
+    let generation = fixture.host.resolve(&workspace, None).await?.generation;
+    // This reader deliberately has no directory-list implementation. A rescan
+    // or complete body read cannot satisfy the changed-path operation.
+    let revised = root
+        .skill_metadata_at(&reader, path, &generation, "SKILL.md", declaration.limits)
+        .await?
+        .ok_or_else(|| Error::NotFound("changed skill metadata".into()))?;
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(revised.description, "Revised description");
+    assert_eq!(revised.source.generation, generation);
+    assert_eq!(original_skill.description, "Original description");
+    let (_, body) = original_skill.source.read(&reader, 256).await?;
+    assert_eq!(body.as_ref(), original);
+
+    fixture
+        .put(path, b"malformed replacement", "malformed-skill")
+        .await?;
+    let malformed = fixture.host.resolve(&workspace, None).await?.generation;
+    assert!(
+        root.skill_metadata_at(&reader, path, &malformed, "SKILL.md", declaration.limits)
+            .await
+            .is_err()
+    );
+    assert_eq!(revised.description, "Revised description");
+    assert_eq!(revised.source.generation, generation);
+
+    // Inspect the real provider's retained allocation at the shared adapter
+    // boundary. Equal contents alone would miss a copied prefix and its owner.
+    use acyclic_harness::context::SkillReader;
+    let acyclic_harness::context::SkillPrefix {
+        bytes: prefix,
+        pinned,
+        ..
+    } = acyclic_harness::context::VolumeDiscovery {
+        reader: &reader,
+        root,
+        io: None,
+    }
+    .skill_prefix(path, &generation, declaration.limits.header_bytes)?
+    .await?;
+    let retained = reader.prefix.lock().unwrap();
+    let retained = retained.as_ref().expect("real prefix read completed");
+    assert_eq!(prefix.as_ptr(), retained.as_ptr());
+    assert_eq!(pinned, revised.source);
+    let copied = prefix.to_vec();
+    assert_eq!(copied.as_slice(), prefix.as_ref());
+    assert_ne!(copied.as_ptr(), retained.as_ptr(), "copy negative control");
+    Ok(())
+}
+
+#[path = "../context_discovery_cases/manifest.rs"]
+mod manifest;
+
+type TestJournal = acyclic_harness::filesystem::FilesystemExecutionJournal<
+    acyclic_stream::MemoryStream,
+    acyclic_fs::MemoryAuthorityBackend,
+    acyclic_fs::MemoryObjectBackend,
+>;
+
+fn first_skill(
+    snapshot: &acyclic_harness::context::DiscoveredContext,
+) -> Result<&acyclic_harness::context::SkillMetadata> {
+    snapshot
+        .skills
+        .first()
+        .ok_or_else(|| Error::NotFound("captured skill".into()))
+}
+
+fn executor(
+    snapshot: acyclic_harness::context::DiscoveredContext,
+    provider: Arc<ScriptedModelProvider>,
+) -> Result<acyclic_harness::executor::StockExecutor> {
+    Ok(acyclic_harness::executor::StockExecutor::new(
+        acyclic_harness::model::Model::new("test".into(), "model".into(), "1".into())?,
+        provider,
+        ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
+        acyclic_harness::tool::ToolRegistry::default(),
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled))
+}
+
+fn assert_lazy_request(provider: &ScriptedModelProvider) -> Result<()> {
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(provider.remaining(), 0);
+    let request = serde_json::to_string(
+        requests
+            .first()
+            .ok_or_else(|| Error::NotFound("model request".into()))?,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(request.contains("Inspect files"));
+    assert!(!request.contains("SECRET BODY"));
+    Ok(())
+}
+
+struct Fixture {
+    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
+    issuer: AuthorityRoot,
+    scope: acyclic_harness::core::Scope,
+    volume: VolumeRef,
+    writer: ContentGrant,
+    reader: Arc<dyn ContentResidencyVerifier>,
+}
+
+impl Fixture {
+    async fn journal_volume(&self) -> Result<(VolumeRef, acyclic_harness::core::Scope)> {
+        let private = VolumeRef::new(
+            self.volume.provider().clone(),
+            "journal".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )?;
+        self.host.create_volume(&private).await?;
+        let scope = self.issuer.bootstrap_scope(
+            "journal",
+            &Capabilities::new([
+                // This scope belongs to the host journal reader/writer.
+                acyclic_harness::contract::capability::HARNESS_HOST.to_owned(),
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+                self.volume.capability(VolumeOperation::Read, &mut None)?,
+                self.volume.directory_read_capability("", &mut None)?,
+            ]),
+            Some(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )?;
+        Ok((private, scope))
+    }
+
+    fn journal(
+        &self,
+        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
+        private: &VolumeRef,
+        scope: &acyclic_harness::core::Scope,
+    ) -> Result<TestJournal> {
+        Ok(TestJournal::new(
+            stream,
+            self.host.clone(),
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: private,
+                verifier: &self.issuer.verifier(&mut None)?,
+                scope,
+                io: None,
+            },
+        )?
+        .with_input_verifier(self.reader.clone()))
+    }
+    async fn new() -> Result<Self> {
+        let provider = ProviderRef::new(
+            "discovery".into(),
+            "filesystem".into(),
+            "2".into(),
+            &mut None,
+        )?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = AgentId::from_bytes([1; 16]);
+        let volume = VolumeRef::new(
+            provider,
+            "sources".into(),
+            VolumeClass::SessionShared,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let issuer = AuthorityRoot::new(
+            "discovery",
+            [9; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "test".into(),
+            },
+        );
+        let scope = issuer.bootstrap_scope(
+            "owner",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.directory_read_capability("", &mut None)?,
+            ]),
+            Some(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let verifier = issuer.verifier(&mut None)?;
+        let writer = ContentGrant::verify(
+            &verifier,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+        Ok(Self {
+            host,
+            issuer,
+            scope,
+            volume,
+            writer,
+            reader,
+        })
+    }
+
+    async fn put(&self, path: &str, bytes: &[u8], key: &str) -> Result<()> {
+        self.host
+            .put_content(
+                &self.volume,
+                &self.writer,
+                path,
+                bytes,
+                "text/plain",
+                "source.md",
+                Some(1_000_000),
+                &IdempotencyKey::new(key)?,
+                None,
+                acyclic_harness::conversation::ContentAccess::default(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    fn declaration(&self) -> ContextDiscovery {
+        let root = ContextRoot {
+            volume: self.volume.clone(),
+            directory: String::new(),
+        };
+        ContextDiscovery {
+            instructions: vec![InstructionScope {
+                root: root.clone(),
+                active_directory: "project".into(),
+            }],
+            skills: vec![ContextRoot {
+                directory: "skills".into(),
+                ..root
+            }],
+            policy: ContextDiscoveryPolicy::default(),
+            limits: ContextDiscoveryLimits {
+                entries: 64,
+                directories: 8,
+                header_bytes: 256,
+                instruction_bytes: 512,
+            },
+        }
+    }
+}
+
+#[tokio::test]
+async fn production_default_policy_loads_both_instruction_names_in_ancestor_order() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let paths = [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "project/AGENTS.md",
+        "project/CLAUDE.md",
+    ];
+    for path in paths {
+        fixture.put(path, path.as_bytes(), path).await?;
+    }
+    let mut declaration = fixture.declaration();
+    declaration.policy = ContextDiscoveryPolicy::default();
+    declaration.skills.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(
+        captured
+            .instructions
+            .iter()
+            .map(|file| file.path())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let (publisher, journal_reader, _, _) = manifest::storage(&fixture).await?;
+    let original = b"---\nname: inspect\ndescription: Inspect files\n---\noriginal body";
+    fixture
+        .put("skills/inspect/SKILL.md", original, "skill")
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    fixture
+        .put("skills/inspect/SKILL.md", b"replacement", "replacement")
+        .await?;
+    let skill = first_skill(&captured)?;
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        prefix: std::sync::Mutex::new(None),
+    };
+    let message = skill
+        .invoke(
+            &reader,
+            publisher.as_ref(),
+            journal_reader.as_ref(),
+            Some(512),
+        )
+        .await?;
+    let ModelContent::Text(text) = message.content else {
+        return Err(Error::Invalid("expected skill text".into()));
+    };
+    assert_eq!(text.as_bytes(), original);
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
+    assert!(
+        skill
+            .invoke(
+                fixture.reader.as_ref(),
+                publisher.as_ref(),
+                journal_reader.as_ref(),
+                Some(8)
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        skill
+            .invoke(
+                fixture.reader.as_ref(),
+                publisher.as_ref(),
+                journal_reader.as_ref(),
+                Some(0)
+            )
+            .await
+            .is_err()
+    );
+    for (key, byte) in [("nul-body", 0), ("invalid-body", 255)] {
+        let mut body = original.to_vec();
+        body.push(byte);
+        fixture.put("skills/inspect/SKILL.md", &body, key).await?;
+        let captured = declaration.capture(fixture.reader.as_ref()).await?;
+        assert!(
+            first_skill(&captured)?
+                .invoke(
+                    fixture.reader.as_ref(),
+                    publisher.as_ref(),
+                    journal_reader.as_ref(),
+                    Some(512)
+                )
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("AGENTS.md", b"root rules", "root").await?;
+    fixture
+        .put("project/AGENTS.md", b"project rules", "project")
+        .await?;
+    let skill = b"---\nname: inspect\ndescription: Inspect the selected source\nmetadata:\n  category: review\n---\n";
+    let mut large = skill.to_vec();
+    large.resize(100_000, b'x');
+    fixture
+        .put("skills/inspect/SKILL.md", &large, "skill")
+        .await?;
+    let declaration = fixture.declaration();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(
+        captured
+            .instructions
+            .iter()
+            .map(|file| file.path())
+            .collect::<Vec<_>>(),
+        ["AGENTS.md", "project/AGENTS.md"]
+    );
+    assert_eq!(captured.skills.len(), 1);
+    assert!(
+        first_skill(&captured)?
+            .source
+            .read(fixture.reader.as_ref(), 32_768)
+            .await
+            .is_err()
+    );
+    let old = ContextPipeline::new(
+        [Arc::new(captured.clone().stage(ContextPlacement::Prepend)?)
+            as Arc<dyn acyclic_harness::context::ContextStage>],
+    );
+    fixture
+        .put("AGENTS.md", b"changed rules", "changed-root")
+        .await?;
+    fixture
+        .put(
+            "skills/inspect/SKILL.md",
+            b"---\nname: inspect\ndescription: New description\n---\nnew body",
+            "changed-skill",
+        )
+        .await?;
+    let pinned = declaration
+        .for_request(
+            fixture.reader.as_ref(),
+            &captured,
+            ContextReloadPolicy::default(),
+        )
+        .await?;
+    assert_eq!(captured, pinned);
+    let live = declaration
+        .for_request(
+            fixture.reader.as_ref(),
+            &captured,
+            ContextReloadPolicy::NextRequest,
+        )
+        .await?;
+    assert_ne!(captured.instructions, live.instructions);
+    assert_eq!(
+        first_skill(&captured)?.description,
+        "Inspect the selected source"
+    );
+    assert_eq!(first_skill(&live)?.description, "New description");
+    let new = old.reload(ContextPipeline::new([
+        Arc::new(live.stage(ContextPlacement::Prepend)?)
+            as Arc<dyn acyclic_harness::context::ContextStage>,
+    ]))?;
+    assert_ne!(old.contracts(None)?, new.contracts(None)?);
+    let input = ContextInput {
+        input: ModelContent::Text("inspect".into()),
+        selected_context: None,
+        step: 0,
+        prior_messages: Vec::new(),
+    };
+    let old_context = old.run(&input, Limits::default(), None).await?;
+    let recovered: acyclic_harness::context::DiscoveredContext = serde_json::from_slice(
+        &serde_json::to_vec(&captured).map_err(|e| Error::Invalid(e.to_string()))?,
+    )
+    .map_err(|e| Error::Invalid(e.to_string()))?;
+    let restarted = ContextPipeline::new([Arc::new(recovered.stage(ContextPlacement::Prepend)?)
+        as Arc<dyn acyclic_harness::context::ContextStage>]);
+    assert_eq!(
+        old_context,
+        restarted.run(&input, Limits::default(), None).await?
+    );
+    assert_ne!(old_context, new.run(&input, Limits::default(), None).await?);
+    fixture
+        .put(
+            "skills/inspect/SKILL.md",
+            b"---\nname: [invalid]\n---\n",
+            "invalid",
+        )
+        .await?;
+    assert!(declaration.capture(fixture.reader.as_ref()).await.is_err());
+    assert_eq!(old_context, old.run(&input, Limits::default(), None).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovery_denies_authority_and_bounds_work_without_partial_success() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.put("AGENTS.md", b"root", "root").await?;
+    fixture.put("project/AGENTS.md", b"child", "child").await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"---\nname: same\ndescription: one\n---\nbody",
+            "a",
+        )
+        .await?;
+    fixture
+        .put(
+            "skills/b/SKILL.md",
+            b"---\nname: same\ndescription: two\n---\nbody",
+            "b",
+        )
+        .await?;
+    let mut declaration = fixture.declaration();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(captured.skills.len(), 2);
+    assert!(captured.skills.iter().all(|skill| skill.name == "same"));
+    assert_eq!(captured.skills[0].source.path, "skills/a/SKILL.md");
+    assert_eq!(captured.skills[1].source.path, "skills/b/SKILL.md");
+    declaration.policy.skill_name = None;
+    declaration.limits.entries = 1;
+    assert!(matches!(
+        declaration.capture(fixture.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
+    declaration.limits.entries = 64;
+    let scope = fixture
+        .issuer
+        .bootstrap_scope(
+            "denied",
+            &Capabilities::default(),
+            Some(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )
+        .expect("scope proof");
+    let denied = FilesystemContentVerifier::new(
+        fixture.host.clone(),
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        32_768,
+        None,
+    )?;
+    assert!(matches!(
+        declaration.capture(denied.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
+    ));
+    declaration.policy.instruction_names.clear();
+    assert_eq!(
+        declaration.capture(denied.as_ref()).await?,
+        Default::default()
+    );
+    declaration
+        .policy
+        .instruction_names
+        .push("AGENTS.md".into());
+    fixture.put("AGENTS.md", &[b'x'; 513], "oversized").await?;
+    assert!(matches!(
+        declaration.capture(fixture.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
+    fixture.put("AGENTS.md", b"bad\0text", "nul").await?;
+    assert!(matches!(
+        declaration.capture(fixture.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_frontmatter_has_explicit_outcomes() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"---\nname: valid\ndescription: valid\n---\nbody",
+            "a",
+        )
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let source = captured
+        .skills
+        .first()
+        .ok_or_else(|| Error::NotFound("captured skill".into()))?
+        .source
+        .clone();
+    for invalid in [
+        b"no frontmatter".as_slice(),
+        b"---\nname: a\ndescription: x\n",
+        b"---\nname: a\nname: b\ndescription: x\n---\n",
+        b"---\nname: a\ndescription: ''\n---\n",
+        b"---\nname: A\ndescription: x\n---\n",
+        b"---\nname: a\ndescription: \xff\n---\n",
+        b"---\nname: a\ndescription: x\nmetadata: {k: 1, k: 2}\n---\n",
+        b"---\nname: a\ndescription: &x value\nmetadata: *x\n---\n",
+        b"---\nname: a\ndescription: !include secret\n---\n",
+    ] {
+        assert!(parse_skill_metadata(invalid, source.clone()).is_err());
+    }
+    let valid = parse_skill_metadata(
+        b"---\r\nname: inspect\r\ndescription: >-\r\n  Inspect selected\r\n  files\r\n---\r\n\xff",
+        source.clone(),
+    )?;
+    assert_eq!(valid.description, "Inspect selected files");
+    let nested = format!(
+        "---\nname: a\ndescription: x\nmetadata: {}0{}\n---\n",
+        "[".repeat(32),
+        "]".repeat(32)
+    );
+    assert!(parse_skill_metadata(nested.as_bytes(), source).is_ok());
+    let mut forged = captured;
+    forged
+        .skills
+        .first_mut()
+        .ok_or_else(|| Error::NotFound("forged skill".into()))?
+        .name = "Invalid".into();
+    assert!(
+        forged
+            .load(
+                &ContextInput {
+                    input: ModelContent::Text("inspect".into()),
+                    selected_context: None,
+                    step: 0,
+                    prior_messages: Vec::new(),
+                },
+                Limits::default(),
+                None,
+            )?
+            .await
+            .is_err()
+    );
+    forged
+        .skills
+        .first_mut()
+        .ok_or_else(|| Error::NotFound("forged skill".into()))?
+        .name = "valid".into();
+    forged
+        .skills
+        .first_mut()
+        .ok_or_else(|| Error::NotFound("forged skill".into()))?
+        .fields
+        .insert("description".into(), serde_json::json!("overridden"));
+    assert!(forged.stage(ContextPlacement::Prepend).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn admitted_frontmatter_has_no_extra_size_or_node_ceilings() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"---\nname: a\ndescription: x\n---\n",
+            "a",
+        )
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let source = first_skill(&captured)?.source.clone();
+    let name = "a".repeat(128);
+    let description = "d".repeat(2_048);
+    let payload = "x".repeat(70_000);
+    let items = vec!["0"; 3_000].join(",");
+    let prefix = format!(
+        "---\nname: {name}\ndescription: {description}\npayload: {payload}\nitems: [{items}]\n---\n"
+    );
+    let metadata = parse_skill_metadata(prefix.as_bytes(), source)?;
+    assert_eq!(metadata.name, name);
+    assert_eq!(metadata.description, description);
+    assert_eq!(
+        metadata
+            .fields
+            .get("payload")
+            .and_then(serde_json::Value::as_str),
+        Some(payload.as_str())
+    );
+    assert_eq!(
+        metadata
+            .fields
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(3_000)
+    );
+    declaration.skills.clear();
+    declaration.limits.header_bytes = 65_537;
+    assert!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await?
+            .skills
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
+    let instructions = Fixture::new().await?;
+    instructions
+        .put("AGENTS.md/child", b"wrong kind", "directory")
+        .await?;
+    let mut declaration = instructions.declaration();
+    declaration.instructions.clear();
+    declaration.instructions.push(InstructionScope {
+        root: ContextRoot {
+            volume: instructions.volume.clone(),
+            directory: String::new(),
+        },
+        active_directory: String::new(),
+    });
+    declaration.policy.skill_name = None;
+    assert!(matches!(
+        declaration.capture(instructions.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
+
+    let skills = Fixture::new().await?;
+    skills
+        .put("skills/a/SKILL.md/child", b"wrong kind", "directory")
+        .await?;
+    let mut declaration = skills.declaration();
+    declaration.instructions.clear();
+    assert!(matches!(
+        declaration.capture(skills.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
+    use acyclic_harness::{OperationId, executor::TurnInput};
+    use acyclic_stream::MemoryStream;
+    let fixture = Fixture::new().await?;
+    fixture
+        .put("AGENTS.md", b"original instructions", "root")
+        .await?;
+    fixture
+        .put("project/AGENTS.md", b"project instructions", "project")
+        .await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY",
+            "skill",
+        )
+        .await?;
+    let declaration = fixture.declaration();
+    let snapshot = declaration.capture(fixture.reader.as_ref()).await?;
+    let (private, scope) = fixture.journal_volume().await?;
+    let stream = Arc::new(MemoryStream::default());
+    let journal = fixture.journal(stream.clone(), &private, &scope)?;
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: serde_json::Value::Null,
+        }),
+    ])]));
+    let original_executor = executor(snapshot.clone(), provider.clone())?;
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::from_bytes([7; 16]),
+        input: ModelContent::Text("inspect".into()),
+        selected_context: None,
+    };
+    let first = original_executor
+        .model_step(&journal, &input, 0, &[])
+        .await?;
+    fixture
+        .put("AGENTS.md", b"replacement instructions", "replace")
+        .await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"not a valid skill anymore",
+            "replace-skill",
+        )
+        .await?;
+    assert!(declaration.capture(fixture.reader.as_ref()).await.is_err());
+    let restored = serde_json::from_slice(
+        &serde_json::to_vec(&snapshot).map_err(|e| Error::Invalid(e.to_string()))?,
+    )
+    .map_err(|e| Error::Invalid(e.to_string()))?;
+    let restarted = executor(restored, provider.clone())?;
+    let recovered_journal = fixture.journal(stream, &private, &scope)?;
+    assert_eq!(
+        first,
+        restarted
+            .model_step(&recovered_journal, &input, 0, &[])
+            .await?
+    );
+    assert_lazy_request(provider.as_ref())?;
+    assert_eq!(
+        snapshot
+            .skills
+            .first()
+            .ok_or_else(|| Error::NotFound("skill".into()))?
+            .source
+            .read(fixture.reader.as_ref(), 32_768)
+            .await?
+            .1
+            .as_ref(),
+        b"---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"---\nname: inspect\ndescription: Inspect files\n---\nbody",
+            "skill",
+        )
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let mut source = first_skill(&captured)?.source.clone();
+    source.generation = acyclic_harness::resources::GenerationRef::new(
+        fixture.volume.provider(),
+        &([255; 32]),
+        Some("missing"),
+        None,
+    )?
+    .0;
+    use acyclic_harness::context::InstructionReader;
+    let mut instructions = acyclic_harness::context::VolumeDiscovery {
+        reader: fixture.reader.as_ref(),
+        root: &source.root,
+        io: None,
+    };
+    assert!(
+        instructions
+            .instruction(&source.path, &source.generation, 32_768)
+            .await
+            .is_err(),
+        "missing generation must not omit the selected instruction"
+    );
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            &source.root.directory,
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&source.generation),
+            true,
+        )
+        .await
+        .is_err(),
+        "missing generation must not omit the optional skill directory"
+    );
+    assert!(
+        instructions
+            .instruction(
+                "skills/missing/SKILL.md",
+                &first_skill(&captured)?.source.generation,
+                32_768,
+            )
+            .await?
+            .is_none(),
+        "only an absent filename is optional"
+    );
+    for (directory, active) in [("skills", "missing"), ("skills/missing", "")] {
+        assert!(
+            acyclic_harness::context::capture_instructions(
+                &mut instructions,
+                directory,
+                active,
+                &["SKILL.md".into()],
+                &mut acyclic_harness::context::DiscoveryWork::default(),
+                Some(&first_skill(&captured)?.source.generation),
+            )
+            .await
+            .is_err(),
+            "a missing declared instruction directory must not omit context: {directory}/{active}"
+        );
+    }
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            "skills/missing",
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&first_skill(&captured)?.source.generation),
+            true,
+        )
+        .await?
+        .is_empty(),
+        "an absent optional skill directory has no catalog"
+    );
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            "skills/missing",
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&first_skill(&captured)?.source.generation),
+            false,
+        )
+        .await
+        .is_err(),
+        "an absent required skill directory must remain an error"
+    );
+    let unavailable = FilesystemContentVerifier::new(
+        FilesystemHost::new(Fs::memory(), fixture.volume.provider(), None)?,
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope,
+        32_768,
+        None,
+    )?;
+    let mut unavailable_instructions = acyclic_harness::context::VolumeDiscovery {
+        reader: unavailable.as_ref(),
+        root: &source.root,
+        io: None,
+    };
+    let missing_skill_authority = acyclic_harness::context::discover_skills_from(
+        &mut unavailable_instructions,
+        &source.root.directory,
+        "SKILL.md",
+        &mut acyclic_harness::context::DiscoveryWork::default(),
+        Some(&first_skill(&captured)?.source.generation),
+        true,
+    )
+    .await;
+    assert!(
+        matches!(
+            missing_skill_authority,
+            Err(error) if error.code() == acyclic_harness::wire::ErrorCode::NotFound
+        ),
+        "missing source authority must not omit the optional skill directory"
+    );
+    let missing_authority = unavailable_instructions
+        .instruction(
+            &source.path,
+            &first_skill(&captured)?.source.generation,
+            32_768,
+        )
+        .await;
+    assert!(
+        matches!(
+            missing_authority,
+            Err(error) if error.code() == acyclic_harness::wire::ErrorCode::NotFound
+        ),
+        "missing source authority must not omit the selected instruction"
+    );
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
+    assert!(
+        fixture
+            .reader
+            .read_private_prefix(
+                &source.root.volume,
+                &source.root.directory,
+                &source.path,
+                &source.generation,
+                256,
+                acyclic_harness::conversation::ContentAccess::default(),
+            )?
+            .await
+            .is_err()
+    );
+    source = first_skill(&captured)?.source.clone();
+    source.path = "AGENTS.md".into();
+    assert!(matches!(
+        source.read(fixture.reader.as_ref(), 32_768).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
+    source.path = "skills/missing/SKILL.md".into();
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
+    Ok(())
+}

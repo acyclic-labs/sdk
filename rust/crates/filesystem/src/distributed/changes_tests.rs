@@ -1019,8 +1019,12 @@ async fn a_delta_larger_than_one_command_is_published_by_reference_in_its_own_co
         &mut work,
     )?;
     let (_, initial_root) = fixture_publication_root(&store, authority, &cancellation).await?;
-    // One source import whose listed changes alone exceed one command.
-    let (directories, files) = source_tree("/src", 6144);
+    // One source import whose listed changes alone exceed one command. Each
+    // entry's payload is its full key plus its encoded record, so a few
+    // thousand long paths already pass the half-command inline budget; the
+    // count keeps a wide margin over that boundary without building a tree
+    // several times larger than the property needs.
+    let (directories, files) = source_tree("/src", 4096);
     let directories: Vec<_> = directories.iter().map(String::as_str).collect();
     let files: Vec<_> = files
         .iter()

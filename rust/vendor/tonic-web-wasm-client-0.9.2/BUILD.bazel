@@ -6,7 +6,7 @@ FEATURES = []
 
 WASM_FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-tonic-web-wasm-client","CARGO_PKG_DESCRIPTION":"grpc-web implementation for use by tonic clients in browsers via webassembly","CARGO_PKG_REPOSITORY":"https://github.com/devashishdxt/tonic-web-wasm-client","CARGO_PKG_LICENSE":"MIT/Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-tonic-web-wasm-client","CARGO_PKG_DESCRIPTION":"grpc-web implementation for use by tonic clients in browsers via webassembly","CARGO_PKG_REPOSITORY":"https://github.com/devashishdxt/tonic-web-wasm-client","CARGO_PKG_LICENSE":"MIT/Apache-2.0"}
 
 extract_cargo_lints(
     name = "lints",
@@ -18,6 +18,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -36,6 +37,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

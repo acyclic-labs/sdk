@@ -7,6 +7,26 @@ use crate::{
     tool::ToolRegistry,
 };
 
+fn dump_log(path: &std::path::Path, from: u64) -> Vec<(String, usize)> {
+    let bytes = std::fs::read(path).unwrap();
+    let mut offset = usize::try_from(from).unwrap();
+    let mut out = Vec::new();
+    while offset + 8 <= bytes.len() {
+        let len = usize::try_from(u64::from_le_bytes(
+            bytes[offset..offset + 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        let body = &bytes[offset + 8..offset + 8 + len];
+        let op = body[0];
+        let klen = u32::from_le_bytes(body[1..5].try_into().unwrap()) as usize;
+        let key = String::from_utf8_lossy(&body[5..5 + klen]).to_string();
+        let vlen = len - 5 - klen;
+        out.push((format!("{op}:{key}"), vlen));
+        offset += 8 + len + 32;
+    }
+    out
+}
+
 fn selection(messages: Vec<ModelMessage>) -> crate::projection::SelectedModelContext {
     crate::projection::SelectedModelContext {
         selection: crate::conversation::ModelContextSelection {
@@ -134,6 +154,22 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
         let current = input(OperationId::new(), &selected);
         let output = executor.execute(current.clone(), &journal).await?;
         let written = log_length()? - before;
+        if history == 1 || history == 512 {
+            let frames = dump_log(&directory.path().join("log"), before);
+            let mut by_size: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::new();
+            for (_, vlen) in &frames {
+                *by_size.entry(*vlen).or_default() += 1;
+            }
+            eprintln!(
+                "frames history={history} count={} total={}",
+                frames.len(),
+                frames.iter().map(|(_, vlen)| vlen).sum::<usize>()
+            );
+            for (size, count) in by_size {
+                eprintln!("frames history={history} size={size} count={count}");
+            }
+        }
         let baseline = *first_log_write.get_or_insert(written);
         // Measure the real persistent object log, including namespace and
         // durability records, rather than an obsolete staging span. Appending

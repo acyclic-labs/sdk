@@ -84,12 +84,13 @@ async fn original_path_frame_refusal_preserves_successful_prefix_without_backend
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
+    let original = crate::NativeMaterializationWork::root(
         WorkBudget {
             allocation_operations: 1,
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
     )
     .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();
@@ -134,8 +135,12 @@ async fn original_path_frame_refusal_preserves_successful_prefix_without_backend
 fn original_path_item_effect_runs_without_root_loan_and_survives_late_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let inspected = examine_item(&mut accounting, None, || original.receipt().unwrap())?;
@@ -161,8 +166,12 @@ fn original_path_item_effect_runs_without_root_loan_and_survives_late_cancellati
 fn original_path_slot_reserve_failure_keeps_actual_cause_and_retires_only_claimed_backing()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt().unwrap();
     let live_before = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);

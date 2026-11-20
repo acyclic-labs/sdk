@@ -181,25 +181,6 @@ impl RuntimeScope {
             })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn validate_narrowing_with_native_work(
-        &self,
-        grants: &Capabilities,
-        limits: &Limits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        (limits).validate(&mut Some(&mut crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        )))?;
-        if !self.allows_authority(grants, limits) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "runtime scope cannot widen ancestor authority",
-            });
-        }
-        Ok(())
-    }
-
     /// Copies existing grants and concrete metadata on the original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn clone_with_native_work(
@@ -208,18 +189,6 @@ impl RuntimeScope {
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let grants = crate::Capabilities::copy(self.grants.iter(), work)?;
         self.clone_native_metadata(grants, self.limits, self.extensions_sealed, work)
-    }
-
-    /// Attenuates paid grants using the ordinary checks and native metadata copy.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn narrow_with_native_work(
-        &self,
-        grants: (Capabilities, acyclic_fs::NativeAllocation),
-        limits: Limits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        self.validate_narrowing_with_native_work(&grants.0, &limits, work)?;
-        self.clone_native_metadata(grants, limits, true, work)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -293,36 +262,6 @@ impl RuntimeScope {
     #[must_use]
     pub const fn extensions(&self) -> Option<&ExtensionAdmission> {
         self.extensions.as_ref()
-    }
-
-    /// Binds process-local executable implementations for this scope.
-    pub fn with_extension_runtime(mut self, runtime: Arc<ExtensionRuntime>) -> Result<Self> {
-        self.validate_extension_runtime(&runtime)?;
-        if let Some(original) = &self.extension_runtime
-            && !original.selected().eq(runtime.selected())
-        {
-            return Err(Error::Conflict(
-                "runtime scope cannot retarget linked extension implementations".into(),
-            ));
-        }
-        self.extension_runtime = Some(runtime);
-        Ok(self)
-    }
-
-    pub(super) fn validate_extension_runtime(&self, runtime: &ExtensionRuntime) -> Result<()> {
-        runtime.validate_admission(self.extensions.as_ref(), &mut None)?;
-        if let Some(schemas) = &self.extension_schemas {
-            for identity in runtime.selected() {
-                if schemas.implementation_digest(&identity.name, identity.version, &mut None)?
-                    != identity.digest
-                {
-                    return Err(Error::Conflict(
-                        "linked implementation differs from original admission registry".into(),
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn extension_schema_registry(&self) -> Option<&SchemaRegistry> {

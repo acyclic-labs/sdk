@@ -43,12 +43,12 @@ fn snapshot_race(broken: bool) {
                 count.count.load(Ordering::SeqCst) > 0,
                 "snapshot handoff must not lose a publication wakeup"
             );
-            assert_eq!(
+            assert!(matches!(
                 next.as_mut().poll(&mut Context::from_waker(&wake)),
                 Poll::Ready(Ok(7))
-            );
+            ));
         } else {
-            assert_eq!(first, Poll::Ready(Ok(7)));
+            assert!(matches!(first, Poll::Ready(Ok(7))));
         }
     });
 }
@@ -93,10 +93,10 @@ fn cancellation_race(broken: bool) {
             1,
             "cancellation must preserve the independent subscription"
         );
-        assert_eq!(
+        assert!(matches!(
             kept.poll_changed(&mut Context::from_waker(&kept_wake)),
             Poll::Ready(Ok(()))
-        );
+        ));
         assert!(changed.state.inner.lock().unwrap().waiters.is_empty());
     });
 }

@@ -1,6 +1,6 @@
-use crate::async_storage::AsyncObjectStore;
-use crate::kernel::*;
-use crate::storage::{ObjectId, ObjectKind};
+use acyclic_fs::async_storage::AsyncObjectStore;
+use acyclic_fs::kernel::*;
+use acyclic_fs::storage::{ObjectId, ObjectKind};
 
 #[path = "../../../tests/support/extent_objects.rs"]
 mod extent_objects;

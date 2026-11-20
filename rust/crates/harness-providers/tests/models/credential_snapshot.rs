@@ -1,4 +1,4 @@
-#[path = "../../src/credentials/watched.rs"]
+#[path = "../../../harness-provider-core/src/credentials/watched.rs"]
 mod watched;
 use crate::sync::{
     Arc,

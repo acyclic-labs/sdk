@@ -247,7 +247,7 @@ fn action_write_child() -> TestResult {
         let journal = MaterializationJournalStore::load(&store, OPERATION)
             .await?
             .ok_or("missing journal")?;
-        work.state.lock().write_probe = Some(crate::demand::WriteProbe {
+        work.state.lock().write_probe = Some(crate::ledger::WriteProbe {
             writes: 0,
             stop_before: (cut != 0).then_some(cut),
         });

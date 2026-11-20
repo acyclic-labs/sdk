@@ -443,6 +443,20 @@ impl Drop for AbortRegistration {
     }
 }
 
+/// Run one client operation, cancelling it when the caller's signal aborts.
+async fn with_abort<T, F>(signal: Option<JsValue>, operation: F) -> Result<T, JsValue>
+where
+    F: std::future::Future<Output = Result<T, client::Error>>,
+{
+    let registration = AbortRegistration::new(signal)?;
+    let cancellation = registration
+        .as_ref()
+        .map(|registration| registration.token.clone());
+    let result = client::run_with_cancellation(operation, cancellation).await;
+    drop(registration);
+    result.map_err(map_error)
+}
+
 /// Browser binding for the shared Actors client.
 #[wasm_bindgen]
 pub struct ActorsClient {
@@ -458,28 +472,9 @@ impl ActorsClient {
         token: String,
         signal: Option<JsValue>,
     ) -> Result<ActorsClient, JsValue> {
-        let registration = AbortRegistration::new(signal)?;
-        let cancellation = registration
-            .as_ref()
-            .map(|registration| registration.token.clone());
-        let result =
-            client::run_with_cancellation(client::connect(&endpoint, &token, None), cancellation)
-                .await;
-        drop(registration);
-        result.map(|inner| Self { inner }).map_err(map_error)
-    }
-
-    async fn run<T, F>(&self, signal: Option<JsValue>, operation: F) -> Result<T, JsValue>
-    where
-        F: std::future::Future<Output = Result<T, client::Error>>,
-    {
-        let registration = AbortRegistration::new(signal)?;
-        let cancellation = registration
-            .as_ref()
-            .map(|registration| registration.token.clone());
-        let result = client::run_with_cancellation(operation, cancellation).await;
-        drop(registration);
-        result.map_err(map_error)
+        with_abort(signal, client::connect(&endpoint, &token, None))
+            .await
+            .map(|inner| Self { inner })
     }
 
     /// Returns the transport selected by the Rust client.
@@ -496,7 +491,7 @@ impl ActorsClient {
         token: &str,
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(
+        with_abort(
             signal,
             self.inner.call_with_credential(method, request, token),
         )
@@ -516,7 +511,7 @@ macro_rules! operation_wrappers {
                 request: &[u8],
                 signal: Option<JsValue>,
             ) -> Result<Vec<u8>, JsValue> {
-                self.run(signal, self.inner.call($name, request)).await
+                with_abort(signal, self.inner.call($name, request)).await
             }
             )+
         }
@@ -528,7 +523,6 @@ acyclic_actors_inventory::wasm_operations!(operation_wrappers);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost::Message as _;
 
     #[test]
     fn definition_manifest_is_the_strict_wire_the_core_admits() -> Result<(), guest::GuestError> {
@@ -557,29 +551,6 @@ mod tests {
         assert_eq!(manifest.limits.handler_timeout_millis(), Some(5_000));
         assert_eq!(manifest.limits.memory_bytes(), None);
         assert_eq!(manifest.limits.checkpoint_bytes(), Some(1 << 20));
-        Ok(())
-    }
-
-    #[test]
-    fn invocation_reply_is_the_front_door_response() -> Result<(), prost::DecodeError> {
-        let bytes = encode_invoke_response(
-            201,
-            vec!["location".into(), "x-a".into()],
-            vec!["/result".into(), "b".into()],
-            b"body".to_vec(),
-        )
-        .unwrap_or_default();
-        let response = acyclic_actors::wire::InvokeActorResponse::decode(bytes.as_slice())?;
-        assert_eq!(response.status, 201);
-        assert_eq!(response.body, b"body");
-        assert_eq!(
-            response
-                .headers
-                .iter()
-                .map(|header| (header.name.as_str(), header.value.as_str()))
-                .collect::<Vec<_>>(),
-            [("location", "/result"), ("x-a", "b")]
-        );
         Ok(())
     }
 }

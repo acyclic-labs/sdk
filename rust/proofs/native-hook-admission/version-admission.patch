@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/host_hooks.rs
-+++ b/rust/crates/harness/src/host_hooks.rs
+--- a/rust/crates/harness-cli/src/host_hooks.rs
++++ b/rust/crates/harness-cli/src/host_hooks.rs
 @@ -19,7 +19,7 @@
      let mut parts = version.split('.');
      let numbers: [Option<u64>; 3] = std::array::from_fn(|_| parts.next()?.parse().ok());

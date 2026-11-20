@@ -503,7 +503,9 @@ async fn device_login_pending_slowdown_then_approval() {
         .login(&mut device, start, std::future::pending())
         .await
         .expect("login");
-    assert!(start.elapsed() >= Duration::from_secs(8));
+    // The first poll is immediate; the interval then bounds the gap between
+    // polls, and slow_down widens it by five seconds.
+    assert!(start.elapsed() >= Duration::from_secs(7));
     assert_eq!(session.access_token, "access-1");
     fake.done();
 }
@@ -531,28 +533,24 @@ async fn device_denial_and_local_expiry_are_terminal() {
         verifier: "test-verifier".to_owned(),
         binding: LoginBinding::default(),
         reconcile_upgrade: false,
+        polled_at: None,
     };
+    let started = tokio::time::Instant::now();
     assert_eq!(
         fake.identity
-            .login(
-                &mut device,
-                tokio::time::Instant::now(),
-                std::future::pending()
-            )
+            .login(&mut device, started, std::future::pending())
             .await
             .err()
             .expect("denied")
             .code,
         "access_denied"
     );
+    // The denied poll above set the last poll time, so a code whose next poll
+    // would pass its expiry is refused locally without another request.
     device.expires_in = 1;
     assert_eq!(
         fake.identity
-            .login(
-                &mut device,
-                tokio::time::Instant::now(),
-                std::future::pending()
-            )
+            .login(&mut device, started, std::future::pending())
             .await
             .err()
             .expect("expired")

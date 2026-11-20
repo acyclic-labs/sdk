@@ -40,10 +40,10 @@ proptest! {
 
         editor.set_cursor(0, false);
         let recalled = format!("saved:{raw}");
-        prop_assert!(recall(&mut editor, true, &recalled, 4));
+        prop_assert!(recall(&mut editor, true, Some(&recalled), 4));
         prop_assert_eq!(editor.text(), format!("saved:{expected}"));
         editor.move_cursor(Motion::End, false, 80);
-        prop_assert!(recall(&mut editor, false, &raw, 5));
+        prop_assert!(recall(&mut editor, false, Some(&raw), 5));
         prop_assert_eq!(editor.text(), expected);
     }
 
@@ -55,7 +55,7 @@ proptest! {
         editor.set_cursor(0, false);
         let before = state(&editor);
         let newer = format!("newer:{raw}");
-        prop_assert!(recall(&mut editor, true, &newer, 0));
+        prop_assert!(recall(&mut editor, true, Some(&newer), 0));
         let after = state(&editor);
         prop_assert_eq!((after.1, after.2), (0, 0));
         prop_assert!(editor.undo());
@@ -63,7 +63,7 @@ proptest! {
         prop_assert!(editor.redo());
         prop_assert_eq!(state(&editor), after);
         let older = format!("older:{raw}");
-        prop_assert!(recall(&mut editor, true, &older, 1));
+        prop_assert!(recall(&mut editor, true, Some(&older), 1));
         prop_assert!(editor.text().starts_with("older:"));
         prop_assert!(!editor.text().contains('\r'));
     }
@@ -75,7 +75,7 @@ proptest! {
     ) {
         let mut editor = Editor::default();
         let recalled = format!("{first}{separator}{second}{separator}{third}");
-        prop_assert!(recall(&mut editor, true, &recalled, 0));
+        prop_assert!(recall(&mut editor, true, Some(&recalled), 0));
         let expected = format!("{first}\n{second}\n{third}");
         prop_assert_eq!(editor.text(), &expected);
         prop_assert_eq!(editor.layout(usize::MAX).rows.len(), 3);

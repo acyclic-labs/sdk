@@ -28,11 +28,13 @@ pub(super) fn field(name: &[c_char]) -> Result<&CStr, NativeMountError> {
 fn is_loopback_mount(mount: &libc::statfs, uid: u32) -> Result<bool, NativeMountError> {
     let source = field(&mount.f_mntfromname)?.to_bytes();
     let socket_id = source
-        .strip_prefix(b"</tmp/acyclic-fs.")
-        .and_then(|source| source.strip_suffix(b"/nfs>:/"));
+        .strip_prefix(b"</")
+        .and_then(|source| source.strip_suffix(b"/nfs>:/"))
+        .and_then(|directory| directory.rsplit(|byte| *byte == b'/').next())
+        .and_then(|name| name.strip_prefix(b"acyclic-fs."));
     Ok(mount.f_owner == uid
         && field(&mount.f_fstypename)?.to_bytes() == b"nfs"
-        && socket_id.is_some_and(|id| !id.is_empty() && !id.contains(&b'/')))
+        && socket_id.is_some_and(|id| !id.is_empty()))
 }
 
 #[cfg(test)]
@@ -130,18 +132,14 @@ pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMount
     {
         return Ok(());
     }
-    retire_mount(field(&mount.f_mntonname)?, |operation, path| {
+    let result = retire_mount(field(&mount.f_mntonname)?, |operation, path| {
         operation(path)
-    })?;
-    verify_detached(mount)
-}
-
-#[cfg(test)]
-fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
-    if mount_table()?
+    });
+    let still_mounted = mount_table()?
         .iter()
-        .any(|current| same_mount(mount, current))
-    {
+        .any(|current| same_mount(mount, current));
+    super::teardown_error::retirement_after_probe(result.map_err(Into::into), !still_mounted)?;
+    if still_mounted {
         return Err(std::io::Error::other("stale mount remained after retirement").into());
     }
     Ok(())

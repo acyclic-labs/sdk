@@ -10,7 +10,7 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn corpus() -> PathBuf {
-    acyclic_test_support::source_path("rust/crates/harness/tests/scenarios")
+    acyclic_test_support::source_path("rust/crates/harness-e2e/tests/scenarios")
 }
 
 struct Descheduled<S>(S);

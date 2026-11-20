@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "synthetic_source_review_input",
+  "qualification": "none; synthetic inputs exercise the source-registration policy only",
+  "files": [
+    {
+      "captured": "registered.rs",
+      "sha256": "f5825a6d55b863382c84c81484f6ef345706eea17c62225e04ab63004fcfa210"
+    },
+    {
+      "captured": "wrong-hash.rs",
+      "sha256": "1eaf120c25d517d2dcd581f99e1bddb47702ae9a1c72aa09e7dca2baa3097442"
+    },
+    {
+      "captured": "wrong-line.rs",
+      "sha256": "7dcd9e64ec21da00feb82902b7508d5517cffd016ea65fccd1aab53522dedabb"
+    }
+  ]
+}

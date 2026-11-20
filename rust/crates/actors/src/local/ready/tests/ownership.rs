@@ -259,35 +259,32 @@ fn ops() -> Vec<Op> {
     ops
 }
 
-fn explore(prefix: &mut Vec<Op>, ops: &[Op], runs: &mut usize) -> Outcome {
-    let mut world = World::new();
-    for &op in prefix.iter() {
-        world.apply(op)?;
-        world.check()?;
+impl Simulation for World {
+    type Op = Op;
+    const DEPTH: usize = DEPTH;
+    fn new() -> Result<Self, String> {
+        Ok(World::new())
     }
-    *runs += 1;
-    let enabled: Vec<Op> = ops
-        .iter()
-        .copied()
-        .filter(|&op| world.enabled(op))
-        .collect();
-    world.finish()?;
-    if prefix.len() == DEPTH {
-        return Ok(());
+    fn enabled(&self, op: Op) -> bool {
+        self.enabled(op)
     }
-    for op in enabled {
-        prefix.push(op);
-        explore(prefix, ops, runs)?;
-        prefix.pop();
+    fn apply(&mut self, op: Op) -> Result<(), String> {
+        self.apply(op)
     }
-    Ok(())
+    fn check(&self) -> Result<(), String> {
+        self.check()
+    }
+    fn finish(self) -> Result<(), String> {
+        self.finish()
+    }
 }
 
 #[test]
 fn no_interleaving_loses_or_skips_a_pending_alarm() -> Outcome {
-    let mut prefix = Vec::new();
+    let mut prefix: Vec<Op> = Vec::new();
     let mut runs = 0;
-    explore(&mut prefix, &ops(), &mut runs).map_err(|error| format!("{error} after {prefix:?}"))?;
+    explore::<World>(&mut prefix, &ops(), &mut runs)
+        .map_err(|error| format!("{error} after {prefix:?}"))?;
     assert!(
         runs > 10_000,
         "the simulation explored only {runs} schedules"

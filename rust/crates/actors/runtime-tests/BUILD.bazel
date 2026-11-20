@@ -1,0 +1,55 @@
+# The runtime test modules are part of the acyclic_actors library under
+# `cfg(runtime_tests)`, so they keep private access while compiling in their own
+# test target. The library's own test target leaves the cfg off.
+load("//rust/crates/test-runner:isolated_test.bzl", "isolated_test")
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+rust_test(
+    name = "runtime_tests",
+    crate = "//rust/crates/actors:acyclic_actors",
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = [
+        "conformance",
+        "model-checking",
+        "test-support",
+    ],
+    rustc_flags = [
+        "--cfg=runtime_tests",
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"conformance\", \"model-checking\", \"test-support\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
+    ],
+    lint_config = "//:workspace_lints",
+    deps = [
+        "//rust/crates/actors-call:acyclic_actors_call",
+        "//rust/crates/actors-contract:acyclic_actors_contract",
+        "//rust/crates/grpc-observability:acyclic_grpc_observability",
+        "//rust/crates/stream-body:acyclic_stream_body",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
+        "//rust/crates/stream:acyclic_stream",
+        "//rust/crates/test-support:acyclic_test_support",
+        "@sdk_crates//http-body-util-0.1.5",
+        "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//rcgen-0.14.10",
+        "@sdk_crates//tempfile-3.27.0",
+        "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tonic-prost-0.14.6",
+        "@sdk_crates//tracing-subscriber-0.3.23",
+    ],
+    proc_macro_deps = [
+        "@sdk_crates//async-trait-0.1.92",
+    ],
+    tags = ["manual", "resources:memory:1536"],
+)
+
+isolated_test(
+    name = "runtime_tests_isolated",
+    binary = ":runtime_tests",
+    id = "acyclic-actors-runtime",
+    limit_seconds = 10,
+)

@@ -10,7 +10,7 @@ description = "Provider-neutral web search behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-search"
 
 [features]
-test-support = ["acyclic-harness-layout/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support"]
+test-support = ["acyclic-harness-layout/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-fs-work/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }

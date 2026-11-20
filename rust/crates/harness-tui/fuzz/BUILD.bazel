@@ -3,16 +3,17 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-harness-tui-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-harness-tui-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_binary(
     name = "completion_events",
     crate_root = "fuzz_targets/completion_events.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/completion_events.rs",
         "//rust/crates/harness-tui:tests/support/completion_deltas.rs",
         "//rust/crates/harness-tui:tests/support/completion_sequences.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -24,9 +25,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -38,10 +42,11 @@ rust_binary(
 rust_binary(
     name = "config_keymap",
     crate_root = "fuzz_targets/config_keymap.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/config_keymap.rs",
         "//rust/crates/harness-tui:tests/support/config_sequences.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -53,9 +58,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -67,10 +75,11 @@ rust_binary(
 rust_binary(
     name = "config_settings",
     crate_root = "fuzz_targets/config_settings.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/config_settings.rs",
         "//rust/crates/harness-tui:tests/support/config_sequences.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -82,9 +91,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -96,10 +108,11 @@ rust_binary(
 rust_binary(
     name = "config_theme",
     crate_root = "fuzz_targets/config_theme.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/config_theme.rs",
         "//rust/crates/harness-tui:tests/support/config_sequences.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -111,9 +124,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -125,10 +141,11 @@ rust_binary(
 rust_binary(
     name = "edit_sequences",
     crate_root = "fuzz_targets/edit_sequences.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/edit_sequences.rs",
         "//rust/crates/harness-tui:tests/support/sequences.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -140,9 +157,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -154,10 +174,11 @@ rust_binary(
 rust_binary(
     name = "input_events",
     crate_root = "fuzz_targets/input_events.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "fuzz_targets/input_events.rs",
         "//rust/crates/harness-tui:tests/support/input_sequences.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -169,9 +190,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -183,8 +207,10 @@ rust_binary(
 rust_binary(
     name = "terminal_decoder",
     crate_root = "fuzz_targets/terminal_decoder.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = [
+        "fuzz_targets/terminal_decoder.rs",
+    ],
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -196,9 +222,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -210,10 +239,11 @@ rust_binary(
 rust_binary(
     name = "terminal_negotiation",
     crate_root = "fuzz_targets/terminal_negotiation.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness-tui:tests/support/negotiation.rs",
+    srcs = [
+        "//rust/crates/harness-tui-term:tests/support/negotiation.rs",
+        "fuzz_targets/terminal_negotiation.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -225,9 +255,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -239,10 +272,11 @@ rust_binary(
 rust_binary(
     name = "terminal_stream",
     crate_root = "fuzz_targets/terminal_stream.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness-tui:tests/support/terminal_keys.rs",
+    srcs = [
+        "//rust/crates/harness-tui-term:tests/support/terminal_keys.rs",
+        "fuzz_targets/terminal_stream.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -254,9 +288,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -268,10 +305,11 @@ rust_binary(
 rust_binary(
     name = "transcript_anchor",
     crate_root = "fuzz_targets/transcript_anchor.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/harness-tui-core:src/transcript_anchor/oracle.rs",
+        "fuzz_targets/transcript_anchor.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    tags = ["resources:memory:256"],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -283,9 +321,12 @@ rust_binary(
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
+        "--check-cfg=cfg(runtime_tests)",
     ],
     lint_config = "//:workspace_lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
+        "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",

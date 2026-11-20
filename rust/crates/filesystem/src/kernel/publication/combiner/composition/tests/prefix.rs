@@ -79,10 +79,18 @@ fn accounting<'a>(
 async fn check_prefix(native: bool, cancel: bool) -> TestResult {
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
-    let first_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let second_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let first_work = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
+    let second_work = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let first_baseline = first_work.live_allocation_bytes().unwrap();
     let second_baseline = second_work.live_allocation_bytes().unwrap();
     let mut first_accounting = accounting(native, &first_work, &cancellation);
@@ -201,10 +209,18 @@ async fn native_owned_prefix_cancellation_preserves_all_members_and_the_actual_s
 async fn check_pins(native: bool) -> TestResult {
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
-    let first_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let second_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let first_work = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
+    let second_work = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut first_accounting = accounting(native, &first_work, &cancellation);
     let mut second_accounting = accounting(native, &second_work, &cancellation);
     let Fixture {
@@ -302,27 +318,30 @@ async fn sweep_prepared_prefix(
     )?;
     let orphan = crate::HashedObject::new(ObjectKind::GenerationRoot, encoded.into());
     let orphan_id = orphan.object_id();
-    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-    fs.objects().put_hashed(orphan, &mut work).await?;
-    drop(
-        fs.objects()
-            .flush_before_publish(
-                crate::PublicationScope {
-                    root: None,
-                    related_root: None,
-                    related_objects: &[],
-                    objects: &[orphan_id],
-                    proven_at: 0,
-                },
-                &mut work,
-            )
-            .await?,
-    );
+    {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
+        fs.objects().put_hashed(orphan, &mut work).await?;
+        drop(
+            fs.objects()
+                .flush_before_publish(
+                    crate::PublicationScope {
+                        root: None,
+                        related_root: None,
+                        related_objects: &[],
+                        objects: &[orphan_id],
+                        proven_at: fs.objects().collection_sweeps(),
+                    },
+                    &mut work,
+                )
+                .await?,
+        );
+    }
     let collected = fs.collect_local_garbage(None, cancellation).await?;
     assert!(
         collected.removed > 0,
         "collector did not sweep a durable orphan"
     );
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
     assert!(!fs.objects().contains(orphan_id, &mut work).await?);
     assert!(
         fs.objects().contains(prefix, &mut work).await?,

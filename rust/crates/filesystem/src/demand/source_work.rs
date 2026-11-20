@@ -71,7 +71,7 @@ pub(crate) trait SourceDemandReadWork:
     fn reserve_source_copy(
         &mut self,
         bytes: u64,
-    ) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
+    ) -> Result<Option<crate::ledger::NativeWorkReservation>, DemandError> {
         let delta = WorkCounters {
             bytes_copied: bytes,
             ..WorkCounters::UNCHARGED
@@ -114,7 +114,7 @@ impl SourceDemandReadWork for DemandWork {
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T {
-        let meter = NativeDemandReadMeter::new(self.take_for_native_queue());
+        let meter = crate::ledger::NativeDemandReadMeter::new(self.take_for_native_queue());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(&meter)));
         *self = meter.0.into_inner().unwrap_or_else(|poisoned| {
             let mut work = poisoned.into_inner();

@@ -213,7 +213,7 @@ async fn filtered_loopback_preserves_idle_cuts_matches_and_checked_resume() -> T
     let provider = Arc::new(MemoryStream::default());
     let fixture = Fixture::open(provider, "filtered-node").await?;
     let client = fixture.client()?;
-    crate::filtered_follow_fixture::qualify_progress(&client).await?;
+    acyclic_stream_contract::filtered_follow_fixture::qualify_progress(&client).await?;
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     Ok(())

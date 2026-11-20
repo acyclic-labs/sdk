@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::demand::DemandSource;
 
 pub(super) async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), String> {
     let fs = Box::pin(Fs::local(LocalOptions::new(&root)))

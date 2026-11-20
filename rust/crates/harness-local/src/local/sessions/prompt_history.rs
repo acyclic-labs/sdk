@@ -78,7 +78,9 @@ impl PromptHistory {
             match self
                 .input
                 .as_mut()
-                .expect("selected input source")
+                .ok_or_else(|| {
+                    crate::Error::Storage("prompt history input was not selected".into())
+                })?
                 .next()
                 .await
                 .map_err(storage)?

@@ -2,7 +2,7 @@
 //! primary's writes only when told.
 use super::*;
 use crate::MemoryObjects;
-use acyclic_stream::AppliedRevisions;
+use acyclic_stream_contract::AppliedRevisions;
 use std::sync::Mutex;
 use std::time::Duration;
 use tonic::transport::Endpoint;

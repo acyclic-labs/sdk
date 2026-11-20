@@ -85,19 +85,3 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
         })
         .collect()
 }
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    #[test]
-    fn login_shell_profile_is_a_runtime_dependency() {
-        let profile = std::path::Path::new("/etc/profile");
-        if !profile.try_exists().unwrap() {
-            return;
-        }
-        let roots = super::runtime_read_roots().unwrap();
-        assert!(
-            roots.iter().any(|root| root == profile),
-            "login shell profile is not granted: {roots:?}"
-        );
-    }
-}

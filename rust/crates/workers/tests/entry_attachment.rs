@@ -1,7 +1,7 @@
 //! Selected immutable attachment through the real account-scoped Objects engine.
 #![cfg(not(target_arch = "wasm32"))]
 use acyclic_actors::{domain, wire};
-use acyclic_manifest::{AssetRole, DeploymentManifest, EntryAsset, ManifestError, PreparedEntry};
+use acyclic_manifest::{DeploymentManifest, EntryAsset, ManifestError, PreparedEntry};
 use acyclic_objects::{Blobs, Digest, MemoryMedium, Put, RootId, Store, Verified, wire::ErrorCode};
 use acyclic_stream::{OwnedBytes, testing::Counted};
 use acyclic_workers::deployment::{Client, CredentialProvider};
@@ -28,7 +28,6 @@ fn manifest(module: &[u8]) -> TestResult<DeploymentManifest> {
         sha256: hex::encode(Sha256::digest(module)),
         size: module.len().try_into()?,
         media_type: "application/wasm".into(),
-        role: AssetRole::Module,
     }];
     // Real admitted declarations belonging only to another entry must disappear.
     let mut other = entry.clone();

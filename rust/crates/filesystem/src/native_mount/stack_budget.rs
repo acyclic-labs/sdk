@@ -357,7 +357,7 @@ async fn lazy_view_callbacks_fit_their_stack_budgets() -> TestResult {
     let view = {
         super::adapter::CallbackRuntime::create()?;
         let cancellation = authored.cancellation().clone();
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         LazyMountSource::new(
             lazy,
             authored,

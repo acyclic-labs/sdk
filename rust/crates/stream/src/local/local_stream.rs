@@ -67,7 +67,19 @@ impl LocalStream {
         validate_limits(limits)?;
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(all(test, not(loom)))]
-        let submitted_root = root.clone();
+        let open_gate = {
+            let mut hook = JOURNAL_OPEN_SUBMITTED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if hook
+                .as_ref()
+                .is_some_and(|(expected_root, _, _)| expected_root == &root)
+            {
+                hook.take()
+            } else {
+                None
+            }
+        };
         let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.recover",
             frames = Empty,
@@ -77,19 +89,15 @@ impl LocalStream {
             "streams",
             "recover",
             PersistenceKey::new(root.as_os_str().as_encoded_bytes().as_ptr() as usize, 0),
-            move || span.in_scope(|| Journal::open(&root, limits, &recovered, &span)),
+            move || {
+                #[cfg(all(test, not(loom)))]
+                if let Some((_, submitted, release)) = open_gate {
+                    let _ = submitted.send(());
+                    let _ = release.recv();
+                }
+                span.in_scope(|| Journal::open(&root, limits, &recovered, &span))
+            },
         );
-        #[cfg(all(test, not(loom)))]
-        {
-            if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
-                && hook
-                    .as_ref()
-                    .is_some_and(|(expected_root, _)| expected_root == &submitted_root)
-                && let Some((_, submitted)) = hook.take()
-            {
-                let _ = submitted.send(());
-            }
-        }
         let commit_clock = Arc::new(PinnedCommitClock {
             source: Arc::clone(&clock),
             pinned: Mutex::new(None),
@@ -406,7 +414,7 @@ impl LocalStream {
                 }
                 let offset = match initial {
                     Some(mut journal) => journal.begin_append(required).map_err(|error| {
-                        stream.inner.fail(LocalStreamFailure::local(
+                        stream.inner.fail(local_failure(
                             "begin_append",
                             &error,
                             stream.work.as_deref(),
@@ -427,11 +435,9 @@ impl LocalStream {
                 })
                 .map_err(|error| stream.inner.fail(LocalStreamFailure::io("write", &error)))?
                 .map_err(|error| {
-                    stream.inner.fail(LocalStreamFailure::local(
-                        "write",
-                        &error,
-                        frame.work.as_deref(),
-                    ))
+                    stream
+                        .inner
+                        .fail(local_failure("write", &error, frame.work.as_deref()))
                 })?;
                 acyclic_native_runtime::cost::charge(
                     acyclic_native_runtime::cost::Cost::JournalAppend,
@@ -534,11 +540,8 @@ impl LocalStream {
         .map_err(|_| LocalStreamError::Executor)
         .and_then(|result| result)
         .map_err(|error| {
-            self.inner.fail(LocalStreamFailure::local(
-                "compact",
-                &error,
-                self.work.as_deref(),
-            ))
+            self.inner
+                .fail(local_failure("compact", &error, self.work.as_deref()))
         })
     }
 

@@ -10,10 +10,13 @@ repository.workspace = true
 description = "Shared capability chain contract and verification"
 
 
+[package.metadata.bazel]
+integration-test-shards = 2
+
 [features]
-javascript = ["dep:js-sys", "dep:wasm-bindgen"]
-native-javascript = ["dep:napi", "dep:napi-derive"]
-js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
+javascript = ["dep:js-sys", "dep:wasm-bindgen", "acyclic-auth-refusal/javascript", "acyclic-auth-operation/javascript"]
+native-javascript = ["dep:napi", "dep:napi-derive", "acyclic-auth-refusal/native-javascript"]
+js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys", "acyclic-auth-operation/js-credential"]
 grpc-metadata = ["dep:tonic"]
 grpc = ["grpc-metadata", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
 test-support = ["dep:acyclic-differential"]
@@ -21,6 +24,8 @@ client = ["dep:reqwest"]
 
 [dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
+acyclic-auth-refusal = { version = "=0.2.0", path = "../auth-refusal" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
@@ -97,12 +102,6 @@ acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "backoff"
-path = "tests/backoff.rs"
-
-[package.metadata.bazel.test-dependencies]
-backoff = ["proptest"]
 
 [[example]]
 name = "issuance_corpus"

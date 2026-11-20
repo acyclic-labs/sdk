@@ -1,0 +1,46 @@
+[package]
+autotests = false
+include = ["Cargo.toml", "README.md", "src/**"]
+name = "acyclic-stream-contract-wire"
+version = "0.2.0"
+edition.workspace = true
+rust-version = "1.92"
+license.workspace = true
+repository.workspace = true
+description = "Canonical Stream v1 wire codecs and retained-fact persistence"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-stream-contract-wire"
+keywords = ["streams", "events", "grpc"]
+categories = ["api-bindings", "data-structures"]
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+test-support = ["acyclic-stream-contract-core/test-support"]
+serde = ["acyclic-stream-contract-core/serde"]
+js-bytes = ["acyclic-stream-contract-core/js-bytes"]
+wasm-journal = ["acyclic-stream-contract-core/wasm-journal"]
+wasm = ["js-bytes", "serde", "acyclic-stream-contract-core/wasm"]
+
+[dependencies]
+acyclic-stream-contract-core = { version = "=0.2.0", path = "../stream-contract-core" }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+bytes.workspace = true
+futures.workspace = true
+http.workspace = true
+prost.workspace = true
+ruzstd.workspace = true
+thiserror.workspace = true
+tonic = { workspace = true, features = ["codegen"] }
+
+[dev-dependencies]
+proptest.workspace = true
+acyclic-compatibility-golden = { path = "../compatibility-golden" }
+acyclic-stream-contract-bytes = { path = "../stream-contract-bytes", features = ["test-support"] }
+acyclic-stream-contract-core = { path = "../stream-contract-core", features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
+
+[lints]
+workspace = true

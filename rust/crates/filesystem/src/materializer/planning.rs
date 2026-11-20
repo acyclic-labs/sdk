@@ -172,6 +172,14 @@ mod tests {
     #[tokio::test]
     async fn merge_publication_touches_only_changed_files() -> Result<(), Box<dyn std::error::Error>>
     {
+        // Linux charges the mount table read to prove the rename boundary.
+        // Hold that input constant while comparing checkout sizes.
+        #[cfg(target_os = "linux")]
+        if acyclic_native_runtime::private_file::with_isolated_user_runtime(
+            "materializer::planning::tests::merge_publication_touches_only_changed_files",
+        )? {
+            return Ok(());
+        }
         let mut changed_cost = None;
         let mut unchanged_writes = None;
         for count in [32, 256] {
@@ -257,7 +265,7 @@ mod tests {
                 let operation = directory.path().join("operation");
                 let operation_id = OperationId::new();
                 let options = crate::MaterializeOptions::native(operation.join("target"));
-                work.state.lock().write_probe = Some(crate::demand::WriteProbe {
+                work.state.lock().write_probe = Some(crate::ledger::WriteProbe {
                     writes: 0,
                     stop_before: None,
                 });
@@ -308,15 +316,15 @@ mod tests {
                         receipt.work.source_bytes_read,
                         receipt.work.object_bytes_written,
                     );
+                    eprintln!(
+                        "merge_publication files={count} changed=1 materializations={} writes={} read={} written={}",
+                        cost.0, cost.1, cost.2, cost.3
+                    );
                     let baseline = *changed_cost.get_or_insert(cost);
                     assert_eq!(cost.0, baseline.0);
                     assert_eq!(cost.1, baseline.1);
                     assert!(cost.2 <= baseline.2 + 256);
                     assert!(cost.3 <= baseline.3 + 256);
-                    eprintln!(
-                        "merge_publication files={count} changed=1 materializations={} writes={} read={} written={}",
-                        cost.0, cost.1, cost.2, cost.3
-                    );
                 } else {
                     assert!(plan.edits.is_empty());
                     assert_eq!(receipt.work.materializations, 0);

@@ -18,6 +18,8 @@ struct Replay {
     digest: [u8; 32],
     outcome: Result<MutationOutcome, ProviderError>,
     results: Vec<MachineObservation>,
+    /// Set by the first child creation: any later failure is a fork failure.
+    births: bool,
 }
 
 #[derive(Clone)]
@@ -57,7 +59,7 @@ struct MemoryState {
     events: BTreeMap<MachineId, tokio::sync::watch::Sender<Vec<MachineEvent>>>,
     replays: BTreeMap<OperationId, Replay>,
     #[cfg(any(test, feature = "test-support"))]
-    fork_failure_after: Option<NonZeroU32>,
+    fork_failure_after: Option<u32>,
 }
 
 impl Default for MemoryState {
@@ -106,10 +108,11 @@ impl Default for SimulatedMachines {
 }
 
 impl SimulatedMachines {
-    /// Injects one terminal failure immediately after the indicated child birth.
-    /// The real creation, result retention and parent accounting all run first.
+    /// Injects one terminal failure immediately after `children` child births;
+    /// `0` fails before the first birth. The real creation, result retention and
+    /// parent accounting of every earlier birth all run first.
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn fail_fork_after(&self, children: NonZeroU32) {
+    pub async fn fail_fork_after(&self, children: u32) {
         self.state.lock().await.fork_failure_after = Some(children);
     }
     /// Simulates a provider that qualifies images with exactly `capabilities`, for example without [`Capability::LiveFork`] to exercise a caller's fallback path.
@@ -243,6 +246,7 @@ impl SimulatedMachines {
                 digest,
                 outcome: Err(ProviderError::OperationIndeterminate(operation)),
                 results: Vec::new(),
+                births: false,
             },
         );
         let mut outcome = action(&mut state);
@@ -250,7 +254,7 @@ impl SimulatedMachines {
             if state
                 .replays
                 .get(&operation)
-                .is_some_and(|replay| !replay.results.is_empty())
+                .is_some_and(|replay| replay.births)
             {
                 outcome = Err(ProviderError::ForkFailed {
                     phase: OperationPhase::Failed,
@@ -298,6 +302,12 @@ fn create_child(
     let replay = state.replays.get_mut(&operation).ok_or_else(|| {
         ProviderError::Rejected("child creation has no original result owner".into())
     })?;
+    replay.births = true;
+    #[cfg(any(test, feature = "test-support"))]
+    if state.fork_failure_after == Some(0) {
+        state.fork_failure_after = None;
+        return Err(ProviderError::Failed);
+    }
     if let Some(parent) = parent {
         state
             .machines
@@ -312,7 +322,7 @@ fn create_child(
     event(state, id, EventFact::State(MachineState::Running), now)?;
     #[cfg(any(test, feature = "test-support"))]
     if let Some(after) = state.fork_failure_after {
-        state.fork_failure_after = NonZeroU32::new(after.get() - 1);
+        state.fork_failure_after = after.checked_sub(1).filter(|left| *left > 0);
         if state.fork_failure_after.is_none() {
             return Err(ProviderError::Failed);
         }

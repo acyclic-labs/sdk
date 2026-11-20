@@ -7,8 +7,8 @@ use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_fs_work::performance::WorkBudget;
 use std::{error::Error, path::Path};
 
-use crate::selected_budget::selected_transaction_budget;
-use crate::transaction::commit;
+use crate::workspace_materialization::selected_budget::selected_transaction_budget;
+use crate::workspace_materialization::transaction::commit;
 
 #[tokio::test]
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()

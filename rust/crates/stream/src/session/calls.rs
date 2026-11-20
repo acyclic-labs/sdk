@@ -288,10 +288,7 @@ impl InputProducer {
             .as_ref()
             .ok_or(StreamError::InvalidArgument)?
             .try_send(chunk)
-            .map_err(|error| match error {
-                tokio::sync::mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-            })?;
+            .map_err(|error| super::client::queue_error(&error))?;
         self.next = next;
         Ok(())
     }

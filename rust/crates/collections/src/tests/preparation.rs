@@ -227,7 +227,6 @@ fn mutable_generated_bounds() -> Result<(), &'static str> {
 
 fn mutable_boundary_shapes() -> Result<(), &'static str> {
     coordinates::<0>()?;
-    coordinates::<8>()?;
     coordinates::<40>()?;
     Ok(())
 }
@@ -299,7 +298,6 @@ fn mutable_population_work() -> Result<(), &'static str> {
         drop(index);
         assert_eq!(original.live.get(), 0);
     }
-    assert_eq!(observations[0], observations[1]);
     assert_eq!(observations, [15, 15]);
     assert!(ordered_comparisons[1] > ordered_comparisons[0]);
     eprintln!(

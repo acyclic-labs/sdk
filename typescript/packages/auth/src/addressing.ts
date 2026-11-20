@@ -88,7 +88,7 @@ export interface IdentityError extends Error {
   readonly name: "IdentityError";
   readonly code: "empty_account" | "empty_id" | "malformed_identity"
     | "unsupported_identity_version"
-    | "invalid_actor_id" | "invalid_namespace" | "reserved_namespace" | "invalid_location_hint";
+    | "invalid_actor_id" | "invalid_namespace" | "invalid_location_hint";
 }
 
 /** An actor address contains three fields and never contains authority. */

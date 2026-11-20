@@ -28,7 +28,7 @@ pub(super) use index::GenerationIndex;
 pub(super) struct GenerationReceipt {
     pub(super) baseline: Option<crate::NativeViewBaseline>,
     pub(super) value: MaterializationReceipt,
-    pub(super) custody: crate::materializer::NativeAllocation,
+    pub(super) custody: crate::ledger::NativeAllocation,
 }
 
 impl GenerationReceipt {

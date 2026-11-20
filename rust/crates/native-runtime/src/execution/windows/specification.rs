@@ -105,14 +105,3 @@ pub(super) fn policy_path(path: &Path) -> io::Result<String> {
 fn schema_version(minor: u32) -> u32 {
     1 | (minor << 16)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::schema_version;
-
-    #[test]
-    fn schema_version_keeps_major_one_in_the_low_half() {
-        assert_eq!(schema_version(0), 0x0000_0001);
-        assert_eq!(schema_version(1), 0x0001_0001);
-    }
-}

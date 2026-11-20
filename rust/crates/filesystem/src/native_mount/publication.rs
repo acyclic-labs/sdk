@@ -159,7 +159,7 @@ where
     }
     if mode == MutationMode::PrivateOverlay {
         original
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .charge(crate::ledger::NativeResourceCredit::Items.delta(1))
             .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
         let outcome = checkout
             .commit_even_if_clean_with_native_work(

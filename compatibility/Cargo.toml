@@ -6,7 +6,7 @@ rust-version = "1.92"
 license.workspace = true
 repository.workspace = true
 description = "Shared build-time protobuf configuration for Acyclic SDK crates"
-include = ["Cargo.toml", "build.rs", "src/**", "proto/**", "descriptors/*.bin", "frames/*.hex"]
+include = ["Cargo.toml", "build.rs", "src/**", "proto/**", "descriptors/*.bin"]
 
 [dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../rust/crates/auth-action" }

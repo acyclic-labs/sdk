@@ -181,6 +181,12 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     replay_sequence(&key, bytes)
 }
 
+/// Prepare an obsolete value using the original local compaction chunk size.
+pub(crate) fn compaction_chunk_bytes() -> Result<usize, Error> {
+    usize::try_from(super::COMPACTION_CHUNK)
+        .map_err(|source| Error::from(ErrorCode::Unavailable).with_source(source))
+}
+
 pub(crate) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
     [
         ("local-put-empty", PUT, "", &[][..]),

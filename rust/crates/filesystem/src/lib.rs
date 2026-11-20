@@ -14,11 +14,20 @@ pub use acyclic_auth::addressing;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_fs_wire::{AUTHORIZATION, FsMethod, authorization};
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
 #[cfg(test)]
 extern crate self as acyclic_fs;
+
+// Shared integration-test support, loaded once for every unit-test module.
+#[cfg(test)]
+#[macro_use]
+#[path = "../tests/support/unbounded.rs"]
+mod unbounded;
+#[cfg(test)]
+#[path = "../tests/support/transaction.rs"]
+mod transaction_fixture;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;
@@ -68,12 +77,9 @@ pub use acyclic_stream::{
 };
 
 pub mod accounting;
-#[cfg(test)]
-#[path = "tests/accounting/mod.rs"]
-mod accounting_tests;
 pub mod async_storage;
 pub mod binding_contract;
-mod collection;
+pub mod collection;
 pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
@@ -92,15 +98,19 @@ pub use demand::DemandError;
 pub mod distributed;
 mod logical_objects;
 pub use logical_objects::{LogicalObjectStore, ObjectSealer, PlainObjects};
+mod error;
 pub mod facade;
 pub mod foundation;
 mod publication_changes;
+mod services;
 pub use publication_changes::PublicationEntry;
 pub use publication_changes::{
     DeltaOrigin, PublicationChanges, PublicationContext, PublicationDelta,
 };
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 mod fsevents;
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+pub use fsevents::stress_fixture as fsevents_test_support;
 pub mod git_compat;
 mod heap_future;
 #[doc(hidden)]
@@ -111,12 +121,15 @@ mod identity;
 mod kani_proofs;
 pub mod kernel;
 pub mod lazy_workspace;
+#[cfg(not(target_arch = "wasm32"))]
+mod ledger;
 pub mod lineage;
 mod lock_order;
 pub mod materializer;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory;
-pub mod model;
+pub use acyclic_fs_format::model;
+mod model_bindings;
 pub mod mount;
 pub mod multi_root;
 #[cfg(not(target_arch = "wasm32"))]
@@ -195,10 +208,10 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
-use acyclic_fs_format::identity::{
+pub use acyclic_fs_format::identity::{
     AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
 };
-use acyclic_fs_format::object_reference::{ObjectId, ObjectIdBytes, ObjectKind, ObjectStorage};
+pub use acyclic_fs_format::object_reference::{ObjectId, ObjectIdBytes, ObjectKind, ObjectStorage};
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(not(target_arch = "wasm32"))]
@@ -283,6 +296,8 @@ pub use lazy_workspace::{
     LazyStoredRecord, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore, NativePublicationSnapshot, SelectedImportPlan,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use ledger::{NativeAllocation, NativeMaterializationWork, NativeWorkReservation};
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
     WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStore,
@@ -297,9 +312,9 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
-    NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX, NativeAllocation, NativeMaterializationWork,
-    NativeStageUncertainty, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
-    NativeWorkReservation, validate_native_preparation_location,
+    NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX, NativeStageUncertainty,
+    NativeTreeMaterializationBackend, NativeTreeMaterializationError,
+    validate_native_preparation_location,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
@@ -366,7 +381,7 @@ pub use operation_window::{
     WorkspaceOperationFinish,
 };
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
-use performance::{
+pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
     WorkObservationError,
 };

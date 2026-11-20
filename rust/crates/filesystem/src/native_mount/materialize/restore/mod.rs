@@ -53,6 +53,7 @@ pub(super) async fn finish_restore(
     prepared: PreparedRestore,
     replacement: HostPathReplacement,
     materialized: Result<(), MaterializeError>,
+    baseline: Option<crate::NativeViewBaseline>,
     cleanup_slot: (Box<MaterializeError>, crate::NativeAllocation),
     work: crate::NativeMaterializationWork,
 ) -> Result<HostPathRestore, MaterializeError> {
@@ -81,14 +82,52 @@ pub(super) async fn finish_restore(
             .file_name()
             .ok_or(MaterializeError::InvalidPath)?;
         let result = match materialized {
-            Ok(_) => publish_restore(
-                &destination_parent,
-                &stage_root,
-                &relative.0,
-                replacement,
-                work,
-            )
-            .map(|()| HostPathRestore::Restored),
+            Ok(()) => (|| {
+                let before = baseline
+                    .as_ref()
+                    .and_then(|baseline| baseline.store.as_ref().zip(baseline.root_identity))
+                    .map(|(store, root)| {
+                        let staged =
+                            crate::native_host::host_path(&relative.0, work, |path, work| {
+                                stage_root.stat(path, work)
+                            })?;
+                        Ok::<_, MaterializeError>((store, root, staged))
+                    })
+                    .transpose()?;
+                publish_restore(
+                    &destination_parent,
+                    &stage_root,
+                    &relative.0,
+                    replacement,
+                    work,
+                )?;
+                if let Some((store, root, staged)) = before {
+                    let current =
+                        crate::native_host::host_path(Path::new(name), work, |path, work| {
+                            destination_parent.stat(path, work)
+                        })?;
+                    let expected = staged.identity();
+                    let actual = current.identity();
+                    if expected != actual {
+                        return Err(MaterializeError::AllocationChanged { expected, actual });
+                    }
+                    // A namespace move can update host-supplied timestamps.
+                    // Bind the refreshed defaults to the same staged object
+                    // while the restore still owns its destination fence.
+                    let before = crate::native_capture::physical_metadata(&staged);
+                    let after = crate::native_capture::physical_metadata(&current);
+                    if before != after {
+                        store
+                            .materialization(work.clone())
+                            .refresh_materialized_metadata(
+                                root,
+                                actual,
+                                crate::WorkspaceMetadata::from_engine(after),
+                            )?;
+                    }
+                }
+                Ok(HostPathRestore::Restored)
+            })(),
             Err(MaterializeError::MissingPath) => {
                 remove_restored_path(&destination_parent, Path::new(name), &relative.0, work)
                     .map(|()| HostPathRestore::Removed)
@@ -172,7 +211,23 @@ pub(super) fn prepare_restore(
     };
     let stage_owner = match replacement {
         HostPathReplacement::Atomic => {
-            HostRoot::open(&stage_parent_path.0, work).map_err(MaterializeError::from)?
+            // The ambient parent may be an alias. Authenticate its child
+            // against the held destination before staging beside it.
+            let parent = HostRoot::open_ambient_parent(&stage_parent_path.0, work)?;
+            let name = destination_root
+                .0
+                .file_name()
+                .ok_or(MaterializeError::InvalidPath)?;
+            let binding =
+                crate::native_host::entry_identity(&parent.directory(), Path::new(name), work)?
+                    .ok_or(MaterializeError::InvalidDestination)?;
+            if binding != actual {
+                return Err(MaterializeError::AllocationChanged {
+                    expected: actual,
+                    actual: binding,
+                });
+            }
+            parent
         }
         HostPathReplacement::LiveMount => {
             crate::native_host::host_path(Path::new(""), work, |path, work| {

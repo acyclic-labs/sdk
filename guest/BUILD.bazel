@@ -1,0 +1,57 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+load(":artifacts.bzl", "guest_artifacts")
+
+# The prepared Linux guest the real-VMM cases boot: a distribution kernel, a BusyBox initramfs
+# with the matching virtio-fs modules, and the pinned cloud-hypervisor binary. The prepare script
+# reads the host kernel and modules, so the action runs outside the sandbox; Bazel caches its
+# outputs, and a missing artifact fails this build rather than skipping a test. The interpreter
+# that runs the script is a declared tool, not a host PATH lookup.
+py_binary(
+    name = "prepare_virtiofs_guest",
+    srcs = ["//:scripts/prepare-virtiofs-guest.py"],
+    main = "//:scripts/prepare-virtiofs-guest.py",
+)
+
+# The guest artifacts are one directory: the tests read `provenance.json` beside the kernel,
+# initramfs and VMM binary, so the directory is the value of ACYCLIC_FS_GUEST_ARTIFACTS.
+guest_artifacts(
+    name = "artifacts_dir",
+    prepare = ":prepare_virtiofs_guest",
+    script = "//:scripts/prepare-virtiofs-guest.py",
+    vmm = "@cloud_hypervisor//file",
+    vmm_sha256 = "f9ffb9646783233d1f0fb09e77db1fca66499d1041e63bc011b90683c0d49933",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# The individual files the generated test metadata names, copied out of the one prepared guest.
+genrule(
+    name = "artifacts",
+    srcs = [":artifacts_dir"],
+    outs = [
+        "kernel",
+        "initramfs.gz",
+        "cloud-hypervisor",
+    ],
+    cmd_bash = """
+set -euo pipefail
+cp $(location :artifacts_dir)/kernel $(@D)/kernel
+cp $(location :artifacts_dir)/initramfs.gz $(@D)/initramfs.gz
+cp $(location :artifacts_dir)/cloud-hypervisor $(@D)/cloud-hypervisor
+""",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# The generated metadata names this label as the guest artifacts path; it is the directory.
+filegroup(
+    name = "provenance.json",
+    srcs = [":artifacts_dir"],
+    visibility = ["//visibility:public"],
+)

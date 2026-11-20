@@ -22,8 +22,12 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::root(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let mut native = crate::AuthorityWork::native(&original, &cancellation);
         original_closure_custody(&traced, generation, &mut native, false).await?;
     }

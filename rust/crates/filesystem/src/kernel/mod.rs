@@ -17,6 +17,9 @@ mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
 mod content_eq;
+#[cfg(test)]
+#[path = "tests/deterministic.rs"]
+mod deterministic;
 pub(crate) mod direct_paths;
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzzing"))]
@@ -100,9 +103,8 @@ pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use content_eq::{records_match_content, records_match_prefix};
-pub(crate) use file_read::{
-    OriginalReadAccounting, read_object_with_accounting, release_standalone_read_bytes,
-};
+pub use file_read::OriginalReadAccounting;
+pub(crate) use file_read::{read_object_with_accounting, release_standalone_read_bytes};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::apply_generation_mutations_retaining_with_accounting;
 pub(crate) use list::list_tree_entries_async_with_accounting;
@@ -153,12 +155,12 @@ pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
 };
+pub(crate) use codec::Decoder;
 pub(crate) use codec::Encoder;
 pub use codec::{
-    CanonicalDecodeError, DecodeLimits, EncodeAllocationStep, EncodeError, EncodeWorkStep,
-    ReadAllocationStep, encode,
+    CanonicalDecodeError, CanonicalInvariant, DecodeLimits, EncodeAllocationStep, EncodeError,
+    EncodeWorkStep, ReadAllocationStep, encode,
 };
-pub(crate) use codec::{CanonicalInvariant, Decoder};
 pub use export::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest, validate_generation_export_manifest,
@@ -204,7 +206,7 @@ pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt,
     apply_generation_mutations,
 };
-pub(crate) use historical_evidence::decode_historical_generation_evidence_observed;
+pub use historical_evidence::decode_historical_generation_evidence_observed;
 pub use historical_evidence::{
     HistoricalGenerationEvidence, HistoricalGenerationProjection,
     decode_historical_generation_evidence, encode_original_generation_evidence,
@@ -243,14 +245,15 @@ pub(crate) use publication::authority_actor;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use publication::codec_fuzz as publication_codec_fuzz;
+pub(crate) use publication::{
+    EVIDENCE_DOMAIN, OriginalEvidence, PreparedPublication, PublicationPreconditions,
+    RetainedPublication, contextual_publication_fingerprint, prepare_publication,
+    verify_original_publication_evidence,
+};
 pub use publication::{
     GroupAbort, PublicationCache, PublicationError, PublicationFailure, PublicationIntent,
     PublicationOwner, PublicationReceipt, PublishGenerationRequest, PublishedGeneration,
     decode_published_generation, publish_generation,
-};
-pub(crate) use publication::{
-    OriginalEvidence, PreparedPublication, PublicationPreconditions, RetainedPublication,
-    contextual_publication_fingerprint, prepare_publication, verify_original_publication_evidence,
 };
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,

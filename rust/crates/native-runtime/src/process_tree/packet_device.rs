@@ -24,7 +24,6 @@ thread_local! {
     static BEFORE_ADMISSION: Hook<dyn FnOnce(&File)> = const { std::cell::RefCell::new(None) };
     static BEFORE_CONNECT: Hook<dyn FnOnce()> = const { std::cell::RefCell::new(None) };
     static BEFORE_LISTEN: Hook<dyn FnOnce()> = const { std::cell::RefCell::new(None) };
-    static WITHOUT_ADMISSION_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A host-owned physical device and the consuming owner's stream endpoint.
@@ -41,6 +40,8 @@ impl PacketDevice {
     }
 
     /// Receive a mount helper's descriptor directly into the host process.
+    /// The helper's control socket stays open until after device closure so
+    /// `fusermount3 -o auto_unmount` can detach the disconnected namespace.
     pub fn receive_device(socket: UnixStream, capacity: u32) -> io::Result<Self> {
         Self::admit(File::from(OwnedFd::from(socket)), capacity, 3)
     }
@@ -107,6 +108,7 @@ impl PacketDevice {
     pub fn mount_fuse(
         &self,
         directory: &File,
+        activity: &File,
         mode: u32,
         uid: u32,
         gid: u32,
@@ -122,7 +124,13 @@ impl PacketDevice {
         {
             *slot = word.to_ne_bytes();
         }
-        runner::send_message(&self.retirement.control, &[directory.as_raw_fd()], &request)?;
+        // The exit action waits on this activity while the host is able to
+        // install the mount, including after the requesting owner is killed.
+        runner::send_message(
+            &self.retirement.control,
+            &[directory.as_raw_fd(), activity.as_raw_fd()],
+            &request,
+        )?;
         self.wait_mounted()
     }
     /// Join actual device receipt from a helper admitted before its spawn.
@@ -572,10 +580,6 @@ fn connect() -> io::Result<UnixStream> {
             }
         });
     }
-    #[cfg(test)]
-    if WITHOUT_ADMISSION_LOCK.get() {
-        return connect_locked(&admissions);
-    }
     // Lock every usable canonical root in fixed runtime/home order. If a
     // login directory appears while a home-backed host is live, its home lock
     // still excludes this client and discovery joins the original endpoint.
@@ -671,10 +675,6 @@ fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
         return Ok(Some(UnixStream::from(stream)));
     }
     let error = io::Error::last_os_error();
-    #[cfg(test)]
-    if WITHOUT_ADMISSION_LOCK.get() {
-        return Err(error);
-    }
     match error.raw_os_error() {
         Some(libc::ENOENT) => Ok(None),
         Some(libc::ECONNREFUSED) => {

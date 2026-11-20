@@ -222,8 +222,9 @@ export function checkTestSupportExports(sources) {
 }
 
 if (import.meta.main) {
-  // Resolve every optional and target-specific edge, including registry crates.
-  const metadata = workspaceGraph(process.cwd(), null);
+  // The forwarding policy checks workspace declarations across all targets.
+  // Cargo.lock covers those edges even when no Bazel configuration builds them.
+  const metadata = workspaceGraph(process.cwd(), null, {resolution: null});
   console.log(`test-support forwarding: ${checkTestSupport(metadata)} dependency declarations checked`);
   const sources = await readSources(process.cwd(), trackedFiles(process.cwd(), ['*.rs']));
   const commands = await readSources(process.cwd(), trackedFiles(process.cwd(), [':!scripts/tests/fixtures'])

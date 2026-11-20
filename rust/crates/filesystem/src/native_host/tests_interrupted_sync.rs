@@ -1,6 +1,6 @@
 //! A held flush makes one native call and returns its original interruption.
 use super::*;
-use crate::demand::DemandWork;
+use crate::ledger::DemandWork;
 use crate::{CancellationToken, WorkCounters};
 use std::cell::Cell;
 

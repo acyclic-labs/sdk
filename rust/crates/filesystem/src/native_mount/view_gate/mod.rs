@@ -104,7 +104,7 @@ impl ViewGate {
         expected: Option<u64>,
     ) -> Result<ViewReadLease, MountSourceError> {
         let cancellation = crate::CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let mut work = crate::ledger::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let mut carrier = super::adapter::NativeDemandCarrier::Borrowed(&mut work);
         loop {
             let notified = self.changed.notified();

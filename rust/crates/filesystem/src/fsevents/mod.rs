@@ -16,7 +16,8 @@
     reason = "FSEvents is a C API resolved at run time; each call documents its contract"
 )]
 
-use crate::demand::{DemandWork, SourceDemandReadWork};
+use crate::demand::SourceDemandReadWork;
+use crate::ledger::DemandWork;
 use crate::native_host::NativeHostWork as _;
 use crate::{DemandError, WorkBudget, WorkCounters};
 use notify::event::{
@@ -65,7 +66,7 @@ unsafe extern "C" {
         context: *mut c_void,
         work: extern "C" fn(*mut c_void),
     );
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     fn dispatch_release(object: DispatchQueue);
     fn dispatch_suspend(object: DispatchQueue);
     fn dispatch_resume(object: DispatchQueue);
@@ -123,7 +124,7 @@ fn native_error(message: &'static str) -> DemandError {
 }
 
 fn notify_error(error: DemandError) -> Error {
-    Error::from(crate::demand::native_demand_read_error(error))
+    Error::from(crate::ledger::native_demand_read_error(error))
 }
 
 /// Keep mandatory failure cleanup admissible without charging unused calls.
@@ -161,9 +162,11 @@ mod stream;
 use api::Api;
 pub(crate) use callback::{BorrowedEventHandlerFn, EventBatch, on_queue};
 use callback::{OnQueue, drain, terminal_suffix};
+#[cfg(feature = "test-support")]
+pub use hub::stress_fixture;
 use hub::{Hub, Registration};
 pub use notify_adapter::FsEventsWatcher;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use stream::BEFORE_DRAIN;
 pub(crate) use stream::{EventStream, StreamTerminal};
 #[cfg(test)]

@@ -59,9 +59,12 @@ proptest! {
 fn failed_node_admission_and_construction_leave_the_index_and_funding_intact()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::performance::BOUNDARY_BUDGET,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let original_control = original.live_allocation_bytes().unwrap();
     let mut table = FixedIndex::default();
     table.get_or_try_insert_with(
@@ -75,8 +78,12 @@ fn failed_node_admission_and_construction_leave_the_index_and_funding_intact()
             allocation_operations: admitted + 1,
             ..crate::performance::BOUNDARY_BUDGET
         };
-        let attempt =
-            crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+        let attempt = crate::NativeMaterializationWork::root(
+            budget,
+            &cancel,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
+        )
+        .map_err(|(error, _)| error)?;
         let mut called = false;
         let result = table.get_or_try_insert_with(
             [255; 16],
@@ -127,9 +134,12 @@ fn fixed_index_value_retires_before_its_original_node_funding()
         }
     }
     let cancel = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
-            .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        crate::performance::BOUNDARY_BUDGET,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let observed = std::cell::Cell::new(false);
     let original_control = original.live_allocation_bytes().unwrap();
     let minimum = std::cell::Cell::new(original_control);

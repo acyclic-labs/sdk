@@ -177,8 +177,8 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
     let first = prompt_settled(&harness, "held", "CANCEL_THIS");
     tokio::pin!(first);
     tokio::select! {
-        outcome = &mut first => panic!("the turn settled before its tool started: {outcome:?}"),
-        entered = entered_rx => entered.expect("the tool never started"),
+        outcome = &mut first => return Err(format!("the turn settled before its tool started: {outcome:?}").into()),
+        entered = entered_rx => entered.map_err(|_| "the tool never started")?,
     }
     assert!(cancelled.cancel().await?.is_some());
     let first = first.await?;
@@ -202,7 +202,7 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
             );
         }
         PromptOutcome::Failed(message) => {
-            panic!("the owner failed on the interrupted tool: {message}");
+            return Err(format!("the owner failed on the interrupted tool: {message}").into());
         }
     }
     match prompt_settled(&harness, "after", "AFTER_PROMPT").await? {
@@ -213,7 +213,9 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
             );
             assert_eq!(output.text, "AFTER");
         }
-        PromptOutcome::Failed(message) => panic!("the owner did not continue: {message}"),
+        PromptOutcome::Failed(message) => {
+            return Err(format!("the owner did not continue: {message}").into());
+        }
     }
     let request = provider
         .request(1)

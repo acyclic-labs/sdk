@@ -480,7 +480,7 @@ pub(crate) struct ReadGate {
     pub(crate) entered: tokio::sync::mpsc::UnboundedSender<
         Option<(
             std::thread::ThreadId,
-            Arc<crate::demand::NativeDemandReadMeter>,
+            Arc<crate::ledger::NativeDemandReadMeter>,
         )>,
     >,
     pub(crate) release: std::sync::mpsc::Receiver<()>,

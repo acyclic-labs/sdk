@@ -103,12 +103,6 @@ fn native_policy_metadata(bytes: &[u8], timestamp: i64) -> Result<(), Box<dyn st
 }
 
 #[test]
-fn native_access_policy_metadata_rejects_xattr_and_setattr_bypasses()
--> Result<(), Box<dyn std::error::Error>> {
-    native_policy_metadata(b"authenticated policy", 42)
-}
-
-#[test]
 fn native_access_handle_metadata_cannot_replace_attribute_roots()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;

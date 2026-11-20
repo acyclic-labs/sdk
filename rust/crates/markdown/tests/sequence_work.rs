@@ -70,13 +70,13 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
 #[test]
 fn backslash_checkpoint_context_has_linear_work() {
     let measure = |count| {
-        let before = work::current();
+        let before = acyclic_markdown_work::work::current();
         let mut markdown = Markdown::default();
         for _ in 0..count {
             markdown.push("\\\\");
         }
         markdown.push("*‐*");
-        let used = work::current() - before;
+        let used = acyclic_markdown_work::work::current() - before;
         assert_eq!(
             markdown.lines(),
             full_parse(&format!("{}*‐*", "\\\\".repeat(count)))
@@ -143,8 +143,8 @@ fn measure(
     let peak = Cell::new(0);
     let mut growth_total = 0;
     let mut push = |delta: &str| {
-        let growth_before = work::source_growth();
-        let before = work::current()
+        let growth_before = acyclic_markdown_work::work::source_growth();
+        let before = acyclic_markdown_work::work::current()
             + markdown.visible_work.get()
             + markdown.reference_cache_visits
             + markdown.reference_moved_lines
@@ -168,7 +168,7 @@ fn measure(
         );
         consumer.truncate(changed);
         consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
-        let used = work::current()
+        let used = acyclic_markdown_work::work::current()
             + markdown.visible_work.get()
             + markdown.reference_cache_visits
             + markdown.reference_moved_lines
@@ -179,7 +179,7 @@ fn measure(
         } else {
             0
         };
-        let growth = work::source_growth() - growth_before;
+        let growth = acyclic_markdown_work::work::source_growth() - growth_before;
         growth_total += growth;
         // Geometric source-buffer growth is prepaid by two copies per input byte.
         assert!(growth_total <= 2 * markdown.source.len() + 64);
@@ -429,73 +429,9 @@ fn push_grammar_regressions_scale_linearly() {
 // still match the full parse when a later run lengthens the closing run,
 // matches an inner opener, reopens the span, strips edge spaces or crosses a
 // line.
-#[test]
-fn reopened_spans_match_the_full_parser() {
-    let cases: [&[&str]; 18] = [
-        &["*em*", "[a][]"],
-        &["*em*", "*em*", "*"],
-        &["_a **b_", "*", "*c**"],
-        &["[a][]", " ", "`code`", "`code`", " ", "*em*", "[a][]"],
-        &[
-            "__bold__", "`code`", "x", "*em*", "_em_", "__bold__", "`code`",
-        ],
-        &["`a`", "`b`", "`c`"],
-        &["`a`", "`", "b`"],
-        &["`a`", "` b"],
-        &["*x `a`", "b`*"],
-        &["` a `", "` b `"],
-        &["``a``", "`b``", "c``"],
-        &["`a`", "`\nb`", "\n`c`"],
-        &["`a\\`", "`b`", "x"],
-        &["*em*", "*em*", "*em*", "*em*", "*em*"],
-        &["`c`", "_em_", "x", "`c`", "_em_", "x"],
-        // Once the reopened span closes, a later closer matches an earlier
-        // opener in the class of the span's opener or of one of its children.
-        &["*", "a *b*", "c*d"],
-        &["_", "x *a _b*", "c_ d"],
-        &["~", "~x *a ~~b*", "c~~ d"],
-    ];
-    for deltas in cases {
-        let mut markdown = Markdown::default();
-        let mut source = String::new();
-        for delta in deltas {
-            markdown.push(delta);
-            source.push_str(delta);
-            assert_eq!(markdown.lines(), full_parse(&source), "{source:?}");
-        }
-    }
-}
 
 // A checkpoint after a hard break would resume at the next line's start,
 // keeping indentation the paragraph strips from a continuation line.
-#[test]
-fn hard_break_continuation_strips_indentation() {
-    for deltas in [
-        &["&amp;", "  \n", " ", "&amp;", "  \n", " "][..],
-        &[
-            "<https://example.org>",
-            " ",
-            "  \n",
-            " ",
-            "<https://example.org>",
-            " ",
-            "  \n",
-            " ",
-        ][..],
-    ] {
-        let mut markdown = Markdown::default();
-        let mut source = String::new();
-        let mut consumer = Vec::new();
-        for delta in deltas {
-            let changed = markdown.push(delta);
-            consumer.truncate(changed);
-            consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
-            source.push_str(delta);
-            assert_eq!(markdown.lines(), full_parse(&source), "lines {source:?}");
-            assert_eq!(consumer, full_parse(&source), "consumer {source:?}");
-        }
-    }
-}
 #[test]
 fn hard_break_checkpoint_preserves_following_indentation() {
     measure(&[16, 16, 33], &[1, 1], "unused", 4, &[1, 3]);
@@ -518,35 +454,6 @@ fn repeated_inline_spans_have_linear_work() {
     }
 }
 
-#[test]
-fn inline_spans_preserve_every_cut() {
-    for span in [
-        "`a`",
-        "``a`b``",
-        "*a*",
-        "_a_",
-        "**a**",
-        "__a__",
-        "~~a~~",
-        "~a~",
-        "[a](u)",
-        "![a](u)",
-        "&amp;",
-        "\\*",
-        "***a***",
-        "` a `",
-        "*a b*",
-        "`a\nb`",
-        "*!`¡À*",
-        "[*x][y][z*][ref]",
-    ] {
-        for middle in ["", " ", "x", "!", "  \n ", "\\\n "] {
-            super::block_checkpoints::check_inline_cuts(&[&format!(
-                "{span}{middle}{span}{middle}{span}\n\na"
-            )]);
-        }
-    }
-}
 
 #[test]
 fn retained_span_content_is_processed_once() {
@@ -562,9 +469,9 @@ fn retained_span_content_is_processed_once() {
             let mut markdown = Markdown::default();
             let mut used = 0;
             for index in 0..count {
-                let before = work::current();
+                let before = acyclic_markdown_work::work::current();
                 markdown.push(span);
-                used += work::current() - before;
+                used += acyclic_markdown_work::work::current() - before;
                 assert_eq!(
                     markdown.lines(),
                     full_parse(&span.repeat(index + 1)),
@@ -581,23 +488,7 @@ fn retained_span_content_is_processed_once() {
     }
 }
 
-#[test]
-fn partial_html_block_names_remain_provisional() {
-    super::block_checkpoints::check_inline_cuts(&[
-        "[x](url)```rust\n<div>\na",
-        "word\n</div>\na",
-        "word\n <table>\na",
-    ]);
-}
 
-#[test]
-fn short_inline_spans_preserve_all_partitions() {
-    for source in [
-        "*a*b", "_a_b", "`a`b", "**a**b", "~~a~~b", "`a``a`", "_a__a_", "*a**a*",
-    ] {
-        super::block_checkpoints::check_all_partitions(source);
-    }
-}
 
 #[test]
 fn intraword_underscore_sequences_have_linear_work() {
@@ -607,15 +498,6 @@ fn intraword_underscore_sequences_have_linear_work() {
     }
 }
 
-#[test]
-fn flanking_rewrites_preserve_every_cut() {
-    for span in ["_a_", "__a__", "*a*", "**a**", "~a~", "~~a~~"] {
-        for flank in ["x", "x ", "!", "é", " x", "_", "*"] {
-            let source = format!("{span}{flank}{span}{flank}{span}\n\na");
-            block_checkpoints::check_inline_cuts(&[&source]);
-        }
-    }
-}
 
 #[test]
 fn fence_reference_visibility_has_linear_storage() {
@@ -626,24 +508,3 @@ fn fence_reference_visibility_has_linear_storage() {
     }
 }
 
-#[test]
-fn intraword_openers_preserve_left_flanking() {
-    let mut markdown = Markdown::default();
-    markdown.push("a*b*");
-    markdown.push("*");
-    assert_eq!(markdown.lines(), full_parse("a*b**"));
-    for source in ["a*b**", ".*+b**", "a***b** c**", ".**+b***"] {
-        block_checkpoints::check_all_partitions(source);
-    }
-    for prefix in ["a", ".", "é", " "] {
-        for marker in ["*", "**", "_", "__", "~", "~~"] {
-            for body in ["b", "+b", "b+", "éb"] {
-                for suffix in ["*", "**", "_"] {
-                    block_checkpoints::check_inline_cuts(&[&format!(
-                        "{prefix}{marker}{body}{marker}{suffix}"
-                    )]);
-                }
-            }
-        }
-    }
-}

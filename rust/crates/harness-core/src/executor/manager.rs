@@ -247,6 +247,6 @@ impl StockExecution<'_> {
         drop(key);
         drop(session);
         scope.finish(summary.output.logical_owned_bytes()?)?;
-        Ok((summary, maximum, end < eligible))
+        Ok((summary, maximum, through < eligible))
     }
 }

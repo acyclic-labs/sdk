@@ -419,7 +419,7 @@ pub(crate) fn closing(text: &str, marker: u8, count: usize) -> bool {
     let candidate = format!("{opening}\n{input}");
     acyclic_markdown_work::record!(scan(candidate.len()));
     #[cfg(test)]
-    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + candidate.len()));
+    acyclic_markdown_work::work::parsed(candidate.len());
     !Parser::new(&candidate).any(|event| {
         acyclic_markdown_work::record!(node());
         matches!(event, Event::Text(_))

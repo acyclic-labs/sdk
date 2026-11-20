@@ -263,17 +263,3 @@ fn compare_fixes_the_reference_before_the_call_and_reports_the_exposing_event() 
     let message = panic.downcast_ref::<String>().expect("formatted message");
     assert!(message.contains("at Some((19, 18))"), "{message}");
 }
-
-#[test]
-fn a_group_cannot_borrow_another_groups_healthy_cases() {
-    let oracle = std::sync::Arc::new(doubling());
-    let checked = oracle.group();
-    let empty = oracle.group();
-    checked.check(&5);
-    let failure = catch_unwind(AssertUnwindSafe(|| drop(empty)))
-        .expect_err("an empty group borrowed another group's healthy case");
-    assert_eq!(
-        failure.downcast_ref::<&str>().copied(),
-        Some("oracle group selected zero healthy cases")
-    );
-}

@@ -83,6 +83,7 @@ struct Claims {
 pub(super) fn unauthorized(error: impl std::fmt::Display) -> Error {
     Error::Unauthorized(format!("workload capability rejected: {error}"))
 }
+#[cfg(test)]
 pub(super) fn now() -> u64 {
     acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock) / 1000
 }

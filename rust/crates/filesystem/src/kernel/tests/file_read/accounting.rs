@@ -45,13 +45,14 @@ fn replay<const PREFIX_MUTANT: u8, const CHECK_PREFIX: bool>(
     let cancellation = CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
     let original = (mode != 0).then(|| {
-        crate::NativeMaterializationWork::new(
+        crate::NativeMaterializationWork::root(
             if mode == 2 || mode == 4 {
                 WorkBudget::UNBOUNDED
             } else {
                 budget
             },
             &cancellation,
+            &crate::services::ServicesInitialized::for_kernel_tests(),
         )
         .unwrap()
     });

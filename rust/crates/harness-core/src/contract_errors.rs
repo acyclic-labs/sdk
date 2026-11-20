@@ -573,6 +573,7 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
         FsError::InvalidAccessPolicy => ErrorCode::Unauthorized,
         FsError::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
         FsError::Authority(AuthorityStoreError::Missing) => ErrorCode::NotFound,
+        FsError::Authority(AuthorityStoreError::PublicationConditionFailed) => ErrorCode::Conflict,
         FsError::Authority(AuthorityStoreError::NativeStream(source)) => {
             stream_refusal_code(source)
         }
@@ -1115,6 +1116,17 @@ impl Error {
         }
         if let Self::Cleanup(failure) = self {
             return failure.classification.uncertain;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::NativeWorkspace { source, .. } = self
+            && let acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Object(
+                acyclic_fs::ObjectStoreError::LogicalObjects(error),
+            )) = source.as_ref()
+            && error.code == acyclic_objects::wire::ErrorCode::Corrupt
+        {
+            // The authenticated object cannot satisfy the same read again.
+            // Its wire storage category still describes the integrity fault.
+            return false;
         }
         use crate::wire::ErrorCode;
         !matches!(

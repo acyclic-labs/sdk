@@ -125,16 +125,14 @@ pub fn safe_version(version: &str) -> Result<String, Error> {
     // `~` plus lowercase UTF-8 hex so URL handling cannot decode them before
     // the static server performs its filesystem lookup. Excluding `~` from
     // the readable alphabet keeps this mapping injective.
-    let encoded = if version
-        .as_bytes()
-        .iter()
-        .all(|byte| is_portable_version_byte(*byte))
-        && !version.ends_with('.')
+    let encoded = if version.as_bytes().iter().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+    }) && !version.ends_with('.')
         && !is_windows_reserved_segment(version)
     {
         version.to_owned()
     } else {
-        hex_version(version.as_bytes())
+        format_digest(&["~"], version.as_bytes(), "")
     };
     if encoded.len() > 255 {
         return Err(Error::Invalid(format!(
@@ -142,14 +140,6 @@ pub fn safe_version(version: &str) -> Result<String, Error> {
         )));
     }
     Ok(encoded)
-}
-
-pub(super) fn is_portable_version_byte(byte: u8) -> bool {
-    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
-}
-
-pub(super) fn hex_version(bytes: &[u8]) -> String {
-    format_digest(&["~"], bytes, "")
 }
 
 pub(super) fn is_windows_reserved_segment(segment: &str) -> bool {
@@ -179,9 +169,6 @@ pub(super) fn is_windows_reserved_segment(segment: &str) -> bool {
             | "LPT8"
             | "LPT9"
     )
-}
-pub(super) fn format_id(id: Id) -> String {
-    id.0.to_string()
 }
 pub(super) fn slugify(value: &str) -> String {
     value.replace('_', "-").to_ascii_lowercase()

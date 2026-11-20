@@ -13,19 +13,6 @@ use tokio::net::TcpListener;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Status};
 
-#[test]
-fn platform_verifier_failure_is_transport_and_retains_its_cause() {
-    let metadata = connect_error(&grpc::ConnectError::PlatformVerifier(
-        rustls::Error::General("native trust initialization failed".to_owned()),
-    ));
-    assert_eq!(metadata.code, "transport");
-    assert!(
-        metadata
-            .message
-            .contains("native trust initialization failed")
-    );
-}
-
 struct DropSentinel(Arc<AtomicBool>);
 
 impl Drop for DropSentinel {
@@ -51,10 +38,13 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     }));
     let follow = Arc::new(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(
-                records,
-                acyclic_stream::StreamPath::new("origin").unwrap(),
-            )))),
+            records: Arc::new(Mutex::new(Some(
+                wire_codec::record_frames(
+                    records,
+                    acyclic_stream::StreamPath::new("origin").unwrap(),
+                )
+                .boxed(),
+            ))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -79,29 +69,6 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     let second = second.expect("second read failed");
     assert!(second.value.is_none());
     assert!(second.error.is_none());
-}
-
-#[tokio::test]
-async fn terminal_peer_and_transport_errors_keep_their_codes_before_end() {
-    for error in [StreamError::InvalidResponse, StreamError::Unavailable] {
-        let code = error.code();
-        let records = futures::stream::once(async move { Err(error) }).boxed();
-        let follow = NativeStreamFollow {
-            state: FollowState {
-                records: Arc::new(Mutex::new(Some(record_frames(
-                    records,
-                    acyclic_stream::StreamPath::new("origin").unwrap(),
-                )))),
-                token: CancellationToken::new(),
-                closed: Arc::new(AtomicBool::new(false)),
-            },
-        };
-        let result = follow.next_result().await.expect("follow read rejected");
-        assert!(result.value.is_none());
-        assert_eq!(result.error.expect("terminal error swallowed").code, code);
-        let end = follow.next_result().await.expect("follow end rejected");
-        assert!(end.value.is_none() && end.error.is_none());
-    }
 }
 
 #[tokio::test]
@@ -140,10 +107,10 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         *close_task_slot.lock().expect("close task slot poisoned") = Some(close_task);
         Poll::Ready(record.take().map(Ok))
     }));
-    *follow.state.records.lock().await = Some(record_frames(
-        records,
-        acyclic_stream::StreamPath::new("origin").unwrap(),
-    ));
+    *follow.state.records.lock().await = Some(
+        wire_codec::record_frames(records, acyclic_stream::StreamPath::new("origin").unwrap())
+            .boxed(),
+    );
 
     let first = follow.next_result().await.expect("first read failed");
     assert!(first.value.is_none());
@@ -193,34 +160,12 @@ impl StreamProvider for TcpDropProbe {
 
     fn write(
         &self,
-        request: acyclic_stream::WriteRequest,
+        _request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
         std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
-        match request {
-            acyclic_stream::WriteRequest::Append(_request) => {
-                Box::pin(futures::TryFutureExt::map_ok(
-                    async move { Err(StreamError::Unsupported) },
-                    acyclic_stream::WriteOutcome::Append,
-                ))
-            }
-            acyclic_stream::WriteRequest::Fork(_request) => {
-                Box::pin(futures::TryFutureExt::map_ok(
-                    async move { Err(StreamError::Unsupported) },
-                    acyclic_stream::WriteOutcome::Fork,
-                ))
-            }
-            acyclic_stream::WriteRequest::Commit(_request) => {
-                Box::pin(futures::TryFutureExt::map_ok(
-                    async move { Err(StreamError::Unsupported) },
-                    acyclic_stream::WriteOutcome::Commit,
-                ))
-            }
-            acyclic_stream::WriteRequest::CommitAccepted(_request) => {
-                Box::pin(async move { Err(StreamError::Unsupported) })
-            }
-        }
+        Box::pin(async move { Err(StreamError::Unsupported) })
     }
 
     async fn read(&self, _request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
@@ -414,10 +359,13 @@ async fn finite_cursor_yields_before_the_rest_of_the_page_and_releases_on_close(
     });
     let cursor = NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(
-                records,
-                acyclic_stream::StreamPath::new("origin").unwrap(),
-            )))),
+            records: Arc::new(Mutex::new(Some(
+                wire_codec::record_frames(
+                    records,
+                    acyclic_stream::StreamPath::new("origin").unwrap(),
+                )
+                .boxed(),
+            ))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },

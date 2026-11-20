@@ -317,10 +317,18 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
         }
     }
     let cancel = CancellationToken::new();
-    let donor = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-        .map_err(|(error, _)| error)?;
-    let recipient = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-        .map_err(|(error, _)| error)?;
+    let donor = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
+    let recipient = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let donor_bytes = donor.live_allocation_bytes().unwrap();
     let recipient_bytes = recipient.live_allocation_bytes().unwrap();
     let dropped = Arc::new(AtomicBool::new(false));

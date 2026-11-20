@@ -731,13 +731,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         adopted: ForkAdopted,
     ) -> Result<AgentPath, Error> {
         let created = self.prepare_root(intent, adopted, false)?;
-        match submit(&*self.provider, created.request).await? {
-            Submitted::Committed(_) => {}
+        let receipt = match submit(&*self.provider, created.request).await? {
+            Submitted::Committed(receipt) => receipt,
             Submitted::Conflict(_) | Submitted::NoSuchAgent(_) | Submitted::RecipientClosed(_) => {
                 return Err(Error::Record("agent exists with another creation"));
             }
-        }
-        self.host(&created.child)?;
+        };
+        let actor = self.actor(&created.child)?;
+        self.runtime.track(actor.clone()).map_err(actor_error)?;
+        self.runtime
+            .wake_committed(&actor, &receipt)
+            .map_err(actor_error)?;
         Ok(created.child)
     }
 

@@ -255,7 +255,7 @@ impl RegistryHold<'_> {
     {
         let file = self.file;
         work.attempt_io(
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+            crate::ledger::NativeResourceCredit::WriteOperations.delta(1),
             || fence_io::unlock(file),
         )?;
         self.locked = false;

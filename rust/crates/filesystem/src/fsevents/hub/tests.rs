@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const DEADLINE: Duration = Duration::from_secs(10);
-const CAP_CHILD: &str = "ACYCLIC_FSEVENTS_CAP_CHILD";
 const REPLAY_CHILD: &str = "ACYCLIC_FSEVENTS_REPLAY_CHILD";
 
 /// Controlled replay state must not affect other tests sharing the process hub.
@@ -20,17 +19,6 @@ fn isolated_replay(name: &str) -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
-}
-
-fn suspend_callbacks(hub: &Hub) -> Suspended {
-    extern "C" fn suspend(queue: *mut c_void) {
-        // SAFETY: the live serial queue is resumed by the returned guard.
-        unsafe { dispatch_suspend(queue) };
-    }
-    // SAFETY: suspend runs after all earlier callbacks and stops subsequent
-    // callbacks before returning, without leaving an in-flight delivery.
-    unsafe { dispatch_sync_f(hub.queue(), hub.queue(), suspend) };
-    Suspended(hub.queue())
 }
 
 fn hub() -> TestResult<&'static Hub> {
@@ -105,20 +93,6 @@ fn wait_until(events: &std::sync::mpsc::Receiver<()>, mut done: impl FnMut() -> 
     true
 }
 
-fn wait_for_arm(hub: &Hub, registration: &Registration, before: u64) -> bool {
-    let (mut state, _) = hub
-        .armed
-        .wait_timeout_while(hub.state(), DEADLINE, |state| {
-            state
-                .of(registration)
-                .is_some_and(|shard| shard.arms <= before)
-        })
-        .unwrap_or_else(PoisonError::into_inner);
-    state
-        .of(registration)
-        .is_some_and(|shard| shard.arms > before)
-}
-
 fn receive_roots(events: &std::sync::mpsc::Receiver<usize>, count: usize) -> TestResult {
     let deadline = Instant::now() + DEADLINE;
     let mut seen = std::collections::HashSet::new();
@@ -128,232 +102,41 @@ fn receive_roots(events: &std::sync::mpsc::Receiver<usize>, count: usize) -> Tes
     Ok(())
 }
 
-fn threads() -> i32 {
-    // SAFETY: plain old data, filled by the kernel below.
-    let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
-    let size = i32::try_from(size_of::<libc::proc_taskinfo>()).unwrap_or(i32::MAX);
-    // SAFETY: the buffer is a live `proc_taskinfo` of the given size.
-    let read = unsafe {
-        libc::proc_pidinfo(
-            std::process::id().cast_signed(),
-            libc::PROC_PIDTASKINFO,
-            0,
-            (&raw mut info).cast(),
-            size,
-        )
-    };
-    if read == size { info.pti_threadnum } else { -1 }
+/// The native path of this process's registration marker.
+fn marker_path(hub: &Hub, marker: u64) -> TestResult<std::ffi::CString> {
+    Ok(std::ffi::CString::new(
+        hub.marker_path(marker).as_os_str().as_bytes().to_vec(),
+    )?)
 }
 
-/// Whether a rescan at `path` covers `root`.
+/// A registration whose handler sends each batch's ids and paths.
+fn recording(
+    root: &Path,
+) -> (
+    Arc<Registration>,
+    std::sync::mpsc::Receiver<Vec<(u64, PathBuf)>>,
+) {
+    let (changed, events) = std::sync::mpsc::channel();
+    let registration = Arc::new(Registration::new(
+        vec![root.to_path_buf()],
+        Arc::new(move |batch| {
+            let batch = batch.expect("native stream delivery failed");
+            let received = batch
+                .ids()
+                .iter()
+                .copied()
+                .zip(batch.iter().map(|(path, _)| path.to_path_buf()))
+                .collect();
+            changed.send(received).expect("receiver alive");
+        }),
+    ));
+    (registration, events)
+}
+
+/// Whether the event requires rescanning `root`.
 fn rescans(path: &Path, flags: u32, root: &Path) -> bool {
-    flags & (MUST_SCAN_SUBDIRS | USER_DROPPED | KERNEL_DROPPED) != 0 && root.starts_with(path)
-}
-
-#[test]
-fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
-    const ROOTS: usize = 1000;
-    let hub = hub()?;
-    let before = threads();
-    let (_parent, roots) = roots(ROOTS)?;
-    let seen = Arc::new(
-        (0..ROOTS)
-            .map(|_| AtomicBool::new(false))
-            .collect::<Vec<_>>(),
-    );
-    let started = Instant::now();
-    let (changed, events) = std::sync::mpsc::channel();
-    let streams = watch_all(&roots, |index| {
-        let changed = changed.clone();
-        let (seen, touched) = (Arc::clone(&seen), roots[index].join("touched"));
-        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
-            let events = events.expect("native stream delivery failed");
-            if events
-                .iter()
-                .any(|(path, flags)| path == touched || rescans(path, flags, &touched))
-            {
-                seen[index].store(true, Ordering::Release);
-            }
-            let _ = changed.send(());
-        })
-    })?;
-    let registered = started.elapsed();
-    let streams_live = hub.streams();
-    assert!(streams_live <= SHARDS, "{streams_live} streams");
-    for root in &roots {
-        std::fs::write(root.join("touched"), b"event")?;
-    }
-    let delivered = wait_until(&events, || {
-        seen.iter().all(|seen| seen.load(Ordering::Acquire))
-    });
-    let missing = seen
-        .iter()
-        .filter(|seen| !seen.load(Ordering::Acquire))
-        .count();
-    println!(
-        "fsevents hub: {ROOTS} roots in {registered:?} on {streams_live} streams; \
-         {} process threads, {before} before",
-        threads()
-    );
-    assert!(delivered, "{missing} of {ROOTS} roots saw no event");
-    drop(streams);
-    Ok(())
-}
-
-#[test]
-fn a_burst_across_many_roots_loses_nothing() -> TestResult {
-    const ROOTS: usize = 128;
-    const FILES: usize = 32;
-    struct Seen {
-        names: Mutex<std::collections::HashSet<PathBuf>>,
-        rescanned: AtomicBool,
-    }
-    hub()?;
-    let (_parent, roots) = roots(ROOTS)?;
-    let seen = Arc::new(
-        (0..ROOTS)
-            .map(|_| Seen {
-                names: Mutex::new(std::collections::HashSet::new()),
-                rescanned: AtomicBool::new(false),
-            })
-            .collect::<Vec<_>>(),
-    );
-    let (changed, events) = std::sync::mpsc::channel();
-    let streams = watch_all(&roots, |index| {
-        let changed = changed.clone();
-        let (seen, root) = (Arc::clone(&seen), roots[index].clone());
-        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
-            let events = events.expect("native stream delivery failed");
-            let seen = &seen[index];
-            let mut names = seen.names.lock().unwrap_or_else(PoisonError::into_inner);
-            for (path, flags) in events.iter() {
-                if rescans(path, flags, &root) {
-                    seen.rescanned.store(true, Ordering::Release);
-                } else if path.parent() == Some(root.as_path()) {
-                    names.insert(path.to_path_buf());
-                }
-            }
-            let _ = changed.send(());
-        })
-    })?;
-    for file in 0..FILES {
-        for root in &roots {
-            std::fs::write(root.join(format!("file-{file}")), b"burst")?;
-        }
-    }
-    let covered = |seen: &Seen| {
-        seen.rescanned.load(Ordering::Acquire)
-            || seen
-                .names
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .len()
-                == FILES
-    };
-    let delivered = wait_until(&events, || seen.iter().all(covered));
-    let rescanned = seen
-        .iter()
-        .filter(|seen| seen.rescanned.load(Ordering::Acquire))
-        .count();
-    let lost = seen.iter().filter(|seen| !covered(seen)).count();
-    println!(
-        "fsevents burst: {} events over {ROOTS} roots, {rescanned} flagged rescans",
-        ROOTS * FILES
-    );
-    assert!(delivered, "{lost} of {ROOTS} roots lost events");
-    drop(streams);
-    Ok(())
-}
-
-#[test]
-fn rearming_loses_and_repeats_nothing() -> TestResult {
-    const FILES: usize = 256;
-    const ROUNDS: usize = 32;
-    const GROWTH: usize = 64;
-    let hub = hub()?;
-    let (_parent, roots) = roots(1 + GROWTH)?;
-    let watched = roots[0].clone();
-    let delivered = Arc::new(Mutex::new(Vec::<(PathBuf, u32, u64)>::new()));
-    let (changed, events) = std::sync::mpsc::channel();
-    let stream = watch(&watched, {
-        let delivered = Arc::clone(&delivered);
-        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
-            let events = events.expect("native stream delivery failed");
-            let ids = events.ids();
-            let mut delivered = delivered.lock().unwrap_or_else(PoisonError::into_inner);
-            for ((path, flags), &id) in events.iter().zip(ids) {
-                delivered.push((path.to_path_buf(), flags, id));
-            }
-            let _ = changed.send(());
-        })
-    })?;
-    let registration = stream.registration.clone().ok_or("unregistered")?;
-    let arms = hub.arms(&registration);
-    // Writes are still in flight on the old stream when each swap stops
-    // it, so the replacement's replay must cover exactly what it missed.
-    let mut others = Vec::new();
-    for (round, growth) in roots[1..].chunks(GROWTH / ROUNDS).enumerate() {
-        for file in 0..FILES / ROUNDS {
-            std::fs::write(watched.join(format!("file-{round}-{file}")), b"rearm")?;
-        }
-        let before = hub.arms(&registration);
-        for root in growth {
-            others.push(watch(root, Arc::new(|_| {}))?);
-        }
-        // A shard that is replaying re-arms once its replay is done.
-        hub.rearm(&registration);
-        if !wait_for_arm(hub, &registration, before) {
-            return Err(format!("the watched shard stopped re-arming in round {round}").into());
-        }
-    }
-    let rearmed = hub.arms(&registration) - arms;
-    let names = |delivered: &[(PathBuf, u32, u64)]| {
-        delivered
-            .iter()
-            .filter(|(path, ..)| path.parent() == Some(watched.as_path()))
-            .map(|(path, ..)| path.clone())
-            .collect::<std::collections::HashSet<_>>()
-    };
-    let complete = wait_until(&events, || {
-        let delivered = delivered.lock().unwrap_or_else(PoisonError::into_inner);
-        names(&delivered).len() == FILES
-            || delivered
-                .iter()
-                .any(|(path, flags, _)| rescans(path, *flags, &watched))
-    });
-    drop(others);
-    drop(stream);
-    let delivered = delivered.lock().unwrap_or_else(PoisonError::into_inner);
-    println!(
-        "fsevents re-arm: {} events for {FILES} files across {rearmed} re-arms",
-        delivered.len()
-    );
-    assert!(
-        rearmed >= ROUNDS as u64,
-        "only {rearmed} re-arms raced {ROUNDS} rounds of writes"
-    );
-    assert!(
-        complete,
-        "{} of {FILES} files seen",
-        names(&delivered).len()
-    );
-    // A replay delivers history in path order, so ids are unique, not sorted.
-    let mut ids = delivered.iter().map(|(.., id)| *id).collect::<Vec<_>>();
-    ids.sort_unstable();
-    for pair in ids.windows(2) {
-        let twice = |(.., id): &&(PathBuf, u32, u64)| *id == pair[0];
-        assert!(
-            pair[0] < pair[1],
-            "event {} delivered twice: {:?}",
-            pair[0],
-            delivered
-                .iter()
-                .enumerate()
-                .filter(|(_, event)| twice(event))
-                .collect::<Vec<_>>()
-        );
-    }
-    Ok(())
+    flags & (USER_DROPPED | KERNEL_DROPPED) != 0
+        || flags & MUST_SCAN_SUBDIRS != 0 && root.starts_with(path)
 }
 
 #[test]
@@ -364,37 +147,39 @@ fn pending_registration_replays_changes_across_history_done() -> TestResult {
         );
     }
     let hub = hub()?;
-    let (_parent, roots) = roots(1)?;
+    let (_parent, roots) = roots(2)?;
     let streams = (0..SHARDS)
         .map(|_| watch(&roots[0], Arc::new(|_| {})))
         .collect::<Result<Vec<_>, _>>()?;
-    let suspended = suspend_callbacks(hub);
-    // Hold native callbacks and simulate an unfinished replay on every shard,
-    // so the next registration must wait with its saved floor.
+    let suspended = hub.suspend_after_delivery();
+    // Narrow simulated coverage during replay so the second root must wait
+    // for a replacement with its saved floor.
     for shard in &mut hub.state().shards {
+        shard.root = Some(roots[0].clone());
         shard.replaying = true;
     }
     let (changed, events) = std::sync::mpsc::channel();
     let registration = Arc::new(Registration::new(
-        vec![roots[0].clone()],
+        vec![roots[1].clone()],
         Arc::new(move |batch| {
             let batch = batch.expect("native stream delivery failed");
             changed.send(batch.ids().to_vec()).expect("receiver alive");
         }),
     ));
-    hub.register(&registration)?;
+    let marker = hub.install(&registration)?;
     let (old, floor, arms) = {
         let mut state = hub.state();
         let shard = state.of(&registration).ok_or("missing shard")?;
         let pending = shard.pending.first().ok_or("missing pending route")?;
         (shard.stream, pending.floor, shard.arms)
     };
-    let path = std::ffi::CString::new(roots[0].as_os_str().as_bytes())?;
+    let path = std::ffi::CString::new(roots[1].as_os_str().as_bytes())?;
+    let marked = marker_path(hub, marker)?;
     hub.deliver(
         old,
-        &[path.as_ptr(); 3],
-        &[ITEM_CREATED, HISTORY_DONE, ITEM_CREATED],
-        &[floor + 1, floor + 1, floor + 2],
+        &[marked.as_ptr(), path.as_ptr(), path.as_ptr(), path.as_ptr()],
+        &[ITEM_CREATED, ITEM_CREATED, HISTORY_DONE, ITEM_CREATED],
+        &[floor, floor + 1, floor + 1, floor + 2],
     );
     assert!(events.try_recv().is_err());
     let (saved, preserved) = std::sync::mpsc::channel();
@@ -422,8 +207,8 @@ fn pending_registration_replays_changes_across_history_done() -> TestResult {
     unsafe { dispatch_async_f(hub.queue(), Box::into_raw(check).cast(), check_floor) };
     drop(suspended);
     assert_eq!(preserved.recv_timeout(DEADLINE)?, Some(floor));
-    assert!(wait_for_arm(hub, &registration, arms));
-    let suspended = suspend_callbacks(hub);
+    hub.wait_for_arm(&registration, arms, DEADLINE)?;
+    let suspended = hub.suspend_after_delivery();
     // Native retirement and replay run before the controlled replay below.
     // Give that injected batch its own original cut, independent of unrelated
     // host events that advanced the real stream during the queue handoff.
@@ -460,9 +245,13 @@ fn replay_filters_old_moves_before_synthesizing_root_changes() -> TestResult {
     }
     let hub = hub()?;
     let (_parent, roots) = roots(1)?;
+    let existing = watch(&roots[0], Arc::new(|_| {}))?;
+    let suspended = hub.suspend_after_delivery();
+    let registered = existing.registration.as_ref().ok_or("unregistered")?;
+    let native = hub.state().of(registered).ok_or("missing shard")?.stream;
     let (changed, events) = std::sync::mpsc::channel();
-    let stream = watch(
-        &roots[0],
+    let registration = Arc::new(Registration::new(
+        vec![roots[0].clone()],
         Arc::new(move |batch| {
             let batch = batch.expect("native stream delivery failed");
             changed
@@ -476,21 +265,29 @@ fn replay_filters_old_moves_before_synthesizing_root_changes() -> TestResult {
                 )
                 .expect("receiver alive");
         }),
-    )?;
-    let suspended = suspend_callbacks(hub);
-    let registration = stream.registration.as_ref().ok_or("unregistered")?;
-    let floor = hub.current_event_id();
-    let native = {
+    ));
+    let marker = hub.install(&registration)?;
+    let floor = {
         let mut state = hub.state();
-        let shard = state.of(registration).ok_or("missing shard")?;
-        shard.replaying = true;
-        for route in shard.routes.values_mut().flatten() {
-            route.floor = floor;
-        }
-        shard.stream
+        let shard = state.of(&registration).ok_or("missing shard")?;
+        assert_eq!(
+            shard.stream, native,
+            "coverage stays on the original stream"
+        );
+        shard
+            .routes
+            .values()
+            .flatten()
+            .find(|route| Arc::ptr_eq(&route.registration, &registration))
+            .ok_or("covered registration must join the covering stream")?
+            .floor
     };
-    // Discard real startup deliveries before injecting the replay batch.
-    while events.try_recv().is_ok() {}
+    let marked = marker_path(hub, marker)?;
+    hub.deliver(native, &[marked.as_ptr()], &[ITEM_CREATED], &[floor]);
+    hub.state()
+        .of(&registration)
+        .ok_or("missing shard")?
+        .replaying = true;
     let root = std::ffi::CString::new(roots[0].as_os_str().as_bytes())?;
     let parent =
         std::ffi::CString::new(roots[0].parent().ok_or("no parent")?.as_os_str().as_bytes())?;
@@ -519,8 +316,27 @@ fn replay_filters_old_moves_before_synthesizing_root_changes() -> TestResult {
     );
     assert!(delivered.iter().all(|&(_, flag)| flag & ROOT_CHANGED != 0));
     assert!(events.try_recv().is_err());
+    let unrelated = c"/unrelated-volume".as_ptr();
+    hub.deliver(
+        native,
+        &[unrelated, unrelated],
+        &[
+            MUST_SCAN_SUBDIRS | USER_DROPPED,
+            MUST_SCAN_SUBDIRS | KERNEL_DROPPED,
+        ],
+        &[0, floor],
+    );
+    assert_eq!(
+        events.try_recv()?,
+        vec![
+            (0, MUST_SCAN_SUBDIRS | USER_DROPPED),
+            (floor, MUST_SCAN_SUBDIRS | KERNEL_DROPPED),
+        ],
+        "an active route must observe stream-wide loss even without a newer event id"
+    );
+    hub.unregister(&registration);
     drop(suspended);
-    drop(stream);
+    drop(existing);
     Ok(())
 }
 
@@ -592,170 +408,142 @@ fn a_panicking_handler_does_not_stop_the_hub() -> TestResult {
     Ok(())
 }
 
-/// The negative control: a stream per watch, as before the hub, runs out.
 #[test]
-fn a_stream_per_watch_hits_the_process_cap() -> TestResult {
-    if std::env::var_os(CAP_CHILD).is_some() {
-        return count_raw_streams();
+fn writes_before_registration_stay_below_its_cut() -> TestResult {
+    let (_parent, roots) = roots(1)?;
+    let (changed, events) = std::sync::mpsc::channel();
+    let before = roots[0].join("before");
+    let after = roots[0].join("after");
+    // A write that returns just before registration is the one `fseventsd`
+    // can number after the current event id.
+    std::fs::write(&before, b"before")?;
+    let stream = watch(
+        &roots[0],
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
+            for (path, flags) in events.iter() {
+                let _ = changed.send((path.to_path_buf(), flags));
+            }
+        }),
+    )?;
+    std::fs::write(&after, b"after")?;
+    // Live delivery is in id order, so `before` would precede `after`.
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let (path, flags) =
+            events.recv_timeout(deadline.saturating_duration_since(Instant::now()))?;
+        assert!(
+            path == after || rescans(&path, flags, &roots[0]),
+            "a write that returned before registration reached the watch: {path:?}"
+        );
+        if path == after {
+            break;
+        }
     }
-    // A child process, so exhausting its streams starves no other test.
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "fsevents::hub::tests::a_stream_per_watch_hits_the_process_cap",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(CAP_CHILD, "1")
-        .output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "{stdout}{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cap = stdout
-        .lines()
-        .find_map(|line| line.split_once("raw fsevents streams: "))
-        .map(|(_, cap)| cap)
-        .ok_or_else(|| {
-            format!(
-                "the child reported no cap: {stdout}{}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        })?;
-    println!("raw fsevents streams: {cap}");
-    let cap = cap
-        .strip_prefix("failed at ")
-        .ok_or("a stream per watch never failed")?
-        .parse::<usize>()?;
-    assert!((16..=1000).contains(&cap), "failed at {cap}");
+    drop(stream);
     Ok(())
 }
 
-fn count_raw_streams() -> TestResult {
-    extern "C" fn ignore(
-        _: FsEventStreamRef,
-        _: *mut c_void,
-        _: usize,
-        _: *mut c_void,
-        _: *const u32,
-        _: *const u64,
-    ) {
+#[test]
+fn the_marker_is_the_live_cut_and_a_gap_ends_its_wait() -> TestResult {
+    if std::env::var_os(REPLAY_CHILD).is_none() {
+        return isolated_replay(
+            "fsevents::hub::tests::the_marker_is_the_live_cut_and_a_gap_ends_its_wait",
+        );
     }
-    const LIMIT: usize = 1024;
-    let cancellation = crate::CancellationToken::new();
-    let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let api = Api::get(&mut work)?;
-    let (_parent, roots) = roots(LIMIT)?;
-    let context = FsEventStreamContext {
-        version: 0,
-        info: std::ptr::null_mut(),
-        retain: None,
-        release: None,
-        copy_description: None,
+    let hub = hub()?;
+    let (_parent, roots) = roots(2)?;
+    let existing = watch(&roots[0], Arc::new(|_| {}))?;
+    let suspended = hub.suspend_after_delivery();
+    let native = hub
+        .state()
+        .of(existing.registration.as_ref().ok_or("unregistered")?)
+        .ok_or("missing shard")?
+        .stream;
+    let (registration, events) = recording(&roots[1]);
+    let marker = hub.install(&registration)?;
+    let path = std::ffi::CString::new(roots[1].as_os_str().as_bytes())?;
+    let marked = marker_path(hub, marker)?;
+    let cut = hub.current_event_id() + 10;
+    // Earlier writes can be numbered above the provisional floor, but never
+    // above the marker: the route waits for it, and its id is the floor.
+    hub.deliver(
+        native,
+        &[path.as_ptr(), marked.as_ptr(), path.as_ptr(), path.as_ptr()],
+        &[ITEM_CREATED, ITEM_CREATED, ITEM_REMOVED, ITEM_CREATED],
+        &[cut - 1, cut, cut, cut + 1],
+    );
+    assert_eq!(events.try_recv()?, vec![(cut + 1, roots[1].clone())]);
+    assert!(events.try_recv().is_err());
+    hub.unregister(&registration);
+    // A stream gap carries no cut, so a waiting route rescans instead.
+    let (gapped, gaps) = recording(&roots[1]);
+    hub.install(&gapped)?;
+    hub.deliver(
+        native,
+        &[path.as_ptr(), path.as_ptr()],
+        &[ITEM_CREATED, MUST_SCAN_SUBDIRS | KERNEL_DROPPED],
+        &[cut + 2, cut + 3],
+    );
+    assert_eq!(gaps.try_recv()?, vec![(cut + 3, roots[1].clone())]);
+    hub.unregister(&gapped);
+    drop(suspended);
+    drop(existing);
+    Ok(())
+}
+
+#[test]
+fn a_marker_seen_during_replay_replays_its_route_from_the_marker() -> TestResult {
+    if std::env::var_os(REPLAY_CHILD).is_none() {
+        return isolated_replay(
+            "fsevents::hub::tests::a_marker_seen_during_replay_replays_its_route_from_the_marker",
+        );
+    }
+    let hub = hub()?;
+    let (_parent, roots) = roots(2)?;
+    let existing = watch(&roots[0], Arc::new(|_| {}))?;
+    let suspended = hub.suspend_after_delivery();
+    let native = {
+        let mut state = hub.state();
+        let shard = state
+            .of(existing.registration.as_ref().ok_or("unregistered")?)
+            .ok_or("missing shard")?;
+        shard.replaying = true;
+        shard.stream
     };
-    let mut running = Vec::new();
-    let mut failed = None;
-    for (index, root) in roots.iter().enumerate() {
-        let (paths, bytes) = api.path_array(std::slice::from_ref(root), &mut work)?;
-        // SAFETY: as in the hub, with a no-op callback and no info.
-        let stream = unsafe {
-            (api.stream_create)(
-                std::ptr::null(),
-                ignore,
-                &raw const context,
-                paths,
-                EVENT_ID_SINCE_NOW,
-                0.0,
-                CREATE_FILE_EVENTS | CREATE_NO_DEFER,
-            )
-        };
-        // SAFETY: the stream, if any, retains the array.
-        unsafe { (api.release)(paths) };
-        work.release(bytes)?;
-        if stream.is_null() {
-            failed = Some(index + 1);
-            break;
-        }
-        // SAFETY: a serial queue per stream, as each watch made before the hub.
-        let queue =
-            unsafe { dispatch_queue_create(c"acyclic.fsevents".as_ptr(), std::ptr::null()) };
-        // SAFETY: both handles are live.
-        unsafe { (api.stream_set_dispatch_queue)(stream, queue) };
-        // SAFETY: the stream has its queue.
-        let started = unsafe { (api.stream_start)(stream) } != 0;
-        running.push((stream, queue, started));
-        if !started {
-            failed = Some(index + 1);
-            break;
-        }
-    }
-    if failed.is_some() {
-        // Keep the actual exhausted native streams alive while a shared
-        // registration fails. Its error must be delivered outside both
-        // locks, before startup releases the callback producer.
-        let hub = hub()?;
-        let (failure, received) = std::sync::mpsc::channel();
-        // Hold the actual callback queue. Startup must reach its funded drain
-        // before returning an error; otherwise its queued failure outlives the
-        // registration's original ownership. Both outcomes publish an event,
-        // so the original broken handoff fails without a readiness timeout.
-        let suspended = Suspended::new(hub.queue());
-        let (observed, observation) = std::sync::mpsc::channel();
-        let root = roots[0].clone();
-        let starter = std::thread::spawn(move || {
-            let draining = observed.clone();
-            BEFORE_DRAIN.with(|hook| {
-                *hook.borrow_mut() = Some(Box::new(move || {
-                    let _ = draining.send(true);
-                }));
-            });
-            let refused = watch(
-                &root,
-                Arc::new(move |events| {
-                    if let Err(error) = events {
-                        let unlocked = hub.arm.try_lock().is_ok() && hub.state.try_lock().is_ok();
-                        let _ = failure.send((error, unlocked));
-                    }
-                }),
-            )
-            .is_err();
-            BEFORE_DRAIN.with(|hook| drop(hook.borrow_mut().take()));
-            let _ = observed.send(false);
-            refused
-        });
-        let draining = observation.recv()?;
-        drop(suspended);
-        let refused = starter
-            .join()
-            .map_err(|_| "native startup worker panicked")?;
-        assert!(refused, "exhausted native capacity admitted another stream");
+    let (registration, events) = recording(&roots[1]);
+    let marker = hub.install(&registration)?;
+    let path = std::ffi::CString::new(roots[1].as_os_str().as_bytes())?;
+    let marked = marker_path(hub, marker)?;
+    let cut = hub.current_event_id() + 10;
+    // History is in path order: this later event passes before the marker.
+    hub.deliver(
+        native,
+        &[path.as_ptr(), marked.as_ptr()],
+        &[ITEM_CREATED, ITEM_CREATED],
+        &[cut + 1, cut],
+    );
+    assert!(events.try_recv().is_err());
+    {
+        let mut state = hub.state();
+        let shard = state.of(&registration).ok_or("missing shard")?;
         assert!(
-            draining,
-            "refused startup released its queued callback owner"
+            shard
+                .routes
+                .values()
+                .flatten()
+                .all(|route| !Arc::ptr_eq(&route.registration, &registration)),
+            "a route that skipped history above its cut must not stay live"
         );
-        let (error, unlocked) = received.recv()?;
-        assert!(
-            unlocked,
-            "failure callback retained a routing or arm lock: {error}"
-        );
+        let pending = shard
+            .pending
+            .iter()
+            .find(|route| Arc::ptr_eq(&route.registration, &registration))
+            .ok_or("the route must replay from its cut")?;
+        assert_eq!((pending.floor, pending.marker), (cut, None));
     }
-    for (stream, queue, started) in running {
-        // SAFETY: each stream is ours; the barrier drains its queue first.
-        unsafe {
-            if started {
-                (api.stream_stop)(stream);
-            }
-            (api.stream_invalidate)(stream);
-            dispatch_sync_f(queue, std::ptr::null_mut(), drain);
-            (api.stream_release)(stream);
-            dispatch_release(queue);
-        }
-    }
-    match failed {
-        Some(count) => println!("raw fsevents streams: failed at {count}"),
-        None => println!("raw fsevents streams: all {LIMIT} ran"),
-    }
+    hub.unregister(&registration);
+    drop(suspended);
+    drop(existing);
     Ok(())
 }

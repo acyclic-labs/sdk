@@ -10,7 +10,7 @@ experimental = ["setup-scripts", "wrapper-scripts"]
 # Suites are meant to finish well under 10 s; a case that needs longer is a
 # defect to fix in code, not a reason to raise this.
 slow-timeout = { period = "5s", terminate-after = 2 }
-default-filter = 'not (test(::full_cloud::) | (package(=acyclic-stream) & test(postgres::capability::)) | (package(=acyclic-objects) & test(s3::capability::)))'
+default-filter = 'not (test(::full_cloud::) | (package(=acyclic-stream) & test(postgres::capability::)) | (package(=acyclic-objects) & test(s3::capability::)) | (package(=acyclic-harness) & test(virtiofs::standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete)))'
 
 [profile.full-cloud]
 default-filter = "test(::full_cloud::)"
@@ -28,6 +28,11 @@ default-filter = 'package(=acyclic-stream) & test(postgres::capability::)'
 
 [profile.s3]
 default-filter = 'package(=acyclic-objects) & test(s3::capability::)'
+
+# The daemon's real-VMM case needs prepared Linux guest artifacts, KVM, QEMU and
+# cloud-hypervisor, which no portable run provides; it runs only in this profile.
+[profile.linux-guest]
+default-filter = 'package(=acyclic-harness) & test(virtiofs::standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete)'
 
 # These tests require writable ProjFS mounts and a readable local USN journal.
 # Missing native capabilities fail their ordinary Windows test entry points.

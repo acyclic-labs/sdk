@@ -1,0 +1,197 @@
+//! Default ownership policy, compiled through the common composed-view path.
+use super::*;
+use crate::agent::{EntryId, WorkspaceMode};
+use acyclic_fs::access::*;
+
+/// Retain the admitted binding mode when moving a composed native root.
+pub fn mode<T>(mount: &acyclic_harness_core::workspace::Mount<T>) -> WorkspaceMode {
+    if mount.mode.read_only() {
+        WorkspaceMode::ReadOnly
+    } else {
+        WorkspaceMode::ReadWrite
+    }
+}
+
+/// The selected cwd is the table's primary slot: its name, source identity and
+/// volume come from that one entry, so no second project argument can disagree.
+pub fn primary(
+    bindings: &[crate::agent::WorkspaceEntry],
+) -> Result<(&crate::agent::WorkspaceEntry, &VolumeRef)> {
+    let entry = crate::agent::WorkspaceTable::primary_in(bindings)
+        .ok_or_else(|| Error::Unauthorized("selected table has no primary workspace".into()))?;
+    Ok((entry, entry.volume()?))
+}
+
+/// The selected task's visible volumes, excluding its primary and internal volume.
+pub fn auxiliary(
+    bindings: &[crate::agent::WorkspaceEntry],
+) -> impl Iterator<Item = (&crate::agent::WorkspaceEntry, &VolumeRef)> {
+    let primary = crate::agent::WorkspaceTable::primary_in(bindings).map(|entry| entry.id);
+    bindings
+        .iter()
+        .filter(move |binding| {
+            Some(binding.id) != primary && binding.role != crate::agent::WorkspaceRole::Internal
+        })
+        .filter_map(|binding| binding.as_volume().map(|volume| (binding, volume)))
+}
+
+pub fn owner<T>(
+    root: &Path,
+    primary: (EntryId, &str, &VolumeRef, &str, WorkspaceMode, T),
+    volumes: impl IntoIterator<Item = (EntryId, String, VolumeRef, String, WorkspaceMode, T)>,
+) -> Result<acyclic_harness_core::workspace::MountTable<T>> {
+    let (entry, name, volume, source_root, mode, source) = primary;
+    let principal = Principal {
+        kind: PrincipalKind::Agent,
+        id: "owner".into(),
+        lineage: vec!["owner".into()],
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let resource = ResourcePattern {
+        lineage_root: None,
+        volume: None,
+        generations: Generations::All,
+        path: "**".into(),
+    };
+    let policy = |actions: &[Action]| {
+        Arc::new(Policy {
+            schema_version: POLICY_SCHEMA_VERSION,
+            version: 1,
+            layers: vec![vec![Rule {
+                id: "owner".into(),
+                effect: Effect::Allow,
+                principal: PrincipalPattern::default(),
+                actions: actions.iter().copied().collect(),
+                resource: resource.clone(),
+                conditions: Conditions {
+                    relation: Some(Relation::SelfTask),
+                    ..Conditions::default()
+                },
+            }]],
+        })
+    };
+    let writable = policy(ActionSet::Owner.actions());
+    let read_only = policy(ActionSet::MountRead.actions());
+    let volumes: Vec<_> = volumes.into_iter().collect();
+    let capability = Capability {
+        layers: vec![
+            std::iter::once(volume)
+                .chain(volumes.iter().map(|(_, _, volume, _, _, _)| volume))
+                .flat_map(|volume| {
+                    Capability::whole_volume(Some(volume.id().into()), ActionSet::Owner.actions())
+                        .layers
+                        .into_iter()
+                        .flatten()
+                })
+                .collect(),
+        ],
+        expires_at: None,
+    };
+    let view =
+        |entry, name, volume, root, mode, source| acyclic_harness_core::workspace::VolumeView {
+            entry,
+            name,
+            agent: principal.id.clone(),
+            volume,
+            root,
+            lineage: principal.lineage.clone(),
+            generation: 0,
+            head: 0,
+            config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+            // Compile each alias independently. A writable sibling of the same
+            // volume must not promote this binding's read-only mode.
+            policy: Arc::clone(match mode {
+                WorkspaceMode::ReadOnly => &read_only,
+                WorkspaceMode::ReadWrite => &writable,
+            }),
+            source,
+        };
+    acyclic_harness_core::workspace::compose(
+        root.into(),
+        &principal,
+        &capability,
+        Context {
+            now: 0,
+            approvals: 0,
+        },
+        view(
+            entry,
+            name.into(),
+            volume.clone(),
+            source_root.into(),
+            mode,
+            source,
+        ),
+        volumes
+            .into_iter()
+            .map(|(entry, name, volume, root, mode, source)| {
+                view(entry, name, volume, root, mode, source)
+            }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation::{VolumeClass, VolumeOwner};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        // Replacing a provider binding cannot change the namespace, access
+        // decisions or volume identity compiled at composition time.
+        #[test]
+        fn binding_keeps_the_composed_authority(sources in any::<[u8; 2]>(), entry in "[a-z]{1,8}(/[a-z]{1,8}){0,3}") {
+            let provider = crate::resources::ProviderRef::new(
+                "binding".into(), "filesystem".into(), "1".into(), &mut None,
+            ).unwrap();
+            let volume = |name: &str| VolumeRef::new(provider.clone(), name.into(),
+                VolumeClass::Project, VolumeOwner::Project("owner".into()), &mut None).unwrap();
+            let root = std::env::current_dir().unwrap();
+            let mut mounts = owner(&root, (EntryId::from_bytes([1; 16]), "project", &volume("project"), "", WorkspaceMode::ReadWrite, sources[0]),
+                [(EntryId::from_bytes([2; 16]), "data".into(), volume("data"), String::new(), WorkspaceMode::ReadWrite, sources[1])]).unwrap();
+            let before: Vec<_> = mounts.mounts().map(|(path, mount)|
+                (path.to_owned(), mount.view.volume.clone(), mount.mode, mount.view.source)).collect();
+            for (_, mount) in mounts.mounts_mut() {
+                mount.view.source = mount.view.source.wrapping_add(1);
+            }
+            for (path, volume, mode, source) in before {
+                let (mounted, relative) = mounts.resolve(Path::new(&path)).unwrap();
+                let qualifier = if path.is_empty() { "project" } else { path.strip_prefix("volume:///").unwrap() };
+                let (selected_path, selected) = mounts.named(Some(qualifier)).unwrap();
+                prop_assert_eq!(selected_path, path.as_str());
+                prop_assert_eq!(&selected.view.volume, &volume);
+                prop_assert!(relative.is_empty());
+                prop_assert_eq!(&mounted.view.volume, &volume);
+                prop_assert_eq!(mounted.mode, mode);
+                prop_assert_eq!(mounted.view.source, source.wrapping_add(1));
+                prop_assert!(mounted.check(Action::Read, "file", 0).is_ok());
+                prop_assert!(mounted.check(Action::Write, "file", 0).is_ok());
+            }
+            for (path, mount) in mounts.mounts() {
+                let task_path = if path.is_empty() { entry.clone() } else { format!("{path}/{entry}") };
+                let (routed, relative) = mounts.file_for(Action::Read, None, &task_path, 0, None).unwrap();
+                prop_assert_eq!(&routed.view.volume, &mount.view.volume);
+                prop_assert_eq!(&relative, &entry);
+                let (routed_again, same_path) = mounts.file_for(Action::Read, Some(&routed.view.volume), &relative, 0, None).unwrap();
+                prop_assert_eq!(&routed_again.view.volume, &mount.view.volume);
+                prop_assert_eq!(same_path.as_ref(), relative.as_ref());
+            }
+            for path in [".volumes/data/entry", ".system/state", ".git/info/exclude", ".home-seed-v1", ".acyclic-sdk/state"] {
+                for explicit in [None, Some(volume("project"))] {
+                    let (selected, relative) = mounts.file_for(Action::Read, explicit.as_ref(), path, 0, None).unwrap();
+                    prop_assert_eq!(&selected.view.volume, &volume("project"));
+                    prop_assert_eq!(relative.as_ref(), path);
+                }
+            }
+            prop_assert!(mounts.file_for(Action::Read, None, "volume:///missing/entry", 0, None).is_err());
+            prop_assert!(mounts.file_for(Action::Read, None, "../entry", 0, None).is_err());
+            prop_assert!(mounts.named(Some("journal")).is_err());
+            prop_assert!(mounts.named(Some("../data")).is_err());
+            prop_assert_eq!(&mounts.named(None).unwrap().1.view.volume, &volume("project"));
+        }
+    }
+}

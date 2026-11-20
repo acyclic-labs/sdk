@@ -717,7 +717,6 @@ pub type ReviewFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<ReviewS
 /// A definitively changed foreign read fence also re-enters the step. Accepted
 /// work replays from its original journal; actor-state conflicts still fence
 /// placement, and an identical refused observation never spins.
-
 pub trait TurnDriver: acyclic_stream::ProviderPlatform {
     /// Reviews parent controls without altering the worker's retained invocation.
     fn review<'a>(
@@ -1630,7 +1629,7 @@ fn admit_wait(
             }
             Some((Wait::Done(outcome), staged, completion))
         }
-        _ => unreachable!(),
+        _ => None,
     }
 }
 

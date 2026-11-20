@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
+use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::native_mount::{MountOptions, probe_native_mount};
 use acyclic_fs::path::PortablePath;

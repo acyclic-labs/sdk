@@ -8,9 +8,10 @@ use super::checkout_fixture::{path, writable_pinned};
 
 #[path = "memory_checkout.rs"]
 mod memory_checkout;
-pub(super) use memory_checkout::{TestCheckout, TestResult, TestVolume, open_checkout};
+pub use memory_checkout::{TestCheckout, TestResult, TestVolume, open_checkout};
 
-pub(super) async fn fixture(
+/// Creates an in-memory volume and a pinned writable checkout.
+pub async fn fixture(
     config: VolumeConfig,
     cancel: &CancellationToken,
 ) -> TestResult<(TestVolume, TestCheckout)> {
@@ -21,7 +22,8 @@ pub(super) async fn fixture(
     Ok((volume, checkout))
 }
 
-pub(super) async fn create(
+/// Creates a regular file with default metadata in a fixture checkout.
+pub async fn create(
     checkout: &mut TestCheckout,
     name: &str,
     bytes: OwnedBytes,

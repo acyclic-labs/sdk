@@ -58,7 +58,7 @@ impl StateGuard<'_> {
             wake.wake();
         }
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
@@ -82,7 +82,7 @@ impl Drop for StateGuard<'_> {
             .filter(|_| state.invalidation_wanted());
         drop(state);
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         let notify = !invalidation::model_checking::omit_guard_notification();
         #[cfg(not(all(test, loom)))]
         let notify = true;
@@ -93,7 +93,7 @@ impl Drop for StateGuard<'_> {
             wake.wake();
         }
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         invalidation::model_checking::after_guard_drop();
     }
 }
@@ -104,7 +104,7 @@ pub(super) struct ProjectionCore {
     #[cfg(test)]
     pub(super) write_pause: std::sync::Mutex<tests::write_gate::PauseSlot>,
     #[cfg(test)]
-    #[cfg(all(not(loom)))]
+    #[cfg(not(loom))]
     pub(super) publication_test: std::sync::Mutex<tests::owner::PublicationTest>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
@@ -182,7 +182,7 @@ impl ProjectionCore {
             #[cfg(test)]
             write_pause: std::sync::Mutex::new(tests::write_gate::PauseSlot::default()),
             #[cfg(test)]
-            #[cfg(all(not(loom)))]
+            #[cfg(not(loom))]
             publication_test: std::sync::Mutex::new(tests::owner::PublicationTest::default()),
             source,
             clock: super::super::clock::Clock::capture(),
@@ -290,7 +290,7 @@ impl ProjectionCore {
         drop(state);
         drop(queued);
         #[cfg(test)]
-        #[cfg(all(loom))]
+        #[cfg(loom)]
         if invalidation::model_checking::omit_terminal_notification() {
             return;
         }

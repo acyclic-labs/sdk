@@ -15,58 +15,50 @@ categories = ["api-bindings", "data-structures"]
 build = "build.rs"
 
 [package.metadata.bazel]
+integration-test-shards = 5
 build-script-inputs = []
 unit-test-only-sources = [
-    "src/filtered_follow_fixture.rs",
     "src/grpc/credential_tests.rs",
     "src/grpc/receipt_tests.rs",
     "src/grpc/tests.rs",
-    "src/head_tests.rs",
     "src/http/http_follow_tests.rs",
     "src/http/session_tests.rs",
-    "src/lib/path_text_tests.rs",
     "src/local/tests/**",
     "src/memory/tests/**",
-    "src/owned_bytes/header_tests.rs",
-    "src/owned_bytes/tests.rs",
     "src/postgres/capability.rs",
-    "src/preparation/tests.rs",
-    "src/query_sync/parity.rs",
-    "src/record_header_tests.rs",
     "src/session/authority_tests.rs",
     "src/session/client/tests.rs",
     "src/session/client/tests/**",
     "src/session/interest_tests.rs",
     "src/session/tests.rs",
-    "src/test_meter.rs",
-    "src/test_trace.rs",
-    "src/wire_codec/origin_tests.rs",
-    "src/wire_codec/read_response_tests/**",
-    "src/wire_codec/revision_tests.rs",
     "src/browser/tests.rs",
-    "src/changes/tests.rs",
-    "src/follow_tests.rs",
-    "src/native/request/tests.rs",
-    "src/pages_tests.rs",
-    "src/pending/tests.rs",
-    "src/persistence/tests.rs",
-    "src/pull_tests.rs",
-    "src/record_headers/prepared/controls/tests.rs",
-    "src/record_headers/prepared/tests.rs",
-    "src/runtime/sources/tests.rs",
-    "src/search/tests.rs",
     "src/session/client/admissions/tests.rs",
     "src/session/client/progress/tests.rs",
     "src/session/client/routes/tests.rs",
     "src/session/runtime/context/tests.rs",
     "src/session/sources/tests.rs",
-    "src/trace/query/tests.rs",
+    "src/changes_tests.rs",
+    "src/lib_tests.rs",
+    "src/pages_tests.rs",
+    "src/pending_tests.rs",
+    "src/persistence_tests.rs",
+    "src/sources_tests.rs",
+    "src/search_tests.rs",
+    "src/query_tests.rs",
+    "src/session_wire_tests.rs",
+    "src/journal_tests.rs",
+    "src/follow_filter_tests.rs",
+    "src/receipt_tests.rs",
+    "src/request_tests.rs",
+    "src/testing_tests.rs",
+    "src/trace_tests.rs",
+    "src/provider_cursor_tests.rs",
+    # Reached only from the #[cfg(all(loom, test))] #[path] module in src/lib.rs.
+    # The label form keeps the glob exclude valid while matching the cross-package input.
+    "**/stream/publication-models:probe.rs",
+    "tests/support/session.rs",
 ]
 
-[package.metadata.bazel.test-dependencies]
-follow-contracts = ["acyclic_stream", "acyclic_stream_wire", "futures", "tempfile", "tokio"]
-provider-contracts = ["acyclic_stream", "tempfile", "tokio"]
-session-contracts = ["acyclic_stream", "acyclic_stream_wire", "bytes", "futures", "proptest", "prost", "tokio"]
 
 [package.metadata.acyclic]
 consumer-features = [
@@ -75,11 +67,6 @@ consumer-features = [
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-
-[[test]]
-name = "read-selectors"
-path = "tests/read_selectors.rs"
-required-features = ["wasm", "conformance"]
 
 [[example]]
 name = "wave1-conformance"
@@ -95,42 +82,36 @@ required-features = ["test-support"]
 
 [features]
 conformance = []
-model-checking = ["conformance", "dep:loom", "dep:tempfile"]
-test-support = ["conformance", "acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
+model-checking = ["conformance", "acyclic-stream-contract/model-checking", "dep:loom", "dep:tempfile"]
+test-support = ["conformance", "acyclic-native-runtime/test-support", "acyclic-auth/test-support", "acyclic-stream-contract/test-support"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
-serde = ["dep:serde"]
+serde = ["dep:serde", "acyclic-stream-contract/serde"]
 # Admitted JavaScript byte ownership without a provider or transport.
-js-bytes = ["dep:wasm-bindgen"]
-wasm-journal = ["dep:wasm-bindgen"]
-wasm = ["js-bytes", "serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
+js-bytes = ["dep:wasm-bindgen", "acyclic-stream-contract/js-bytes"]
+wasm-journal = ["dep:wasm-bindgen", "acyclic-stream-contract/wasm-journal"]
+wasm = ["js-bytes", "serde", "acyclic-stream-contract/wasm", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
-acyclic-decimal-u64 = { version = "=0.2.0", path = "../decimal-u64" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
+acyclic-stream-contract = { version = "=0.2.0", path = "../stream-contract" }
 acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
-web-time = { version = "1.1.0" }
 loom = { version = "0.7.3", features = ["futures"], optional = true }
 tempfile = { version = "3.27.0", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
-base64 = "0.23.1"
-blake3 = "1.8.2"
 bytes.workspace = true
 futures.workspace = true
 pin-project-lite = "0.2.17"
 http.workspace = true
 prost.workspace = true
-ruzstd.workspace = true
 serde_json.workspace = true
 serde = { workspace = true, optional = true }
 sha2.workspace = true
-smallvec = "1.16.2"
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt", "macros"] }
-tonic-prost = { workspace = true }
 uuid.workspace = true
 tracing.workspace = true
 
@@ -153,6 +134,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 tokio-postgres = { version = "0.7.18" }
 acyclic-log-frame = { version = "=0.2.0", path = "../log-frame" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+acyclic-native-claim = { version = "=0.2.0", path = "../native-claim" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 rustls = { workspace = true }
@@ -160,8 +142,7 @@ rustls-platform-verifier = { workspace = true }
 url = "=2.5.8"
 
 [dev-dependencies]
-web-time = "1.1.0"
-acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+acyclic-compatibility-golden = { path = "../compatibility-golden" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 ed25519-dalek = "=3.0.0"
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
@@ -172,6 +153,9 @@ acyclic-process-resources = { version = "=0.2.0", path = "../process-resources" 
 proptest.workspace = true
 # The OS resource sampler the descriptor tests count with.
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+# The native test meter and the filtered-follow fixture, owned by the contract crates.
+acyclic-stream-contract = { version = "=0.2.0", path = "../stream-contract", features = ["test-support"] }
+acyclic-stream-contract-bytes = { version = "=0.2.0", path = "../stream-contract-bytes", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 axum = { workspace = true, features = ["ws"] }
 tonic-web.workspace = true
@@ -204,16 +188,3 @@ required-features = ["conformance"]
 [[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "session-contracts"
-path = "tests/session_contracts.rs"
-
-[[test]]
-name = "provider-contracts"
-path = "tests/provider_contracts.rs"
-required-features = ["conformance"]
-
-[[test]]
-name = "follow-contracts"
-path = "tests/follow_contracts.rs"

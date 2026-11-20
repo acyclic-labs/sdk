@@ -104,8 +104,8 @@ pub(super) fn build_family(
             _ => (None, None),
         };
         items.push(ApiItem {
-            id: format_id(item_id),
-            parent_id: public_item.parent_id.map(format_id),
+            id: item_id.0.to_string(),
+            parent_id: public_item.parent_id.map(|id| id.0.to_string()),
             name,
             kind: kind_name(item.inner.item_kind()).into(),
             path: path.join("::"),

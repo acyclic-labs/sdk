@@ -40,7 +40,7 @@ impl<S> RevisionChannel<S> {
 
     /// Selects the implicit account floor; every clone keeps shared observations.
     #[must_use]
-    pub fn with_revision_scope(mut self, scope: acyclic_stream::RevisionScope) -> Self {
+    pub fn with_revision_scope(mut self, scope: acyclic_stream_contract::RevisionScope) -> Self {
         self.revisions = RevisionTracker::scoped(&self.revisions, scope);
         self
     }
@@ -145,8 +145,8 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
             }
         }
     }
-    let authority = acyclic_stream::AppliedRevisions::new(
-        acyclic_stream::RevisionScope::new(bytes.to_vec()),
+    let authority = acyclic_stream_contract::AppliedRevisions::new(
+        acyclic_stream_contract::RevisionScope::new(bytes.to_vec()),
         7,
         9,
     );
@@ -186,7 +186,8 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
         return false;
     }
     // Two real writer tokens for different incarnations cannot form one cut.
-    let foreign = acyclic_stream::AppliedRevisions::new(revision.scope.clone(), 8, 9).current();
+    let foreign =
+        acyclic_stream_contract::AppliedRevisions::new(revision.scope.clone(), 8, 9).current();
     let mut conflicting = request.metadata().clone();
     conflicting.append_bin(
         MINIMUM_REVISION,

@@ -119,7 +119,7 @@ async fn changes_follow_uses_indexed_grants_and_owner_deny_wins() -> TestResult 
     let (fs, streams, workspace) = fixture().await?;
     workspace.write_text("/allowed", "original").await?;
     workspace.write_text("/denied", "private").await?;
-    let policy = crate::access::fixtures::denied(Action::List, "denied");
+    let policy = crate::access::fixtures::denied(Action::List, "denied")?;
     crate::access::fixtures::publish_policy(&workspace, &policy).await?;
     let prepared = subscribe(
         fs.clone(),
@@ -182,7 +182,7 @@ async fn policy_revocation_and_deletion_close_idle_and_queued_changes_without_cr
         if deleted {
             workspace.delete(crate::IdempotencyKey::new()).await?;
         } else {
-            let policy = crate::access::fixtures::denied(Action::List, "allowed");
+            let policy = crate::access::fixtures::denied(Action::List, "allowed")?;
             crate::access::fixtures::publish_policy(&workspace, &policy).await?;
         }
         assert!(

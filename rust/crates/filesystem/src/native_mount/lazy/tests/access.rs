@@ -9,7 +9,7 @@ async fn revoked_chunk(broken: bool) -> Result<(), Box<dyn std::error::Error>> {
     let path = mounted(&["file"]);
     let (_, pin) = view.lookup_pinned(&path)?.ok_or("missing source file")?;
     let mut chunks = Vec::new();
-    let result = adapter::tests::return_fence::with_omitted(broken, || {
+    let result = adapter::tests::return_fence_control::with_omitted(broken, || {
         view.read_pinned(
             &path,
             pin.ok_or(MountSourceError::Stale)?,

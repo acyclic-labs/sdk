@@ -224,7 +224,7 @@ impl AgentBinding {
     }
 
     /// Own both the original command and invocation across browser awaits.
-    pub fn prepare_owned(
+    fn prepare_owned(
         &self,
         command: PreparedCommand,
     ) -> Result<PreparedAgentInvocation<'static>, CommandError> {

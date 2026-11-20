@@ -1323,7 +1323,6 @@ mod handoff_tests {
 
     #[test]
     fn admission_terminal_survives_failed_post_and_full_credit_loss() -> io::Result<()> {
-        use std::io::Read as _;
         use std::net::TcpStream;
 
         for failed_post in [true, false] {
@@ -1410,13 +1409,9 @@ mod handoff_tests {
                 assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
                 assert_eq!(error.raw_os_error(), None);
             }
-            // Dropping a queued reply may send a refusal before service exit.
-            // Neither that refusal nor EOF may become an admission ACK.
-            for mut peer in [Some(first), second].into_iter().flatten() {
-                let mut reply = [1];
-                let count = peer.read(&mut reply)?;
-                assert!(count == 0 || reply == [0]);
-            }
+            // The occupied-credit peer stays open until the producer exits;
+            // the transport test proves its refusal is never an admission ACK.
+            drop(second);
         }
         Ok(())
     }

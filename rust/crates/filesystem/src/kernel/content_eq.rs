@@ -198,9 +198,10 @@ async fn compare<S: AsyncObjectStore>(
             offset += span_length;
             continue;
         }
-        // Partial chunk comparisons retain at most one admitted range per side,
-        // rather than allocating or hashing a whole potentially enormous file.
-        let length = span_length.min(super::CONTENT_READ_CHUNK_BYTES);
+        // The intersection already ends at the first source chunk or extent
+        // boundary. Reading a smaller slice would load and verify the same
+        // source object again at the next offset.
+        let length = span_length;
         if length == 0 {
             return Err(FileRangeReadError::InvalidRange.into());
         }

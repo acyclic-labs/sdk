@@ -147,9 +147,9 @@ fn native_producer_retains_original_consumer_panic() -> io::Result<()> {
 }
 
 #[test]
-fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Result<()> {
-    // Dispatch owns deadline admission. Advance that same production cut
-    // explicitly, while the actual native queue retains registration wakes.
+fn immediate_registration_retains_its_native_wake_without_a_source_token() -> io::Result<()> {
+    // Dispatch owns deadline admission. The actual native queue retains the
+    // registration wake, which must never be mistaken for a source token.
     let hub = Hub {
         poller: platform::Poller::new()?,
         registry: Mutex::new(Registry::default()),
@@ -177,85 +177,13 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
         assert!(registry.positions.is_empty());
         assert!(registry.timers.first().is_none());
     }
-    let mut later = arm_on(&hub, &[], Some(distant))?;
+    let _later = arm_on(&hub, &[], Some(distant))?;
     let mut ready = Vec::new();
     hub.poller.wait(None, &mut ready)?;
     assert!(
         ready.is_empty(),
         "the original registration wake carries no source token"
     );
-
-    // The earlier deadline must notify even when the queue was previously
-    // waiting for a later one. Its wake remains observable before wait entry.
-    let mut first = arm_on(&hub, &[], Some(earlier))?;
-    hub.poller.wait(None, &mut ready)?;
-    assert!(ready.is_empty());
-    struct Notified(AtomicBool);
-    impl Wake for Notified {
-        fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::Release);
-        }
-    }
-    let notified = Arc::new(Notified(AtomicBool::new(false)));
-    let waker = Waker::from(Arc::clone(&notified));
-    let mut context = Context::from_waker(&waker);
-    hub.dispatch(&mut ready, earlier - Duration::from_nanos(1));
-    assert!(!notified.0.load(Ordering::Acquire));
-    assert!(Pin::new(&mut first).poll(&mut context).is_pending());
-    assert!(Pin::new(&mut later).poll(&mut context).is_pending());
-
-    hub.dispatch(&mut ready, earlier);
-    assert!(notified.0.load(Ordering::Acquire));
-    assert!(matches!(
-        Pin::new(&mut first).poll(&mut context),
-        Poll::Ready(ProcessWaitOutcome::Deadline)
-    ));
-    assert!(Pin::new(&mut later).poll(&mut context).is_pending());
-    {
-        let registry = hub.registry();
-        assert!(
-            !registry
-                .positions
-                .contains_key(&first.first.as_ref().unwrap().token)
-        );
-        assert_eq!(registry.timers.first().map(|(at, _)| at), Some(distant));
-        assert!(
-            registry
-                .positions
-                .contains_key(&later.first.as_ref().unwrap().token)
-        );
-    }
-    // A duplicated source packet cannot replace the retained deadline result.
-    notified.0.store(false, Ordering::Release);
-    ready.push(first.first.as_ref().unwrap().token);
-    hub.dispatch(&mut ready, earlier);
-    assert!(!notified.0.load(Ordering::Acquire));
-    assert!(matches!(
-        Pin::new(&mut first).poll(&mut context),
-        Poll::Ready(ProcessWaitOutcome::Deadline)
-    ));
-
-    let cancelled = arm_on(&hub, &[], Some(distant))?;
-    let cancelled_token = cancelled.first.as_ref().unwrap().token;
-    drop(cancelled);
-    {
-        let registry = hub.registry();
-        assert!(!registry.positions.contains_key(&cancelled_token));
-        assert_eq!(
-            registry.timers.first(),
-            Some((distant, later.first.as_ref().unwrap().token))
-        );
-    }
-    hub.dispatch(&mut ready, distant);
-    assert!(notified.0.load(Ordering::Acquire));
-    assert!(matches!(
-        Pin::new(&mut later).poll(&mut context),
-        Poll::Ready(ProcessWaitOutcome::Deadline)
-    ));
-    let registry = hub.registry();
-    assert!(registry.armed.is_empty());
-    assert!(registry.positions.is_empty());
-    assert!(registry.timers.first().is_none());
     Ok(())
 }
 

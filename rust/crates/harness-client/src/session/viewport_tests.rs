@@ -113,7 +113,11 @@ fn follow(resource: String) -> wire::SessionSubscription {
     }
 }
 
-async fn fill(view: &mut StreamView, followed: Option<&StreamPath>) {
+async fn fill<K, Q>(views: &mut Views<K>, key: &Q, followed: Option<&StreamPath>)
+where
+    K: Ord + std::borrow::Borrow<Q>,
+    Q: Ord + ?Sized,
+{
     // Capture real provider records and use the shared encoder's origin rule:
     // stream views elide their own origin; resource views spell every origin.
     let memory = MemoryStream::default();
@@ -161,9 +165,12 @@ async fn fill(view: &mut StreamView, followed: Option<&StreamPath>) {
             })),
             ..Default::default()
         };
-        view.apply(&frame.into(), sequence + 1).unwrap();
+        views
+            .apply(key, &frame.into(), sequence + 1)
+            .unwrap()
+            .unwrap();
     }
-    assert_eq!(view.records().len(), 16);
+    assert_eq!(views.get(key).unwrap().view.records().len(), 16);
 }
 
 fn refused_without_allocations(
@@ -270,11 +277,7 @@ async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle()
     let (streams, resources) = tree.visible(0);
     session.replace_interests(streams, resources).unwrap();
     let old_path = session.views.keys().next().unwrap().clone();
-    fill(
-        &mut session.views.get_mut(&old_path).unwrap().view,
-        Some(&old_path),
-    )
-    .await;
+    fill(&mut session.views, &old_path, Some(&old_path)).await;
     let old_bytes = session.retained_bytes();
     assert!(old_bytes > 0);
     assert_eq!(old_bytes, session.view(&old_path).unwrap().retained_bytes());
@@ -403,15 +406,11 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             session.register(follow);
             let mut context = Context::from_waker(std::task::Waker::noop());
             if resource {
-                fill(
-                    &mut session.resource_views.get_mut(&name).unwrap().view,
-                    None,
-                )
-                .await;
+                fill(&mut session.resource_views, &name, None).await;
                 assert!(session.poll_resource(&name, &mut context).is_ready());
                 assert!(!session.is_resource_following(&name));
             } else {
-                fill(&mut session.views.get_mut(&path).unwrap().view, Some(&path)).await;
+                fill(&mut session.views, &path, Some(&path)).await;
                 assert!(session.poll_stream(&path, &mut context).is_ready());
                 assert!(!session.is_following(&path));
             }
@@ -485,11 +484,7 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             assert_eq!(session.followed_interests(), 12);
             assert_eq!(session.retained_bytes(), 0);
             if resource {
-                fill(
-                    &mut session.resource_views.get_mut(&name).unwrap().view,
-                    None,
-                )
-                .await;
+                fill(&mut session.resource_views, &name, None).await;
                 assert!(session.retained_bytes() > 0);
                 assert!(session.release_resource(&name).unwrap());
                 assert_eq!(session.retained_bytes(), 0);

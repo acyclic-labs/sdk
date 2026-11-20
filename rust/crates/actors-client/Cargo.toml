@@ -1,0 +1,64 @@
+[package]
+autotests = false
+include = ["Cargo.toml", "src/**"]
+name = "acyclic-actors-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated Actors v1 clients over gRPC and HTTP"
+
+[features]
+test-support = [
+    "acyclic-actors-contract/test-support",
+    "acyclic-auth/test-support",
+    "acyclic-native-runtime/test-support",
+]
+
+[dependencies]
+acyclic-actors-contract = { version = "=0.2.0", path = "../actors-contract" }
+acyclic-actors-inventory = { version = "=0.2.0", path = "../actors-inventory" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc-metadata"] }
+http.workspace = true
+prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_bytes.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
+tokio-util = { version = "=0.7.20", features = ["rt"] }
+ts-rs = "=12.0.1"
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
+reqwest.workspace = true
+rustls.workspace = true
+tonic = { workspace = true, features = ["codegen", "router", "transport", "tls-ring"] }
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { workspace = true, features = ["codegen"] }
+tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
+url = "=2.5.8"
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+futures.workspace = true
+http-body = "1.1.0"
+proptest.workspace = true
+serde_json.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+tonic-prost.workspace = true
+
+[lints]
+workspace = true

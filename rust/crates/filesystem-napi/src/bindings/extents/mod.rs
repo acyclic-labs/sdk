@@ -112,9 +112,7 @@ impl NativeCheckout {
     }
 }
 
-pub(in crate::bindings) fn native_extent_span(
-    span: &acyclic_fs::kernel::ExtentSlice,
-) -> NativeExtentSpan {
+fn native_extent_span(span: &acyclic_fs::kernel::ExtentSlice) -> NativeExtentSpan {
     let (kind, object_id, object_offset) = match &span.kind {
         ExtentKind::Hole => ("hole", None, None),
         ExtentKind::AllocatedZero => ("allocated-zero", None, None),
@@ -137,7 +135,7 @@ pub(in crate::bindings) fn native_extent_span(
     }
 }
 
-pub(in crate::bindings) fn native_extent_plan(
+fn native_extent_plan(
     receipt: acyclic_fs_work::performance::OperationReceipt<Option<acyclic_fs::kernel::ExtentPlan>>,
 ) -> Result<NativeExtentPlan> {
     let work_json = work_json(&receipt.work)?;

@@ -85,7 +85,7 @@ pub struct CheckoutMountSource<A: 'static, O: 'static> {
     native_original: Option<crate::NativeMaterializationWork>,
     native_io_original: Option<crate::NativeMaterializationWork>,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    cleanup_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
+    cleanup_credit: StdMutex<Option<crate::ledger::NativeWorkReservation>>,
     _source_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -121,7 +121,7 @@ fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
 }
 
 pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
-    crate::demand::native_demand_error(error).into()
+    crate::ledger::native_demand_error(error).into()
 }
 
 impl From<FsError> for MountSourceError {

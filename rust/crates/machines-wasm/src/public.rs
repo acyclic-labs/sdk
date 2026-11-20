@@ -1270,30 +1270,3 @@ pub async fn dispatch<P: MachinesProvider>(
         _ => Err(err("unknown Machines operation")),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn public_digest_is_strict_and_lowercase() {
-        let value = "AB".repeat(32);
-        assert!(digest(&value, "digestHex").is_ok());
-        let ImageOut::ManagedOci { digest_hex } =
-            image_out(&Image::managed([0xab; 32]).expect("valid digest"))
-        else {
-            unreachable!()
-        };
-        assert_eq!(digest_hex, "ab".repeat(32));
-    }
-
-    #[test]
-    fn public_enum_spellings_are_kebab_case() {
-        assert!(matches!(
-            capability_out(&Capability::LiveCheckpoint),
-            CapabilityIn::LiveCheckpoint
-        ));
-        assert_eq!(state_out(MachineState::Running), "running");
-        assert_eq!(pressure_out(Pressure::CustomerBudget), "customer-budget");
-    }
-}

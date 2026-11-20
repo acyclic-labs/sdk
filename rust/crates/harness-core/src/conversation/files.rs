@@ -1,5 +1,6 @@
 use super::*;
 mod canonical;
+pub(crate) use canonical::FileIdentity;
 
 /// Immutable byte descriptor checked before a file is admitted.
 #[derive(
@@ -218,6 +219,21 @@ impl PartialEq for FileRef {
 impl Eq for FileRef {}
 
 impl FileRef {
+    /// Borrows the complete wire identity in canonical field order.
+    pub(crate) fn canonical(&self) -> impl Serialize + '_ {
+        canonical::Canonical(self)
+    }
+
+    fn identity_view(&self) -> FileIdentity<'_> {
+        FileIdentity {
+            volume: &self.volume,
+            path: &self.path,
+            version: &self.version,
+            descriptor: &self.descriptor,
+            display_name: &self.display_name,
+        }
+    }
+
     pub(crate) fn publication_witness(&self) -> Option<&PublicationWitness> {
         self.publication.as_deref()
     }
@@ -235,11 +251,7 @@ impl FileRef {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        crate::executor::json::borrowed_json_digest(
-            &canonical::Canonical(self),
-            Some(maximum_bytes),
-            work,
-        )
+        crate::executor::json::borrowed_json_digest(&self.canonical(), Some(maximum_bytes), work)
     }
 
     /// Creates a reference after checking paths, version and descriptor.
@@ -268,11 +280,7 @@ impl FileRef {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.volume.validate(work)?;
-        validate_content_path(&self.path, work)?;
-        validate_label(&self.version, work)?;
-        validate_label(&self.display_name, work)?;
-        self.descriptor.validate(work)
+        self.identity_view().validate(work)
     }
 
     /// Owning volume.

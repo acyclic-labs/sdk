@@ -168,20 +168,20 @@ impl NativeCheckout {
                     .into_iter()
                     .map(|identity| identity.map(|value| Buffer::from(value.into_bytes().to_vec())))
                     .collect();
-                let result = live_mutation_result(receipt.value.outcome, receipt.work)?;
+                let fields = live_observation_fields(receipt.value.outcome);
                 if resolved {
                     checkout.clear_retained_operation(operation_id);
                 }
                 Ok(NativeAuthoredLiveMutationResult {
                     created_file_ids,
-                    status: result.status,
-                    generation_id: result.generation_id,
-                    epoch: result.epoch,
-                    sequence: result.sequence,
-                    conflict_count: result.conflict_count,
-                    truncated: result.truncated,
-                    committed_fingerprint: result.committed_fingerprint,
-                    work_json: result.work_json,
+                    status: fields.status.to_owned(),
+                    generation_id: fields.generation_id,
+                    epoch: fields.epoch,
+                    sequence: fields.sequence,
+                    conflict_count: 0,
+                    truncated: false,
+                    committed_fingerprint: fields.committed_fingerprint,
+                    work_json: work_json(&receipt.work)?,
                 })
             }
             Err(error) => {
@@ -274,11 +274,17 @@ pub(in crate::bindings) fn mutation_result(
     })
 }
 
-pub(in crate::bindings) fn commit_result(
-    outcome: LivePublicationObservation,
-    work: acyclic_fs_work::performance::WorkCounters,
-) -> Result<NativeCommitResult> {
-    let (status, generation_id, epoch, sequence, fingerprint) = match outcome {
+/// One publication observation projected onto the fields every live result shares.
+pub(in crate::bindings) struct LiveObservationFields {
+    pub(in crate::bindings) status: &'static str,
+    pub(in crate::bindings) generation_id: Option<Buffer>,
+    pub(in crate::bindings) epoch: Option<BigInt>,
+    pub(in crate::bindings) sequence: Option<BigInt>,
+    pub(in crate::bindings) committed_fingerprint: Option<Buffer>,
+}
+
+fn live_observation_fields(outcome: LivePublicationObservation) -> LiveObservationFields {
+    let (status, generation_id, epoch, sequence, committed_fingerprint) = match outcome {
         LivePublicationObservation::Committed {
             generation_id,
             head,
@@ -319,84 +325,43 @@ pub(in crate::bindings) fn commit_result(
             Some(Buffer::from(committed_fingerprint.into_bytes().to_vec())),
         ),
     };
-    Ok(NativeCommitResult {
-        status: status.to_owned(),
+    LiveObservationFields {
+        status,
         generation_id,
         epoch,
         sequence,
-        committed_fingerprint: fingerprint,
+        committed_fingerprint,
+    }
+}
+
+pub(in crate::bindings) fn commit_result(
+    outcome: LivePublicationObservation,
+    work: acyclic_fs_work::performance::WorkCounters,
+) -> Result<NativeCommitResult> {
+    let fields = live_observation_fields(outcome);
+    Ok(NativeCommitResult {
+        status: fields.status.to_owned(),
+        generation_id: fields.generation_id,
+        epoch: fields.epoch,
+        sequence: fields.sequence,
+        committed_fingerprint: fields.committed_fingerprint,
         work_json: work_json(&work)?,
     })
 }
 
-pub(in crate::bindings) fn live_mutation_result(
+fn live_mutation_result(
     outcome: LiveMutationOutcome,
     work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeLiveMutationResult> {
-    let (status, generation_id, epoch, sequence, conflict_count, truncated, fingerprint) =
-        match outcome {
-            LiveMutationOutcome::Committed {
-                generation_id,
-                head,
-            } => (
-                "committed",
-                Some(Buffer::from(generation_id.to_bytes().to_vec())),
-                Some(bigint(head.epoch.get())),
-                Some(bigint(head.sequence.get())),
-                0,
-                false,
-                None,
-            ),
-            LiveMutationOutcome::AlreadyCommitted {
-                generation_id,
-                head,
-            } => (
-                "already-committed",
-                Some(Buffer::from(generation_id.to_bytes().to_vec())),
-                Some(bigint(head.epoch.get())),
-                Some(bigint(head.sequence.get())),
-                0,
-                false,
-                None,
-            ),
-            LiveMutationOutcome::Conflict { actual } => (
-                "conflict",
-                None,
-                Some(bigint(actual.epoch.get())),
-                Some(bigint(actual.sequence.get())),
-                0,
-                false,
-                None,
-            ),
-            LiveMutationOutcome::Fenced { actual_epoch } => (
-                "fenced",
-                None,
-                Some(bigint(actual_epoch.get())),
-                None,
-                0,
-                false,
-                None,
-            ),
-            LiveMutationOutcome::IdempotencyConflict {
-                committed_fingerprint,
-            } => (
-                "idempotency-conflict",
-                None,
-                None,
-                None,
-                0,
-                false,
-                Some(Buffer::from(committed_fingerprint.into_bytes().to_vec())),
-            ),
-        };
+    let fields = live_observation_fields(outcome);
     Ok(NativeLiveMutationResult {
-        status: status.to_owned(),
-        generation_id,
-        epoch,
-        sequence,
-        conflict_count,
-        truncated,
-        committed_fingerprint: fingerprint,
+        status: fields.status.to_owned(),
+        generation_id: fields.generation_id,
+        epoch: fields.epoch,
+        sequence: fields.sequence,
+        conflict_count: 0,
+        truncated: false,
+        committed_fingerprint: fields.committed_fingerprint,
         work_json: work_json(&work)?,
     })
 }

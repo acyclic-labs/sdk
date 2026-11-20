@@ -4,8 +4,8 @@ use acyclic_fs_work::serde_decode::MaterializationDecode;
 pub(crate) fn reserve<T>(
     values: &mut Vec<T>,
     needed: usize,
-    work: &crate::materializer::NativeMaterializationWork,
-    held: &mut crate::materializer::NativeAllocation,
+    work: &crate::ledger::NativeMaterializationWork,
+    held: &mut crate::ledger::NativeAllocation,
 ) -> Result<(), crate::NativeTreeMaterializationError> {
     work.admit(crate::WorkCounters::UNCHARGED)?;
     let width = std::mem::size_of::<T>();
@@ -53,8 +53,8 @@ pub(crate) fn reserve<T>(
 pub(super) fn reserve_slots<T>(
     values: &mut Vec<T>,
     needed: usize,
-    work: &crate::materializer::NativeMaterializationWork,
-    slot: &mut Option<crate::materializer::NativeAllocation>,
+    work: &crate::ledger::NativeMaterializationWork,
+    slot: &mut Option<crate::ledger::NativeAllocation>,
 ) -> Result<(), LocalCoreStateStoreError> {
     if slot.is_none() {
         *slot = Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?);
@@ -74,7 +74,7 @@ impl RecordValue {
     pub(super) fn write_checkpoint(
         value: Option<&Self>,
         writer: &mut impl Write,
-        work: Option<&crate::materializer::NativeMaterializationWork>,
+        work: Option<&crate::ledger::NativeMaterializationWork>,
     ) -> Result<(), LocalCoreStateStoreError> {
         if let Some(work) = work {
             let mut encoded = LogBuffer {
@@ -110,7 +110,7 @@ impl RecordValue {
 /// In-memory encoding is admitted at every actual Vec growth, before serde writes.
 pub(super) struct LogBuffer {
     pub(super) bytes: Vec<u8>,
-    pub(super) allocation: Option<crate::materializer::NativeAllocation>,
+    pub(super) allocation: Option<crate::ledger::NativeAllocation>,
 }
 
 impl Write for LogBuffer {
@@ -143,8 +143,8 @@ impl Write for LogBuffer {
 pub(super) fn measured_record_path(
     root: &Path,
     leaf: &str,
-    work: &crate::materializer::NativeMaterializationWork,
-    allocation: &mut crate::materializer::NativeAllocation,
+    work: &crate::ledger::NativeMaterializationWork,
+    allocation: &mut crate::ledger::NativeAllocation,
 ) -> Result<PathBuf, LocalCoreStateStoreError> {
     let mut owned = work.path(root, Some(Path::new(leaf)))?;
     owned.1.resize(owned.0.capacity() as u64)?;
@@ -154,7 +154,7 @@ pub(super) fn measured_record_path(
 
 pub(super) struct MaterializationReader<'a> {
     pub(super) file: &'a File,
-    pub(super) work: &'a crate::materializer::NativeMaterializationWork,
+    pub(super) work: &'a crate::ledger::NativeMaterializationWork,
     pub(super) remaining_file_bytes: u64,
     pub(super) original_length: u64,
 }
@@ -211,9 +211,9 @@ impl Read for MaterializationReader<'_> {
 
 pub(super) fn read_file<T: DeserializeOwned>(
     path: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
+    work: &crate::ledger::NativeMaterializationWork,
     maximum_bytes: Option<u64>,
-) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
+) -> Result<Option<(T, crate::ledger::NativeAllocation)>, LocalCoreStateStoreError> {
     let file = match materialization_open_options(
         path,
         &crate::native_host::NativeOpenOptions::Read,
@@ -277,8 +277,8 @@ impl<R: Read> Read for DecodeReader<R> {
 pub(super) fn measured_decode_reader<T: DeserializeOwned>(
     reader: impl Read,
     encoded_bytes: u64,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(T, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
+    work: &crate::ledger::NativeMaterializationWork,
+) -> Result<(T, crate::ledger::NativeAllocation), LocalCoreStateStoreError> {
     // Serde's amortized string scratch is bounded by twice the encoded input.
     let scratch_bytes = encoded_bytes
         .checked_mul(2)
@@ -315,7 +315,7 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
 
 pub(super) struct MaterializationWriter<'a> {
     pub(super) file: File,
-    pub(super) work: Option<&'a crate::materializer::NativeMaterializationWork>,
+    pub(super) work: Option<&'a crate::ledger::NativeMaterializationWork>,
     pub(super) encoded: bool,
 }
 
@@ -371,7 +371,7 @@ impl Write for MaterializationWriter<'_> {
 
 pub(super) fn materialization_parent(
     path: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
+    work: &crate::ledger::NativeMaterializationWork,
 ) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
     let parent = path
         .parent()
@@ -383,7 +383,7 @@ pub(super) fn materialization_parent(
 pub(super) fn materialization_open_options(
     path: &Path,
     options: &crate::native_host::NativeOpenOptions,
-    work: &crate::materializer::NativeMaterializationWork,
+    work: &crate::ledger::NativeMaterializationWork,
 ) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
     let parent = materialization_parent(path, work)?;
     materialization_open_at(&parent, path, options, work)
@@ -393,7 +393,7 @@ pub(super) fn materialization_open_at(
     parent: &cap_std::fs::Dir,
     path: &Path,
     options: &crate::native_host::NativeOpenOptions,
-    work: &crate::materializer::NativeMaterializationWork,
+    work: &crate::ledger::NativeMaterializationWork,
 ) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
     let leaf = path.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")

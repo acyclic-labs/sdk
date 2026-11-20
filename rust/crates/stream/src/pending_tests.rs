@@ -1,0 +1,357 @@
+mod tests {
+    use crate::BoxProviderFuture;
+    use crate::StreamCategory;
+    use crate::*;
+    use crate::{CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream};
+    use futures::FutureExt as _;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Executor(Mutex<Vec<BoxProviderFuture<'static, ()>>>);
+    impl crate::runtime::Executor for Executor {
+        fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
+            self.0
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(future);
+        }
+        fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+            Box::pin(futures::future::pending())
+        }
+    }
+
+    fn assert_original_producer_loss(error: &StreamError) {
+        assert_eq!(error.category(), StreamCategory::Unavailable);
+        let mut cause = std::error::Error::source(error);
+        let mut original = false;
+        while let Some(source) = cause {
+            original |= source
+                .downcast_ref::<crate::completion::ProducerDropped>()
+                .is_some();
+            cause = source.source();
+        }
+        assert!(original, "completion lost its original producer-loss cause");
+    }
+
+    async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), StreamError> {
+        let provider = Arc::new(MemoryStream::default());
+        let stream = Stream::new(Arc::clone(&provider), "pending")?;
+        let path = stream.path().clone();
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: stream.path().clone(),
+                }],
+                vec![CommitMutation::Append {
+                    path: stream.path().clone(),
+                    records: vec!["original".into()],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let executor = Executor::default();
+        let pending = Pending::submit(Arc::clone(&provider), request.clone(), &executor);
+        let retained = pending.clone();
+        assert!(pending.wait().now_or_never().is_none());
+        drop(pending);
+        drop(stream);
+        assert_eq!(
+            provider.head(path).await.map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
+        let owned = executor
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .pop()
+            .ok_or(StreamError::Unavailable)?;
+        owned.await;
+        let outcome = retained.wait().await?;
+        assert!(matches!(outcome, CommitOutcome::Committed(_)));
+        assert_eq!(retained.clone().wait().await?, outcome);
+        assert_eq!(provider.commit(request.clone()).await?, outcome);
+        let mut changed = request;
+        let effect = changed
+            .effects
+            .first_mut()
+            .ok_or(StreamError::InvalidArgument)?;
+        let CommitMutation::Append { records, .. } = effect
+            .mutations
+            .first_mut()
+            .ok_or(StreamError::InvalidArgument)?
+        else {
+            unreachable!()
+        };
+        *records = vec!["changed".into()];
+        assert_eq!(
+            provider
+                .commit(changed)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::IdempotencyMismatch)
+        );
+
+        // Even losing every waiter cannot revoke custody already submitted.
+        let mut request = CommitRequest {
+            idempotency_key: IdempotencyKey::unique(),
+            ..retained.request().clone()
+        };
+        request
+            .effects
+            .first_mut()
+            .ok_or(StreamError::InvalidArgument)?
+            .conditions
+            .clear();
+        drop(Pending::submit(
+            Arc::clone(&provider),
+            request.clone(),
+            &executor,
+        ));
+        let owned = executor
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .pop()
+            .ok_or(StreamError::Unavailable)?;
+        owned.await;
+        assert!(
+            provider
+                .inspect_idempotency(request.idempotency_key)
+                .await?
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{NativePending, StreamPath, test_meter::Meter};
+        use std::{future::Future, sync::atomic::Ordering, task::Context};
+
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("pending/native")?;
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![crate::CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec!["original native result".into()],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let meter = Arc::new(Meter::default());
+        let funded = request.try_clone_native(&meter.original())?;
+        let before = meter.held.load(Ordering::SeqCst);
+        let allocations = meter.allocations.load(Ordering::SeqCst);
+        let mut prepared = None;
+        let physical = acyclic_test_support::measure(|| {
+            let (request, storage) = funded.into_parts();
+            prepared = Some(NativePending::prepare_native(
+                Arc::clone(&provider),
+                request,
+                storage,
+                &meter.original(),
+            ));
+        });
+        let (pending, producer) = prepared.unwrap()?;
+        let Err(pending) = pending.try_take() else {
+            panic!("a live producer lost its original request");
+        };
+        assert_eq!(pending.request(), &request);
+        assert_eq!(
+            physical.bytes_current,
+            (meter.held.load(Ordering::SeqCst) - before).cast_signed()
+        );
+        assert_eq!(
+            physical.count_current,
+            (meter.allocations.load(Ordering::SeqCst) - allocations).cast_signed()
+        );
+        assert!(pending.result().now_or_never().is_none());
+        assert_eq!(
+            provider
+                .head(path.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
+        producer.await??;
+        let retained = pending.result().await?;
+        let outcome = retained.as_ref().unwrap().as_ref().unwrap().value();
+        assert!(matches!(outcome, CommitOutcome::Committed(_)));
+        let cloned = pending.clone();
+        assert!(std::ptr::eq(retained, cloned.result().await?));
+        assert_eq!(&provider.commit(request.clone()).await?, outcome);
+        let Err(pending) = pending.try_take() else {
+            panic!("another observer lost its original result");
+        };
+        drop(cloned);
+        let Ok((original, result, storage)) = pending.try_take() else {
+            panic!("the sole completed owner could not take its result");
+        };
+        assert_eq!(original, request);
+        assert!(matches!(result, Some(Ok(Ok(_)))));
+        drop((original, result, storage));
+        // Committed history still physically belongs to the provider. Its native
+        // storage must stay funded until that original owner retires as well.
+        assert!(meter.held.load(Ordering::SeqCst) > 0);
+        drop(provider);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+
+        // Producer loss before first poll must terminate both registered waiters.
+        // The first waiter remains unpolled while the second must progress.
+        let meter = Arc::new(Meter::default());
+        let (retained, storage) = request.try_clone_native(&meter.original())?.into_parts();
+        let (pending, producer) = NativePending::prepare_native(
+            Arc::new(MemoryStream::default()),
+            retained,
+            storage,
+            &meter.original(),
+        )?;
+        let mut first = Box::pin(pending.result());
+        let mut second = Box::pin(pending.result());
+        struct Wake(std::sync::atomic::AtomicUsize);
+        impl futures::task::ArcWake for Wake {
+            fn wake_by_ref(this: &Arc<Self>) {
+                this.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let first_wake = Arc::new(Wake(std::sync::atomic::AtomicUsize::new(0)));
+        let second_wake = Arc::new(Wake(std::sync::atomic::AtomicUsize::new(0)));
+        let first_waker = futures::task::waker(first_wake.clone());
+        let second_waker = futures::task::waker(second_wake.clone());
+        let mut first_context = Context::from_waker(&first_waker);
+        let mut second_context = Context::from_waker(&second_waker);
+        assert!(first.as_mut().poll(&mut first_context).is_pending());
+        assert!(second.as_mut().poll(&mut second_context).is_pending());
+        drop(producer);
+        assert_eq!(first_wake.0.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            second_wake.0.load(Ordering::SeqCst),
+            1,
+            "retained pending observer blocked another observer's retirement"
+        );
+        assert!(matches!(
+            second.as_mut().poll(&mut second_context),
+            std::task::Poll::Ready(Err(error)) if error.category() == StreamCategory::Unavailable
+        ));
+        drop(first);
+        drop(second);
+        assert!(matches!(
+            pending.result().now_or_never(),
+            Some(Err(error)) if error.category() == StreamCategory::Unavailable
+        ));
+        let error = pending
+            .result()
+            .await
+            .err()
+            .ok_or("lost producer had a result")?;
+        assert_original_producer_loss(&error);
+        drop(pending);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+
+        for allowed in 0..physical.count_current.cast_unsigned() {
+            let meter = Arc::new(Meter::default());
+            let funded = request.try_clone_native(&meter.original())?;
+            let (retained, storage) = funded.into_parts();
+            meter.limit.store(
+                meter.allocations.load(Ordering::SeqCst) + allowed,
+                Ordering::SeqCst,
+            );
+            assert!(
+                NativePending::prepare_native(
+                    Arc::new(MemoryStream::default()),
+                    retained,
+                    storage,
+                    &meter.original(),
+                )
+                .is_err()
+            );
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            meter.assert_refunded();
+        }
+
+        // Original native failure is retained, not normalized to a portable error
+        // or reconstructed by each observer. Admission succeeds before cancellation.
+        let meter = Arc::new(Meter::default());
+        let (retained, storage) = request.try_clone_native(&meter.original())?.into_parts();
+        let (pending, producer) = NativePending::prepare_native(
+            Arc::new(MemoryStream::default()),
+            retained,
+            storage,
+            &meter.original(),
+        )?;
+        meter.cancelled.store(true, Ordering::SeqCst);
+        producer.await??;
+        let result = pending.result().await?;
+        let error = result.as_ref().err().expect("native cancellation lost");
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(error.get_ref().is_some_and(|cause| {
+            cause
+                .downcast_ref::<crate::test_meter::NativeDenial>()
+                .is_some_and(|cause| cause.0 == "cancelled")
+        }));
+        let observer = pending.clone();
+        assert!(std::ptr::eq(result, observer.result().await?));
+        drop(observer);
+        drop(pending);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        cancellation_keeps_exact_submission_and_shared_outcome().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn append_submission_keeps_identity_and_survives_observer_cancellation()
+    -> Result<(), StreamError> {
+        let provider = Arc::new(MemoryStream::default());
+        let stream = Stream::new(Arc::clone(&provider), "append-custody")?;
+        let request = crate::AppendRequest {
+            path: stream.path().clone(),
+            records: vec!["original".into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let executor = Executor::default();
+        let pending =
+            AppendPending::submit_append(Arc::clone(&provider), request.clone(), &executor);
+        let retained = pending.clone();
+        assert_eq!(retained.request(), &request);
+        assert!(pending.wait().now_or_never().is_none());
+        drop(pending);
+        assert_eq!(
+            provider
+                .head(request.path.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
+        let producer = executor
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .pop()
+            .ok_or(StreamError::Unavailable)?;
+        producer.await;
+        let outcome = retained.wait().await?;
+        assert!(matches!(outcome, crate::AppendOutcome::Committed(_)));
+        assert_eq!(provider.append(request.clone()).await?, outcome);
+        assert_eq!(retained.wait().await?, outcome);
+        let abandoned = AppendPending::submit_task(request, futures::future::pending(), &executor);
+        drop(
+            executor
+                .0
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .pop()
+                .ok_or(StreamError::Unavailable)?,
+        );
+        assert_original_producer_loss(&abandoned.result().await.unwrap_err());
+        Ok(())
+    }
+}

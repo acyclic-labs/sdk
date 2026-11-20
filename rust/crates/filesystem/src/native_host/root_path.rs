@@ -6,9 +6,9 @@ pub(super) fn open_windows_root_name(
     access: fs::FILE_ACCESS_RIGHTS,
     flags: fs::FILE_FLAGS_AND_ATTRIBUTES,
 ) -> io::Result<File> {
-    // SAFETY: callers validate the terminated name; success transfers a fresh handle.
     #[cfg(test)]
     super::stat_probe::event("CreateFileW");
+    // SAFETY: the caller supplies a validated, NUL-terminated name that stays live for the call.
     let handle = unsafe {
         fs::CreateFileW(
             windows::core::PCWSTR(name.as_ptr()),

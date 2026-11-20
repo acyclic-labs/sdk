@@ -117,7 +117,7 @@ proptest! {
         let before = broken.receipt().unwrap();
         for _ in &entries {
             for _ in &missing {
-                capture_charge(&broken, crate::materializer::NativeResourceCredit::Items.delta(1)).unwrap();
+                capture_charge(&broken, crate::ledger::NativeResourceCredit::Items.delta(1)).unwrap();
             }
         }
         prop_assert!(broken.receipt().unwrap().items_examined - before.items_examined > item_bound);

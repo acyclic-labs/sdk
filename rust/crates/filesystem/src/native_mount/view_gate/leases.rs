@@ -7,7 +7,7 @@ pub(in crate::native_mount) struct ViewReadLease {
     pub(super) owner: crate::kernel::allocation::retained::RetainedArc<ReadOwner>,
     pub(super) payload: Option<crate::kernel::allocation::retained::RetainedAllocation>,
     // Settles after the owner and payload have physically left this lease.
-    pub(super) completion: crate::demand::ViewReadCompletion,
+    pub(super) completion: crate::ledger::ViewReadCompletion,
 }
 
 pub(in crate::native_mount) struct ViewWriteLease {

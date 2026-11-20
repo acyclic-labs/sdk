@@ -120,46 +120,6 @@ pub fn validate_cancel_response(
     validate_operation_status(&request.operation_id, request.owner.as_ref(), status)
 }
 
-/// Validates a protobuf-encoded handshake request and response.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub fn validate_wire_handshake(request: &[u8], response: &[u8]) -> Result<()> {
-    let request = wire::HandshakeRequest::decode(request)
-        .map_err(|error| Error::Invalid(format!("invalid handshake request: {error}")))?;
-    let response = wire::HandshakeResponse::decode(response)
-        .map_err(|error| Error::Invalid(format!("invalid handshake response: {error}")))?;
-    let supported = response
-        .supported
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("handshake supported capabilities are missing".into()))?;
-    let expected = negotiate(&request, supported)?;
-    if response.protocol != expected.protocol || response.supported != expected.supported {
-        return Err(Error::Conflict(
-            "handshake response identity mismatch".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// Validates protobuf-encoded operation status identity.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub fn validate_wire_status(request: &[u8], status: &[u8]) -> Result<()> {
-    let request = wire::ObserveRequest::decode(request)
-        .map_err(|error| Error::Invalid(format!("invalid observe request: {error}")))?;
-    let status = wire::OperationStatus::decode(status)
-        .map_err(|error| Error::Invalid(format!("invalid operation status: {error}")))?;
-    validate_operation_status(&request.operation_id, request.owner.as_ref(), &status)
-}
-
-/// Validates protobuf-encoded cancellation response identity.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub fn validate_wire_cancellation(request: &[u8], response: &[u8]) -> Result<()> {
-    let request = wire::CancelRequest::decode(request)
-        .map_err(|error| Error::Invalid(format!("invalid cancel request: {error}")))?;
-    let response = wire::CancelResponse::decode(response)
-        .map_err(|error| Error::Invalid(format!("invalid cancel response: {error}")))?;
-    validate_cancel_response(&request, &response)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

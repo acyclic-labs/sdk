@@ -180,13 +180,6 @@ impl SocketInbound for ForwardInput {
     }
 }
 
-fn queue_error<T>(error: &mpsc::error::TrySendError<T>) -> StreamError {
-    match error {
-        mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-        mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-    }
-}
-
 impl Drop for ForwardInput {
     fn drop(&mut self) {
         self.client.pool.cancel_interest(self.id, &self.progress);

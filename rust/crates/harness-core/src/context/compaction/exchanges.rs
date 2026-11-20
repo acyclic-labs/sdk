@@ -1,11 +1,11 @@
+pub(super) use super::grouping::Group;
+use super::grouping::{self, Message, Part};
 use super::{Context, quota_vector, selection::compaction_error};
 use crate::{
     Result,
     model::{ModelContentPart, ModelMessage, ModelRole},
 };
 use acyclic_collections::CompiledPrefixError;
-pub(super) use acyclic_model_render::exchanges::Group;
-use acyclic_model_render::exchanges::{self, Message, Part};
 
 impl Message for ModelMessage {
     fn assistant(&self) -> bool {
@@ -62,7 +62,7 @@ pub(super) fn exchange_groups(
 ) -> Result<Vec<Group>> {
     let mut groups = quota_vector::<Group>(context.messages.len(), quota)?;
     let original = crate::wire_codec::BorrowedIndexWork::new(quota.work());
-    match exchanges::exchange_groups(&context.messages, &mut groups, &mut &original) {
+    match grouping::exchange_groups(&context.messages, &mut groups, &mut &original) {
         Ok(()) => Ok(groups),
         Err(CompiledPrefixError::Work(error)) => Err(error),
         Err(CompiledPrefixError::Allocation(cause)) => original.with(|work| {

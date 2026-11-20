@@ -210,15 +210,6 @@ pub struct Input {
 
 /// Project native historical receipts with separately verified release facts.
 pub fn build(input: &BuildInput, scope: &Input) -> Result<DocsData, Error> {
-    if scope
-        .binaries
-        .iter()
-        .any(|binary| !input.rustdoc_files.contains(&binary.rustdoc_file))
-    {
-        return Err(Error::Invalid(
-            "binary input is absent from Rustdoc inputs".into(),
-        ));
-    }
     build_data_inner(input, Some(scope), &scope.binaries)
 }
 

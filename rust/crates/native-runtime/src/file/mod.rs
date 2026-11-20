@@ -148,14 +148,17 @@ impl std::os::windows::io::AsHandle for HeldFile {
     }
 }
 
+/// The platform's stable identity for an open file.
 #[cfg(windows)]
-pub(crate) type FileIdentity = (u64, [u8; 16]);
+pub type FileIdentity = (u64, [u8; 16]);
 
+/// The platform's stable identity for an open file.
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-pub(crate) type FileIdentity = (u64, u64);
+pub type FileIdentity = (u64, u64);
 
+/// Queries the platform's stable identity for an open file.
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-pub(crate) fn file_identity(file: &File) -> io::Result<FileIdentity> {
+pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
     #[cfg(test)]
     FILE_IDENTITY_QUERIES.with(|count| count.set(count.get() + 1));
     #[cfg(windows)]
@@ -172,7 +175,10 @@ thread_local! {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-pub(crate) fn file_identity_from_metadata(metadata: &std::fs::Metadata) -> FileIdentity {
+/// Device and inode from existing metadata, with no additional filesystem query.
+#[inline]
+#[must_use]
+pub fn file_identity_from_metadata(metadata: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt as _;
     (metadata.dev(), metadata.ino())
 }

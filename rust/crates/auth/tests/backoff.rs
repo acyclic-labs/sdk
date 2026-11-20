@@ -1,7 +1,6 @@
-#[path = "../src/operation/backoff.rs"]
-mod backoff;
+//! Properties of transport backoff bounds, jitter, and reset behavior.
 
-use backoff::Backoff;
+use acyclic_auth::operation::Backoff;
 use proptest::prelude::*;
 
 fn finite_milliseconds() -> impl Strategy<Value = f64> {

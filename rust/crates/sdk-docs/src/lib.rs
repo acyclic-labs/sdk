@@ -3,6 +3,10 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
+//!
+//! The crate is layered: the data types and their digests live here, [`build`] assembles a bundle
+//! from rustdoc receipts, [`projection`] and [`public_api`] derive the public surface, and
+//! [`rustdoc_profiles`] and [`scenarios`] own the Cargo/rustdoc execution boundary.
 use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
 use schemars::JsonSchema;
 use semver::Version;
@@ -27,7 +31,7 @@ pub mod historical;
 #[path = "../fuzz/metadata_output.rs"]
 mod metadata_output_oracle;
 #[doc(hidden)]
-pub mod path_identity;
+pub use sdk_file_identity::path_identity;
 #[cfg(test)]
 #[path = "../fuzz/path_identity.rs"]
 mod path_identity_oracle;

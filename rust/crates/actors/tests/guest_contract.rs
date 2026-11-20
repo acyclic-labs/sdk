@@ -179,7 +179,7 @@ proptest! {
 }
 
 #[test]
-fn artifact_handshake_and_context_defaults_are_explicit() {
+fn artifact_handshake_admits_only_the_frozen_abi_version() {
     assert_eq!(negotiate_abi(GUEST_ABI_VERSION), Ok(()));
     for version in [0, 2, u32::MAX] {
         assert_eq!(
@@ -187,17 +187,6 @@ fn artifact_handshake_and_context_defaults_are_explicit() {
             Err(GuestError::UnsupportedAbi(version))
         );
     }
-    let lifecycle = GuestContext::builder((), Box::new(|| 42)).build();
-    assert!(lifecycle.admitted_identity.is_none());
-    assert!(lifecycle.actor.alarms.is_none());
-    assert!((lifecycle.retry_key)("effect").is_err());
-    let delivery = GuestContext::builder((), Box::new(|| 42))
-        .delivery("stable".into())
-        .build();
-    assert_eq!(
-        (delivery.retry_key)("effect"),
-        retry_key("stable", "effect")
-    );
 }
 
 #[test]

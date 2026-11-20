@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA: &str = "sdk-generation-release-manifest.v1";
-pub const FILE_NAME: &str = "sdk-generation-release-manifest.v1.json";
+const FILE_NAME: &str = "sdk-generation-release-manifest.v1.json";
 
 /// The same source identity is used to produce and validate a manifest.
 pub struct SourceIdentity<'a> {
@@ -311,14 +311,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path();
         let candidate = output_path(
-            &output,
+            output,
             &Channel::Release,
             &PublicationStatus::Candidate,
             "1.0.0",
         )
         .unwrap();
         let released = output_path(
-            &output,
+            output,
             &Channel::Release,
             &PublicationStatus::RegistryReleased,
             "1.0.0",
@@ -381,7 +381,7 @@ mod tests {
         );
         expected.insert(release_digest, "sha256:sidecar".into());
         let error = validate(
-            &root,
+            root,
             &output,
             &release,
             SourceIdentity {

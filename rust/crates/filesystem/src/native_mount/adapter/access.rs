@@ -149,7 +149,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     ) -> Result<T, MountSourceError> {
         let result = read.await;
         #[cfg(test)]
-        if super::tests::return_fence::omitted() {
+        if super::tests::return_fence_control::omitted() {
             return result;
         }
         let revision = observe_current_policy(&self.checkout, &self.cancellation, work).await?;
@@ -343,15 +343,11 @@ where
         let view = self.access_snapshot_with_meter(work)?;
         crate::native_mount::actions::require_projfs_mode(
             &view,
+            &self.root,
             writable,
             access_time(&self.runtime.clock)?,
-        )
-        .map_err(|error| match error {
-            super::super::MountLifecycleError::NativePolicy(reason) => {
-                NativeMountError::Lifecycle(reason)
-            }
-            _ => NativeMountError::Lifecycle("ProjFS policy admission failed"),
-        })?;
+            work,
+        )?;
         let custody = work
             .claim(
                 std::mem::size_of::<(crate::access::projection::Lease, crate::NativeAllocation)>()

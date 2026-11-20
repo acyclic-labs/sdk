@@ -1,5 +1,8 @@
 //! Agent commit shapes and step protocol through the shared Streams providers.
+#![cfg(test)]
 
+#[cfg(all(not(loom), feature = "test-support"))]
+use acyclic_harness_control_checks as agent_control_mapping;
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
@@ -951,11 +954,11 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
 async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     let root = AgentPath::root(&id(1));
     let (path, mut state) = child_of(&root, 2)?;
-    for byte in 0..40 {
-        state
-            .open_children
-            .insert(&path.child(&AgentId::from_bytes([byte; 16]))?)
-            .await?;
+    let children = (0..40)
+        .map(|byte| path.child(&AgentId::from_bytes([byte; 16])))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for child in &children {
+        state.open_children.insert(child).await?;
     }
     let driver = script(Vec::new());
     let archive_record = InboxRecord::Archive(Control {
@@ -993,16 +996,44 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     .await?;
     assert_eq!(archives(&second.outs), 40 - MAX_FANOUT);
     assert_eq!(second.alarm, Alarm::Clear);
-    assert!(second.state.reported);
-    assert!(matches!(
-        second.outs.last(),
-        Some(Out::Send { to, record: InboxRecord::ChildDone(ChildDone { outcome: AgentOutcome::Archived, .. }) }) if *to == root
-    ));
+    assert!(!second.state.reported);
+    let mut state = second.state;
+    let mut receipts = children.into_iter().zip(2..).peekable();
+    while let Some((child, sequence)) = receipts.next() {
+        let settled = step(
+            &driver,
+            &path,
+            Some(state),
+            (sequence + 1, 0),
+            Wake::Inbox {
+                sequence,
+                record: InboxRecord::ChildDone(ChildDone {
+                    child,
+                    outcome: AgentOutcome::Archived,
+                }),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        if receipts.peek().is_some() {
+            assert!(!settled.state.reported);
+            assert!(settled.outs.is_empty());
+        } else {
+            assert!(settled.state.reported);
+            assert!(matches!(
+                settled.outs.as_slice(),
+                [Out::Send { to, record: InboxRecord::ChildDone(ChildDone {
+                    outcome: AgentOutcome::Archived, ..
+                }) }] if *to == root
+            ));
+        }
+        state = settled.state;
+    }
     let third = step(
         &driver,
         &path,
-        Some(second.state),
-        (2, 0),
+        Some(state),
+        (42, 0),
         Wake::Alarm,
         acyclic_actors::guest::CancellationToken::new(),
     )
@@ -1074,32 +1105,30 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
     let mut shapes = Vec::new();
     for agent in [&paths[0], &paths[paths.len() / 2], &paths[paths.len() - 1]] {
         let request = send(agent, &user(), &cancel("c1"))?;
-        let touched: Vec<_> = request.effects[0]
-            .conditions
-            .iter()
-            .map(|condition| match condition {
-                CommitCondition::Head { path, .. }
-                | CommitCondition::Tail { path, .. }
-                | CommitCondition::Present { path }
-                | CommitCondition::Absent { path } => path.clone(),
-            })
-            .collect();
         assert!(
-            touched
-                .iter()
-                .all(|path| path.as_str().starts_with(agent.as_str()))
+            request
+                .conditions()
+                .all(|condition| condition.path().as_str().starts_with(agent.as_str()))
         );
         let Submitted::Committed(receipt) = submit(&provider, request.clone()).await? else {
             panic!("send to a dormant agent did not commit");
         };
+        assert!(receipt.forks.is_empty());
+        assert!(
+            receipt
+                .appends
+                .iter()
+                .all(|append| append.path.as_str().starts_with(agent.as_str()))
+        );
         shapes.push((
-            request.effects[0].conditions.len(),
-            request.effects[0].mutations.len(),
-            receipt.appends.len() + receipt.forks.len(),
+            request.conditions().count(),
+            request.mutations().count(),
+            receipt.appends.len(),
         ));
     }
     assert!(shapes.windows(2).all(|pair| pair[0] == pair[1]));
-    assert_eq!(shapes[0], (2, 1, 1));
+    // Cancel appends the inbox record and its selected-input stop marker.
+    assert_eq!(shapes[0], (2, 2, 2));
     for agent in [&paths[1], &paths[paths.len() - 2]] {
         assert_eq!(inbox_tail(&provider, agent).await?, 1);
     }

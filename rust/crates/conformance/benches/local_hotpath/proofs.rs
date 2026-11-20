@@ -3,7 +3,8 @@ use super::{
     population::{Fixture, id, require_root},
     report::{Result, emit},
 };
-use acyclic_harness_core::{agent::IntentId, filesystem::hosting::RootSubmission};
+use acyclic_harness::hosting::RootSubmission;
+use acyclic_harness_core::agent::IntentId;
 use acyclic_stream::{
     CommitMutation, CommitRequest, CommittedEnvelope, CommittedMutation, CutSimulationError,
     IdempotencyOutcome, PersistenceCut, StreamError, StreamProvider, StreamProviderExt as _,

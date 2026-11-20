@@ -1,0 +1,35 @@
+# Thresholds for the lints enabled in [workspace.lints.clippy] (Cargo.toml).
+cognitive-complexity-threshold = 30
+# large_futures ceiling, in bytes. The largest concrete future awaited by value
+# was 95,312 bytes when this was set (a harness integration test); 128 KiB
+# leaves headroom for ordinary growth, while a layer that stops erasing its
+# boundary future adds a whole subtree to its callers and crosses it. Lower it
+# as boundaries shrink. Generic futures are measured where they are concrete.
+future-size-threshold = 131072
+# Tests may unwrap, expect, panic and index; the workspace denies them elsewhere.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+# The working directory belongs to the whole process: changing it moves every
+# other thread's relative paths and the directory each later child starts in.
+# Give a child its own directory with `Command::current_dir` instead.
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "process-wide; pass an explicit environment with Command::env" },
+    { path = "std::env::remove_var", reason = "process-wide; pass an explicit environment with Command::env_remove" },
+    { path = "std::env::set_current_dir", reason = "process-wide; use Command::current_dir for a child" },
+    # OS file locks belong to the open file description, which a concurrently
+    # spawned child shares until exec; close alone may never release them.
+    { path = "std::fs::File::lock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::lock_shared", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::try_lock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::try_lock_shared", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::unlock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "libc::flock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "rustix::fs::flock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "nix::fcntl::flock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows_sys::Win32::Storage::FileSystem::LockFile", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows_sys::Win32::Storage::FileSystem::LockFileEx", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows::Win32::Storage::FileSystem::LockFile", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows::Win32::Storage::FileSystem::LockFileEx", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+]

@@ -48,27 +48,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("windows", _) => Some(protoc_bin_vendored_win32::protoc_bin_path()),
         _ => None,
     });
-    let mut source = match executable {
-        Some(path) => {
-            println!("cargo:rerun-if-changed={}", path.display());
-            place(&out.join("protoc"), &fs::read(path)?)?;
-            "const EXECUTABLE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/protoc\"));\n"
-                .to_owned()
-        }
-        None => "const EXECUTABLE: &[u8] = &[];\n".into(),
-    };
-    // These includes are byte-identical across all vendored platform packages.
-    source.push_str("const INCLUDES: &[(&str, &[u8])] = &[\n");
+    // The library includes this file from inside `Compiler::new`, so the bytes
+    // stay in the object file and out of the crate metadata every dependent
+    // reads. An unsupported platform gets an empty file, which `new` rejects.
+    if let Some(path) = executable {
+        println!("cargo:rerun-if-changed={}", path.display());
+        place(&out.join("protoc"), &fs::read(path)?)?;
+    } else {
+        place(&out.join("protoc"), &[])?;
+    }
+    // These includes are byte-identical across all vendored platform packages. They are
+    // returned from functions, not module-scope consts, so their bytes stay in the object
+    // file and out of the crate metadata every dependent reads.
+    let mut source =
+        String::from("fn include_files() -> &'static [(&'static str, &'static [u8])] {\n    &[\n");
     let root = env::var_os("PROTOC_INCLUDE")
         .map_or_else(protoc_bin_vendored_win32::include_path, PathBuf::from);
     println!("cargo:rerun-if-changed={}", root.display());
     embed(&root, &root, &out, "include", &mut source)?;
-    source.push_str("];\nconst SHARED: &[(&str, &[u8])] = &[\n");
+    source.push_str(
+        "    ]\n}\nfn shared_files() -> &'static [(&'static str, &'static [u8])] {\n    &[\n",
+    );
     let shared =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?)
             .join("proto");
     embed(&shared, &shared, &out, "shared", &mut source)?;
-    source.push_str("];\n");
+    source.push_str("    ]\n}\n");
     place(&out.join("compiler.rs"), source.as_bytes())?;
     Ok(())
 }

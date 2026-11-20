@@ -5,7 +5,7 @@
 //! The observer must include ingress, completion and cleanup, including workers.
 //! Counts are not elapsed times, provider-call estimates or sampled CPU usage.
 
-use std::{error::Error, fmt, future::Future};
+use std::{error::Error, fmt};
 
 mod ordered;
 use ordered::OrderedInputs;
@@ -46,15 +46,6 @@ pub fn assert_scales(bound: Bound, small: (u64, u64), large: (u64, u64)) {
 
 /// The complete qualification population vector, in fresh storage domains.
 pub const POPULATIONS: [u64; 3] = [1, 1_000, 100_000];
-/// Composed operations applied in lifecycle order by deterministic simulations.
-pub const LIFECYCLE_OPERATIONS: [Operation; 6] = [
-    Operation::Create,
-    Operation::Turn,
-    Operation::Tool,
-    Operation::Fork,
-    Operation::ChildPage,
-    Operation::Archive,
-];
 /// Primitive and session operations measured by the shared native benchmark.
 pub const CORE_OPERATIONS: [Operation; 17] = [
     Operation::ActorCreate,
@@ -187,23 +178,6 @@ pub struct Idle {
     pub timers: Option<u64>,
 }
 
-/// Real lifecycle and its original work observer, with no readiness probes.
-pub trait Population {
-    /// Complete one operation and its safety oracle before returning work.
-    /// Await only that operation's commit, delivery, native completion or channel
-    /// event. Producer loss must return an error; deadlines do not prove progress.
-    fn operation(
-        &mut self,
-        operation: Operation,
-        agent: u64,
-    ) -> impl Future<Output = Result<Work, Failure>>;
-    /// Sample after the create phase's completions, without a timed idle window.
-    fn idle(&mut self) -> Result<Idle, Failure>;
-    /// Release all original owners and await their explicit terminal events.
-    /// Include this final cleanup in the archive accounting where appropriate.
-    fn close(self) -> impl Future<Output = Result<(), Failure>>;
-}
-
 /// A metric's exact sum and worst completed operation, with missing coverage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counter {
@@ -294,55 +268,6 @@ impl fmt::Display for Failure {
     }
 }
 impl Error for Failure {}
-
-/// Drive every parent, including provisioning, through the requested operations.
-/// Callers can use smaller vectors for fast proofs; only [`POPULATIONS`] qualifies
-/// the full target. Storage is fresh at each point and released before the next.
-pub async fn run<P, F, Fut>(
-    sizes: &[u64],
-    operations: &[Operation],
-    mut fresh: F,
-    recovery: &str,
-) -> Result<Report, Failure>
-where
-    P: Population,
-    F: FnMut(u64) -> Fut,
-    Fut: Future<Output = Result<P, Failure>>,
-{
-    if sizes.is_empty() || sizes[0] == 0 || sizes.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(failure(
-            "population vector",
-            format!("require increasing positive sizes: {sizes:?}"),
-            recovery,
-        ));
-    }
-    let mut report = Report {
-        points: Vec::with_capacity(sizes.len()),
-    };
-    for &agents in sizes {
-        // Observer allocations precede the empty-host baseline taken by fresh.
-        let mut point = Point {
-            agents,
-            samples: Vec::with_capacity(operations.len()),
-            idle: Idle::default(),
-        };
-        let mut population = fresh(agents).await?;
-        for &operation in operations {
-            let mut sample = Sample::new(operation);
-            for agent in 0..agents {
-                let work = population.operation(operation, agent).await?;
-                sample.record(work, recovery)?;
-            }
-            point.samples.push(sample);
-            if operation == Operation::Create {
-                point.idle = population.idle()?;
-            }
-        }
-        population.close().await?;
-        report.points.push(point);
-    }
-    Ok(report)
-}
 
 fn failure(step: &str, evidence: String, recovery: &str) -> Failure {
     Failure {

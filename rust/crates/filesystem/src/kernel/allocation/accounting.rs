@@ -493,7 +493,7 @@ impl<'a> KernelAccounting<'a> {
                 work, cancellation, ..
             } => {
                 #[cfg(test)]
-                #[cfg(all(loom))]
+                #[cfg(loom)]
                 if charge_model::split_charge() {
                     work.admit(WorkCounters::UNCHARGED)?;
                     cancellation.check()?;
@@ -701,7 +701,7 @@ impl<'a> KernelAccounting<'a> {
 
     pub(crate) fn spent(&self) -> Result<WorkCounters, crate::WorkObservationError> {
         #[cfg(test)]
-        #[cfg(all(not(loom)))]
+        #[cfg(not(loom))]
         super::snapshot_tests::observe();
         match self {
             Self::Standalone {

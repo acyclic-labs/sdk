@@ -4,11 +4,10 @@ load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = [
-        "model-checking",
         "test-support",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"sdk-docs","CARGO_PKG_DESCRIPTION":"Deterministic Rust-owned versioned SDK documentation data","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"sdk-docs","CARGO_PKG_DESCRIPTION":"Deterministic Rust-owned versioned SDK documentation data","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
     name = "lints",
@@ -28,13 +27,14 @@ rust_library(
         "//rust/crates/sdk-docs/fuzz:corpus/metadata_output/native-workspace.json",
         "//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json",
     ],
+    tags = ["resources:memory:512"],
     edition = "2021",
     version = "0.1.0",
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"test-support\"))",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
@@ -67,7 +67,7 @@ rust_test(
     crate_features = FEATURES,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"model-checking\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"test-support\"))",
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
@@ -102,14 +102,23 @@ rust_test(
         "//rust/crates/stream:examples/stream-typescript-consumer.rs",
         "src/lib.rs",
         "//:workspace-manifests",
+    ] + [
+        "@sdk_compilers//:cargo",
+        "@sdk_compilers//:rustc",
+        "@sdk_compilers//:rustup",
     ],
-    tags = ["manual"],
+    env = {"CARGO_BIN_EXE_CARGO":"$(rootpath @sdk_compilers//:cargo)","CARGO_BIN_EXE_rustc":"$(rootpath @sdk_compilers//:rustc)","CARGO_BIN_EXE_rustup":"$(rootpath @sdk_compilers//:rustup)"},
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:512"],
 )
 
 isolated_test(
     name = "sdk_docs_test",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
+    binaries = {"@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-docs",
     exclude = ["::full_cloud::"],
     workers = 1,
@@ -120,7 +129,7 @@ isolated_test(
 isolated_test(
     name = "sdk_docs_test_full-cloud",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    binaries = {"@sdk_compilers//:cargo":"CARGO","@sdk_compilers//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-docs",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

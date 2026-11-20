@@ -10,7 +10,7 @@ export const packagedTypeScriptBindings = [
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
   ["harness/v2/resources_pb", ["machines", "actors"], "compatibility"],
-  ["objects/v1/objects_pb", ["objects"]],
+  ["objects/v1/objects_pb", ["objects"], "rust/crates/objects-core"],
   ["stream/v1/stream_pb", ["stream"], "rust/crates/stream-wire"],
   ["stream/v1/session_pb", ["stream"], "rust/crates/stream-wire"],
   ["actors/v1/actors_pb", ["actors"], "rust/crates/actors-contract"],

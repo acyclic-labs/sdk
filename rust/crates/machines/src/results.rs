@@ -1,25 +1,17 @@
 //! Immutable settled observations under the original completion owner.
 //!
-//! The physical fork owner stages observations with [`record`]. It includes
-//! [`publication`] in its EXISTING terminal commit, alongside the operation's
-//! terminal outcome, including failure. Each observation must be recorded in the
-//! child's creation transaction, before admitting another child. Cleanup uses the
-//! same retained cut for success, failure and crash recovery.
-//! The source prefix is shared by Streams; settlement does not recopy its bytes.
-//! Native controllers instead retain their original partition revision and
-//! observations. [`NativeResults`] borrows that retained result without a second
-//! publication, resource inspection or conversion of its revision to a commit ID.
+//! The physical fork owner stages observations with [`record`] in each child's
+//! creation transaction, before admitting another child. Cleanup uses the same
+//! retained cut for success, failure and crash recovery.
+//! Native controllers retain their original partition revision and observations.
+//! [`NativeResults`] borrows that retained result without a second publication,
+//! resource inspection or conversion of its revision to a commit ID.
 use crate::{MachineObservation, OperationId, ProviderError};
-use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitId, CommitMutation, ReadRequest, StreamPath,
-    StreamProvider, StreamProviderExt as _,
-};
-use futures::StreamExt as _;
+use acyclic_stream::{AppendRecord, CommitId};
 use serde::{Deserialize, Serialize};
 use std::{
     num::{NonZeroU32, NonZeroU64},
     ops::Range,
-    sync::Arc,
 };
 
 /// The actual terminal publication owner. A native revision is scoped to the
@@ -92,7 +84,11 @@ impl ResultCursor {
         Ok(())
     }
 
-    /// Admit this cursor against the original result and bound its next page by credit.
+    /// Selects the child indices covered by this cursor and page credit.
+    /// Returns the cursor for the next page when the original result has more children.
+    ///
+    /// # Errors
+    /// Rejects a different settlement or an index past the original result extent.
     pub fn interval(
         self,
         original: ResultCut,
@@ -224,140 +220,6 @@ fn unsupported() -> ProviderError {
     )
 }
 
-fn path(root: &StreamPath, operation: OperationId) -> Result<StreamPath, ProviderError> {
-    let call = acyclic_actors::call::CallPath::new(root, &operation.to_string())
-        .map_err(|error| invalid(&error.to_string()))?;
-    StreamPath::new(format!("{}/results", call.log())).map_err(storage)
-}
-
-/// Joins a staged prefix to the caller's EXISTING terminal publication. Add both
-/// condition and the mutation to that commit; do not publish them separately.
-/// Its operation record must retain `count`; that record's Streams `commit_id`
-/// identifies this same settlement, including after a lost acknowledgment.
-///
-/// `count` is the exact original preparation cut. Streams shares that immutable
-/// prefix even if preparation later appends. No source head reread or checksum
-/// is needed. Staging itself, its admission and its funded custody belong to the
-/// original physical operation owner.
-/// The admitted source must exist even when `count` is zero, so a fork that
-/// fails before its first birth still publishes a verifiable empty cut.
-pub fn publication(
-    root: &StreamPath,
-    operation: OperationId,
-    source: StreamPath,
-    count: u64,
-) -> Result<(CommitCondition, CommitMutation), ProviderError> {
-    let destination = path(root, operation)?;
-    if source == destination {
-        return Err(invalid("result preparation cannot replace its publication"));
-    }
-    Ok((
-        CommitCondition::Absent {
-            path: destination.clone(),
-        },
-        CommitMutation::Fork {
-            source,
-            destination,
-            at_tail: count,
-            records: Vec::new(),
-            exclude: Vec::new(),
-        },
-    ))
-}
-
-/// Reader pinned once to the terminal operation's actual publication. It owns
-/// no worker, timer, registry or lifecycle interest. Dropping it does not cancel
-/// the operation. Reopen using the SAME retained settlement after reply loss.
-pub struct SettledResults {
-    streams: Arc<dyn StreamProvider>,
-    path: StreamPath,
-    cut: ResultCut,
-}
-
-impl SettledResults {
-    /// The server supplies the SAME authenticated Streams/root and the count
-    /// and publication from the original terminal record. These arguments are
-    /// not an admission API and must never be accepted as guest authority.
-    /// One head verifies the fork publication, not the latest Machine state.
-    pub async fn open(
-        streams: Arc<dyn StreamProvider>,
-        root: &StreamPath,
-        operation: OperationId,
-        settlement: CommitId,
-        count: u64,
-    ) -> Result<Self, ProviderError> {
-        let path = path(root, operation)?;
-        let head = streams.head(path.clone()).await.map_err(storage)?;
-        let origin = head
-            .origin
-            .ok_or_else(|| invalid("result publication has no original fork cut"))?;
-        if origin.inherited.commit_id != settlement
-            || origin.inherited.forked_at != count
-            || head.tail < count
-        {
-            return Err(invalid(
-                "result publication differs from terminal operation",
-            ));
-        }
-        Ok(Self {
-            streams,
-            path,
-            cut: ResultCut {
-                operation,
-                settlement: Settlement::Streams(settlement),
-                count,
-            },
-        })
-    }
-
-    #[must_use]
-    pub fn cursor(&self) -> ResultCursor {
-        ResultCursor {
-            cut: self.cut,
-            from: 0,
-        }
-    }
-
-    /// Reads only the requested original interval. There are no head reads,
-    /// resource inspections or completion waits per page. A lost/short source
-    /// is a typed error, never an empty success or a readiness retry.
-    pub async fn page(
-        &self,
-        cursor: ResultCursor,
-        credit: NonZeroU32,
-    ) -> Result<ResultPage, ProviderError> {
-        // Credit is an allowance, not a demand to exceed the shared read chunk.
-        let chunk = u32::try_from(acyclic_stream::MAX_ITEMS)
-            .map_err(|_| invalid("Streams read chunk cannot be represented"))?;
-        let credit = NonZeroU32::new(credit.get().min(chunk))
-            .ok_or_else(|| invalid("Streams read chunk is empty"))?;
-        let (range, next) = cursor.interval(self.cut, credit)?;
-        let limit = u32::try_from(range.end - range.start)
-            .map_err(|_| invalid("result page credit cannot be represented"))?;
-        let machines = if limit == 0 {
-            Vec::new()
-        } else {
-            let records = self
-                .streams
-                .read(ReadRequest {
-                    path: self.path.clone(),
-                    from: range.start,
-                    limit,
-                    at_least: Default::default(),
-                    key: None,
-                })
-                .await
-                .map_err(storage)?;
-            observations(records, range.start, limit).await?
-        };
-        Ok(ResultPage {
-            cursor,
-            machines,
-            next,
-        })
-    }
-}
-
 /// Destroys exactly the children in an original cut, with O(page credit) memory.
 /// This is the single cleanup path for successful, failed and recovered forks.
 /// Every destroy key is derived from the original operation and child index;
@@ -396,40 +258,9 @@ pub async fn cleanup(
     }
 }
 
-async fn observations(
-    mut records: impl futures::Stream<
-        Item = Result<acyclic_stream::Record, acyclic_stream::StreamError>,
-    > + Unpin,
-    from: u64,
-    limit: u32,
-) -> Result<Vec<MachineObservation>, ProviderError> {
-    let mut machines = Vec::with_capacity(
-        usize::try_from(limit).map_err(|_| invalid("result page credit exceeds address space"))?,
-    );
-    // Do not await an extra item/EOF after consuming granted credit.
-    for index in 0..limit {
-        let record = records
-            .next()
-            .await
-            .ok_or_else(|| invalid("original result prefix ended before its admitted extent"))?
-            .map_err(storage)?;
-        if record.sequence != from + u64::from(index) {
-            return Err(invalid("original result sequence was substituted"));
-        }
-        machines.push(decode(record.value.as_ref())?);
-    }
-    Ok(machines)
-}
-
 fn invalid(message: &str) -> ProviderError {
     ProviderError::Rejected(format!(
-        "{message}; recovery: retain the original operation, publication and result cursor"
-    ))
-}
-
-fn storage(error: acyclic_stream::StreamError) -> ProviderError {
-    ProviderError::Rejected(format!(
-        "original result access failed: {error}; recovery: restore the original operation's Streams authority and publication"
+        "{message}; recovery: retain the original operation and result cursor"
     ))
 }
 
@@ -486,6 +317,3 @@ pub mod codec_fuzz {
         matches!(decode(&foreign_field), Err(ProviderError::Rejected(_)))
     }
 }
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;

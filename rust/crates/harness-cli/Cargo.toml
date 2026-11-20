@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-harness-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native CLI completion custody, host hook manifests and usage presentation"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-harness-cli"
+
+[dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+futures.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+
+[lints]
+workspace = true

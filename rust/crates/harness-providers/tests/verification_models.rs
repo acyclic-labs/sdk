@@ -3,7 +3,7 @@
 use crate::{Adapter, sync};
 use sync::Arc;
 mod accounting {
-    include!("../src/accounting.rs");
+    include!("../../harness-provider-core/src/accounting.rs");
 
     // This mutation needs a switch between load and store to lose an update.
     pub fn observe_racy(estimator: &TokenEstimator, ratio: f64) {
@@ -61,8 +61,7 @@ fn calibration_model(broken: bool) {
 #[path = "models/refresh.rs"]
 mod refresh;
 
-#[path = "../src/usage_snapshot.rs"]
-mod usage_snapshot;
+use acyclic_harness_provider_core::usage_snapshot;
 #[test]
 fn usage_snapshot_is_atomic_across_concurrent_counting_and_completion() {
     use acyclic_harness_core::model::{

@@ -47,7 +47,7 @@ pub enum WorkspaceMutation {
 
 /// Publication families within the host-owned journal.
 #[derive(Clone, Copy)]
-pub(crate) enum InternalContentClass {
+pub enum InternalContentClass {
     Interaction,
     Execution,
     /// The original validated tool result, readable through tool-output observation.
@@ -63,7 +63,8 @@ pub(crate) enum InternalContentClass {
 }
 
 impl InternalContentClass {
-    pub(in crate::filesystem) fn require_path(
+    /// Refuses a path that does not belong to this publication family.
+    pub fn require_path(
         volume: &VolumeRef,
         class: Option<Self>,
         path: &str,
@@ -95,11 +96,13 @@ impl InternalContentClass {
         }
     }
 
-    pub(in crate::filesystem) fn contains_path(self, path: &str) -> bool {
+    /// Whether `path` belongs to this publication family.
+    pub fn contains_path(self, path: &str) -> bool {
         path.starts_with(self.prefix())
     }
 
-    pub(in crate::filesystem) fn prefix(self) -> &'static str {
+    /// The path prefix that names this publication family.
+    pub fn prefix(self) -> &'static str {
         match self {
             Self::Interaction => ".system/interactions/",
             Self::Execution => ".system/execution/",

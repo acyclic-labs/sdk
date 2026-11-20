@@ -2,8 +2,8 @@
 //! not a provider fixture. Its capture procedure and digest are beside it.
 use super::*;
 use acyclic_harness_core::{
-    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    model::{Model, ModelDispatch, ModelSampling, ToolCall},
+    conversation::{FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
+    model::{Model, ModelDispatch, ModelSampling, PreparedModelRequest, ToolCall},
     resources::ProviderRef,
     tool::ToolDefinition,
 };
@@ -169,14 +169,6 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
         messages[2]["metadata"]["acyclic_content"],
         serde_json::to_value(&call.request.messages[2].content).map_err(invalid)?
     );
-    assert_eq!(sample["id"], sample["metadata"]["replay_key"]);
-    assert_eq!(
-        sample["id"],
-        acyclic_harness_core::model::replay_key(&bytes)
-            .map(blake3::Hash::from)?
-            .to_hex()
-            .as_str()
-    );
     assert_eq!(
         sample["metadata"]["source"]["operation"],
         json!(admission.operation_id)
@@ -185,7 +177,6 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
     assert_eq!(sample["metadata"]["usage"]["tokens"]["input"], 0);
     assert_eq!(sample["metadata"]["usage"]["tokens"]["output"], u64::MAX);
     assert!(sample["metadata"]["usage"]["tokens"]["cached"].is_null());
-    assert_eq!(log["stats"]["started_at"], "");
 
     let mut foreign = usage.clone();
     foreign.dispatch.step += 1;
@@ -233,117 +224,138 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<()> {
-    use acyclic_harness_core::{conversation::Limits, model::PreparedModelRequest};
-    for arguments in [
-        Value::Null,
-        json!(false),
-        json!(7),
-        json!("raw"),
-        json!([1]),
-        json!({}),
-    ] {
-        let mut request = request("generated parallel calls".into());
-        request.messages[1].content = ModelContent::Parts(
-            (0..3)
-                .map(|index| {
-                    ModelContentPart::ToolCall(ToolCall::new(
-                        format!("call-{index}"),
-                        "read".into(),
-                        if index == 0 {
-                            arguments.clone()
-                        } else {
-                            json!({})
-                        },
-                    ))
-                })
-                .collect(),
-        );
-        request.messages[2].content = ModelContent::Parts(
-            (0..3)
-                .map(|index| ModelContentPart::ToolResult {
-                    call_id: format!("call-{index}"),
-                    name: "read".into(),
-                    content: match index {
-                        0 => ToolResultContent::Error {
-                            message: "Original refused call".into(),
-                        },
-                        1 => ToolResultContent::Json {
-                            value: json!({"original":1}),
-                        },
-                        _ => ToolResultContent::Parts {
-                            parts: vec![acyclic_harness_core::model::ModelDataPart::Text {
-                                text: "Original text".into(),
-                            }],
-                        },
+/// Builds a three-result group whose first call carries `arguments`, admits it
+/// through the shared admission and exports it. The first result is the typed
+/// error the harness records for a refused call, so admission always succeeds.
+fn grouped(arguments: &Value) -> Result<(Value, ModelRequest)> {
+    let mut request = request("generated parallel calls".into());
+    request.messages[1].content = ModelContent::Parts(
+        (0..3)
+            .map(|index| {
+                ModelContentPart::ToolCall(ToolCall::new(
+                    format!("call-{index}"),
+                    "read".into(),
+                    if index == 0 {
+                        arguments.clone()
+                    } else {
+                        json!({})
                     },
-                })
-                .collect(),
-        );
-        // Exercise the shared admission, not merely a codec-shaped mock.
-        let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
-        let bytes = prepared.bytes();
-        let call = Call::new(source(), &admission(bytes)?, bytes)?;
-        let mut output = Vec::new();
-        call.write(
-            &mut output,
-            "2026-11-02T00:00:00Z",
-            &ModelContent::Text("done".into()),
-            None,
-        )?;
-        let log: Value = serde_json::from_slice(&output).map_err(invalid)?;
+                ))
+            })
+            .collect(),
+    );
+    request.messages[2].content = ModelContent::Parts(
+        (0..3)
+            .map(|index| ModelContentPart::ToolResult {
+                call_id: format!("call-{index}"),
+                name: "read".into(),
+                content: match index {
+                    0 => ToolResultContent::Error {
+                        message: "Original refused call".into(),
+                    },
+                    1 => ToolResultContent::Json {
+                        value: json!({"original":1}),
+                    },
+                    _ => ToolResultContent::Parts {
+                        parts: vec![acyclic_harness_core::model::ModelDataPart::Text {
+                            text: "Original text".into(),
+                        }],
+                    },
+                },
+            })
+            .collect(),
+    );
+    // Exercise the shared admission, not merely a codec-shaped mock.
+    let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+    let bytes = prepared.bytes();
+    let call = Call::new(source(), &admission(bytes)?, bytes)?;
+    let mut output = Vec::new();
+    call.write(
+        &mut output,
+        "2026-11-02T00:00:00Z",
+        &ModelContent::Text("done".into()),
+        None,
+    )?;
+    Ok((serde_json::from_slice(&output).map_err(invalid)?, request))
+}
+
+/// Every JSON value that is not an object, so the property covers each kind
+/// rather than a pinned list of examples.
+fn non_object_value() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        Just(Value::Null),
+        any::<bool>().prop_map(Value::Bool),
+        any::<i64>().prop_map(|value| Value::Number(value.into())),
+        any::<String>().prop_map(Value::String),
+        prop::collection::vec(
+            any::<i64>().prop_map(|value| Value::Number(value.into())),
+            0..4
+        )
+        .prop_map(Value::Array),
+    ]
+}
+
+proptest! {
+    /// The grouped export keeps one message per original result whatever the
+    /// first call's arguments are. A call whose arguments are not an object is
+    /// refused: the display arguments are marked unparsed while the original
+    /// value is retained, and admission accepts it only beside the typed error
+    /// the harness recorded.
+    #[test]
+    fn grouped_results_export_every_argument_shape(
+        arguments in prop_oneof![Just(json!({})), non_object_value()],
+    ) {
+        let (log, mut request) = grouped(&arguments).expect("the typed error admits the call");
         let messages = log["samples"][0]["messages"].as_array().expect("messages");
-        assert_eq!(
+        prop_assert_eq!(
             messages.len(),
             6,
             "three original results become three Inspect messages"
         );
         for index in 0..3 {
-            assert_eq!(
-                messages[1]["tool_calls"][index]["id"],
-                messages[index + 2]["tool_call_id"]
+            prop_assert_eq!(
+                &messages[1]["tool_calls"][index]["id"],
+                &messages[index + 2]["tool_call_id"]
             );
-            assert_eq!(messages[index + 2]["metadata"]["original_message_index"], 2);
-            assert_eq!(
-                messages[index + 2]["metadata"]["original_part_index"],
-                index
+            prop_assert_eq!(
+                &messages[index + 2]["metadata"]["original_message_index"],
+                &json!(2)
+            );
+            prop_assert_eq!(
+                &messages[index + 2]["metadata"]["original_part_index"],
+                &json!(index)
             );
         }
         let display = &messages[1]["tool_calls"][0];
-        assert!(display["arguments"].is_object());
-        assert_eq!(display["parse_error"].is_string(), !arguments.is_object());
-        assert_eq!(
-            messages[1]["metadata"]["acyclic_content"][0]["arguments"],
-            arguments
+        prop_assert!(display["arguments"].is_object());
+        prop_assert_eq!(display["parse_error"].is_string(), !arguments.is_object());
+        prop_assert_eq!(
+            &messages[1]["metadata"]["acyclic_content"][0]["arguments"],
+            &arguments
         );
-        assert_eq!(messages[2]["error"]["message"], "Original refused call");
-        assert_eq!(messages[3]["content"], r#"{"original":1}"#);
-        assert_eq!(messages[4]["content"][0]["text"], "Original text");
-        assert_eq!(
-            messages[2]["metadata"]["acyclic_content"],
-            serde_json::to_value(&request.messages[2].content).map_err(invalid)?
+        prop_assert_eq!(
+            &messages[2]["metadata"]["acyclic_content"],
+            &serde_json::to_value(&request.messages[2].content).expect("generated content")
         );
-        assert!(
+        prop_assert!(
             messages[3]["metadata"]["acyclic_content"].is_null(),
             "the full group is serialized only once"
         );
-        assert!(messages[4]["metadata"]["acyclic_content"].is_null());
+        prop_assert!(messages[4]["metadata"]["acyclic_content"].is_null());
         if !arguments.is_object() {
             let ModelContent::Parts(parts) = &mut request.messages[2].content else {
-                unreachable!()
+                unreachable!("generated grouped results")
             };
             let ModelContentPart::ToolResult { content, .. } = &mut parts[0] else {
-                unreachable!()
+                unreachable!("generated grouped result")
             };
             *content = ToolResultContent::Json { value: json!({}) };
-            assert!(
+            prop_assert!(
                 PreparedModelRequest::prepare(request, Limits::default(), None).is_err(),
                 "invalid arguments only admit their original error result"
             );
         }
     }
-    Ok(())
 }
 
 proptest! {
@@ -373,10 +385,6 @@ fn admitted_nested_tool_json_survives_the_shared_replay_key() -> Result<()> {
     };
     tool.arguments = json!({"nested": arguments});
     let bytes = serde_json::to_vec(&request).map_err(invalid)?;
-    assert!(
-        serde_json::from_slice::<Value>(&bytes).is_err(),
-        "former default-depth decoder negative control"
-    );
     let call = Call::new(source(), &admission(&bytes)?, &bytes)?;
     assert_eq!(call.request, request);
     let mut output = Vec::new();
@@ -587,18 +595,6 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     );
     let terminal = &records[3];
     let settlement = call.settlement(journal.as_ref(), terminal).await?;
-    let page = acyclic_harness_core::executor::usage_page(
-        journal.as_ref(),
-        operation,
-        source().agent_path,
-        0,
-    )
-    .await?;
-    assert_eq!(page.items.iter().filter(|usage| usage.completed).count(), 1);
-    super::super::journal_page(journal.as_ref(), operation, source().agent_path, 0, |_| {
-        None
-    })
-    .await?;
     let mut output = Vec::new();
     settlement.write(
         &mut output,

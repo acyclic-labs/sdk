@@ -265,13 +265,6 @@ impl ProcessTree {
         }
     }
 
-    /// Kernel observations that decide a macOS process group whose kill was
-    /// refused, for a group of up to 255 members: two listings and one probe
-    /// per member, with no wait. A larger group needs its member count plus
-    /// four. No termination phase observes on a clock: an exit wait reads
-    /// once per exit event or deadline.
-    pub const TERMINATION_OBSERVATIONS: u64 = 257;
-
     /// Starts a child in an owned operating-system process tree.
     pub fn spawn(command: &mut ProcessCommand) -> io::Result<Self> {
         let mut custody = None;

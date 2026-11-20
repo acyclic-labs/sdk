@@ -124,7 +124,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(runtime_tests)))]
 mod tests {
     use super::*;
     use crate::guest::{Checkpoint, GuestFuture, Manifest, Transition};

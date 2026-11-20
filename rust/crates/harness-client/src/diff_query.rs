@@ -32,15 +32,6 @@ impl DiffProjection {
     pub fn open(self, invocation: &[u8]) -> Result<Bytes, CommandError> {
         crate::QueryProjection::Diff(self).open(invocation)
     }
-
-    /// Decode only the product framing; the owning host admits the returned
-    /// original invocation through its existing canonical command decoder.
-    pub fn decode_open(bytes: &[u8]) -> Result<(Self, &[u8]), CommandError> {
-        match crate::QueryProjection::decode_open(bytes)? {
-            (crate::QueryProjection::Diff(projection), invocation) => Ok((projection, invocation)),
-            _ => Err(CommandError::Invalid),
-        }
-    }
 }
 
 /// Immutable selection for every later step of one live query.

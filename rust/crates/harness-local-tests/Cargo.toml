@@ -1,0 +1,55 @@
+[package]
+name = "acyclic-harness-local-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+description = "Local harness scenario tests through the public API"
+
+[package.metadata.bazel]
+integration-test-shards = 16
+
+[features]
+test-support = ["acyclic-harness-local/test-support"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+required-features = ["test-support"]
+
+[dev-dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
+acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", features = ["test-support"] }
+acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
+acyclic-harness-workspace = { version = "=0.2.0", path = "../harness-workspace", features = ["test-support"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support", "conformance"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "test-support"] }
+acyclic-test-support = { path = "../test-support" }
+base64 = "=0.23.1"
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+jsonschema.workspace = true
+proptest.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tempfile = "3.27.0"
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util", "test-util", "process", "net"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

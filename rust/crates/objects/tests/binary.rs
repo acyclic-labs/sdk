@@ -5,7 +5,7 @@ use acyclic_objects::{
     binary::{BinaryObjects, Reply, Transport},
     conformance, route, wire,
 };
-use acyclic_stream::{OwnedBytes, Revision};
+use acyclic_stream_contract::{OwnedBytes, Revision};
 use bytes::Bytes;
 use futures::FutureExt as _;
 use prost::Message;

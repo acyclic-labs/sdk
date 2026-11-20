@@ -14,8 +14,6 @@ model-checking = ["dep:loom"]
 [dependencies]
 acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
 acyclic-harness-tui-editor-io = { version = "=0.2.0", path = "../harness-tui-editor-io" }
-acyclic-harness-tui-terminal = { version = "=0.2.0", path = "../harness-tui-terminal" }
-futures.workspace = true
 loom = { version = "0.7.3", optional = true }
 acyclic-markdown = { version = "=0.2.0", path = "../markdown" }
 unicode-segmentation = "1.12"
@@ -26,12 +24,12 @@ serde_json = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+acyclic-harness-tui-term = { version = "=0.2.0", path = "../harness-tui-term" }
 
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
-proptest.workspace = true
 alacritty_terminal = "0.26"
+proptest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
@@ -39,19 +37,6 @@ serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 shell-words = "1.1"
 tempfile = "3.27"
-
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["event", "fs", "termios"] }
-signal-hook = { version = "0.4" }
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["event"] }
-
-
-[target.'cfg(unix)'.dev-dependencies]
-futures.workspace = true
-rustix = { workspace = true, features = ["process"] }
-rustix-openpty = "0.2"
 
 [lints]
 workspace = true

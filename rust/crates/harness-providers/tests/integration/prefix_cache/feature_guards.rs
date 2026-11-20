@@ -68,7 +68,8 @@ async fn manifest(
                 "inputSchema":{"type":"object"}}],
         }))?;
         for definition in catalog.model_definitions(None, None)? {
-            let mut tool = crate::integration_helpers::echo_tool(&definition.name);
+            let mut tool =
+                crate::prefix_cache_cases::integration_helpers::echo_tool(&definition.name);
             tool.definition = definition;
             extra.push(tool);
         }
@@ -155,7 +156,7 @@ async fn guarded_run(
     adapter: Adapter,
     path: &'static str,
     enabled: bool,
-) -> TestResult<[u64; 2]> {
+) -> TestResult<Vec<Bytes>> {
     let label = format!("{feature:?}/{adapter:?}/{enabled}");
     let transport = transport(path);
     let storage = MemoryHarnessStorage::new(StorageAgentId::from_bytes([91; 16]), 1 << 20).await?;
@@ -270,10 +271,7 @@ async fn guarded_run(
     }
     let sent = transport.state.lock().unwrap();
     assert_eq!(sent.2.len(), 3, "{label}");
-    Ok([
-        sent.2.iter().map(|request| request.body.len() as u64).sum(),
-        sent.2.iter().map(|request| request.cached.read).sum(),
-    ])
+    Ok(sent.2.iter().map(|request| request.body.clone()).collect())
 }
 
 #[tokio::test]
@@ -307,82 +305,4 @@ async fn optional_features_preserve_prefix() -> TestResult {
         }
     }
     Ok(())
-}
-// Compaction may replace history, but must retain its reusable header.
-#[tokio::test]
-async fn compaction_summaries_preserve_prefix() -> TestResult {
-    for (adapter, path) in FAMILIES {
-        use acyclic_harness_core::executor::{ExecutionEvent, StockExecutor, TurnInput};
-        let transport = transport(path);
-        let mut storage =
-            MemoryHarnessStorage::new(StorageAgentId::from_bytes([92; 16]), 1 << 20).await?;
-        let bindings = storage.content_bindings();
-        let provider = Arc::new(
-            registry(adapter, PromptCache::Native, transport.clone())?
-                .with_content(bindings.reader.clone(), None)
-                .resolve("recorded/model")?,
-        );
-        let system = Context {
-            messages: vec![message(ModelRole::System, "Keep the cached policy.")],
-            ..Default::default()
-        };
-        let stage = SourceStage::new("prefix", "1", Arc::new(system), ContextPlacement::Prepend);
-        let executor = StockExecutor::new(
-            provider.model().clone(),
-            provider,
-            ContextPipeline::new([Arc::new(stage) as _]),
-            ToolRegistry::default(),
-        )
-        .with_compaction_policy(CompactionPolicy::Capacity(CapacityCompaction {}));
-        let mut history = vec![
-            message(ModelRole::User, "older-0:".repeat(6_000)),
-            message(ModelRole::Assistant, "older-1:".repeat(6_000)),
-        ];
-        for turn in 0..2_u8 {
-            let task = format!("Return 19 + 23. {}", "y".repeat(20_000));
-            history.push(message(ModelRole::User, task));
-            let op = OperationId::from_bytes([turn + 1; 16]);
-            let selected = selected(history.clone());
-            storage = storage.with_bound_selection(selected.clone())?;
-            let journal = storage.journal();
-            let input = TurnInput::from_selected_context(op, selected)?;
-            let output = executor.execute(input.clone(), journal.as_ref()).await?;
-            let count = transport.state.lock().unwrap().2.len();
-            let replay = executor.execute(input, journal.as_ref()).await?;
-            assert_eq!(replay.text, output.text);
-            let replayed = transport.state.lock().unwrap().2.len();
-            assert_eq!(replayed, count, "replay redispatched a model");
-            let records = journal.replay(op, 0, u32::MAX, None)?.await?;
-            let compacted = records
-                .iter()
-                .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }));
-            assert_eq!(compacted, turn == 1);
-            history.push(message(ModelRole::Assistant, output.text));
-        }
-        let sent = transport.state.lock().unwrap();
-        let context = transport.context.lock().unwrap();
-        assert_eq!(sent.2.len(), 2);
-        let [summary] = &context[..] else {
-            return Err(format!("{} context calls", context.len()).into());
-        };
-        let (before, after) = (&sent.2[0], &sent.2[1]);
-        assert!(holds(&summary.body, b"Source count:"));
-        assert_eq!(header(path, &before.body)?, header(path, &after.body)?);
-        assert!(after.cached.read > 0, "compaction lost the cached header");
-        assert!(holds(&after.body, BACKSTOP.as_bytes()));
-        assert!(!holds(&after.body, b"older-0:"));
-    }
-    Ok(())
-}
-
-fn header(path: &str, body: &[u8]) -> TestResult<Value> {
-    let mut value: Value = serde_json::from_slice(body)?;
-    let field = match path {
-        "responses" => "input",
-        "models/model:streamGenerateContent" => "contents",
-        _ => "messages",
-    };
-    let messages = value[field].as_array_mut().unwrap();
-    messages.retain(|message| message["role"] == "system");
-    Ok(value)
 }

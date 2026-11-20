@@ -267,7 +267,7 @@ fn run_read(
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     finish.finish(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             read_batch_impl(&file, &reads)
         }))
         .unwrap_or_else(|_| std::process::abort()),

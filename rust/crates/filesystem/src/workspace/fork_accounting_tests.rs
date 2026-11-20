@@ -1,4 +1,4 @@
-use super::accounting_tests::{ObservedAuthority, Prefunded, ReplayCustody};
+use super::accounting_tests::{ObservedAuthority, ReplayCustody};
 use super::*;
 use std::sync::Mutex;
 

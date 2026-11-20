@@ -127,7 +127,7 @@ async fn retained_content_comparisons_recheck_current_read_authority()
             ..
         })
     ));
-    fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "entry")).await?;
+    fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "entry")?).await?;
     for key in [publication_key, IdempotencyKey::new()] {
         assert!(matches!(
             bound
@@ -216,7 +216,7 @@ async fn coarse_bindings_fence_policy_on_the_checkout_that_serves_data()
         .clone()
         .bind_coarse_access(&Action::ALL, &cancel)
         .await?;
-    let policy = fixtures::denied(Action::Read, "secrets/**");
+    let policy = fixtures::denied(Action::Read, "secrets/**")?;
     fixtures::publish_policy(&owner, &policy).await?;
     assert!(matches!(
         bound
@@ -243,7 +243,7 @@ proptest! {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(async {
             let workspace = workspace().await?;
-            fixtures::publish_policy(&workspace, &fixtures::denied(Action::ALL[action], &path)).await?;
+            fixtures::publish_policy(&workspace, &fixtures::denied(Action::ALL[action], &path)?).await?;
             let actions: &[Action] = if read_only { &[Action::List, Action::Read, Action::ReadHistory] }
                 else { &Action::ALL };
             let expected = !actions.contains(&Action::ALL[action]);
@@ -291,7 +291,7 @@ async fn policy_rebase(observe: bool, revoke: bool) -> Result<bool, Box<dyn std:
         )
         .await?;
     if revoke {
-        fixtures::publish_policy(&owner, &fixtures::denied(Action::Write, "accepted")).await?;
+        fixtures::publish_policy(&owner, &fixtures::denied(Action::Write, "accepted")?).await?;
     } else {
         owner.write_text("/unrelated", "other writer").await?;
     }

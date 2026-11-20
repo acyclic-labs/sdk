@@ -1,0 +1,46 @@
+[package]
+name = "acyclic-harness-browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Browser bindings for the shared Acyclic agent runtime"
+
+[features]
+browser = ["acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", features = ["wasm"] }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["wasm"] }
+acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona" }
+acyclic-machines-grpc = { version = "=0.2.0", path = "../machines-grpc", features = ["javascript"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["wasm"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+js-sys.workspace = true
+prost.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+serde-wasm-bindgen.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+tracing.workspace = true
+tsify.workspace = true
+uuid.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+
+[lints]
+workspace = true

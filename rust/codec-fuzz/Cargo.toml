@@ -14,10 +14,10 @@ build-script-data = [
     "../crates/actors-contract/proto",
     "../crates/auth/proto",
     "../crates/filesystem-wire/proto",
-    "../crates/harness-core/proto",
+    "../crates/harness-wire/proto",
     "../crates/inference/proto",
     "../crates/machines/proto",
-    "../crates/objects/proto",
+    "../crates/objects-core/proto",
     "../crates/stream-wire/proto",
 ]
 
@@ -62,7 +62,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["rt"], optio
 
 [dev-dependencies]
 acyclic-test-support = { path = "../crates/test-support" }
-acyclic-proto-build = { path = "../../compatibility" }
+acyclic-compatibility-golden = { path = "../crates/compatibility-golden" }
 
 [build-dependencies]
 acyclic-proto-build = { path = "../../compatibility" }

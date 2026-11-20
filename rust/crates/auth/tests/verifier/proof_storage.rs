@@ -52,7 +52,7 @@ fn protected_buffers_are_scrubbed_before_deallocation() {
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "verifier::proof_storage::scrub_child",
+                acyclic_test_support::unit_test_name!(scrub_child).as_str(),
                 "--nocapture",
             ])
             .env("LD_PRELOAD", &library)

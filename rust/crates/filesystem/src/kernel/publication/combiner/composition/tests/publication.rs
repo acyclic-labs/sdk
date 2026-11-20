@@ -26,8 +26,12 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
     let directory = tempfile::tempdir()?;
     let fs = crate::LocalFs::local(crate::LocalOptions::new(directory.path())).await?;
     let cancel = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-        .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::root(
+        WorkBudget::UNBOUNDED,
+        &cancel,
+        &crate::services::ServicesInitialized::for_kernel_tests(),
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancel);
     let (core, _) = core(&fs, &mut accounting, &cancel).await?;
     let request = core.request;

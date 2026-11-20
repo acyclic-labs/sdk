@@ -1,6 +1,6 @@
 use super::{
-    LocalCoreStateStore, Path, PathBuf, read_recoverable, with_lock, write_journaled,
-    write_journaled_in,
+    LocalCoreStateStore, Path, PathBuf, Publication, read_recoverable, with_lock, write_journaled,
+    write_record_in,
 };
 
 #[test]
@@ -73,7 +73,7 @@ fn publication_retains_one_directory_through_every_namespace_operation() -> Test
                             } else {
                                 // Restore the previous physical parent opens while
                                 // executing the same writes, renames and barriers.
-                                write_journaled_in(paths, &42_u64, None)
+                                write_record_in(paths, &42_u64, None, Publication::Recoverable)
                             };
                             probe.publish();
                             result
@@ -221,7 +221,7 @@ fn record_write_child() -> TestResult {
     let store = LocalCoreStateStore::new(&root).materialization(work.clone());
     let namespace = store.namespace()?;
     let mut paths = namespace.record("publication-cuts", &[0x97; 16])?;
-    work.state.lock().write_probe = Some(crate::demand::WriteProbe {
+    work.state.lock().write_probe = Some(crate::ledger::WriteProbe {
         writes: 0,
         stop_before: (cut != 0).then_some(cut),
     });

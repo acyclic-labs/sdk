@@ -94,9 +94,23 @@ pub(crate) fn file_read_grant<'f>(
         .with_prefix(acyclic_fs::access::FILE_READ_PREFIX)
         .next()
         .is_some()
-        && grants.contains(&file.read_capability(work)?)
+        && matches_read_label(grants, work, |work| file.read_capability(work))?
     {
         return Ok(Some(ReadGrant::Exact));
+    }
+    if file.volume().is_agent_journal()
+        && journal_input_requires_selection(file.path())
+        && !grants.contains(crate::contract::capability::HARNESS_HOST)
+    {
+        // Staging owns the journal write. Ordinary readers only receive the
+        // exact accepted input or the operation's original steering directory.
+        let Some(prefix) = journal_turn_input_directory(file.path()) else {
+            return Ok(None);
+        };
+        return Ok(matches_read_label(grants, work, |work| {
+            file.volume().directory_read_capability(prefix, work)
+        })?
+        .then_some(ReadGrant::Directory(prefix)));
     }
     directory_read_grant(
         grants,
@@ -106,6 +120,21 @@ pub(crate) fn file_read_grant<'f>(
             .map_or("", |(parent, _)| parent),
         work,
     )
+}
+
+pub(crate) fn journal_input_requires_selection(path: &str) -> bool {
+    path.strip_prefix("inputs/").is_some_and(|relative| {
+        !relative.contains('/') || relative.starts_with("turns/") || relative.starts_with("skills/")
+    })
+}
+
+pub(crate) fn journal_turn_input_directory(path: &str) -> Option<&str> {
+    const ROOT: &str = "inputs/turns/";
+    let (operation, _) = path.strip_prefix(ROOT)?.split_once('/')?;
+    if operation.is_empty() {
+        return None;
+    }
+    path.get(..ROOT.len() + operation.len())
 }
 
 /// The grant that admits reading every path under `path` of `volume`, if any.
@@ -141,11 +170,24 @@ pub(crate) fn directory_read_grant<'p>(
         )
         .chain((!path.is_empty()).then_some(path))
     {
-        if grants.contains(&volume.directory_read_label(digest, prefix, work)?) {
+        if matches_read_label(grants, work, |work| {
+            volume.directory_read_label(digest, prefix, work)
+        })? {
             return Ok(Some(ReadGrant::Directory(prefix)));
         }
     }
     Ok(None)
+}
+
+fn matches_read_label(
+    grants: &crate::Capabilities,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    make: impl FnOnce(&mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String>,
+) -> Result<bool> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let label = make(quota.work())?;
+    quota.adopt(label.capacity() as u64)?;
+    Ok(grants.contains(&label))
 }
 
 pub(crate) fn directory_read_granted_with_work(

@@ -96,7 +96,7 @@ impl Substrate for Streams {
 }
 
 fn cases() -> PathBuf {
-    acyclic_test_support::crate_path!("scenarios")
+    acyclic_test_support::crate_path!("fixtures")
 }
 
 #[tokio::test]

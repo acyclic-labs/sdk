@@ -191,7 +191,7 @@ pub fn capture_registry_corpus(
     })
 }
 
-pub(super) fn corpus_inventory(
+fn corpus_inventory(
     corpus: &RegistryCorpus,
 ) -> Result<BTreeMap<String, RegistryOwnerVersions>, String> {
     corpus

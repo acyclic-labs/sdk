@@ -2,7 +2,7 @@
 //! supplied by the host; no callback runs while this state is borrowed twice.
 use super::GroupAbort;
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Phase {

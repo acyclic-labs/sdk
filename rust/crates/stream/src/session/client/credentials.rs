@@ -210,13 +210,6 @@ impl Client {
     }
 }
 
-pub(super) fn queue_error<T>(error: &mpsc::error::TrySendError<T>) -> StreamError {
-    match error {
-        mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-        mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-    }
-}
-
 impl Pool {
     pub(super) fn renew_credential(
         &mut self,

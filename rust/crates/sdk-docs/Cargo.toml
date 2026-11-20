@@ -13,15 +13,14 @@ test-workers = 1
 test-env-inherit = ["PATH", "RUSTUP_HOME", "CARGO_HOME"]
 
 [package.metadata.bazel.test-tools.sdk_docs_test]
-CARGO = "//:toolchain_cargo"
-rustc = "//:rustc"
+CARGO = "@sdk_compilers//:cargo"
+rustc = "@sdk_compilers//:rustc"
 rustup = "@sdk_compilers//:rustup"
 
 [package.metadata.bazel.test-data.sdk_docs_test]
 workspace-manifests = "//:workspace-manifests"
 
 [features]
-model-checking = []
 test-support = ["acyclic-native-runtime/test-support"]
 
 [dependencies]
@@ -41,7 +40,7 @@ tempfile = "=3.27.0"
 acyclic-test-support = { path = "../test-support" }
 hex.workspace = true
 sha2 = "0.11.1"
-proptest = "1.11.0"
+proptest.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

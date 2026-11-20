@@ -30,7 +30,7 @@ enum LedgerState {
         // The producer is a separate subsystem's owner: a link names its auto
         // traits so a ledger's are not re-derived through the producer graph.
         #[cfg(not(target_arch = "wasm32"))]
-        Option<crate::materializer::Link<crate::demand::NativeDemandReadMeter>>,
+        Option<crate::ledger::Link<crate::ledger::NativeDemandReadMeter>>,
     ),
 }
 
@@ -607,7 +607,7 @@ impl AllocationLedger {
 }
 
 pub(crate) mod fixed_index;
-pub(crate) mod retained;
+pub mod retained;
 pub use fixed_index::FixedIndex;
 #[cfg(not(target_arch = "wasm32"))]
 pub use retained::{ErasedRetainedArc, ErasedRetainedWeak};
@@ -905,5 +905,5 @@ impl AllocationError {
 mod tests;
 
 #[cfg(test)]
-#[cfg(all(not(loom)))]
+#[cfg(not(loom))]
 mod snapshot_tests;

@@ -20,7 +20,7 @@ pub(crate) fn hash_lazy_value<T: MemoryLazyNode>(
 enum Charge<'a, 'b> {
     Accounting(&'a mut KernelAccounting<'b>),
     #[cfg(not(target_arch = "wasm32"))]
-    Native(&'a mut crate::demand::DemandWork, &'a CancellationToken),
+    Native(&'a mut crate::ledger::DemandWork, &'a CancellationToken),
 }
 impl Charge<'_, '_> {
     fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {

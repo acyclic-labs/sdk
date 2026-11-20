@@ -32,7 +32,8 @@ enum MountPhase {
 
 #[derive(Default)]
 pub(super) struct Mount {
-    helper: Option<Child>,
+    auto_unmount: Option<Child>,
+    uncovered_mount: Option<u64>,
     program: Option<&'static CStr>,
     phase: MountPhase,
     exit_action: Option<acyclic_native_runtime::ProcessExitAction>,
@@ -59,6 +60,10 @@ impl Mount {
         fence: &File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), super::NativeMountError> {
+        let path = path.canonicalize().map_err(|error| {
+            super::NativeMountError::host_operation("resolve original FUSE mountpoint", path, error)
+        })?;
+        let path = path.as_path();
         // A privileged mount and its crash cleanup use the kernel directly.
         // In particular, do not ask fusermount to interpret a Sysbox mount.
         self.arm_exit_action(c"/bin/umount", &["-i", "-l", "--"], path, fence, work)
@@ -89,8 +94,14 @@ impl Mount {
         // /dev/fuse while another of its threads can enter the mounted volume.
         let funded = super::host_io::fund_device(work)?;
         let hosted = PacketDevice::prepare(file, funded.capacity)?;
+        let activity = self
+            .exit_action
+            .as_ref()
+            .ok_or(super::NativeMountError::ControlPending)?
+            .activity()?;
         match hosted.mount_fuse(
             &directory,
+            &activity,
             mode,
             nix::unistd::getuid().as_raw(),
             nix::unistd::getgid().as_raw(),
@@ -113,6 +124,7 @@ impl Mount {
                 ));
             }
         }
+        drop(activity);
         drop(hosted);
         drop(funded);
         // Only kernel permission refusal requires the unprivileged helper.
@@ -126,6 +138,7 @@ impl Mount {
         })?;
         let program = program()?;
         self.program = Some(program);
+        self.uncovered_mount = Some(super::super::disconnected::mount_id(&directory)?);
         self.arm_exit_action(program, &["-u", "-q", "-z", "--"], path, fence, work)
             .map_err(|error| error.during("arm unprivileged FUSE owner-exit action", path))?;
         self.open_helper(program, path, writable, device, work)
@@ -175,11 +188,11 @@ impl Mount {
                 .map_err(io::Error::from)?,
         );
         let options = if writable {
-            "fsname=acyclic-fs,default_permissions,exec,noatime"
+            "fsname=acyclic-fs,auto_unmount,default_permissions,exec,noatime"
         } else {
-            "fsname=acyclic-fs,default_permissions,exec,noatime,ro"
+            "fsname=acyclic-fs,auto_unmount,default_permissions,exec,noatime,ro"
         };
-        self.helper = Some(spawn_mount_helper(
+        let mut helper = spawn_mount_helper(
             program,
             path,
             options,
@@ -189,26 +202,16 @@ impl Mount {
                 .as_ref()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?
                 .activity()?,
-        )?);
-        let received = hosted.wait_mounted();
-        let received_device = received.is_ok();
-        if received_device {
-            *device = Some(Device {
-                device: hosted,
-                allocation: funded.allocation,
-                maximum_write: funded.maximum_write,
-            });
-            self.phase = MountPhase::Mounted;
-        }
-        self.helper
-            .as_mut()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
-            .wait()?;
-        self.helper.take();
-        if !received_device {
+        )?;
+        if let Err(received) = hosted.wait_mounted() {
+            drop(hosted);
+            helper.wait()?;
             diagnostic.seek(SeekFrom::Start(0))?;
             let mut text = Vec::new();
             diagnostic.read_to_end(&mut text)?;
+            if text.is_empty() {
+                return Err(received.into());
+            }
             let text = String::from_utf8_lossy(&text).into_owned();
             let kind = if text.contains("only allowed if 'user_allow_other' is set") {
                 io::ErrorKind::PermissionDenied
@@ -217,26 +220,34 @@ impl Mount {
             };
             return Err(io::Error::new(kind, text).into());
         }
+        self.auto_unmount = Some(helper);
+        *device = Some(Device {
+            device: hosted,
+            allocation: funded.allocation,
+            maximum_write: funded.maximum_write,
+        });
         Ok(())
     }
 
-    pub(super) fn stop(&mut self, path: &CStr) -> io::Result<()> {
-        if let Some(child) = self.helper.as_mut() {
-            if child.try_wait()?.is_none() {
-                child.kill()?;
-            }
-            child.wait()?;
-            self.helper.take();
+    pub(super) fn stop(
+        &mut self,
+        path: &CStr,
+        transport: Option<&super::host_io::HostIo>,
+    ) -> io::Result<()> {
+        if let Some(transport) = transport {
+            transport.begin_stop();
         }
-        self.attempt_unmount(|mount| {
+        let result = self.attempt_unmount(|mount| {
             // A closed connection does not mean its namespace is gone.
             unmount_with(
                 |flags| nix::mount::umount2(path, flags),
                 || mount.unmount_helper(path),
             )
-        })?;
-        self.cancel_exit_action()?;
-        Ok(())
+        });
+        if let Some(transport) = transport {
+            transport.stop();
+        }
+        result
     }
 
     pub(super) fn cancel_exit_action(&mut self) -> io::Result<()> {
@@ -249,7 +260,15 @@ impl Mount {
 
     // Retain the original namespace lock until the admitted cleanup has
     // physically exited, including when the ordinary unmount was refused.
-    pub(super) fn finish_exit_action(&mut self) -> io::Result<()> {
+    pub(super) fn finish_exit_action(&mut self, namespace_detached: bool) -> io::Result<()> {
+        if let Some(mut helper) = self.auto_unmount.take() {
+            helper.wait()?;
+        }
+        // Libfuse can report success when its auto-unmount probe declines to
+        // detach. Only an accepted explicit unmount cancels the exit action.
+        if namespace_detached {
+            return self.cancel_exit_action();
+        }
         if let Some(action) = self.exit_action.as_mut() {
             action.finish()?;
         }
@@ -264,26 +283,47 @@ impl Mount {
             .map(acyclic_native_runtime::ProcessExitAction::id)
     }
 
-    fn unmount_helper(&mut self, path: &CStr) -> io::Result<()> {
+    #[cfg(test)]
+    pub(super) fn auto_unmount_id(&self) -> Option<u32> {
+        self.auto_unmount.as_ref().map(Child::id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn kill_auto_unmount_for_recovery_test(&mut self) -> io::Result<()> {
+        if let Some(mut helper) = self.auto_unmount.take() {
+            helper.kill()?;
+            helper.wait()?;
+        }
+        Ok(())
+    }
+
+    fn unmount_helper(&self, path: &CStr) -> io::Result<()> {
         let program = self.program.unwrap_or(c"fusermount3");
         let mut command = helper_command(program);
         command
             .args(["-u", "-q", "-z", "--"])
             .arg(std::ffi::OsStr::from_bytes(path.to_bytes()));
-        self.helper = Some(command.spawn()?);
-        drop(command);
-        let status = self
-            .helper
-            .as_mut()
-            .ok_or(io::ErrorKind::NotFound)?
-            .wait()?;
-        self.helper.take();
-        if !status.success() {
-            // A refusal admits no device-acknowledgment wait.
-            return Err(io::ErrorKind::Other.into());
+        let status = command.status()?;
+        if status.success() {
+            return Ok(());
         }
-        // Helper exit alone cannot establish device destruction.
-        Ok(())
+        if let Some(original) = self.uncovered_mount {
+            // The packet server may have closed first, already triggering
+            // auto-unmount. Check the namespace without entering FUSE.
+            let flags = rustix::fs::OFlags::PATH
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC;
+            match rustix::fs::open(path, flags, rustix::fs::Mode::empty()) {
+                Ok(current) if super::super::disconnected::mount_id(&current)? == original => {
+                    return Ok(());
+                }
+                Err(rustix::io::Errno::NOENT) => return Ok(()),
+                _ => {}
+            }
+        }
+        // A refusal admits no device-acknowledgment wait.
+        Err(io::ErrorKind::Other.into())
     }
 
     fn attempt_unmount(
@@ -380,14 +420,12 @@ impl Mount {
     }
     pub(super) fn pending(&self) -> bool {
         !matches!(self.phase, MountPhase::Detached)
-            || self.helper.is_some()
+            || self.auto_unmount.is_some()
             || self.exit_action.is_some()
     }
 
     pub(super) fn needs_unmount(&self) -> bool {
-        self.helper.is_some()
-            || self.exit_action.is_some()
-            || matches!(self.phase, MountPhase::Mounted)
+        matches!(self.phase, MountPhase::Mounted)
     }
 
     #[cfg(test)]
@@ -442,8 +480,10 @@ fn spawn_mount_helper(
     diagnostic: &File,
     activity: File,
 ) -> io::Result<Child> {
+    use std::os::unix::process::CommandExt as _;
     let mut command = helper_command(program);
     command
+        .process_group(0)
         .args(["-o", options, "--"])
         .arg(path)
         .env("_FUSE_COMMFD", "0")
@@ -452,7 +492,6 @@ fn spawn_mount_helper(
         .stderr(Stdio::from(diagnostic.try_clone()?));
     #[cfg(test)]
     if tests::force_fork() {
-        use std::os::unix::process::CommandExt;
         // SAFETY: the control makes no child-side calls. Registering even this
         // empty hook restores the dependency's original fork selection.
         unsafe {

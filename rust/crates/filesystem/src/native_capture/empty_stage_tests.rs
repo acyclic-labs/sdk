@@ -67,7 +67,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
                 &root,
                 &test_host_path(Path::new("file")),
                 &snapshot,
-                Some(8),
+                (Some(8), false),
                 &original,
                 &mut staged,
             ));

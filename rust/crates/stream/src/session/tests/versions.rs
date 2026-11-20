@@ -3,7 +3,7 @@ use crate::StreamCategory;
 
 #[tokio::test]
 async fn admission_golden_frame_opens_without_another_request() -> TestResult {
-    let golden = acyclic_proto_build::golden::frame("session.admission")?;
+    let golden = acyclic_compatibility_golden::frame("session.admission")?;
     let decoded = wire::SessionFrame::decode(golden.as_slice())?;
     let frame = frame(
         0,

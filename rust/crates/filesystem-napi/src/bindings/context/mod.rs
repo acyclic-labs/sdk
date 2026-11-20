@@ -96,9 +96,7 @@ impl NativeWorkspaceGraph {
     }
 }
 
-pub(in crate::bindings) fn native_workspace_lineage_record(
-    record: WorkspaceLineageRecord,
-) -> NativeWorkspaceLineageRecord {
+fn native_workspace_lineage_record(record: WorkspaceLineageRecord) -> NativeWorkspaceLineageRecord {
     NativeWorkspaceLineageRecord {
         version: record.version,
         revision: bigint(record.revision),

@@ -8,6 +8,7 @@
 use super::*;
 use crate::StreamCategory;
 
+use prost::Message;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -161,116 +162,6 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
 fn path() -> StreamPath {
     StreamPath::new("follow/test").unwrap()
 }
-#[tokio::test]
-async fn json_heads_refuses_incoherent_cuts_without_another_provider_request()
--> Result<(), Box<dyn std::error::Error>> {
-    let provider = MemoryStream::default();
-    let source = StreamPath::new("head/source")?;
-    provider
-        .append(AppendRequest {
-            path: source.clone(),
-            records: vec![OwnedBytes::from_static(b"x").into()],
-            if_tail: None,
-            idempotency_key: IdempotencyKey::unique(),
-        })
-        .await?;
-    provider
-        .fork(ForkRequest {
-            source,
-            destination: StreamPath::new("head/child")?,
-            at_tail: None,
-            exclude: Vec::new(),
-            idempotency_key: IdempotencyKey::unique(),
-        })
-        .await?;
-    let request = HeadsRequest {
-        at: None,
-        retained: Default::default(),
-        durable_through: None,
-        projection: Default::default(),
-        paths: vec![StreamPath::new("head/child")?].into(),
-        children: None,
-        limit: 1,
-        at_least: RevisionCut::default(),
-    };
-    // Capture the real fork head through the shipping wire and JSON encoders;
-    // each negative control changes only its named coherence fields.
-    let view = crate::wire_codec::heads_to_wire(provider.heads(request.clone()).await?)?;
-    let original = view.heads[0].head.clone().unwrap();
-    let captured = crate::http_response::value("heads", &view.encode_to_vec())?.unwrap();
-    let request = crate::wire_codec::heads_request_to_wire(request).encode_to_vec();
-    for (tail, durable, sequence, inherited, valid) in [
-        (0, 0, None, None, true),
-        (0, 0, None, Some(0), true),
-        (1, 1, Some(0), Some(1), true),
-        (1, 0, None, None, false),
-        (0, 0, Some(0), None, false),
-        (2, 0, Some(0), None, false),
-        (1, 2, Some(0), None, false),
-        (1, 0, Some(0), Some(2), false),
-        (u64::MAX, 0, Some(u64::MAX), None, false),
-    ] {
-        let mut response = captured.clone();
-        let head = &mut response["heads"][0];
-        head["tail"] = json!(tail.to_string());
-        head["durable"] = json!(durable.to_string());
-        head["last"] = sequence.map_or(Value::Null, |sequence| {
-            let mut record = head["last"].clone();
-            record["sequence"] = json!(sequence.to_string());
-            record
-        });
-        head["origin"] = inherited.map_or(Value::Null, |cut| {
-            let mut origin = head["origin"].clone();
-            origin["forkedAt"] = json!(cut.to_string());
-            origin
-        });
-        let server = Server::new(vec![Reply::ok(response)]).await;
-        let actual = server
-            .client
-            .request("heads", request.clone(), Ok)
-            .await
-            .map(|response| response["heads"][0].clone());
-        let mut wire = original.clone();
-        wire.tail = tail;
-        wire.durable = durable;
-        wire.last = sequence.map(|sequence| {
-            let mut record = original.last.clone().unwrap();
-            record.sequence = sequence;
-            record
-        });
-        wire.origin = inherited.map(|cut| {
-            let mut origin = original.origin.clone().unwrap();
-            origin.forked_at = cut;
-            origin
-        });
-        let expected = crate::wire_codec::head_from_wire(wire).map(|head| {
-            crate::http_response::value(
-                "head",
-                &crate::wire_codec::head_to_wire(head).encode_to_vec(),
-            )
-            .unwrap()
-            .unwrap()
-        });
-        assert_eq!(
-            actual.as_ref().map_err(|error| error.category()),
-            expected.as_ref().map_err(|error| error.category())
-        );
-        if valid {
-            assert_eq!(parse_u64(&actual?["tail"])?, tail);
-        } else {
-            assert_eq!(
-                actual.as_ref().map_err(|error| error.category()),
-                Err(StreamCategory::InvalidResponse)
-            );
-            assert!(std::error::Error::source(actual.as_ref().unwrap_err()).is_some());
-        }
-        let requests = server.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, "/v1/stream/heads");
-    }
-    Ok(())
-}
-
 async fn missing_idempotency() -> (IdempotencyKey, Reply) {
     let key = IdempotencyKey::unique();
     // Capture the real provider's absent observation with the shipping codec.

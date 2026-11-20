@@ -24,10 +24,8 @@ pub(crate) const GATE: u16 = 60;
 mod checked;
 #[cfg(all(
     any(debug_assertions, test),
-    any(
-        all(test, not(target_arch = "wasm32")),
-        all(not(target_arch = "wasm32"), target_os = "linux")
-    )
+    not(target_arch = "wasm32"),
+    target_os = "linux"
 ))]
 pub(crate) use checked::Condvar;
 #[cfg(all(any(debug_assertions, test), any(test, not(target_arch = "wasm32"))))]

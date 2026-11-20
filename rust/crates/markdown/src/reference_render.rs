@@ -50,7 +50,7 @@ impl Markdown {
             && let Some(line) = out.lines.get_mut(cache.lines.start - self.lines.len())
         {
             #[cfg(test)]
-            work::copy(std::mem::size_of::<Line>());
+            acyclic_markdown_work::work::copy(std::mem::size_of::<Line>());
             replacement.reuse_line(std::mem::take(line));
         }
         for event in &events {
@@ -122,7 +122,7 @@ impl Markdown {
                     && let Some(line) = self.lines.get_mut(cache.lines.start)
                 {
                     #[cfg(test)]
-                    work::copy(std::mem::size_of::<Line>());
+                    acyclic_markdown_work::work::copy(std::mem::size_of::<Line>());
                     renderer.reuse_line(std::mem::take(line));
                 }
                 let (events, used, interval) = cache.template.events(&self.references, budget);
@@ -162,7 +162,7 @@ impl Markdown {
                 {
                     self.reference_cache_visits += 1;
                     self.reference_moved_lines += lines.len();
-                    work::copy(lines.len() * std::mem::size_of::<Line>());
+                    acyclic_markdown_work::work::copy(lines.len() * std::mem::size_of::<Line>());
                 }
                 if let Some(cache) = self.cached.get(index) {
                     for (target, line) in self
@@ -196,12 +196,16 @@ impl Markdown {
         let previous_length = self.lines.len();
         let previous_stable = self.stable_lines;
         #[cfg(test)]
-        work::copy((previous_length - first_line) * std::mem::size_of::<Line>());
+        acyclic_markdown_work::work::copy(
+            (previous_length - first_line) * std::mem::size_of::<Line>(),
+        );
         let mut previous = self.lines.split_off(first_line).into_iter();
         let mut cursor = first_line;
         let mut lines = std::mem::take(&mut self.lines);
         #[cfg(test)]
-        work::grow(length.saturating_sub(previous_length) * std::mem::size_of::<Line>());
+        acyclic_markdown_work::work::grow(
+            length.saturating_sub(previous_length) * std::mem::size_of::<Line>(),
+        );
         lines.reserve(length.saturating_sub(lines.len()));
         // Caches are appended in source order. Walk them once while consuming
         // each old line once; neither splice a suffix nor rescan cache ranges.
@@ -227,7 +231,9 @@ impl Markdown {
         #[cfg(test)]
         {
             self.reference_moved_lines += lines.len() - first_line;
-            work::copy((lines.len() - first_line) * std::mem::size_of::<Line>());
+            acyclic_markdown_work::work::copy(
+                (lines.len() - first_line) * std::mem::size_of::<Line>(),
+            );
         }
         self.stable_lines = self.stable_lines + lines.len() - previous_length;
         self.lines = lines;

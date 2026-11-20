@@ -3,45 +3,15 @@ use crate::StreamCategory;
 use futures::StreamExt as _;
 use futures::TryFutureExt as _;
 use loom::thread;
-use std::cell::Cell;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum Fault {
-    None,
-    MixedReceiptCut,
-    BarrierAsFlushed,
-    OmitAppendWake,
-    RetainReplacedState,
-    IgnoreHead,
-    IgnoreAbsent,
-    RetainConflictKey,
-    RootOnlyFork,
-    IgnoreForkExclusions,
-    IgnorePageRecordBytes,
-    OmitPoisonPublication,
-    HoldPublicationDuringMaintenance,
-    HoldStateDuringDurability,
-    ReleasePendingPublication,
-}
-
-loom::thread_local! {
-    static FAULT: Cell<Fault> = Cell::new(Fault::None);
-}
-
-pub(crate) fn set_fault(fault: Fault) {
-    FAULT.with(|current| current.set(fault));
-}
+pub(crate) use acyclic_stream_contract::verification::{Fault, fault_is, set_fault};
 
 /// Omits this actor's append wake for adapter model negative controls.
 pub fn omit_append_wake() {
     set_fault(Fault::OmitAppendWake);
-}
-
-pub(crate) fn fault_is(fault: Fault) -> bool {
-    FAULT.with(|current| current.get() == fault)
 }
 
 fn expect_model_failure(run: impl FnOnce(), expected: &str) {

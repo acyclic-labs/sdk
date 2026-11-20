@@ -1,7 +1,7 @@
 use super::access::{compiled, deny, seed};
 use super::*;
-use crate::access::AccessView;
-use crate::access::{Action, Policy};
+use crate::access::Policy;
+use crate::access::{AccessView, Action};
 
 struct Reload {
     source: std::sync::Weak<MemorySource>,
@@ -119,7 +119,7 @@ fn cached_denial_observes_owner_policy_publication_before_host_probes()
     let source = source(FilesystemProfile::Portable)?;
     seed(&source, "file", b"pinned")?;
     let selected = checkout_state(&source).0;
-    let denied = crate::access::fixtures::denied(Action::Read, "file");
+    let denied = crate::access::fixtures::denied(Action::Read, "file")?;
     publish(&source, &denied)?;
     let view = compiled(
         &source,

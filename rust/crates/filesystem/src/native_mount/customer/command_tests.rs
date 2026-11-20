@@ -55,7 +55,7 @@ async fn command_final_join(revoke: bool, guarded: bool) -> Result<(), Box<dyn s
                 &cancellation,
             )
             .await?;
-        let policy = crate::access::fixtures::denied(crate::access::Action::Write, "result");
+        let policy = crate::access::fixtures::denied(crate::access::Action::Write, "result")?;
         checkout
             .write_access_policy(
                 &serde_json::to_vec(&policy)?,

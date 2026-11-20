@@ -183,7 +183,7 @@ pub(super) async fn apply_host_metadata_offloaded(
                 let stat = root.0.stat(super::work::host_path(&path.0), work)?;
                 #[cfg(windows)]
                 let stat = root.0.stat(&path.0, work)?;
-                return record_materialized_stat(baseline.as_ref(), file_id, &stat, work);
+                return record_materialized_stat(baseline.as_ref(), file_id, metadata, &stat, work);
             }
             #[cfg(target_os = "linux")]
             let target = root
@@ -216,7 +216,7 @@ pub(super) async fn apply_host_metadata_offloaded(
                 let stat = root.0.stat(super::work::host_path(&path.0), work)?;
                 #[cfg(windows)]
                 let stat = root.0.stat(&path.0, work)?;
-                record_materialized_stat(baseline.as_ref(), file_id, &stat, work)?;
+                record_materialized_stat(baseline.as_ref(), file_id, metadata, &stat, work)?;
             }
             Ok(())
         },
@@ -229,6 +229,7 @@ pub(super) async fn apply_host_metadata_offloaded(
 pub(super) fn record_materialized_stat(
     baseline: Option<&crate::NativeViewBaseline>,
     file_id: Option<FileId>,
+    authored: FileMetadata,
     stat: &crate::native_host::HostStat,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), MaterializeError> {
@@ -242,8 +243,11 @@ pub(super) fn record_materialized_stat(
         .root_identity
         .ok_or(MaterializeError::InvalidOptions)?;
     let file_id = file_id.ok_or(MaterializeError::InvalidOptions)?;
-    let metadata =
-        crate::WorkspaceMetadata::from_engine(crate::native_capture::physical_metadata(stat));
+    let physical = crate::native_capture::physical_metadata(stat);
+    if !crate::NativeViewBaseline::needs_host_defaults(&authored, &physical) {
+        return Ok(());
+    }
+    let metadata = crate::WorkspaceMetadata::from_engine(physical);
     store
         .materialization(work.clone())
         .record_materialized_metadata(root, stat.identity(), file_id, metadata)?;

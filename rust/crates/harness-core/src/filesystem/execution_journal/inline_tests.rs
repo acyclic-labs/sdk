@@ -1443,9 +1443,14 @@ async fn terminal_usage_case(
     let ExecutionEvent::Model {
         usage: Some(reference),
         ..
-    } = &records[2].event
+    } = &records
+        .get(2)
+        .ok_or_else(|| Error::Invalid("original terminal commit is absent".into()))?
+        .event
     else {
-        panic!("original terminal commit lost its usage reference");
+        return Err(Error::Invalid(
+            "original terminal commit lost its usage reference".into(),
+        ));
     };
     let bytes = journal.load(reference, None)?.await?;
     let record: crate::executor::ModelUsageRecord = crate::contract::json_from_slice(&bytes)

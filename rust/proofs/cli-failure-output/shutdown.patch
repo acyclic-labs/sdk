@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/completion.rs b/rust/crates/harness/src/completion.rs
---- a/rust/crates/harness/src/completion.rs
-+++ b/rust/crates/harness/src/completion.rs
+diff --git a/rust/crates/harness-cli/src/completion.rs b/rust/crates/harness-cli/src/completion.rs
+--- a/rust/crates/harness-cli/src/completion.rs
++++ b/rust/crates/harness-cli/src/completion.rs
 @@ -169,7 +169,7 @@ impl CliCompletion {
          open: impl FnOnce() -> io::Result<acyclic_native_runtime::InheritedOutput>,
      ) -> Self {

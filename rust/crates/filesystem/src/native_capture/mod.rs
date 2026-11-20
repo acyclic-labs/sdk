@@ -1,9 +1,10 @@
 //! Bounded host-state capture into one atomic sparse checkout transaction.
 
-use crate::demand::{DemandError, native_demand_error};
+use crate::demand::DemandError;
 use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
+use crate::ledger::native_demand_error;
 use crate::model::FilesystemProfile;
 pub use crate::native_host::NativeDurability;
 use crate::native_host::NativeHostWork as _;
@@ -49,7 +50,7 @@ use host_walk::*;
 mod host_observation_tests;
 mod inline_reuse;
 #[cfg(test)]
-#[cfg(all(any(windows, target_os = "linux")))]
+#[cfg(any(windows, target_os = "linux"))]
 mod inline_reuse_tests;
 mod reconcile;
 mod relocate;
@@ -69,7 +70,7 @@ use stage::*;
 #[cfg(target_os = "linux")]
 mod held_root_tests;
 #[cfg(test)]
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 mod immutable_publication_tests;
 mod metadata;
 #[cfg(test)]

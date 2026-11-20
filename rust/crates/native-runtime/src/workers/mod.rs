@@ -196,6 +196,8 @@ fn start_world_demand(demand: usize) {
 
 /// Initializes the existing native and host I/O services before measured requests are admitted.
 pub fn initialize_native_io_services() -> io::Result<()> {
+    #[cfg(not(loom))]
+    crate::sync::initialize_parking();
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     FILE_HEALTH.get_or_init(|| Mutex::new(FileHealthRegistry::new()));
     for slot in [&NATIVE_WORKERS, &BLOCKING_WORKERS] {

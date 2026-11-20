@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use super::{
     DemandError, DemandWork, NativeMaterializationWork, WorkBudget, ordinary_work, test_root,
 };

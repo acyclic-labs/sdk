@@ -7,7 +7,7 @@ FEATURES = [
         "model-checking",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-stream-publication-models","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-stream-publication-models","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 extract_cargo_lints(
     name = "lints",
@@ -20,6 +20,7 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
+    tags = ["resources:memory:256"],
     pkg_name = "acyclic-stream-publication-models",
     edition = "2024",
     version = "0.0.0",
@@ -39,24 +40,22 @@ rust_test(
     name = "publication_cases",
     crate_root = "publication.rs",
     srcs = [
+        "//rust/crates/stream-contract-core:src/change.rs",
+        "//rust/crates/stream-contract-core:src/change/sync.rs",
+        "//rust/crates/stream-contract-core:src/interest.rs",
+        "//rust/crates/stream-contract-core:src/lib/error.rs",
+        "//rust/crates/stream-contract-core:src/query_sync.rs",
+        "//rust/crates/stream-contract-core:src/query_sync/budgeted.rs",
+        "//rust/crates/stream-contract-core:src/query_sync/locks.rs",
+        "//rust/crates/stream-contract-core:src/query_sync/parity.rs",
+        "//rust/crates/stream-contract-core:src/query_sync/watch.rs",
         "change.rs",
         "cursor.rs",
         "interest.rs",
         "probe.rs",
         "publication.rs",
         "shared.rs",
-        "//rust/crates/stream:src/change.rs",
-        "//rust/crates/stream:src/change/sync.rs",
         "//rust/crates/stream:src/http/shared.rs",
-        "//rust/crates/stream:src/interest.rs",
-        "//rust/crates/stream:src/lib/error.rs",
-        "//rust/crates/stream:src/pull.rs",
-        "//rust/crates/stream:src/pull_tests.rs",
-        "//rust/crates/stream:src/query_sync.rs",
-        "//rust/crates/stream:src/query_sync/budgeted.rs",
-        "//rust/crates/stream:src/query_sync/locks.rs",
-        "//rust/crates/stream:src/query_sync/parity.rs",
-        "//rust/crates/stream:src/query_sync/watch.rs",
     ],
     edition = "2024",
     version = "0.0.0",
@@ -83,16 +82,19 @@ rust_test(
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/stream:src/change.rs",
+        "//rust/crates/stream-contract-core:src/change.rs",
+        "//rust/crates/stream-contract-core:src/interest.rs",
+        "//rust/crates/stream-contract-core:src/lib/error.rs",
+        "//rust/crates/stream-contract-core:src/query_sync.rs",
         "//rust/crates/stream:src/http/shared.rs",
-        "//rust/crates/stream:src/interest.rs",
-        "//rust/crates/stream:src/lib/error.rs",
-        "//rust/crates/stream:src/pull.rs",
-        "//rust/crates/stream:src/query_sync.rs",
         "change.rs",
         "interest.rs",
     ],
-    tags = ["manual"],
+    args = [
+        "--skip",
+        "::full_cloud::",
+    ],
+    tags = ["manual","resources:memory:256"],
 )
 
 isolated_test(

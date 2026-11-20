@@ -68,7 +68,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let journal = Journal {
         #[cfg(test)]
         append_admissions: 0,
-        claim: acyclic_native_runtime::StoreClaim::acquire(&claims.path().join(LOCK_FILE))?,
+        claim: acyclic_native_claim::StoreClaim::acquire(&claims.path().join(LOCK_FILE))?,
         file: acyclic_native_runtime::CachedFile::new(file, &path, true, true)?,
         epoch: 0,
         operations: 0,

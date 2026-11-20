@@ -35,6 +35,11 @@ pub fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderErro
     if credential_before_dispatch(&value) {
         return read_error(value);
     }
+    // ABORTED is the transport's definite refusal of a sequencer or transaction
+    // conflict: the original effect did not commit, so the key is unspent.
+    if value.code() == tonic::Code::Aborted && !uncertain_effect(&value) {
+        return ProviderError::Conflict(value.message().into()).with_cause(value);
+    }
     if value.code() != tonic::Code::FailedPrecondition || uncertain_effect(&value) {
         return guest_error(ProviderError::Indeterminate(key), value);
     }
@@ -123,6 +128,15 @@ mod tests {
         assert_eq!(
             mutation_error(key, Status::permission_denied("server denied")).classification(),
             &ProviderError::Rejected("server denied".into())
+        );
+    }
+
+    #[test]
+    fn aborted_mutation_is_a_definite_conflict() {
+        let key = IdempotencyKey::from_digest([3; 32]);
+        assert_eq!(
+            mutation_error(key, Status::aborted("key rebound")).classification(),
+            &ProviderError::Conflict("key rebound".into())
         );
     }
 }

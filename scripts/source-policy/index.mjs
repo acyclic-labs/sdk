@@ -85,8 +85,17 @@ function scriptTokens(file, source, parser) {
  /** @type {import('typescript-parser').Node[]} */
  const stack = [parsed];
  const out = [];
+ if (parsed.isDeclarationFile) return {stream: out, parsed};
  while (stack.length) {
   const node = /** @type {import('typescript-parser').Node} */ (stack.pop());
+  // The TypeScript type syntax range leaves class heritage expressions and
+  // executable keywords such as `void` in the runtime token stream.
+  if ((node.kind >= ts.SyntaxKind.FirstTypeNode && node.kind <= ts.SyntaxKind.LastTypeNode)
+   || ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)
+   || (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly)
+   || ((ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) && node.isTypeOnly)) {
+   continue;
+  }
   const start = node.getStart(parsed);
   const line = parsed.getLineAndCharacterOfPosition(start).line + 1;
   if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
@@ -102,7 +111,10 @@ function scriptTokens(file, source, parser) {
   if (ts.isPropertyAccessExpression(node) && (node.name.text === 'wait' || node.name.text === 'yield')) out.push({value: node.name.text, kind: 'indirection', line, start});
   if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
    const callee = node.expression;
-   if (ts.isElementAccessExpression(callee) || callee.kind === ts.SyntaxKind.ImportKeyword
+   const specifier = callee.kind === ts.SyntaxKind.ImportKeyword && node.arguments?.length === 1 ? node.arguments[0] : undefined;
+   if (specifier && ts.isStringLiteralLike(specifier) && /^\.{1,2}\//.test(specifier.text))
+    out.push({value: specifier.text, kind: 'module-load', line, start});
+   else if (ts.isElementAccessExpression(callee) || callee.kind === ts.SyntaxKind.ImportKeyword
     || (ts.isIdentifier(callee) && (callee.text === 'eval' || callee.text === 'Function' || callee.text === 'require'))
     || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect')) out.push({value: callee.getText(parsed), kind: 'indirection', line, start});
   }
@@ -112,11 +124,16 @@ function scriptTokens(file, source, parser) {
    continue;
   }
   if (node.kind === ts.SyntaxKind.EndOfFileToken) continue;
-  const kind = literalKinds.has(node.kind) ? 'literal'
+  const isLiteral = literalKinds.has(node.kind);
+  const parent = node.parent;
+  const isModuleSpecifier = isLiteral && ((ts.isImportDeclaration(parent) || ts.isExportDeclaration(parent))
+   && parent.moduleSpecifier === node || ts.isCallExpression(parent)
+   && parent.expression.kind === ts.SyntaxKind.ImportKeyword && parent.arguments[0] === node);
+  const kind = isLiteral ? isModuleSpecifier ? 'module-specifier' : 'literal'
    : node.kind === ts.SyntaxKind.Identifier || (node.kind >= ts.SyntaxKind.FirstKeyword && node.kind <= ts.SyntaxKind.LastKeyword) ? 'word'
    : 'punctuation';
   // The parser preserves executable template substitutions and regex boundaries.
-  const value = kind === 'literal' ? /** @type {import('typescript-parser').LiteralLikeNode} */ (node).text
+  const value = isLiteral ? /** @type {import('typescript-parser').LiteralLikeNode} */ (node).text
    : ts.isIdentifier(node) ? node.text : node.getText(parsed);
   out.push({value, kind, line, start});
  }
@@ -348,6 +365,180 @@ function nativeTokens(source, file) {
  return out;
 }
 
+// Rustfmt can reorder an unadorned file-level import block and remove the
+// optional comma before a use-tree's closing brace. Keep everything else,
+// including attributes, visibility, aliases, and executable tokens, exact.
+function rustImportLayout(file, source) {
+ const tokens = nativeTokens(source, file).map(token => [token.kind, token.value]);
+ const punctuation = (index, value) => tokens[index]?.[0] === 'punctuation' && tokens[index][1] === value;
+ let start = 0;
+ while (punctuation(start, '#') && punctuation(start + 1, '!') && punctuation(start + 2, '[')) {
+  let depth = 1;
+  start += 3;
+  while (depth && start < tokens.length) {
+   if (punctuation(start, '[')) depth++;
+   if (punctuation(start, ']')) depth--;
+   start++;
+  }
+ }
+ const imports = [];
+ let end = start;
+ while (tokens[end]?.[0] === 'word' && tokens[end][1] === 'use') {
+  let stop = end + 1;
+  while (tokens[stop]?.[0] === 'word' || ['{', '}', ',', ':', '*'].some(value => punctuation(stop, value))) stop++;
+  if (!punctuation(stop, ';')) break;
+  const declaration = tokens.slice(end, stop).filter((_, offset) =>
+   !punctuation(end + offset, ',') || !punctuation(end + offset + 1, '}'));
+  imports.push(JSON.stringify(declaration));
+  end = stop + 1;
+ }
+ return JSON.stringify([tokens.slice(0, start), imports.sort(), tokens.slice(end)]);
+}
+
+export function sameRustImportLayout(file, before, after) {
+ if (!file.endsWith('.rs') || before === after) return false;
+ try { return rustImportLayout(file, before) === rustImportLayout(file, after); }
+ catch (error) { if (error instanceof SourceSyntaxError) return false; throw error; }
+}
+
+// Recognize finite iteration, casts, and typed bindings in Rust syntax. Macro
+// and attribute bodies may use other grammars, so their candidates stay intact.
+function rustSyntax(stream) {
+ const finite = new Set(), typed = new Set(), casts = new Set(), typeFor = new Set();
+ const syntax = {finite, typed, casts, typeFor};
+ const ends = new Map(), stack = [];
+ const pairs = new Map([['(', ')'], ['[', ']'], ['{', '}']]);
+ const decimalEnd = start => {
+  let end = start, offset = stream[start]?.start;
+  while (stream[end]?.kind === 'punctuation' && stream[end].start === offset && /^[0-9]$/.test(stream[end].value)) {
+   end++;
+   offset++;
+  }
+  return end;
+ };
+ for (let i = 0; i < stream.length; i++) {
+  if (stream[i].kind !== 'punctuation') continue;
+  const value = stream[i].value;
+  if (pairs.has(value)) stack.push(i);
+  if (closing.has(value)) {
+   const start = stack.pop();
+   if (start === undefined || pairs.get(stream[start].value) !== value) return syntax;
+   ends.set(start, i);
+  }
+ }
+ if (stack.length) return syntax;
+ const afterGenerics = start => {
+  if (stream[start]?.value !== '<') return start;
+  let depth = 1;
+  for (let at = start + 1; at < stream.length; at++) {
+   const token = stream[at];
+   if (token.kind !== 'punctuation') continue;
+   const end = ends.get(at);
+   if (end !== undefined) { at = end; continue; }
+   if (token.value === '<') depth++;
+   if (token.value === '>' && stream[at - 1]?.value !== '-' && --depth === 0) return at + 1;
+  }
+ };
+ const pathSeparator = at => stream[at]?.value === ':' && stream[at + 1]?.value === ':';
+ const traitFor = start => {
+  let at = afterGenerics(start + 1);
+  if (at === undefined) return;
+  if (stream[at]?.value === '!') at++;
+  if (pathSeparator(at)) at += 2;
+  while (stream[at]?.kind === 'word') {
+   const next = afterGenerics(at + 1);
+   if (next === undefined) return;
+   if (stream[next]?.value === 'for') return next;
+   if (!pathSeparator(next)) return;
+   at = next + 2;
+  }
+ };
+ let importing = false;
+ for (let i = 0; i < stream.length; i++) {
+  const end = ends.get(i), previous = stream[i - 1]?.value;
+  if (end !== undefined && (previous === '!' || previous === '#'
+   || (stream[i - 2]?.value === '!' && stream[i - 3]?.value === 'macro_rules'))) {
+   i = end;
+   continue;
+  }
+  if (stream[i].kind === 'punctuation' && stream[i].value === ';') importing = false;
+  if (stream[i].kind !== 'word') continue;
+  const value = stream[i].value;
+  if (value === 'impl') {
+   const target = traitFor(i);
+   if (target !== undefined) typeFor.add(target);
+  }
+  if (value === 'use' && stream[i + 1]?.value !== '<'
+   || value === 'extern' && stream[i + 1]?.value === 'crate') importing = true;
+  if (!importing && stream[i + 1]?.value === 'as') casts.add(i);
+  if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word') {
+   let declaration = i - 1;
+   if (stream[declaration]?.value === 'mut') declaration--;
+   if (stream[declaration]?.value === 'ref') declaration--;
+   if (['let', 'const', 'static'].includes(stream[declaration]?.value)) typed.add(i);
+  }
+  if (value !== 'for') continue;
+  if (stream[i + 1]?.value === '<' && stream[i + 2]?.value === "'") typeFor.add(i);
+  let at = i + 1;
+  if (stream[at]?.value === 'ref') at++;
+  if (stream[at]?.value === 'mut') at++;
+  if (stream[at]?.value === '(') at = (ends.get(at) ?? at) + 1;
+  else if (stream[at]?.kind === 'word' && /^[A-Za-z_]\w*$/.test(stream[at].value)) at++;
+  else continue;
+  if (stream[at]?.value !== 'in') continue;
+  at++;
+  const left = decimalEnd(at);
+  if (left > at && stream[left]?.value === '.' && stream[left + 1]?.value === '.') {
+   const start = left + (stream[left + 2]?.value === '=' ? 3 : 2);
+   const right = decimalEnd(start);
+   if (right > start && stream[right]?.value === '{') finite.add(i);
+  }
+  if (stream[at]?.value === '&') {
+   at++;
+   if (stream[at]?.value === 'mut') at++;
+  }
+  // Iterator adapters can change termination. Require the array itself.
+  const arrayEnd = ends.get(at);
+  if (stream[at]?.value === '[' && arrayEnd !== undefined && stream[arrayEnd + 1]?.value === '{') finite.add(i);
+ }
+ return syntax;
+}
+
+// Recognize finite JavaScript iteration. `for...of` and `for...in` walk a
+// finite iterable/object; a classic `for` is finite when its comparison and
+// step move the same way. `while`, `do...while` and `for (;;)` stay candidates.
+function scriptSyntax(parsed, stream) {
+ const finite = new Set();
+ const starts = new Map();
+ for (let i = 0; i < stream.length; i++) if (stream[i].value === 'for') starts.set(stream[i].start, i);
+ const step = node => {
+  if (!node) return 0;
+  if (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node))
+   return node.operator === ts.SyntaxKind.PlusPlusToken ? 1 : node.operator === ts.SyntaxKind.MinusMinusToken ? -1 : 0;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) return 1;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken) return -1;
+  return 0;
+ };
+ const direction = node => {
+  if (!node || !ts.isBinaryExpression(node)) return 0;
+  const kind = node.operatorToken.kind;
+  return kind === ts.SyntaxKind.LessThanToken || kind === ts.SyntaxKind.LessThanEqualsToken ? 1
+   : kind === ts.SyntaxKind.GreaterThanToken || kind === ts.SyntaxKind.GreaterThanEqualsToken ? -1 : 0;
+ };
+ const visit = node => {
+  if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+   const at = starts.get(node.getStart(parsed));
+   if (at !== undefined) finite.add(at);
+  } else if (ts.isForStatement(node)) {
+   const at = starts.get(node.getStart(parsed));
+   if (at !== undefined && direction(node.condition) !== 0 && direction(node.condition) === step(node.incrementor)) finite.add(at);
+  }
+  ts.forEachChild(node, visit);
+ };
+ visit(parsed);
+ return {finite};
+}
+
 export function pollingUnit(file, source, parser = undefined) {
  const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source, parser) : undefined;
  const stream = parsed?.stream ?? nativeTokens(source, file);
@@ -367,8 +558,11 @@ export function pollingUnit(file, source, parser = undefined) {
   if (!aliases.has(from)) aliases.set(from, new Set());
   aliases.get(from).add(to);
  };
+ const rustForms = rust ? rustSyntax(stream) : undefined;
+ const scriptForms = parsed?.parsed ? scriptSyntax(parsed.parsed, stream) : undefined;
  const bindings = [];
  let depth = 0;
+ let braceDepth = 0;
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
   // Only the innermost initializer owns a reference. Its binding name already
@@ -380,13 +574,18 @@ export function pollingUnit(file, source, parser = undefined) {
    bindings.pop();
   }
   if (t.kind === 'word') {
-   if (bindings.length && !futurePoll(i)) edge(t.value, bindings[bindings.length - 1].name);
-   if (stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
-   if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word') edge(t.value, stream[i + 2].value);
-   if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: t.value, depth, line: t.line});
+   if (bindings.length && braceDepth === bindings[bindings.length - 1].braceDepth && !futurePoll(i)) edge(t.value, bindings[bindings.length - 1].name);
+   if (!rustForms?.casts.has(i) && stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
+   // A declared type is independent of its binding's value. Destructuring
+   // fields and other ambiguous colons still propagate alias candidates.
+   if (!rustForms?.typed.has(i) && stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word')
+    edge(t.value, stream[i + 2].value);
+   if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: t.value, depth, braceDepth, line: t.line});
   }
   if (t.kind === 'punctuation' && opening.has(t.value)) depth++;
   if (t.kind === 'punctuation' && closing.has(t.value)) depth--;
+  if (t.kind === 'punctuation' && t.value === '{') braceDepth++;
+  if (t.kind === 'punctuation' && t.value === '}') braceDepth--;
  }
  const queue = [...forbidden];
  for (let i = 0; i < queue.length; i++) {
@@ -397,8 +596,8 @@ export function pollingUnit(file, source, parser = undefined) {
  const sites = [];
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
-  const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
-   : t.kind === 'word' && loop.has(t.value) ? 'loop'
+  const kind = t.kind === 'indirection' || t.kind === 'module-load' ? 'indirect-timer-or-call'
+   : t.kind === 'word' && loop.has(t.value) && !(rustForms ?? scriptForms)?.typeFor?.has(i) && !(rustForms ?? scriptForms)?.finite.has(i) ? 'loop'
    : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
    : t.kind === 'literal' ? embeddedKind(t.value) ?? embeddedKind(escapedSpelling(t.value))
    : undefined;

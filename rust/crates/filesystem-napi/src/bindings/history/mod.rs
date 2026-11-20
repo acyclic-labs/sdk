@@ -29,15 +29,6 @@ pub struct NativeJoinOptions {
     pub target_generation: Option<Buffer>,
 }
 
-/// Terminal result of applying one immutable join plan.
-#[napi(object)]
-pub struct NativeJoinResult {
-    pub status: String,
-    pub generation_id: Option<Buffer>,
-    pub conflicts: Vec<NativeMergeConflict>,
-    pub truncated: bool,
-}
-
 #[napi]
 impl NativeChangeSet {
     #[must_use]
@@ -95,7 +86,7 @@ impl NativeJoinPlan {
         &self,
         if_target: Buffer,
         idempotency_key: Option<Buffer>,
-    ) -> Result<NativeJoinResult> {
+    ) -> Result<NativeRebaseOutcome> {
         let if_target = decode_generation_id(&if_target)?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
@@ -118,7 +109,7 @@ impl NativeJoinPlan {
         if_target: Buffer,
         idempotency_key: Option<Buffer>,
         selections: Vec<NativeMergeSelection>,
-    ) -> Result<NativeJoinResult> {
+    ) -> Result<NativeRebaseOutcome> {
         let if_target = decode_generation_id(&if_target)?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         let mut resolved = BTreeMap::new();
@@ -205,12 +196,12 @@ impl NativeGeneration {
     pub async fn list_directory(
         &self,
         path: String,
-        after: Option<NativeWorkspaceName>,
+        after: Option<NativePathComponent>,
         maximum_entries: NapiU32,
     ) -> Result<NativeWorkspaceDirectoryPage> {
         let maximum_entries = maximum_entries.into_inner();
 
-        let after = after.map(native_workspace_name).transpose()?;
+        let after = after.as_ref().map(decode_name_component).transpose()?;
         sdk_value!(Box::pin(unbounded_future!(
             self.inner,
             list_directory(&path, after.as_ref(), maximum_entries)
@@ -269,9 +260,9 @@ pub(in crate::bindings) fn native_join_history(value: &str) -> Result<JoinHistor
     }
 }
 
-pub(in crate::bindings) fn native_join_result(
+fn native_join_result(
     outcome: JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
-) -> NativeJoinResult {
+) -> NativeRebaseOutcome {
     let (status, generation) = match outcome {
         JoinOutcome::Applied(value) => ("applied", Some(value.generation)),
         JoinOutcome::AlreadyApplied(value) => ("already-applied", Some(value.generation)),
@@ -281,7 +272,7 @@ pub(in crate::bindings) fn native_join_result(
             conflicts,
             truncated,
         } => {
-            return NativeJoinResult {
+            return NativeRebaseOutcome {
                 status: "conflicted".to_owned(),
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
@@ -291,7 +282,7 @@ pub(in crate::bindings) fn native_join_result(
         JoinOutcome::Fenced => ("fenced", None),
         JoinOutcome::IdempotencyConflict => ("idempotency-conflict", None),
     };
-    NativeJoinResult {
+    NativeRebaseOutcome {
         status: status.to_owned(),
         generation_id: generation.map(|value| native_generation_buffer(value.id())),
         conflicts: Vec::new(),

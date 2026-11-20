@@ -24,7 +24,8 @@ pub fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
     FilesystemKey::from_bytes(bytes)
 }
 
-pub(in crate::filesystem) fn content_metadata_key_io(
+/// Derives the metadata attribute name that keys a volume path's content.
+pub fn content_metadata_key_io(
     volume: &VolumeRef,
     path: &str,
     io: Option<&PreparationIo>,
@@ -82,7 +83,8 @@ pub(super) fn content_metadata_key_in_namespace_io(
         .map_err(|error| Error::Storage(error.to_string()))
 }
 
-pub(crate) fn map_error(error: WorkspaceError) -> Error {
+/// Maps a workspace failure onto the harness error surface.
+pub fn map_error(error: WorkspaceError) -> Error {
     use crate::wire::ErrorCode;
     match error {
         WorkspaceError::Cancelled(error) => Error::from(error),

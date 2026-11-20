@@ -134,7 +134,7 @@ pub enum Action {
 /// versioned settings-admissions stream. Ordinary indexed reads and follows
 /// query decisions even when startup refuses before creating an agent root.
 /// Each query also binds the complete original configuration cut.
-
+///
 /// "invalid" and "rejected" cannot relax enforcement: retain previously
 /// admitted settings, or refuse the session when no retained generation exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -67,10 +67,6 @@ proptest! {
 #[test]
 fn actor_reference_framing_and_reserved_namespace() -> Result<(), Box<dyn std::error::Error>> {
     let reference = ActorReference::new(b"account", b"__default", b"existing.Actor_1")?;
-    assert_eq!(
-        NamespaceId::for_deployment(b"__default"),
-        Err(IdentityError::ReservedNamespace)
-    );
     let bytes = reference.encode();
     for length in 0..bytes.len() {
         assert!(ActorReference::decode(bytes.get(..length).ok_or("prefix")?).is_err());

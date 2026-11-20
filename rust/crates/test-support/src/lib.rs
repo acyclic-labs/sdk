@@ -16,26 +16,40 @@ mod fixtures;
 pub mod trace;
 pub mod trace_capture;
 pub mod waker;
-pub use fixtures::{crate_source_path, executable_file, runtime_path, source_path};
-/// Construct a future before entering its polling frame. Large test and model
-/// futures otherwise retain construction temporaries beside their polling stack.
-/// The sized `F` lives behind the returned `Pin<Box<F>>`: its handle is one
-/// pointer, independent of the future's payload, by Rust's layout guarantees.
-#[inline(never)]
-pub fn boxed_future<F: std::future::Future>(build: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
-    Box::pin(build())
+pub use fixtures::{crate_source_path, executable_file, source_path};
+
+/// The libtest name of the test function at `$test`, a path relative to the
+/// calling module, for a test process that re-runs one case of its own binary.
+/// Naming the function makes a moved or renamed child test a compile error
+/// instead of an `--exact` filter that matches nothing and exits 0.
+#[macro_export]
+macro_rules! unit_test_name {
+    ($($test:ident)::+) => {{
+        let _ = $($test)::+;
+        $crate::unit_test_path(::core::module_path!(), ::core::stringify!($($test)::+))
+    }};
 }
 
-pub mod module_cases;
+/// Resolves a test path relative to `module` to its libtest name, which omits
+/// the crate segment. Used through [`unit_test_name!`].
+#[doc(hidden)]
+#[must_use]
+pub fn unit_test_path(module: &str, test: &str) -> String {
+    let mut path: Vec<&str> = module.split("::").skip(1).collect();
+    for segment in test.split("::").map(str::trim) {
+        if segment == "super" {
+            path.pop();
+        } else {
+            path.push(segment);
+        }
+    }
+    path.join("::")
+}
 pub mod partitions;
 pub mod physical_cuts;
 pub mod readiness;
 /// Population-independent work and retained-resource qualification.
 pub mod scale;
-/// Compiler observations made on the build host for every module path case.
-/// Target tests compare their actual source traversal with this independent proof.
-pub const MODULE_COMPILER_REACHED: [bool; module_cases::CASES.len()] =
-    include!(concat!(env!("OUT_DIR"), "/module-compiler.rs"));
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},

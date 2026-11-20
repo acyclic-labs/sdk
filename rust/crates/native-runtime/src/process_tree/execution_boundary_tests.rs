@@ -109,26 +109,32 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
 
 #[test]
 fn closed_standard_streams_preserve_confined_setup() {
-    for mode in [
-        "direct-root",
-        "direct-nested",
-        "custody-root",
-        "custody-nested",
-    ] {
-        let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "--exact",
-                "process_tree::execution_boundary_tests::closed_stream_probe",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("ACYCLIC_BOUNDARY_CLOSED_STREAMS", mode)
-            .stdin(ProcessStdio::null())
-            .stdout(ProcessStdio::piped())
-            .stderr(ProcessStdio::piped());
-        directory_output(command, None).unwrap();
-    }
+    // Each mode is an independent real child with its own standard streams, so
+    // the four confinement cases run at once instead of one after another.
+    std::thread::scope(|scope| {
+        for mode in [
+            "direct-root",
+            "direct-nested",
+            "custody-root",
+            "custody-nested",
+        ] {
+            scope.spawn(move || {
+                let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "process_tree::execution_boundary_tests::closed_stream_probe",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env("ACYCLIC_BOUNDARY_CLOSED_STREAMS", mode)
+                    .stdin(ProcessStdio::null())
+                    .stdout(ProcessStdio::piped())
+                    .stderr(ProcessStdio::piped());
+                directory_output(command, None).unwrap();
+            });
+        }
+    });
 }
 
 // Only the isolated real child changes its standard streams. Restore them

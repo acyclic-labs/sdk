@@ -348,7 +348,7 @@ where
             // Every unauthored node may read differently from the new epoch.
             self.authored.record_projection_change(
                 &ViewChange::Everything,
-                &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::ledger::DemandWork::new(
                     WorkBudget::UNBOUNDED,
                     self.authored.cancellation(),
                 )),
