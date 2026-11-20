@@ -76,7 +76,14 @@ impl ActorStateTransaction<'_> {
     }
     /// Stage metadata; only a successful publication confirms durability.
     pub fn put(&mut self, key: String, value: Bytes) {
-        let previous = self.state.metadata.insert(key.clone(), value);
+        // Replacing an existing key moves only the old value into undo; the
+        // key is cloned only when the map must own a new entry.
+        let previous = if let Some(slot) = self.state.metadata.get_mut(&key) {
+            Some(std::mem::replace(slot, value))
+        } else {
+            self.state.metadata.insert(key.clone(), value);
+            None
+        };
         self.undo.push((key, previous));
     }
     /// Remove metadata in this same transaction; refusal restores the original value.

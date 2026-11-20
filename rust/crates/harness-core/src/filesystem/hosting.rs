@@ -996,13 +996,13 @@ where
                 std::slice::from_ref(file)
             }
             (None, Some(file))
-                if file.volume().is_agent_journal()
-                    && !own_journal
-                    && state.adoption_grant(file).is_empty() =>
+                if file.volume().is_agent_journal() && state.adoption_grant(file).is_empty() =>
             {
-                return Err(Error::Record(
-                    "journal file requires its selected agent or committed conversation proof",
-                ));
+                // Every other journal file, the agent's own or a foreign one,
+                // needs an exact adoption grant or the committed proof above.
+                return Err(turn(crate::Error::Unauthorized(
+                    JOURNAL_PROOF_REQUIRED.into(),
+                )));
             }
             (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),
         };
@@ -1665,6 +1665,10 @@ where
             .await
     }
 }
+
+/// The one refusal of an unproven journal read.
+pub(in crate::filesystem) const JOURNAL_PROOF_REQUIRED: &str =
+    "journal file requires adoption or a committed conversation proof";
 
 fn turn(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))

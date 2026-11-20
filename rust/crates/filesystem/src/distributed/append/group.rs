@@ -66,6 +66,28 @@ impl GroupPreparation<'_> {
     }
 }
 
+/// The members before the first one recovered from durable history, when the
+/// group refused every one of them: none of their own conditions is proven
+/// to have failed. Zero when there is nothing to submit again.
+fn unproven_prefix(receipts: &[FsAppendOutcome]) -> usize {
+    receipts
+        .iter()
+        .position(|outcome| {
+            matches!(
+                outcome,
+                FsAppendOutcome::AlreadyCommitted(_) | FsAppendOutcome::IdempotencyConflict { .. }
+            )
+        })
+        .filter(|&recovered| {
+            receipts.get(..recovered).is_some_and(|prefix| {
+                prefix
+                    .iter()
+                    .all(|outcome| matches!(outcome, FsAppendOutcome::Conflict { .. }))
+            })
+        })
+        .unwrap_or(0)
+}
+
 pub(in crate::distributed) fn group_first<'a>(
     requests: &'a [crate::GuardedAppend],
     cuts: &[crate::PolicyCut],
@@ -140,7 +162,96 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// Native completion storage is funded before submission. After an
     /// authenticated native commit, caller cancellation or a busy projection
     /// cache cannot replace or delay delivery of its original member receipts.
+    ///
+    /// One transaction refuses every member when any one condition fails. A
+    /// member recovered as already durable (or bound to other input) is never
+    /// a refusal of the members before it: their own conditions are unproven,
+    /// so that prefix is submitted again without it, and each member receives
+    /// only its own outcome.
     pub async fn compare_and_append_group<G: AuthorityGuard>(
+        &self,
+        requests: &[crate::GuardedAppend],
+        cuts: &[crate::PolicyCut],
+        work: &mut AuthorityWork<'_>,
+        mut guard: Option<&mut G>,
+    ) -> Result<AppendGroupOutcome, AuthorityError<G::Error>> {
+        let outcome = self
+            .append_group_attempt(requests, cuts, work, guard.as_deref_mut())
+            .await?;
+        let AppendGroupOutcome::Published {
+            mut receipts,
+            allocation,
+        } = outcome
+        else {
+            return Ok(outcome);
+        };
+        let mut members = unproven_prefix(&receipts);
+        // A group carries no more policy cuts than members.
+        while members > 0 && members >= cuts.len() {
+            visit(work)?;
+            let prefix = requests
+                .get(..members)
+                .ok_or(AuthorityStoreError::RejectedStatic("missing group prefix"))?;
+            let retry = receipts
+                .get_mut(..members)
+                .ok_or(AuthorityStoreError::RejectedStatic("missing group prefix"))?;
+            match self
+                .append_group_attempt(prefix, cuts, work, guard.as_deref_mut())
+                .await?
+            {
+                AppendGroupOutcome::Published {
+                    receipts: settled,
+                    allocation: settled_allocation,
+                } => {
+                    if settled.len() != retry.len() {
+                        return Err(authority_corrupt(
+                            "group prefix receipts do not match its members",
+                            work,
+                        )
+                        .into());
+                    }
+                    for (slot, outcome) in retry.iter_mut().zip(settled) {
+                        *slot = outcome;
+                    }
+                    drop(settled_allocation);
+                    members = unproven_prefix(retry);
+                }
+                AppendGroupOutcome::Rejected {
+                    index,
+                    outcome,
+                    observed,
+                } => {
+                    // A rejected prefix published nothing at `observed`.
+                    let mut rejected = Some(outcome);
+                    for ((position, slot), request) in retry.iter_mut().enumerate().zip(prefix) {
+                        *slot = if position == index {
+                            rejected.take().ok_or(AuthorityStoreError::RejectedStatic(
+                                "duplicate rejected group member",
+                            ))?
+                        } else if request.epoch != observed.epoch {
+                            FsAppendOutcome::Fenced {
+                                actual_epoch: observed.epoch,
+                            }
+                        } else {
+                            FsAppendOutcome::Conflict { actual: observed }
+                        };
+                    }
+                    if rejected.is_some() {
+                        return Err(
+                            authority_corrupt("rejected member outside its group", work).into()
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(AppendGroupOutcome::Published {
+            receipts,
+            allocation,
+        })
+    }
+
+    async fn append_group_attempt<G: AuthorityGuard>(
         &self,
         requests: &[crate::GuardedAppend],
         cuts: &[crate::PolicyCut],

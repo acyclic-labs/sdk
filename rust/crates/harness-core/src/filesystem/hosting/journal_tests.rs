@@ -1199,8 +1199,10 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         .read_file(&root, &hidden_input, 0, 8)
         .await
         .expect_err("uncommitted input must not acquire a generic file grant");
+    // The documented refusal, not a generic access denial.
     assert!(matches!(denied, Error::Turn(cause)
-        if cause.code() == crate::wire::ErrorCode::Unauthorized));
+        if matches!(cause.as_ref(), crate::Error::Unauthorized(reason)
+            if reason == super::super::JOURNAL_PROOF_REQUIRED)));
     for hidden in [hidden_input.path(), ".system/effects/hidden"] {
         assert!(
             reader

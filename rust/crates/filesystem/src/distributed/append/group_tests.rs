@@ -318,3 +318,52 @@ async fn group_checks_every_members_policy_cut_and_the_active_scope() -> TestRes
     }
     Ok(())
 }
+
+// One transaction refuses a whole group, but a member recovered as already
+// durable is no refusal of the fresh member before it: that member's own
+// conditions held, so it commits and the duplicate gets its durable receipt.
+#[tokio::test]
+async fn recovered_member_does_not_refuse_its_fresh_prefix() -> TestResult {
+    let (store, authority) = fixture().await?;
+    let requests = requests(authority, 4)?;
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    for request in &requests[..2] {
+        assert!(matches!(
+            store
+                .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+                .await?,
+            FsAppendOutcome::Committed(_)
+        ));
+    }
+    let [_, durable, fresh, after] = requests.as_slice() else {
+        return Err("missing group requests".into());
+    };
+    // The duplicate is chained on the fresh member's provisional head, so
+    // its admission sees no reason to resolve its locator; the shared stream
+    // transaction is what finds it durable.
+    let mut duplicate = durable.clone();
+    duplicate.expected = after.expected;
+    let AppendGroupOutcome::Published {
+        receipts,
+        allocation,
+    } = store
+        .compare_and_append_group(&[fresh.clone(), duplicate], &[], &mut work, None::<&mut ()>)
+        .await?
+    else {
+        return Err("group was rejected".into());
+    };
+    assert!(
+        matches!(
+            receipts.as_slice(),
+            [FsAppendOutcome::Committed(committed), FsAppendOutcome::AlreadyCommitted(existing)]
+                if committed.operation_id == fresh.commit.operation_id
+                    && existing.operation_id == durable.commit.operation_id
+        ),
+        "a recovered sibling refused a fresh member"
+    );
+    drop(receipts);
+    drop(allocation);
+    assert_eq!(store.head(authority, &mut work).await?.sequence.get(), 3);
+    Ok(())
+}

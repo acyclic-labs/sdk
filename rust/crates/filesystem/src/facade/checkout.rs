@@ -429,6 +429,11 @@ impl<A, O> Checkout<A, O> {
         self.root.file_table != self.base_root.file_table || self.prepared_merge_parent.is_some()
     }
 
+    /// The authority head this checkout publishes against.
+    pub(crate) const fn authority_head(&self) -> Option<Head> {
+        self.authority_head
+    }
+
     /// A head is a delta base only when this exact generation was observed there.
     /// Exact checkouts may carry a newer head solely for writer fencing.
     pub(super) fn base_authority_head(&self) -> Option<Head> {

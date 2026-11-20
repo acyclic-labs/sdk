@@ -112,3 +112,37 @@ proptest::proptest! {
         proptest::prop_assert!(result.is_ok(), "{result:?}");
     }
 }
+
+// A winner that publishes its unchanged base still advances the authority
+// head. The loser rebases onto that head and commits; Current is only for a
+// head that did not move, where committing again would conflict again.
+#[test]
+fn rebase_adopts_a_head_that_advanced_with_an_unchanged_tree() -> Result<(), Box<dyn Error>> {
+    futures::executor::block_on(async {
+        let fs = Fs::memory();
+        let workspace = unbounded!(fs, create_workspace("unchanged-tree-head"))?;
+        let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        pending.write_text("/local", "local").await?;
+        let mut other = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        let TransactionCommit::Committed(unchanged) = commit(&mut other).await? else {
+            return Err("an unchanged candidate did not publish".into());
+        };
+        let TransactionCommit::Conflict { actual } = commit(&mut pending).await? else {
+            return Err("a stale candidate committed without a rebase".into());
+        };
+        assert_eq!(actual.id(), unchanged.id());
+        let TransactionRebase::Rebased(base) = unbounded!(pending, rebase(1))? else {
+            return Err("a rebase onto an advanced head reported no movement".into());
+        };
+        assert_eq!(base.id(), unchanged.id());
+        assert!(matches!(
+            commit(&mut pending).await?,
+            TransactionCommit::Committed(_)
+        ));
+        assert_eq!(
+            unbounded!(workspace, read("/local", 16))?.as_ref(),
+            b"local"
+        );
+        Ok(())
+    })
+}

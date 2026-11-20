@@ -244,13 +244,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     {
         let maximum_conflicts = maximum_conflicts.into();
         let base = self.checkout.base_generation();
+        let head = self.checkout.authority_head();
         let receipt = self
             .checkout
             .rebase_head(maximum_conflicts, budget, cancellation)
             .await
             .map_err(|failure| failure.map_error(WorkspaceError::from))?;
         let value = match receipt.value {
-            crate::kernel::RebaseDecision::Safe { generation } if generation == base => {
+            // An unchanged tree can still stand on an advanced head: a clean
+            // publication moves the head, and this candidate now expects it.
+            crate::kernel::RebaseDecision::Safe { generation }
+                if generation == base && self.checkout.authority_head() == head =>
+            {
                 TransactionRebase::Current(Generation {
                     workspace: self.workspace.clone(),
                     id: generation,
