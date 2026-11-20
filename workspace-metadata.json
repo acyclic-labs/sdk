@@ -449,5 +449,5 @@
 "target_directory":"target",
 "version":1,
 "workspace_root":".",
-"metadata":null
+"metadata":{"test-lints":{"clippy":{"indexing_slicing":"allow","string_slice":"allow","unwrap_in_result":"allow"}}}
 }

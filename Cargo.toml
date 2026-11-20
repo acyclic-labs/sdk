@@ -423,6 +423,15 @@ undocumented_unsafe_blocks = "deny"
 # nests a layer's state machine in its caller; erase it at the boundary.
 large_futures = "deny"
 
+# Test targets (every rust_test: unit and integration cases) take the workspace lints above with these
+# overrides, as //:workspace_test_lints. A panic is how a test fails, so the panic-family lints, which guard
+# product robustness, are off in test code; product code is still linted by its library and binary compiles.
+# clippy.toml's allow-*-in-tests reach only #[test] fns and #[cfg(test)] modules, and none covers unwrap_in_result.
+[workspace.metadata.test-lints.clippy]
+indexing_slicing = "allow"
+string_slice = "allow"
+unwrap_in_result = "allow"
+
 # Unoptimized async state machines exceed default stacks in filesystem, harness,
 # Git and provider paths. Keep the established optimization for those consumers;
 # independently compiled wire and identity leaves do not need it.
