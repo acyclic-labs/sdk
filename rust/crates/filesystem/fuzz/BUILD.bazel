@@ -1185,6 +1185,8 @@ rust_test(
     ],
     }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem:src/operation_window/lease_path/encoding.rs",
+    ] + [
         ":access",
         ":decoded_cache",
         ":decoder_work",

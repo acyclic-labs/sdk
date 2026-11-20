@@ -296,11 +296,13 @@ function fileLabel(file) {
 }
 // A module declared inside an inline `mod x { ... }` lives at a path the declaration alone does not
 // name, so every globbed source (`seeds`) is read too: an embed or #[path] in any of them is an input.
-function closure(crateDir, rootFile, seeds = []) {
+// `view` gives the source as the compile sees it.
+const source = file => fs.readFileSync(path.join(root, file), "utf8");
+function closure(crateDir, rootFile, seeds = [], view = source) {
   const seen = new Set([rootFile, ...seeds]), queue = [...seen];
   while (queue.length) {
     const file = queue.pop(), here = path.posix.dirname(file);
-    const text = fs.readFileSync(path.join(root, file), "utf8");
+    const text = view(file);
     const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
     const found = [];
     for (const [, concat, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
@@ -435,14 +437,39 @@ function hasUnitTests(crateDir, rootFile) {
 // The argument of source_path or crate_path! names its read whatever its shape.
 const LITERAL = /"([^"\\\n]*\/[^"\\\n]*)"/g;
 const NAMED = /\b(source_path|crate_path!|crate_path_str!)\(\s*"([^"\\\n]+)"/g;
+// In another workspace, test-support's source_path resolves in the --source-repository's runfiles (the
+// isolated test runner points it there), so a file it names there is declared by that repository's label:
+// the file in its innermost Bazel package, which exports every file it holds.
+function sourceLabel(file) {
+  if (!fs.statSync(path.join(sourceDirectory, file), { throwIfNoEntry: false })?.isFile()) return undefined;
+  let owner = path.posix.dirname(file);
+  while (owner !== "." && !fs.existsSync(path.join(sourceDirectory, owner, "BUILD.bazel"))) owner = path.posix.dirname(owner);
+  owner = owner === "." ? "" : owner;
+  return `${repositoryName}//${owner}:${within(owner, file)}`;
+}
+// A library's source as another crate's build compiles it: every item that no build with test off
+// reaches (#[cfg(test)], #[test]) blanked, offsets kept.
+const libraryViews = new Map();
+function libraryView(file) {
+  if (libraryViews.has(file)) return libraryViews.get(file);
+  const text = source(file), code = codeOnly(text);
+  let view = text;
+  for (const { path: name, args, start, end } of attributes(text)) {
+    if (name !== "test" && (name !== "cfg" || values(parseCfg(args), { test: false }).yes)) continue;
+    const to = text[start + 1] === "!" ? text.length : itemEnd(code, end);
+    view = view.slice(0, start) + view.slice(start, to).replace(/[^\n]/g, " ") + view.slice(to);
+  }
+  libraryViews.set(file, view);
+  return view;
+}
 const literalReads = new Map();
-function readsOf(crateDir, rootFile) {
-  const key = `${crateDir} ${rootFile}`;
+function readsOf(crateDir, rootFile, view = source) {
+  const key = `${crateDir} ${rootFile} ${view === source}`;
   if (literalReads.has(key)) return literalReads.get(key);
-  const files = new Set(), dirs = new Set();
-  for (const file of closure(crateDir, rootFile)) {
+  const files = new Set(), dirs = new Set(), labels = new Set();
+  for (const file of closure(crateDir, rootFile, [], view)) {
     if (!file.endsWith(".rs")) continue;
-    const text = fs.readFileSync(path.join(root, file), "utf8");
+    const text = view(file);
     const add = (spelled, directory) => {
       const named = path.posix.normalize(spelled).replace(/\/$/, "");
       if (named.startsWith("..") || named === "." || crateDir.startsWith(`${named}/`)) return;
@@ -456,10 +483,12 @@ function readsOf(crateDir, rootFile) {
       }
     }
     for (const [, reader, literal] of text.matchAll(NAMED)) {
-      add(reader === "source_path" ? literal : path.posix.join(crateDir, literal), () => true);
+      const label = reader === "source_path" && sourceDirectory ? sourceLabel(path.posix.normalize(literal)) : undefined;
+      if (label) labels.add(label);
+      else add(reader === "source_path" ? literal : path.posix.join(crateDir, literal), () => true);
     }
   }
-  const reads = { files, dirs };
+  const reads = { files, dirs, labels };
   literalReads.set(key, reads);
   return reads;
 }
@@ -499,6 +528,33 @@ function devLibraries(p) {
     if (members.has(dep.pkg) && dep.dep_kinds.every(k => k.kind === "dev")) found.add(dep.pkg);
   }
   return [...found].map(id => packages.get(id)).filter(libOf);
+}
+// Every other first-party library a test of this package links, through normal dependencies at any
+// depth. Its library build's code reads at run time the files it names outside its own package (golden
+// fixtures, say) in whichever test links it; its own tests' code and package files are its own business.
+const linkedReads = new Map();
+function linkedLibraryReads(p) {
+  if (linkedReads.has(p.id)) return linkedReads.get(p.id);
+  const found = new Set(), queue = [p.id, ...devLibraries(p).map(other => other.id)];
+  while (queue.length) {
+    const id = queue.pop();
+    for (const byId of nodes) for (const dep of byId.get(id)?.deps ?? []) {
+      const lib = members.has(dep.pkg) && libOf(packages.get(dep.pkg));
+      if (!lib || lib.kind.includes("proc-macro") || found.has(dep.pkg) || !dep.dep_kinds.some(k => k.kind === null)) continue;
+      found.add(dep.pkg);
+      queue.push(dep.pkg);
+    }
+  }
+  const reads = { files: new Set(), dirs: new Set(), labels: new Set() };
+  for (const id of found) {
+    const other = packages.get(id), own = dir(other), outside = file => ownerOf(file) !== own;
+    const { files, dirs, labels } = readsOf(own, path.relative(root, libOf(other).src_path).replaceAll("\\", "/"), libraryView);
+    for (const file of files) if (outside(file)) reads.files.add(file);
+    for (const directory of dirs) if (outside(`${directory}/`)) reads.dirs.add(directory);
+    for (const label of labels) reads.labels.add(label);
+  }
+  linkedReads.set(p.id, reads);
+  return reads;
 }
 // A test that can mount FUSE runs outside the linux-sandbox, whose user namespace strips
 // fusermount3's setuid bit. A package declaring [package.metadata.bazel] mounts-fuse = true mounts;
@@ -1066,10 +1122,10 @@ ${platformSources.map(([platform, sources]) =>
   const runtimeData = target => {
     const narrow = narrowTestRunfiles(target);
     const libraries = narrow ? [] : [...(lib ? [p] : []), ...devLibraries(p)];
-    const all = [readsOf(dir(p), repoRelative(target)), ...libraries.map(other => readsOf(dir(other), repoRelative(libOf(other))))];
+    const all = [readsOf(dir(p), repoRelative(target)), ...libraries.map(other => readsOf(dir(other), repoRelative(libOf(other)))), ...(narrow ? [] : [linkedLibraryReads(p)])];
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
     if (files.has(".cargo/config.toml")) for (const file of cargoConfigInputs) files.add(file);
-    const labels = new Set([...dirs].flatMap(treeLabels));
+    const labels = new Set([...[...dirs].flatMap(treeLabels), ...all.flatMap(reads => [...reads.labels])]);
     for (const file of files) {
       const owner = ownerOf(file);
       if (owner !== dir(p)) labels.add(fileLabel(file));

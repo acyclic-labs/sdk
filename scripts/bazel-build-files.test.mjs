@@ -440,6 +440,38 @@ test("the loom split walks each listed package a workspace holds, and a workspac
   }
 });
 
+test("another workspace's tests carry the source repository files and the linked libraries' reads", () => {
+  const generator = fixture(), other = fixture();
+  try {
+    writeFileSync(join(generator.root, "member/BUILD.bazel"), "");
+    mkdirSync(join(generator.root, "member/tests"));
+    writeFileSync(join(generator.root, "member/tests/identity.json"), "{}\n");
+    execFileSync("git", ["add", "-A"], { cwd: generator.root });
+    // `local` is a member and a normal dependency of `member`: its library code reads a root fixture tree
+    // and a file of the source repository, and its own tests read a file only they need.
+    const workspace = join(other.root, "Cargo.toml");
+    writeFileSync(workspace, readFileSync(workspace, "utf8").replace('members = ["member"]\nexclude = ["local"]', 'members = ["member", "local"]'));
+    mkdirSync(join(other.root, "fixtures/persisted"), { recursive: true });
+    writeFileSync(join(other.root, "fixtures/persisted/v1.json"), "{}\n");
+    mkdirSync(join(other.root, "notes"));
+    writeFileSync(join(other.root, "notes/only-local.txt"), "\n");
+    writeFileSync(join(other.root, "local/src/lib.rs"), 'pub const PERSISTED: &str = "fixtures/persisted";\n\npub fn identity() -> std::path::PathBuf {\n    test_support::source_path("member/tests/identity.json")\n}\n\n#[cfg(test)]\nmod tests {\n    const OWN: &str = "notes/only-local.txt";\n}\n');
+    execFileSync("git", ["add", "-A"], { cwd: other.root });
+    const output = join(other.root, "generated.json");
+    const result = spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", "--root", other.root,
+      "--source-repository", generator.root, "@sdk_source", "write", "--output", output], { cwd: generator.root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const generated = JSON.parse(readFileSync(output, "utf8"));
+    const test = build => build.slice(build.indexOf("rust_test("));
+    assert.match(test(generated["member/BUILD.bazel"]), /"\/\/:tree\/fixtures\/persisted",\n\s*"@sdk_source\/\/member:tests\/identity.json",/);
+    assert.doesNotMatch(generated["member/BUILD.bazel"], /only-local/);
+    assert.match(test(generated["local/BUILD.bazel"]), /"\/\/:notes\/only-local.txt"/);
+  } finally {
+    rmSync(generator.root, { recursive: true, force: true });
+    rmSync(other.root, { recursive: true, force: true });
+  }
+});
+
 test("the generator refuses multiple integration binaries and repeated roots", () => {
   const { root, run } = fixture();
   const manifest = join(root, "member/Cargo.toml");
