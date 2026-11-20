@@ -84,7 +84,8 @@ test("the privileged wrapper accepts exactly the privileges the generator does",
   try {
     // The wrapper checks the names in order and stops at the first unknown, so refusing only the last
     // one shows it accepted every listed one before it.
-    const result = spawnSync("sh", ["rust/crates/test-runner/privileged.sh", "true"], { encoding: "utf8",
+    // Run as isolated_test runs it, by its own #! line, so the test never names a second interpreter.
+    const result = spawnSync("rust/crates/test-runner/privileged.sh", ["true"], { encoding: "utf8",
       env: { PATH: process.env.PATH, ACYCLIC_TEST_VERITY_DIR: verity, ACYCLIC_TEST_PRIVILEGES: [...privileges, "not-a-privilege"].join(" ") } });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^privileged\.sh: unknown privilege not-a-privilege /m, "every listed privilege is accepted before the unlisted one is refused");
