@@ -209,6 +209,8 @@ pub(super) async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> Tes
     // extra exchange must remain observable to the exact request-count oracle.
     let request = sent.into_iter().next().ok_or("empty HTTP recording")?;
     if transport
+        .clone()
+        .transport()
         .send(HttpRequest {
             method: ::http::Method::POST,
             url: request.url,

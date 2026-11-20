@@ -347,7 +347,8 @@ mod tests {
                         .try_collect::<Vec<_>>()
                         .await?;
                 }
-                let sent = transport.sent.lock().unwrap();
+                let requests = transport.requests().unwrap();
+                let sent = crate::tests::generation_requests(&requests);
                 let mut native: serde_json::Value =
                     serde_json::from_slice(&sent[sent.len() - 2].body).unwrap();
                 let implicit: serde_json::Value =
@@ -444,7 +445,8 @@ mod tests {
                     .any(|event| matches!(event, ModelEvent::Completed { .. }))
             );
         }
-        let sent = transport.sent.lock().unwrap();
+        let requests = transport.requests().unwrap();
+        let sent = crate::tests::generation_requests(&requests);
         let bodies: Vec<serde_json::Value> = sent
             .iter()
             .map(|request| serde_json::from_slice(&request.body).unwrap())

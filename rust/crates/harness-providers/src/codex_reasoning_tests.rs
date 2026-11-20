@@ -6,7 +6,6 @@ use acyclic_harness_core::model::{
     ToolResultContent,
 };
 use futures::StreamExt as _;
-use std::sync::atomic::AtomicUsize;
 
 const NATIVE: &str = r#"{ "type": "reasoning", "id": "rs_saved", "encrypted_content": "opaque-exact==", "summary": [] }"#;
 
@@ -42,13 +41,9 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
             let transport: Arc<dyn HttpTransport> = if native {
-                Arc::new(super::native::NativeServer {
-                    inner: server.clone(),
-                    work: work.clone(),
-                    sent: AtomicUsize::new(0),
-                })
+                super::native::native_server(server.clone(), &work).0
             } else {
-                server.clone()
+                server.transport()
             };
             let provider =
                 Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)

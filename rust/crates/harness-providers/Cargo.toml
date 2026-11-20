@@ -18,6 +18,7 @@ local = ["dep:acyclic-harness-local"]
 # The browser content reader lives in the facade's wasm bindings.
 browser = ["acyclic-harness-core/browser", "acyclic-harness-provider-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
+test-support = ["acyclic-harness-provider-core/test-support"]
 fuzzing = ["acyclic-harness-core/test-support", "acyclic-harness-provider-core/fuzzing"]
 model-checking = ["dep:loom", "acyclic-harness-provider-core/model-checking"]
 

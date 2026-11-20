@@ -104,7 +104,8 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let sent = transport.sent.lock().unwrap();
+        let requests = transport.requests().unwrap();
+        let sent = crate::tests::generation_requests(&requests);
         let bodies: Vec<serde_json::Value> = sent
             .iter()
             .map(|request| serde_json::from_slice(&request.body).unwrap())

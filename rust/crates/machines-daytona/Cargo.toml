@@ -23,7 +23,7 @@ time = { workspace = true, features = ["parsing"] }
 
 [dev-dependencies]
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
-acyclic-harness-provider-core = { path = "../harness-provider-core", version = "=0.2.0", default-features = false }
+acyclic-harness-provider-core = { path = "../harness-provider-core", version = "=0.2.0", default-features = false, features = ["test-support"] }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 acyclic-machines-conformance = { path = "../machines-conformance", version = "=0.2.0" }
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "sync"] }

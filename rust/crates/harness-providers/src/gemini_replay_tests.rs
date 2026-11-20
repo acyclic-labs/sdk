@@ -702,7 +702,8 @@ async fn signed_answer_native_stream_keeps_exact_custody() -> Result<()> {
     provider.transport = crate::deadline::Bounded::wrap(
         Arc::new(super::native_tests::Fixture::new(
             std::str::from_utf8(&seed[1..]).unwrap(),
-        )),
+        ))
+        .transport(),
         crate::TimeoutSpec::DEFAULT,
     );
     let (prepared, dispatch) = request(&provider)?;

@@ -20,56 +20,28 @@ impl Backend {
     }
 }
 
-impl HttpTransport for Backend {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn delay_with_native_work(
-        &self,
-        wait: std::time::Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
-        crate::fixtures::native_delay(wait, work)
-    }
-    /// The agent host's ordinary dispatch.
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let (status, body) = self.answer(&request);
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status,
-                body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(
-                    body.as_bytes(),
-                ))])),
+impl Backend {
+    fn transport(self: &Arc<Self>) -> Arc<crate::fixtures::ScriptedHttp> {
+        let ordinary = self.clone();
+        let native = self.clone();
+        Arc::new(
+            crate::fixtures::ScriptedHttp::respond(move |request| {
+                let (status, body) = ordinary.answer(request);
+                crate::fixtures::ScriptedHttp::reply(status, body)
             })
-        })
-    }
-    fn supports_native(&self, _: &NativeMaterializationWork) -> Result<bool> {
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let (status, body) = self.answer(&request);
-            drop(request);
-            HttpResponse::with_native_body(
-                status,
-                futures::stream::iter([Ok(Bytes::from_static(body.as_bytes()))]),
-                work,
-            )
-        })
+            .with_native(true, move |request, work| {
+                let native = native.clone();
+                acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                    let (status, body) = native.answer(&request);
+                    drop(request);
+                    HttpResponse::with_native_body(
+                        status,
+                        futures::stream::iter([Ok(Bytes::from_static(body.as_bytes()))]),
+                        work,
+                    )
+                })
+            }),
+        )
     }
 }
 
@@ -95,7 +67,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
         generations: AtomicUsize::new(0),
     });
     let provider =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.transport())
             .with_codex_login(login)
             .resolve("openai/gpt-5")?;
     let (request, _) = crate::tests::request(&provider)?;
@@ -170,7 +142,7 @@ async fn stock(broken: bool) -> Result<()> {
         BTreeMap::new()
     });
     let mut registry =
-        Registry::with_transport(credentials, backend.clone()).with_codex_login(login);
+        Registry::with_transport(credentials, backend.transport()).with_codex_login(login);
     let catalog = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
     std::fs::write(catalog.path(), include_str!("fixtures/luna-catalog.json"))
         .map_err(|_| invalid("fixture catalog"))?;

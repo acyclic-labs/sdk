@@ -1,6 +1,6 @@
 use super::*;
 use crate::HttpResponse;
-use acyclic_stream::BoxProviderFuture;
+use crate::fixtures::ScriptedHttp;
 use bytes::Bytes;
 use futures::FutureExt as _;
 use proptest::prelude::*;
@@ -9,38 +9,30 @@ use std::sync::{Arc, Mutex};
 struct Refresh {
     status: u16,
     response: Value,
-    sent: Mutex<Vec<HttpRequest>>,
+    sent: Arc<Mutex<Vec<HttpRequest>>>,
     release: Option<futures::future::Shared<futures::channel::oneshot::Receiver<()>>>,
 }
 
-impl HttpTransport for Refresh {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            self.sent
-                .lock()
-                .map_err(|_| invalid("fixture poisoned"))?
-                .push(request);
-            if let Some(release) = &self.release {
-                release
-                    .clone()
-                    .await
-                    .map_err(|_| invalid("refresh response producer disappeared"))?;
-            }
-            let chunk = Bytes::from(self.response.to_string());
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: self.status,
-                body: Box::pin(futures::stream::once(async { Ok(chunk) })),
+impl Refresh {
+    fn transport(&self) -> ScriptedHttp {
+        let status = self.status;
+        let response = Arc::new(self.response.clone());
+        let sent = self.sent.clone();
+        let release = self.release.clone();
+        ScriptedHttp::respond_owned(move |request| {
+            let sent = sent.clone();
+            let release = release.clone();
+            let response = response.clone();
+            Box::pin(async move {
+                sent.lock()
+                    .map_err(|_| invalid("fixture poisoned"))?
+                    .push(request);
+                if let Some(release) = release {
+                    release
+                        .await
+                        .map_err(|_| invalid("refresh response producer disappeared"))?;
+                }
+                ScriptedHttp::reply(status, response.to_string())
             })
         })
     }
@@ -69,7 +61,7 @@ fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, 
         status,
         response: json!({"access_token":jwt(crate::codex::fixed_now().unix_timestamp() + 3600),
         "id_token":"new-id","refresh_token":"new-refresh"}),
-        sent: Mutex::new(Vec::new()),
+        sent: Arc::default(),
         release: None,
     };
     Ok((
@@ -83,7 +75,7 @@ fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, 
 async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
     let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
     let (root, login, transport) = fixture(&access, 200)?;
-    let (bearer, account) = login.bearer(&transport, None, None).await?;
+    let (bearer, account) = login.bearer(&transport.transport(), None, None).await?;
     assert_eq!(bearer, access);
     assert_eq!(account.as_deref(), Some("account"));
     assert!(
@@ -101,7 +93,7 @@ async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
 async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> Result<()> {
     for expiry in [0, crate::codex::fixed_now().unix_timestamp() + 299] {
         let (root, login, transport) = fixture(&jwt(expiry), 200)?;
-        let (access, account) = login.bearer(&transport, None, None).await?;
+        let (access, account) = login.bearer(&transport.transport(), None, None).await?;
         assert_eq!(access, transport.response["access_token"]);
         assert_eq!(account.as_deref(), Some("account"));
         let stored = acyclic_harness_provider_response::json(
@@ -143,15 +135,15 @@ async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
     let (_root, first, mut transport) = fixture(&jwt(0), status)?;
     let (release, completion) = futures::channel::oneshot::channel();
     transport.release = Some(completion.shared());
-    let transport = Arc::new(transport);
+    let script = transport.transport();
     let mut second = first.fresh();
     assert!(crate::sync::Arc::ptr_eq(&first.refresh, &second.refresh));
     if broken {
         second.refresh = crate::sync::Arc::new(crate::refresh::Refresh::new());
     }
     // Hold the endpoint response while both callers reach the ownership boundary.
-    let mut left = std::pin::pin!(first.bearer(transport.as_ref(), None, None));
-    let mut right = std::pin::pin!(second.bearer(transport.as_ref(), None, None));
+    let mut left = std::pin::pin!(first.bearer(&script, None, None));
+    let mut right = std::pin::pin!(second.bearer(&script, None, None));
     assert!(left.as_mut().now_or_never().is_none());
     assert!(right.as_mut().now_or_never().is_none());
     release.send(()).expect("refresh response remains owned");
@@ -188,7 +180,9 @@ async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Resu
     let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"access_token":"updated-access"});
-    let (updated, _) = login.bearer(&transport, Some(&access), None).await?;
+    let (updated, _) = login
+        .bearer(&transport.transport(), Some(&access), None)
+        .await?;
     assert_eq!(updated, "updated-access");
     let stored = acyclic_harness_provider_response::json(
         &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
@@ -204,7 +198,10 @@ async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Re
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"refresh_token":"rotated-refresh","id_token":"rotated-id"});
     assert_eq!(
-        login.bearer(&transport, Some(&access), None).await?.0,
+        login
+            .bearer(&transport.transport(), Some(&access), None)
+            .await?
+            .0,
         access
     );
     let stored = acyclic_harness_provider_response::json(
@@ -222,7 +219,7 @@ async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> 
         let before =
             std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
         let error = login
-            .bearer(&transport, None, None)
+            .bearer(&transport.transport(), None, None)
             .await
             .expect_err("rejected refresh");
         assert!(matches!(
@@ -246,7 +243,12 @@ async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> 
         changed["tokens"]["account_id"] = json!("another-account");
         std::fs::write(root.path().join("auth.json"), changed.to_string())
             .map_err(|e| invalid(e.to_string()))?;
-        assert!(login.bearer(&transport, None, None).await.is_err());
+        assert!(
+            login
+                .bearer(&transport.transport(), None, None)
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -384,8 +386,18 @@ async fn negative_control_failed_refreshes_race_without_shared_ownership() {
 #[tokio::test]
 async fn a_new_caller_can_retry_a_previously_failed_attempt() -> Result<()> {
     let (_root, login, transport) = fixture(&jwt(0), 503)?;
-    assert!(login.bearer(&transport, None, None).await.is_err());
-    assert!(login.bearer(&transport, None, None).await.is_err());
+    assert!(
+        login
+            .bearer(&transport.transport(), None, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        login
+            .bearer(&transport.transport(), None, None)
+            .await
+            .is_err()
+    );
     assert_eq!(transport.sent.lock().unwrap().len(), 2);
     Ok(())
 }
@@ -397,7 +409,7 @@ async fn injected_clock_drives_exact_expiry_boundaries_and_publication_time() ->
             &jwt(crate::codex::fixed_now().unix_timestamp() + remaining),
             200,
         )?;
-        login.bearer(&transport, None, None).await?;
+        login.bearer(&transport.transport(), None, None).await?;
         assert_eq!(
             transport.sent.lock().unwrap().len(),
             usize::from(remaining <= 300)

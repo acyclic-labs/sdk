@@ -201,7 +201,7 @@ async fn custom_media_keeps_generic_credit_and_requires_its_own_projection_adapt
             refusal
         );
         assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-        assert!(script.sent.lock().unwrap().is_empty());
+        assert!(generation_requests(&script.requests().unwrap()).is_empty());
     }
     Ok(())
 }
@@ -267,7 +267,7 @@ async fn unbounded_aggregate_credit_does_not_restore_the_former_default() -> Res
             .is_err()
     );
     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-    assert!(script.sent.lock().unwrap().is_empty());
+    assert!(generation_requests(&script.requests().unwrap()).is_empty());
     Ok(())
 }
 
@@ -387,7 +387,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
                 &mut crate::files::FileText(reversed.into_iter()),
             );
             assert!(wrong.is_err() || wrong.unwrap() != expected);
-            assert!(transport.sent.lock().unwrap().is_empty());
+            assert!(generation_requests(&transport.requests().unwrap()).is_empty());
         }
     }
     Ok(())
@@ -514,9 +514,13 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                 crate::tests::count_result(crate::prepared::PreparedInput::count(shared.clone()))
                     .await?;
             count.validate(&shared.request, &mut None)?;
-            let counted = script.counted.lock().unwrap();
+            let requests = script.requests()?;
+            let counted = requests
+                .iter()
+                .rev()
+                .find(|request| is_count_request(request));
             let counted = acyclic_harness_provider_response::json(
-                counted.as_ref().expect("original count was not sent"),
+                &counted.expect("original count was not sent").body,
             )?;
             assert_eq!(
                 counted["generateContentRequest"]["contents"],
@@ -564,12 +568,13 @@ proptest! {
             // Negative control: the original unbound composition cannot issue HTTP.
             let error = provider.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap_err();
             assert!(error.to_string().contains("model file byte resolution is unavailable"));
-            assert!(script.sent.lock().unwrap().is_empty());
+            assert!(generation_requests(&script.requests().unwrap()).is_empty());
             let reader = Arc::new(Reader { data: text.as_bytes().to_vec(), reads: AtomicUsize::new(0) });
             let bound = provider.bind_content(reader.clone(), maximum).unwrap();
             bound.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-            let sent = script.sent.lock().unwrap();
+            let requests = script.requests().unwrap();
+            let sent = generation_requests(&requests);
             let body = acyclic_harness_provider_response::json(&sent[0].body).unwrap();
             let expected = if text.is_empty() { json!([]) } else { json!([
                 {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
@@ -845,7 +850,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
         );
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
     }
-    assert!(script.sent.lock().expect("fixture").is_empty());
+    assert!(generation_requests(&script.requests().unwrap()).is_empty());
     Ok(())
 }
 
@@ -905,7 +910,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
         .try_collect::<Vec<_>>()
         .await?;
     assert_eq!(
-        script.sent.lock().expect("fixture")[0].headers["x-owner"],
+        generation_requests(&script.requests().unwrap())[0].headers["x-owner"],
         "project"
     );
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
@@ -1095,7 +1100,8 @@ async fn optional_file_policy_preserves_aggregate_admission_and_rebinding() -> R
         if admitted {
             result?;
             assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
-            let sent = script.sent.lock().unwrap();
+            let requests = script.requests().unwrap();
+            let sent = generation_requests(&requests);
             assert_eq!(sent.len(), 1);
             let body = acyclic_harness_provider_response::json(&sent[0].body)?;
             assert_eq!(
@@ -1113,7 +1119,7 @@ async fn optional_file_policy_preserves_aggregate_admission_and_rebinding() -> R
                     .contains("aggregate byte limit")
             );
             assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
-            assert!(script.sent.lock().unwrap().is_empty());
+            assert!(generation_requests(&script.requests().unwrap()).is_empty());
         }
     }
     Ok(())

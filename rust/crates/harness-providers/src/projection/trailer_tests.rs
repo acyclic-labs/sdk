@@ -365,6 +365,6 @@ fn gemini_summary_extends_admitted_user_and_tool_result_sources() -> acyclic_har
             ModelContent::Text("Summarize \"猫\".".into())
         );
     }
-    assert!(transport.sent.lock().unwrap().is_empty());
+    assert!(crate::tests::generation_requests(&transport.requests().unwrap()).is_empty());
     Ok(())
 }

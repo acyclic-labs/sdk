@@ -6,22 +6,11 @@ use acyclic_harness_core::model::{
 };
 use futures::TryStreamExt as _;
 
-struct Mixed(Vec<(String, Arc<Scripted>)>);
-
-impl HttpTransport for Mixed {
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn now(&self) -> Duration {
-        Duration::ZERO
-    }
-    fn send(
-        &self,
-        request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
+fn mixed(routes: Arc<Vec<(String, Arc<Scripted>)>>) -> ScriptedHttp {
+    ScriptedHttp::respond_owned(move |request| {
+        let routes = routes.clone();
         Box::pin(async move {
-            let route = self
-                .0
+            let route = routes
                 .iter()
                 .find(|(prefix, _)| request.url.starts_with(prefix))
                 .ok_or_else(|| {
@@ -44,9 +33,9 @@ impl HttpTransport for Mixed {
                     "mixed provider credential route differs".into(),
                 ));
             }
-            route.1.send(request).await
+            ScriptedHttp::reply(200, route.1.reply(request)?)
         })
-    }
+    })
 }
 
 #[tokio::test]
@@ -79,7 +68,8 @@ async fn mixed_provider_catalog_executes_every_route_and_rejects_a_swapped_adapt
     }
     let file = tempfile::NamedTempFile::new()?;
     std::fs::write(file.path(), serde_json::to_vec(&document)?)?;
-    let transport = Arc::new(Mixed(routes));
+    let routes = Arc::new(routes);
+    let transport = Arc::new(mixed(routes.clone()));
     let credentials = providers
         .iter()
         .map(|(name, _, _)| (name.to_string(), format!("fixture-{name}")))
@@ -117,7 +107,7 @@ async fn mixed_provider_catalog_executes_every_route_and_rejects_a_swapped_adapt
                 .any(|event| matches!(event, ModelEvent::Content { delta } if delta == "ok"))
         );
         assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
-        let sent = transport.0[index].1.state.lock().unwrap();
+        let sent = routes[index].1.state.lock().unwrap();
         assert_eq!(sent.2.len(), 1);
         assert!(
             sent.2[0]

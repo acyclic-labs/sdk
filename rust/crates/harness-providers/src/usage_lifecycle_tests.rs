@@ -74,38 +74,35 @@ impl Proxy {
     }
 }
 
-impl HttpTransport for Proxy {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(self.exchange(request))
+impl Proxy {
+    fn transport(self: &Arc<Self>) -> Arc<ScriptedHttp> {
+        let ordinary = self.clone();
+        let native = self.clone();
+        let delay = self.clone();
+        let native_delay = self.clone();
+        Arc::new(
+            ScriptedHttp::respond_owned(move |request| {
+                let ordinary = ordinary.clone();
+                Box::pin(async move { ordinary.exchange(request).await })
+            })
+            .with_native(true, move |request, work| {
+                let native = native.clone();
+                NativeFutureBundle::new(work, move || async move {
+                    let response = native.exchange(request).await?;
+                    HttpResponse::with_native_body(response.status, response.body, work)
+                })
+            })
+            .with_delay(move |wait| delay.record_wait(wait))
+            .with_native_delay(move |wait, work| {
+                let timer = native_delay.record_wait(wait);
+                NativeFutureBundle::new(work, || timer)
+            }),
+        )
     }
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        NativeFutureBundle::new(work, || async move {
-            let response = self.exchange(request).await?;
-            HttpResponse::with_native_body(response.status, response.body, work)
-        })
-    }
-    fn now(&self) -> Duration {
-        Duration::ZERO
-    }
-    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
+
+    fn record_wait(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.waits.lock().unwrap().push(wait);
         Box::pin(async { Ok(()) })
-    }
-    fn delay_with_native_work(
-        &self,
-        wait: Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
-        let timer = self.delay(wait);
-        NativeFutureBundle::new(work, || timer)
     }
 }
 
@@ -121,7 +118,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
         waits: Mutex::new(Vec::new()),
     });
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), proxy.clone());
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), proxy.transport());
     let mut spec: BTreeMap<String, ProviderSpec> =
         serde_json::from_str(include_str!("fixtures/luna-catalog.json"))
             .map_err(|error| invalid(error.to_string()))?;
@@ -338,7 +335,7 @@ async fn truncated_responses_preserve_transport_cause_on_both_provider_paths() -
         r#"{"object":"response","status":"completed","output":[],"usage":{"input_tokens":11,"output_tokens":"#,
     ] {
         for native in [false, true] {
-            let transport = Arc::new(super::native_tests::Fixture::new(wire));
+            let transport = Arc::new(super::native_tests::Fixture::new(wire)).transport();
             let provider = provider_with(Adapter::Responses, "http://127.0.0.1:1234/v1", transport);
             let (request, dispatch) = request(&provider)?;
             let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
@@ -389,7 +386,7 @@ async fn complete_responses_share_native_parts_tools_and_usage_with_streamed_res
         r#""usage":{"input_tokens":11,"output_tokens":3}}"#
     );
     for native in [false, true] {
-        let transport = Arc::new(super::native_tests::Fixture::new(wire));
+        let transport = Arc::new(super::native_tests::Fixture::new(wire)).transport();
         let provider = provider_with(Adapter::Responses, "http://127.0.0.1:1234/v1", transport);
         let (request, dispatch) = request(&provider)?;
         let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;

@@ -153,53 +153,26 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn recovery_timer_excludes_observer_latency_and_does_not_require_a_wall_clock() {
-        use crate::{HttpRequest, HttpResponse, HttpTransport};
-        use acyclic_stream::BoxProviderFuture;
+        use crate::{HttpTransport, fixtures::ScriptedHttp};
         use futures::StreamExt as _;
-        struct Clock {
-            origin: tokio::time::Instant,
-            wall: bool,
-        }
-        impl HttpTransport for Clock {
-            fn send(
-                &self,
-                _: HttpRequest,
-            ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
-                panic!("timer replay must not issue HTTP")
-            }
-            fn now(&self) -> Duration {
-                self.origin.elapsed()
-            }
-            fn unix_ms(&self) -> acyclic_harness_core::Result<u64> {
-                if self.wall {
-                    Ok(1_000_000)
-                } else {
-                    Err(crate::invalid("wall clock unavailable"))
-                }
-            }
-            fn delay(
-                &self,
-                duration: Duration,
-            ) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
-                Box::pin(async move {
-                    tokio::time::sleep(duration).await;
-                    Ok(())
-                })
-            }
-            fn delay_with_native_work(
-                &self,
-                duration: Duration,
-                work: &acyclic_fs::NativeMaterializationWork,
-            ) -> acyclic_harness_core::Result<
-                acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-            > {
-                acyclic_fs::NativeFutureBundle::new(work, || self.delay(duration))
-            }
-        }
+        let delay = |duration| {
+            Box::pin(async move {
+                tokio::time::sleep(duration).await;
+                Ok(())
+            }) as acyclic_stream::BoxProviderFuture<'static, _>
+        };
         for native in [false, true] {
             for wall in [false, true] {
                 tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().unwrap().block_on(async {
-                    let clock = Clock { origin: tokio::time::Instant::now(), wall };
+                    let origin = tokio::time::Instant::now();
+                    let clock = ScriptedHttp::respond(|_| panic!("timer replay must not issue HTTP"))
+                        .with_clock(move || origin.elapsed(), move || {
+                            if wall { Ok(1_000_000) } else { Err(crate::invalid("wall clock unavailable")) }
+                        })
+                        .with_delay(delay)
+                        .with_native_delay(move |duration, work| {
+                            acyclic_fs::NativeFutureBundle::new(work, || delay(duration))
+                        });
                     let work = crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new()).unwrap();
                     let baseline = work.live_allocation_bytes();
                     let mut stream = Box::pin(events(&clock, unavailable(ModelTransportFailure::Connect), Duration::from_secs(3), false, native.then_some(&work)));

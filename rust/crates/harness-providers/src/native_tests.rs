@@ -1,4 +1,5 @@
 use super::*;
+use crate::fixtures::ScriptedHttp;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "native_stock_tests.rs"]
@@ -35,60 +36,46 @@ impl Fixture {
     }
 }
 
-impl HttpTransport for Fixture {
-    // No deadline ever expires: these fixtures exercise cancellation, never a timeout.
-    fn delay(
-        &self,
-        _: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        Box::pin(std::future::pending())
+impl Fixture {
+    pub(super) fn transport(self: &Arc<Self>) -> Arc<ScriptedHttp> {
+        let ordinary = self.clone();
+        let native = self.clone();
+        Arc::new(
+            ScriptedHttp::respond(move |request| ordinary.exchange(request))
+                .with_delay(|_| Box::pin(std::future::pending()))
+                .with_native(true, move |request, work| {
+                    native.clone().exchange_native(request, work)
+                }),
+        )
     }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn delay_with_native_work(
-        &self,
-        _: std::time::Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
-        crate::fixtures::native_delay(std::time::Duration::MAX, work)
-    }
-    /// The agent host's ordinary dispatch, for fixtures that answer at once.
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+
+    fn exchange(&self, request: &HttpRequest) -> Result<HttpResponse> {
         assert!(
             self.cancel.is_none(),
             "cancellation fixtures exercise only the funded native callback"
         );
-        Box::pin(async move {
-            if let Some(response) = fixture_count(&request) {
-                return Ok(response);
-            }
-            let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
-            assert!(
-                request.headers.contains_key("authorization")
-                    || request.headers.contains_key("x-api-key")
-                    || request.headers.contains_key("x-goog-api-key")
-            );
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: self.status,
-                body: Box::pin(futures::stream::iter([Ok(self.reply(attempt))])),
-            })
+        if let Some(response) = fixture_count(request) {
+            return Ok(response);
+        }
+        let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            request.headers.contains_key("authorization")
+                || request.headers.contains_key("x-api-key")
+                || request.headers.contains_key("x-goog-api-key")
+        );
+        Ok(HttpResponse {
+            request_id: None,
+            retry_after: None,
+            status: self.status,
+            body: Box::pin(futures::stream::iter([Ok(self.reply(attempt))])),
         })
     }
-    fn supports_native(&self, work: &NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
+    pub(super) fn exchange_native<'a>(
+        self: Arc<Self>,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
     ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, move || async move {
             if let Some(response) = fixture_count(&request) {
                 return HttpResponse::with_native_body(response.status, response.body, work);
             }
@@ -143,7 +130,7 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
         let (mut provider, _) = provider(adapter, 200);
         let fixture = Arc::new(Fixture::new(response));
         provider.transport =
-            crate::deadline::Bounded::wrap(fixture.clone(), crate::TimeoutSpec::DEFAULT);
+            crate::deadline::Bounded::wrap(fixture.transport(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
         let work = work(&CancellationToken::new())?;
         let before = work.live_allocation_bytes().unwrap();
@@ -240,7 +227,7 @@ async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Re
         });
         let (mut provider, _) = provider(crate::Adapter::Responses, 200);
         provider.transport =
-            crate::deadline::Bounded::wrap(fixture.clone(), crate::TimeoutSpec::DEFAULT);
+            crate::deadline::Bounded::wrap(fixture.transport(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
         let work = work(&CancellationToken::new())?;
         let before = work.live_allocation_bytes().unwrap();
@@ -307,7 +294,8 @@ async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies
                 pending_body,
                 prefix,
                 ..Fixture::new(CHAT)
-            }),
+            })
+            .transport(),
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, dispatch) = request(&provider)?;
@@ -361,7 +349,7 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
             ..Fixture::new(response)
         });
         provider.transport =
-            crate::deadline::Bounded::wrap(fixture.clone(), crate::TimeoutSpec::DEFAULT);
+            crate::deadline::Bounded::wrap(fixture.transport(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
         let ordinary = provider
             .generate(&request, dispatch)
@@ -423,7 +411,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
 -> Result<()> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
     provider.transport = crate::deadline::Bounded::wrap(
-        Arc::new(Fixture::new("data: invalid-json\n\n")),
+        Arc::new(Fixture::new("data: invalid-json\n\n")).transport(),
         crate::TimeoutSpec::DEFAULT,
     );
     let (request, dispatch) = request(&provider)?;
@@ -447,7 +435,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     let transport = Arc::new(Fixture::new(CHAT));
     provider.transport =
-        crate::deadline::Bounded::wrap(transport.clone(), crate::TimeoutSpec::DEFAULT);
+        crate::deadline::Bounded::wrap(transport.transport(), crate::TimeoutSpec::DEFAULT);
     let exhausted = NativeMaterializationWork::new(
         acyclic_fs_work::performance::work_budget(65_536, baseline),
         &CancellationToken::new(),
@@ -485,7 +473,8 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
             cancel: Some(cancel),
             pending_body: true,
             ..Fixture::new(CHAT)
-        }),
+        })
+        .transport(),
         crate::TimeoutSpec::DEFAULT,
     );
     let (request, _) = request(&provider)?;
@@ -524,7 +513,7 @@ mod source_accounting {
             response.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
             let expected = response.len() as u64;
             let (mut provider, _) = provider(Adapter::Chat, 200);
-            provider.transport = crate::deadline::Bounded::wrap(Arc::new(Fixture { response: Bytes::from(response), ..Fixture::new(CHAT) }), crate::TimeoutSpec::DEFAULT);
+            provider.transport = crate::deadline::Bounded::wrap(Arc::new(Fixture { response: Bytes::from(response), ..Fixture::new(CHAT) }).transport(), crate::TimeoutSpec::DEFAULT);
             let (request, dispatch) = request(&provider).unwrap();
             let work = work(&CancellationToken::new()).unwrap();
             let baseline = work.live_allocation_bytes().unwrap();

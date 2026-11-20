@@ -61,59 +61,56 @@ struct RacingCli {
     requests: Mutex<Vec<HttpRequest>>,
 }
 
-impl HttpTransport for RacingCli {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
+impl RacingCli {
+    fn transport(self: &Arc<Self>) -> crate::fixtures::ScriptedHttp {
+        let state = self.clone();
+        crate::fixtures::ScriptedHttp::respond_owned(move |request| {
+            let state = state.clone();
+            Box::pin(async move { state.exchange(request) })
+        })
     }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let first = {
-                let mut requests = self.requests.lock().map_err(|_| invalid("fixture lock"))?;
-                requests.push(request);
-                requests.len() == 1
-            };
-            if first {
-                // The real CLI does not participate in this provider's in-memory mutex.
-                // Publish a complete credential document while independent readers run.
-                let mut update = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())
-                    .map_err(|_| invalid("fixture staging"))?;
-                update
-                    .write_all(&self.cli_bytes)
-                    .map_err(|_| invalid("fixture write"))?;
-                update
-                    .persist(&self.path)
-                    .map_err(|_| invalid("fixture replace"))?;
-            }
-            let (status, value) = self
-                .replies
-                .lock()
-                .map_err(|_| invalid("fixture lock"))?
-                .pop_front()
-                .ok_or_else(|| invalid("unexpected refresh"))?;
-            let bytes = Bytes::from(value.to_string());
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status,
-                body: Box::pin(futures::stream::once(async { Ok(bytes) })),
-            })
+
+    fn exchange(&self, request: HttpRequest) -> Result<HttpResponse> {
+        let first = {
+            let mut requests = self.requests.lock().map_err(|_| invalid("fixture lock"))?;
+            requests.push(request);
+            requests.len() == 1
+        };
+        if first {
+            // The real CLI does not participate in this provider's in-memory mutex.
+            // Publish a complete credential document while independent readers run.
+            let mut update = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())
+                .map_err(|_| invalid("fixture staging"))?;
+            update
+                .write_all(&self.cli_bytes)
+                .map_err(|_| invalid("fixture write"))?;
+            update
+                .persist(&self.path)
+                .map_err(|_| invalid("fixture replace"))?;
+        }
+        let (status, value) = self
+            .replies
+            .lock()
+            .map_err(|_| invalid("fixture lock"))?
+            .pop_front()
+            .ok_or_else(|| invalid("unexpected refresh"))?;
+        let bytes = Bytes::from(value.to_string());
+        Ok(HttpResponse {
+            request_id: None,
+            retry_after: None,
+            status,
+            body: Box::pin(futures::stream::once(async { Ok(bytes) })),
         })
     }
 }
 
-fn race(path: &Path, cli: &Value, replies: Vec<(u16, Value)>) -> RacingCli {
-    RacingCli {
+fn race(path: &Path, cli: &Value, replies: Vec<(u16, Value)>) -> Arc<RacingCli> {
+    Arc::new(RacingCli {
         path: path.to_owned(),
         cli_bytes: format!("{cli}\n").into_bytes(),
         replies: Mutex::new(replies.into()),
         requests: Mutex::new(Vec::new()),
-    }
+    })
 }
 
 #[tokio::test]
@@ -132,7 +129,10 @@ async fn cli_write_during_successful_refresh_wins_without_extra_auth_directory_f
             json!({"access_token":"discard-provider-access", "refresh_token":"discard-provider-refresh"}),
         )],
     );
-    assert_eq!(login.bearer(&transport, None, None).await?.0, cli_access);
+    assert_eq!(
+        login.bearer(&transport.transport(), None, None).await?.0,
+        cli_access
+    );
     assert_eq!(
         std::fs::read(&transport.path).map_err(|_| invalid("fixture read"))?,
         transport.cli_bytes
@@ -156,7 +156,10 @@ async fn rejected_refresh_reloads_a_fresh_cli_bearer_once() -> Result<()> {
             &auth(&cli_access),
             vec![(status, json!({"error":"invalid_grant"}))],
         );
-        assert_eq!(login.bearer(&transport, None, None).await?.0, cli_access);
+        assert_eq!(
+            login.bearer(&transport.transport(), None, None).await?.0,
+            cli_access
+        );
         assert_eq!(
             transport
                 .requests
@@ -190,7 +193,10 @@ async fn rejected_refresh_retries_the_changed_on_disk_refresh_token() -> Result<
                 ),
             ],
         );
-        assert_eq!(login.bearer(&transport, None, None).await?.0, "updated");
+        assert_eq!(
+            login.bearer(&transport.transport(), None, None).await?.0,
+            "updated"
+        );
         let requests = transport
             .requests
             .lock()
@@ -217,7 +223,7 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
             vec![(status, json!({"access_token":"provider-token"}))],
         );
         assert!(matches!(
-            login.bearer(&transport, None, None).await,
+            login.bearer(&transport.transport(), None, None).await,
             Err(acyclic_harness_core::Error::Unauthorized(_))
         ));
         assert_eq!(
@@ -243,9 +249,10 @@ async fn independent_login_instances_adopt_cli_credentials_published_during_refr
             (200, json!({"access_token":"discard-second"})),
         ],
     );
+    let script = transport.transport();
     let (left, right) = futures::join!(
-        first.bearer(&transport, None, None),
-        second.bearer(&transport, None, None)
+        first.bearer(&script, None, None),
+        second.bearer(&script, None, None)
     );
     assert_eq!(left?.0, cli_access);
     assert_eq!(right?.0, cli_access);
@@ -261,7 +268,7 @@ async fn oauth_transient_statuses_keep_the_retryable_classification() -> Result<
     for status in [429, 500, 503] {
         let (_root, login, transport) = fixture(&jwt(0), status)?;
         let error = login
-            .bearer(&transport, None, None)
+            .bearer(&transport.transport(), None, None)
             .await
             .expect_err("transient failure");
         assert!(error.to_string().contains(&status.to_string()));
@@ -287,7 +294,10 @@ async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> R
             json!({"access_token":"new-access", "refresh_token":"single-use-rotated", "id_token":"new-id"}),
         )],
     );
-    assert_eq!(login.bearer(&transport, None, None).await?.0, "new-access");
+    assert_eq!(
+        login.bearer(&transport.transport(), None, None).await?.0,
+        "new-access"
+    );
     let stored = decode_auth(&std::fs::read(&transport.path).unwrap())?;
     assert_eq!(stored["tokens"]["refresh_token"], "single-use-rotated");
     assert_eq!(stored["tokens"]["id_token"], "new-id");
@@ -507,7 +517,7 @@ fn oversized_merge_preserves_original(
             .map_err(fail)?;
         Ok(())
     } else {
-        futures::executor::block_on(login.bearer(&transport, None, None)).map(|_| ())
+        futures::executor::block_on(login.bearer(&transport.transport(), None, None)).map(|_| ())
     };
     prop_assert!(
         std::fs::read(&path).map_err(fail)? == original,
@@ -561,8 +571,9 @@ async fn account_binding_errors_are_not_shared_with_a_newly_resolved_model() -> 
         wait.await.unwrap();
         old.refresh.complete(permit, None);
     };
-    let old_request = old.bearer(&transport, None, None);
-    let new_request = fresh.bearer(&transport, None, None);
+    let script = transport.transport();
+    let old_request = old.bearer(&script, None, None);
+    let new_request = fresh.bearer(&script, None, None);
     let mut holder = core::pin::pin!(holder);
     let mut old_request = core::pin::pin!(old_request);
     let mut new_request = core::pin::pin!(new_request);

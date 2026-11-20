@@ -2,7 +2,6 @@ use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness_core::model::{ModelEvent, ModelProvider};
 use futures::StreamExt as _;
-use std::sync::atomic::AtomicUsize;
 
 const AUTH_ERROR: &str = "data: {\"type\":\"error\",\"error\":{\"code\":\"invalid_api_key\",\"type\":\"authentication_error\"}}\n\n";
 const TEXT: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
@@ -23,13 +22,9 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
             let transport: Arc<dyn HttpTransport> = if native {
-                Arc::new(super::native::NativeServer {
-                    inner: server.clone(),
-                    work: work.clone(),
-                    sent: AtomicUsize::new(0),
-                })
+                super::native::native_server(server.clone(), &work).0
             } else {
-                server.clone()
+                server.transport()
             };
             let provider =
                 Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
@@ -161,13 +156,9 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
             let transport: Arc<dyn HttpTransport> = if native {
-                Arc::new(super::native::NativeServer {
-                    inner: server.clone(),
-                    work: work.clone(),
-                    sent: AtomicUsize::new(0),
-                })
+                super::native::native_server(server.clone(), &work).0
             } else {
-                server.clone()
+                server.transport()
             };
             let provider =
                 Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
@@ -243,49 +234,28 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
     Ok(())
 }
 
-struct CancelRefresh {
-    cancel: CancellationToken,
-}
-impl HttpTransport for CancelRefresh {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn delay_with_native_work(
-        &self,
-        wait: std::time::Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
-        crate::fixtures::native_delay(wait, work)
-    }
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        panic!("native HTTP required")
-    }
-    fn supports_native(&self, _: &NativeMaterializationWork) -> Result<bool> {
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            if request.url.ends_with("/oauth/token") {
-                self.cancel.cancel();
-                std::future::pending().await
-            } else {
-                drop(request);
-                HttpResponse::with_native_body(401, futures::stream::iter([Ok(Bytes::new())]), work)
-            }
-        })
-    }
+fn cancel_refresh(cancel: CancellationToken) -> Arc<crate::fixtures::ScriptedHttp> {
+    Arc::new(
+        crate::fixtures::ScriptedHttp::respond(|_| panic!("native HTTP required")).with_native(
+            true,
+            move |request, work| {
+                let cancel = cancel.clone();
+                acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                    if request.url.ends_with("/oauth/token") {
+                        cancel.cancel();
+                        std::future::pending().await
+                    } else {
+                        drop(request);
+                        HttpResponse::with_native_body(
+                            401,
+                            futures::stream::iter([Ok(Bytes::new())]),
+                            work,
+                        )
+                    }
+                })
+            },
+        ),
+    )
 }
 #[tokio::test]
 async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_custody()
@@ -300,7 +270,7 @@ async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_
     let baseline = work.live_allocation_bytes();
     let provider = Registry::with_transport(
         Credentials::explicit(BTreeMap::new()),
-        Arc::new(CancelRefresh { cancel }),
+        cancel_refresh(cancel),
     )
     .with_codex_login(login)
     .resolve("openai/gpt-5")?;

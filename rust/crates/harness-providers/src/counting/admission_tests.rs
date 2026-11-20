@@ -35,7 +35,7 @@ proptest! {
             if observed >= 1_000 {
                 prop_assert!(next.fixed_tokens > first.fixed_tokens);
             }
-            prop_assert!(script.sent.lock().unwrap().is_empty(), "counting must not dispatch inference");
+            prop_assert!(generation_requests(&script.requests().unwrap()).is_empty(), "counting must not dispatch inference");
         }
     }
 }
@@ -59,35 +59,19 @@ fn calibrated_weight_negative_control_cannot_establish_admission() -> Result<()>
     Ok(())
 }
 
-struct CountResponse {
-    status: u16,
-    body: &'static [u8],
-    empty_chunks: usize,
-}
-impl HttpTransport for CountResponse {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: self.status,
-                body: Box::pin(
-                    futures::stream::repeat_with(|| Ok(Bytes::new()))
-                        .take(self.empty_chunks)
-                        .chain(futures::stream::iter([Ok(Bytes::from_static(self.body))])),
-                ),
-            })
+fn count_response(status: u16, body: &'static [u8], empty_chunks: usize) -> ScriptedHttp {
+    ScriptedHttp::respond(move |_| {
+        Ok(HttpResponse {
+            request_id: None,
+            retry_after: None,
+            status,
+            body: Box::pin(
+                futures::stream::repeat_with(|| Ok(Bytes::new()))
+                    .take(empty_chunks)
+                    .chain(futures::stream::iter([Ok(Bytes::from_static(body))])),
+            ),
         })
-    }
+    })
 }
 
 #[tokio::test]
@@ -99,11 +83,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
         provider.transport = crate::deadline::Bounded::wrap(
-            Arc::new(CountResponse {
-                status,
-                body: b"fixture-secret",
-                empty_chunks: 0,
-            }),
+            Arc::new(count_response(status, b"fixture-secret", 0)),
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, _) = request(&provider)?;
@@ -121,11 +101,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
         provider.transport = crate::deadline::Bounded::wrap(
-            Arc::new(CountResponse {
-                status: 200,
-                body,
-                empty_chunks: 0,
-            }),
+            Arc::new(count_response(200, body, 0)),
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, _) = request(&provider)?;
@@ -134,11 +110,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     let (mut provider, _) = provider(Adapter::Responses, 200);
     Arc::make_mut(&mut provider.config).max_event_bytes = Some(8);
     provider.transport = crate::deadline::Bounded::wrap(
-        Arc::new(CountResponse {
-            status: 200,
-            body: b"{\"input_tokens\":1}",
-            empty_chunks: 0,
-        }),
+        Arc::new(count_response(200, b"{\"input_tokens\":1}", 0)),
         crate::TimeoutSpec::DEFAULT,
     );
     let (request, _) = request(&provider)?;
@@ -146,11 +118,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     let counted = b"{\"input_tokens\":1}";
     Arc::make_mut(&mut provider.config).max_event_bytes = Some(counted.len());
     provider.transport = crate::deadline::Bounded::wrap(
-        Arc::new(CountResponse {
-            status: 200,
-            body: counted,
-            empty_chunks: counted.len() + 1,
-        }),
+        Arc::new(count_response(200, counted, counted.len() + 1)),
         crate::TimeoutSpec::DEFAULT,
     );
     assert_eq!(provider.counted(&request, 0).await?.input_tokens, 1);
@@ -165,46 +133,28 @@ proptest::proptest! {
         partial in proptest::prelude::any::<bool>(), definitive in proptest::prelude::any::<bool>(),
         status in proptest::sample::select(vec![200u16, 201, 202, 400, 413, 408, 429, 503]),
     ) {
-        struct CountBody {
-            sent: std::sync::atomic::AtomicUsize,
-            failures: usize, timeout: bool, partial: bool, definitive: bool, status: u16,
-        }
-        impl HttpTransport for CountBody {
-            fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-                crate::fixtures::delay(wait)
-            }
-            fn now(&self) -> std::time::Duration {
-                crate::fixtures::now()
-            }
-            fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-                let attempt = self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Box::pin(async move {
-                    let body: acyclic_stream::BoxProviderStream<'static, Result<Bytes>> = if attempt < self.failures {
-                        let failure = if self.definitive { invalid("malformed count") } else {
-                            acyclic_harness_provider_response::transport_failure(false, if self.timeout {
-                                acyclic_harness_core::ModelTransportFailure::Timeout
-                            } else { acyclic_harness_core::ModelTransportFailure::Interrupted }, "count body failed")
-                        };
-                        Box::pin(futures::stream::iter(self.partial.then(|| Ok(Bytes::from_static(b"{\"input_tokens\":"))))
-                            .chain(futures::stream::once(async { Err(failure) })))
-                    } else {
-                        Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"{\"input_tokens\":7}"))]))
-                    };
-                    let status = if attempt < self.failures { self.status } else { 200 };
-                    Ok(HttpResponse { status, body, request_id: None, retry_after: None })
-                })
-            }
-        }
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        let transport = Arc::new(CountBody {
-            sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive, status,
-        });
+        let transport = Arc::new(ScriptedHttp::new((0..=failures).map(|attempt| {
+            let body: acyclic_stream::BoxProviderStream<'static, Result<Bytes>> = if attempt < failures {
+                let failure = if definitive { invalid("malformed count") } else {
+                    acyclic_harness_provider_response::transport_failure(false, if timeout {
+                        acyclic_harness_core::ModelTransportFailure::Timeout
+                    } else { acyclic_harness_core::ModelTransportFailure::Interrupted }, "count body failed")
+                };
+                Box::pin(futures::stream::iter(partial.then(|| Ok(Bytes::from_static(b"{\"input_tokens\":"))))
+                    .chain(futures::stream::once(async { Err(failure) })))
+            } else {
+                Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"{\"input_tokens\":7}"))]))
+            };
+            let status = if attempt < failures { status } else { 200 };
+            Ok(HttpResponse { status, body, request_id: None, retry_after: None })
+        })));
         provider.transport = crate::deadline::Bounded::wrap(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.counted(&request, 0));
         let final_failure = matches!(status, 400 | 413) || (definitive && !matches!(status,408 | 429 | 500..=599));
         let expected = if final_failure && failures > 0 { 1 } else { failures + 1 };
-        proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
+        proptest::prop_assert_eq!(transport.requests().unwrap().len(), expected);
         proptest::prop_assert_eq!(result.is_ok(), failures == 0 || !final_failure);
         if let Ok(count) = result {
             proptest::prop_assert_eq!(count.input_tokens, 7);
@@ -213,28 +163,8 @@ proptest::proptest! {
     }
 }
 
-/// Counts sends; a turn whose bound is within its ceiling must send none.
-struct Sends(std::sync::atomic::AtomicUsize);
-impl HttpTransport for Sends {
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async {
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: 200,
-                body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(
-                    b"{\"input_tokens\":7}",
-                ))])),
-            })
-        })
-    }
+fn count_seven() -> ScriptedHttp {
+    ScriptedHttp::respond(|_| ScriptedHttp::reply(200, Bytes::from_static(b"{\"input_tokens\":7}")))
 }
 
 #[tokio::test]
@@ -271,7 +201,7 @@ async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint()
                 0
             )?
         );
-        assert!(script.sent.lock().unwrap().is_empty());
+        assert!(generation_requests(&script.requests().unwrap()).is_empty());
     }
     Ok(())
 }
@@ -286,10 +216,10 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
             .as_mut()
             .unwrap()
             .framing_tokens = framing;
-        let sends = Arc::new(Sends(std::sync::atomic::AtomicUsize::new(0)));
+        let sends = Arc::new(count_seven());
         provider.transport =
             crate::deadline::Bounded::wrap(sends.clone(), crate::TimeoutSpec::DEFAULT);
-        let sent = || sends.0.load(std::sync::atomic::Ordering::SeqCst);
+        let sent = || sends.requests().unwrap().len();
         let (prepared, _) = request(&provider)?;
         let names = crate::tool_names::Names::new(prepared.request());
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
@@ -466,7 +396,7 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
 fn local_admission_does_not_copy_transport_headers() -> Result<()> {
     // Initialize the executor's thread-local wake owner outside the measurement.
     futures::executor::block_on(async {});
-    let sends = Arc::new(Sends(std::sync::atomic::AtomicUsize::new(0)));
+    let sends = Arc::new(count_seven());
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([
             ("openai".into(), "supplied-key".into()),
@@ -546,6 +476,6 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
             registry.register(id.into(), config)?;
         }
     }
-    assert_eq!(sends.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(sends.requests().unwrap().len(), 0);
     Ok(())
 }

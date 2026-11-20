@@ -14,18 +14,17 @@ use acyclic_harness_core::{
     model::{ModelContent, ModelMessage, ModelRole},
     tool::ToolRegistry,
 };
+use acyclic_harness_provider_core::fixtures::ScriptedHttp;
 use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, Registry,
     ReqwestTransport,
 };
-use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use futures::StreamExt as _;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 type ProbeResult<T = ()> = std::result::Result<T, &'static str>;
@@ -89,69 +88,68 @@ fn retain_wire_usage(
     Ok(())
 }
 
-impl HttpTransport for ObservedTransport {
-    fn now(&self) -> Duration {
-        self.inner.now()
-    }
-    fn delay(
-        &self,
-        duration: Duration,
-    ) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
-        self.inner.delay(duration)
-    }
-    fn send(
-        &self,
-        request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
-        Box::pin(async move {
-            let slot = {
-                let mut calls = self.calls.lock().unwrap();
-                let slot = calls.len();
-                calls.push(WireUsage::default());
-                slot
-            };
-            let response = self.inner.send(request).await?;
-            if !(200..300).contains(&response.status) {
-                return Ok(response);
-            }
-            let calls = self.calls.clone();
-            let adapter = self.adapter;
-            let body = Box::pin(async_stream::try_stream! {
-                let frames = acyclic_harness_core::sse::frames(
-                    response.body, None, acyclic_harness_core::sse::Decoder::default().with_json_document(),
-                );
-                let mut frames = std::pin::pin!(frames);
-                while let Some(frame) = frames.next().await {
-                    let frame = frame?;
-                    if frame.data() != "[DONE]" {
-                        let value: Value = serde_json::from_str(frame.data())
-                            .map_err(|_| acyclic_harness_core::Error::Invalid("live cache wire JSON is malformed".into()))?;
-                        let usage = match adapter {
-                            Adapter::Anthropic => value.get("message").and_then(|message| message.get("usage")).or_else(|| value.get("usage")),
-                            Adapter::Responses => value.get("response").and_then(|response| response.get("usage")),
-                            Adapter::Gemini => value.get("usageMetadata"),
-                            Adapter::Chat => None,
-                        };
-                        if let Some(usage) = usage {
-                            retain_wire_usage(&calls, slot, adapter, usage)?;
-                        }
-                    }
-                    let mut original_data = String::new();
-                    for line in frame.data().split('\n') {
-                        original_data.push_str("data: ");
-                        original_data.push_str(line);
-                        original_data.push('\n');
-                    }
-                    original_data.push('\n');
-                    yield Bytes::from(original_data);
-                }
-            });
-            Ok(HttpResponse {
-                body,
-                status: response.status,
-                request_id: response.request_id,
-                retry_after: response.retry_after,
+impl ObservedTransport {
+    fn transport(self: Arc<Self>) -> Arc<ScriptedHttp> {
+        let exchange = self.clone();
+        let clock = self.clone();
+        Arc::new(
+            ScriptedHttp::respond_owned(move |request| {
+                let exchange = exchange.clone();
+                Box::pin(async move { exchange.exchange(request).await })
             })
+            .with_monotonic_clock(move || clock.inner.now())
+            .with_delay(move |duration| self.inner.delay(duration)),
+        )
+    }
+
+    async fn exchange(&self, request: HttpRequest) -> acyclic_harness_core::Result<HttpResponse> {
+        let slot = {
+            let mut calls = self.calls.lock().unwrap();
+            let slot = calls.len();
+            calls.push(WireUsage::default());
+            slot
+        };
+        let response = self.inner.send(request).await?;
+        if !(200..300).contains(&response.status) {
+            return Ok(response);
+        }
+        let calls = self.calls.clone();
+        let adapter = self.adapter;
+        let body = Box::pin(async_stream::try_stream! {
+            let frames = acyclic_harness_core::sse::frames(
+                response.body, None, acyclic_harness_core::sse::Decoder::default().with_json_document(),
+            );
+            let mut frames = std::pin::pin!(frames);
+            while let Some(frame) = frames.next().await {
+                let frame = frame?;
+                if frame.data() != "[DONE]" {
+                    let value: Value = serde_json::from_str(frame.data())
+                        .map_err(|_| acyclic_harness_core::Error::Invalid("live cache wire JSON is malformed".into()))?;
+                    let usage = match adapter {
+                        Adapter::Anthropic => value.get("message").and_then(|message| message.get("usage")).or_else(|| value.get("usage")),
+                        Adapter::Responses => value.get("response").and_then(|response| response.get("usage")),
+                        Adapter::Gemini => value.get("usageMetadata"),
+                        Adapter::Chat => None,
+                    };
+                    if let Some(usage) = usage {
+                        retain_wire_usage(&calls, slot, adapter, usage)?;
+                    }
+                }
+                let mut original_data = String::new();
+                for line in frame.data().split('\n') {
+                    original_data.push_str("data: ");
+                    original_data.push_str(line);
+                    original_data.push('\n');
+                }
+                original_data.push('\n');
+                yield Bytes::from(original_data);
+            }
+        });
+        Ok(HttpResponse {
+            body,
+            status: response.status,
+            request_id: response.request_id,
+            retry_after: response.retry_after,
         })
     }
 }
@@ -262,7 +260,8 @@ async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
             adapter,
             calls: calls.clone(),
         });
-        let mut registry = Registry::with_transport(Credentials::explicit(keys.clone()), transport);
+        let mut registry =
+            Registry::with_transport(Credentials::explicit(keys.clone()), transport.transport());
         let mut spec = registry.catalog()[provider].as_ref().clone();
         spec.authentication = Authentication::ApiKey;
         registry

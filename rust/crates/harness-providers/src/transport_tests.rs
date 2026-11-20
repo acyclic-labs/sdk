@@ -22,7 +22,7 @@ enum Reply {
 
 /// Counts real exchanges and records recovery timers, optionally held on an event.
 struct Counted {
-    inner: ReqwestTransport,
+    inner: Arc<ReqwestTransport>,
     sent: AtomicUsize,
     waits: Mutex<Vec<std::time::Duration>>,
     gate: Option<Arc<WaitGate>>,
@@ -65,42 +65,32 @@ impl Counted {
     }
 }
 
-impl HttpTransport for Counted {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        self.sent.fetch_add(1, Ordering::SeqCst);
-        self.inner.send(request)
-    }
-    // Each failed exchange is the explicit model-redelivery step.
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(self.wait(wait))
-    }
-    fn now(&self) -> std::time::Duration {
-        self.gate
-            .as_ref()
-            .map_or_else(crate::fixtures::now, |gate| {
-                std::time::Duration::from_nanos(gate.now_ns.load(Ordering::SeqCst))
+impl Counted {
+    fn transport(self: &Arc<Self>) -> Arc<ScriptedHttp> {
+        let observed = self.clone();
+        let clock = self.clone();
+        let ordinary = self.clone();
+        let native = self.clone();
+        Arc::new(
+            ScriptedHttp::forward(self.inner.clone(), move || {
+                observed.sent.fetch_add(1, Ordering::SeqCst);
             })
-    }
-    fn unix_ms(&self) -> Result<u64> {
-        Ok(1_700_000_000_000)
-    }
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        self.inner.supports_native(work)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        self.sent.fetch_add(1, Ordering::SeqCst);
-        self.inner.send_with_native_work(request, work)
-    }
-    fn delay_with_native_work(
-        &self,
-        wait: std::time::Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || self.wait(wait))
+            .with_clock(
+                move || {
+                    clock
+                        .gate
+                        .as_ref()
+                        .map_or_else(crate::fixtures::now, |gate| {
+                            std::time::Duration::from_nanos(gate.now_ns.load(Ordering::SeqCst))
+                        })
+                },
+                || Ok(1_700_000_000_000),
+            )
+            .with_delay(move |wait| Box::pin(ordinary.wait(wait)))
+            .with_native_delay(move |wait, work| {
+                acyclic_fs::NativeFutureBundle::new(work, || native.wait(wait))
+            }),
+        )
     }
 }
 
@@ -185,13 +175,13 @@ async fn read_request(socket: &mut tokio::net::TcpStream) {
 
 fn model(base_url: &str) -> Result<(ResolvedModel, Arc<Counted>)> {
     let transport = Arc::new(Counted {
-        inner: ReqwestTransport::new()?,
+        inner: Arc::new(ReqwestTransport::new()?),
         sent: AtomicUsize::new(0),
         waits: Mutex::new(Vec::new()),
         gate: None,
     });
     Ok((
-        super::provider_with(Adapter::Chat, base_url, transport.clone()),
+        super::provider_with(Adapter::Chat, base_url, transport.transport()),
         transport,
     ))
 }
@@ -353,7 +343,7 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
             let (entered_tx, mut entered) = tokio::sync::oneshot::channel();
             let (release, release_rx) = tokio::sync::oneshot::channel();
             let transport = Arc::new(Counted {
-                inner: ReqwestTransport::new()?,
+                inner: Arc::new(ReqwestTransport::new()?),
                 sent: AtomicUsize::new(0),
                 waits: Mutex::new(Vec::new()),
                 gate: Some(Arc::new(WaitGate {
@@ -365,7 +355,7 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
             let provider = super::provider_with(
                 Adapter::Chat,
                 &format!("http://127.0.0.1:{port}/v1"),
-                transport.clone(),
+                transport.transport(),
             );
             let (request, dispatch) = super::request(&provider)?;
             let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
@@ -681,6 +671,7 @@ async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
     let (port, accepted) = serve(vec![Reply::Garbage]).await?;
     let (provider, transport) = model(&format!("https://127.0.0.1:{port}/v1"))?;
     let error = transport
+        .transport()
         .send(HttpRequest {
             method: ::http::Method::POST,
             url: provider.config.base_url.clone(),

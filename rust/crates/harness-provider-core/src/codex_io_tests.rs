@@ -188,7 +188,9 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     );
     // A blocked publisher cannot stall another account or the async executor.
     let (_other_root, other, other_transport) = fixture(&jwt(now + 3600), 200)?;
-    other.bearer(&other_transport, None, None).await?;
+    other
+        .bearer(&other_transport.transport(), None, None)
+        .await?;
     assert!(other_transport.sent.lock().unwrap().is_empty());
     release
         .send(())
@@ -198,7 +200,10 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
         .ok()
         .expect("original completion wakes its waiter");
     login.refresh.complete(retained, None);
-    assert_eq!(login.bearer(&transport, None, None).await?.0, replacement);
+    assert_eq!(
+        login.bearer(&transport.transport(), None, None).await?.0,
+        replacement
+    );
     assert!(transport.sent.lock().unwrap().is_empty());
     assert_eq!(work.receipt()?.durability_operations, 1);
 
@@ -235,6 +240,9 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
         matches!(error, acyclic_harness_core::Error::Invalid(ref reason) if reason == "publication producer lost")
     );
     login.refresh.complete(permit.take().unwrap(), None);
-    assert_eq!(login.bearer(&transport, None, None).await?.0, replacement);
+    assert_eq!(
+        login.bearer(&transport.transport(), None, None).await?.0,
+        replacement
+    );
     Ok((work, baseline))
 }

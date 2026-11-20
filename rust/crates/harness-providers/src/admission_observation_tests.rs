@@ -1,6 +1,7 @@
 //! The original gate's facts reach provider streams and an agent's journal
 //! while its request is still queued, rather than after the request returns.
 use super::*;
+use crate::fixtures::ScriptedHttp;
 use acyclic_harness_core::model::ModelEvent;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -12,7 +13,7 @@ struct Transport {
 }
 
 impl Transport {
-    fn response(&self, request: HttpRequest) -> HttpResponse {
+    fn response(&self, request: &HttpRequest) -> HttpResponse {
         self.sent.fetch_add(1, Ordering::SeqCst);
         let body = if request.url.ends_with("/count_tokens") {
             self.counted.fetch_add(1, Ordering::SeqCst);
@@ -29,53 +30,36 @@ impl Transport {
     }
 }
 
-impl HttpTransport for Transport {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move { Ok(self.response(request)) })
-    }
-
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let response = self.response(request);
-            HttpResponse::with_native_body(response.status, response.body, work)
+fn scripted_transport() -> (Arc<ScriptedHttp>, Arc<Transport>) {
+    let state = Arc::<Transport>::default();
+    let ordinary = state.clone();
+    let native = state.clone();
+    let monotonic = state.clone();
+    let wall = state.clone();
+    let transport = ScriptedHttp::respond(move |request| Ok(ordinary.response(request)))
+        .with_native(true, move |request, work| {
+            let native = native.clone();
+            acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                let response = native.response(&request);
+                HttpResponse::with_native_body(response.status, response.body, work)
+            })
         })
-    }
-
-    fn now(&self) -> Duration {
-        Duration::from_millis(self.millis.load(Ordering::SeqCst))
-    }
-
-    fn unix_ms(&self) -> Result<u64> {
-        Ok(1_000_000 + self.millis.load(Ordering::SeqCst))
-    }
-
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(std::future::pending())
-    }
-
-    fn delay_with_native_work(
-        &self,
-        _: Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, std::future::pending)
-    }
+        .with_clock(
+            move || Duration::from_millis(monotonic.millis.load(Ordering::SeqCst)),
+            move || Ok(1_000_000 + wall.millis.load(Ordering::SeqCst)),
+        )
+        .with_delay(|_| Box::pin(std::future::pending()))
+        .with_native_delay(|_, work| {
+            acyclic_fs::NativeFutureBundle::new(work, std::future::pending)
+        });
+    (Arc::new(transport), state)
 }
 
 #[tokio::test]
 async fn generation_and_count_publish_original_admission_on_both_provider_paths() -> Result<()> {
     for native in [false, true] {
         for count in [false, true] {
-            let transport = Arc::<Transport>::default();
+            let (transport, state) = scripted_transport();
             let provider = crate::tests::provider_with(
                 Adapter::Chat,
                 "https://provider.test/v1",
@@ -119,9 +103,9 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
                     cause: ModelAdmissionCause::Cooldown { until },
                 }))
              if until == Duration::from_secs(5)));
-            assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+            assert_eq!(state.sent.load(Ordering::SeqCst), 0);
             assert!(events.next().now_or_never().is_none());
-            transport.millis.store(5_000, Ordering::SeqCst);
+            state.millis.store(5_000, Ordering::SeqCst);
             held.waited();
             assert!(
                 matches!(events.next().await.transpose()?, Some(ModelEvent::Wait(
@@ -142,7 +126,7 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
             }
             assert_eq!(traces, 2);
             assert!(terminal);
-            assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
+            assert_eq!(state.sent.load(Ordering::SeqCst), 1);
             drop(events);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
@@ -157,7 +141,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
     use acyclic_harness_local::{LocalHarness, local::agent_conversation::Conversation};
     for maximum in [None, std::num::NonZeroUsize::new(1)] {
         for count in [false, true] {
-            let transport = Arc::<Transport>::default();
+            let (transport, state) = scripted_transport();
             let fixture = crate::tests::provider_with(
                 Adapter::Chat,
                 "https://provider.test/v1",
@@ -238,9 +222,9 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             assert_eq!(usage.waits().started, 1);
             assert_eq!(usage.waits().completed, 0);
             assert_eq!(usage.waits().elapsed_ns(), None);
-            assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
+            assert_eq!(state.sent.load(Ordering::SeqCst), 0);
             if maximum.is_some() {
-                transport.millis.store(5_000, Ordering::SeqCst);
+                state.millis.store(5_000, Ordering::SeqCst);
                 held.waited();
                 let outcome = turn.await?;
                 assert!(
@@ -257,13 +241,13 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
                 assert_eq!(final_usage.waits().started, 1);
                 assert_eq!(final_usage.waits().completed, 0);
                 assert_eq!(
-                    transport.sent.load(Ordering::SeqCst),
+                    state.sent.load(Ordering::SeqCst),
                     0,
                     "a refused observation must not admit HTTP or a generation dispatch"
                 );
                 continue;
             }
-            transport.millis.store(2_000, Ordering::SeqCst);
+            state.millis.store(2_000, Ordering::SeqCst);
             assert!(extending.observe(429, Some(RETRY_AFTER), transport.now()));
             while usage.waits().changed == 0 {
                 usage.advance().await?;
@@ -271,7 +255,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             assert_eq!(usage.waits().changed, 1);
             assert_eq!(usage.waits().completed, 0);
             assert_eq!(usage.waits().elapsed_ns(), None);
-            transport.millis.store(5_000, Ordering::SeqCst);
+            state.millis.store(5_000, Ordering::SeqCst);
             extending.waited();
             assert!(matches!(
                 turn.await?,
@@ -289,11 +273,11 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             while !settled.synchronized() {
                 settled.advance().await?;
             }
-            let counted = transport.counted.load(Ordering::SeqCst);
+            let counted = state.counted.load(Ordering::SeqCst);
             assert_eq!(counted > 0, count);
             assert!(settled.totals().completed > 0);
             assert_eq!(
-                transport.sent.load(Ordering::SeqCst) as u64,
+                state.sent.load(Ordering::SeqCst) as u64,
                 settled.totals().completed + counted as u64,
                 "HTTP generation sends must match completed journal calls"
             );

@@ -99,3 +99,14 @@ pub fn adversarial(taken: u32) -> Vec<String> {
     tools.extend((1..=taken).map(|salt| crate::tool_names::Names::candidate("mcp.a.b", salt)));
     tools
 }
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, feature = "test-support", feature = "fuzzing")
+))]
+mod scripted_http;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, feature = "test-support", feature = "fuzzing")
+))]
+pub use scripted_http::ScriptedHttp;

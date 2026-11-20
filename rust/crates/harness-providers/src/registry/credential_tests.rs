@@ -1,5 +1,5 @@
 use super::*;
-use crate::credentials::Source;
+use crate::{credentials::Source, fixtures::ScriptedHttp};
 use acyclic_auth::credential::{CredentialValidity, CredentialWatch};
 use acyclic_harness_core::model::ModelProvider as _;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -68,35 +68,6 @@ proptest::proptest! {
     }
 }
 
-struct Server(Mutex<Vec<crate::HttpRequest>>);
-impl HttpTransport for Server {
-    fn send(
-        &self,
-        request: crate::HttpRequest,
-    ) -> acyclic_stream::BoxProviderFuture<'_, Result<crate::HttpResponse>> {
-        self.0.lock().unwrap().push(request);
-        Box::pin(async {
-            Ok(crate::HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: 200,
-                body: Box::pin(futures::stream::once(async {
-                    Ok(bytes::Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"done\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"))
-                })),
-            })
-        })
-    }
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-}
-
 pub(crate) fn watched(
     sender: tokio::sync::watch::Sender<u64>,
 ) -> impl Fn() -> CredentialWatch + Send + Sync {
@@ -142,7 +113,9 @@ async fn credential_watch_login_creation_refresh_and_account_pin() -> Result<()>
             _ => None,
         })
     }));
-    let server = Arc::new(Server(Mutex::new(Vec::new())));
+    let server = Arc::new(ScriptedHttp::respond(|_| {
+        ScriptedHttp::reply(200, bytes::Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"done\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"))
+    }));
     let registry = Registry::with_transport(credentials, server.clone());
     let provider = registry.resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
@@ -182,7 +155,7 @@ async fn credential_watch_login_creation_refresh_and_account_pin() -> Result<()>
             .generate(&request, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
-        let sent = server.0.lock().unwrap();
+        let sent = server.requests()?;
         let next = sent.last().unwrap();
         assert_eq!(next.headers["authorization"], format!("Bearer {bearer}"));
         assert_eq!(request.bytes(), frozen);
@@ -203,13 +176,13 @@ async fn credential_watch_login_creation_refresh_and_account_pin() -> Result<()>
     }
     std::fs::write(path, auth("switched", "other").1.to_string()).unwrap();
     events.send_replace(3);
-    let before = server.0.lock().unwrap().len();
+    let before = server.requests()?.len();
     let error = provider
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await
         .unwrap_err();
     assert!(error.to_string().contains("account changed"), "{error}");
-    assert_eq!(server.0.lock().unwrap().len(), before);
+    assert_eq!(server.requests()?.len(), before);
     Ok(())
 }

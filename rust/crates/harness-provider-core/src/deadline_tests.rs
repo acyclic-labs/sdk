@@ -1,6 +1,7 @@
 //! Generated request histories advance the caller's logical clock and release
 //! headers/chunks through channels. Only the chosen request deadline owns a timer.
 use super::*;
+use crate::fixtures::ScriptedHttp;
 use futures::channel::{mpsc, oneshot};
 use proptest::prelude::*;
 use std::sync::{
@@ -32,19 +33,30 @@ async fn timer_event(timer: Timer, wait: Duration) -> Result<()> {
     Ok(())
 }
 
-struct Script {
-    response: Mutex<Option<oneshot::Receiver<Result<HttpResponse>>>>,
-    timer: Timer,
-    arms: Arc<AtomicUsize>,
-    sends: Arc<AtomicUsize>,
+#[derive(Default)]
+struct Observations {
+    arms: AtomicUsize,
+    sends: AtomicUsize,
     clock_reads: AtomicUsize,
-    origin: tokio::time::Instant,
 }
 
-impl HttpTransport for Script {
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        self.sends.fetch_add(1, Ordering::SeqCst);
-        let response = self.response.lock().unwrap().take();
+fn script(
+    timer: Timer,
+) -> (
+    Arc<ScriptedHttp>,
+    Arc<Observations>,
+    oneshot::Sender<Result<HttpResponse>>,
+) {
+    let (headers, response) = oneshot::channel();
+    let response = Mutex::new(Some(response));
+    let observations = Arc::<Observations>::default();
+    let sends = observations.clone();
+    let arms = observations.clone();
+    let clock = observations.clone();
+    let origin = tokio::time::Instant::now();
+    let transport = ScriptedHttp::respond_owned(move |_| {
+        sends.sends.fetch_add(1, Ordering::SeqCst);
+        let response = response.lock().unwrap().take();
         Box::pin(async move {
             response
                 .ok_or_else(|| crate::invalid("response was already consumed"))?
@@ -57,32 +69,16 @@ impl HttpTransport for Script {
                     )
                 })?
         })
-    }
-
-    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        self.arms.fetch_add(1, Ordering::SeqCst);
-        Box::pin(timer_event(self.timer, wait))
-    }
-
-    fn now(&self) -> Duration {
-        self.clock_reads.fetch_add(1, Ordering::SeqCst);
-        tokio::time::Instant::now().saturating_duration_since(self.origin)
-    }
-}
-
-fn script(timer: Timer) -> (Arc<Script>, oneshot::Sender<Result<HttpResponse>>) {
-    let (headers, response) = oneshot::channel();
-    (
-        Arc::new(Script {
-            response: Mutex::new(Some(response)),
-            timer,
-            arms: Arc::default(),
-            sends: Arc::default(),
-            clock_reads: AtomicUsize::new(0),
-            origin: tokio::time::Instant::now(),
-        }),
-        headers,
-    )
+    })
+    .with_delay(move |wait| {
+        arms.arms.fetch_add(1, Ordering::SeqCst);
+        Box::pin(timer_event(timer, wait))
+    })
+    .with_monotonic_clock(move || {
+        clock.clock_reads.fetch_add(1, Ordering::SeqCst);
+        tokio::time::Instant::now().saturating_duration_since(origin)
+    });
+    (Arc::new(transport), observations, headers)
 }
 
 fn request() -> HttpRequest {
@@ -133,15 +129,15 @@ proptest! {
         total in 0..10_000u64,
     ) {
         runtime().block_on(async {
-            let (script, headers) = script(Timer::Clock);
+            let (script, observations, headers) = script(Timer::Clock);
             let transport = Bounded::wrap(script.clone(), TimeoutSpec { total_ms: Some(total) });
             let (chunks, body) = mpsc::unbounded();
             let mut send = pin!(transport.send(request()));
             if total == 0 {
                 let error = send.await.err().expect("zero deadline refuses dispatch");
                 assert_eq!(cause(&error), "");
-                assert_eq!(script.sends.load(Ordering::SeqCst), 0);
-                assert_eq!(script.arms.load(Ordering::SeqCst), 0);
+                assert_eq!(observations.sends.load(Ordering::SeqCst), 0);
+                assert_eq!(observations.arms.load(Ordering::SeqCst), 0);
                 return;
             }
             assert!(send.as_mut().now_or_never().is_none());
@@ -166,7 +162,7 @@ proptest! {
                         assert_eq!(cause(&item.expect_err("fixed request deadline")), "");
                         assert!(body.next().await.is_none());
                         assert!(chunks.unbounded_send(Ok(Bytes::new())).is_err());
-                        assert_eq!(script.arms.load(Ordering::SeqCst), 1);
+                        assert_eq!(observations.arms.load(Ordering::SeqCst), 1);
                         return;
                     }
                     assert_eq!(item.unwrap(), Bytes::from_static(b"x"));
@@ -174,7 +170,7 @@ proptest! {
                 drop(chunks);
                 assert!(body.next().await.is_none());
             }
-            assert_eq!(script.arms.load(Ordering::SeqCst), 1);
+            assert_eq!(observations.arms.load(Ordering::SeqCst), 1);
         });
     }
 
@@ -183,7 +179,7 @@ proptest! {
     #[test]
     fn expiry_precedes_ready_bytes_and_eof(eof in any::<bool>(), partial in any::<bool>(), late in 0..1_000u64) {
         runtime().block_on(async {
-            let (script, headers) = script(Timer::Starved);
+            let (script, _, headers) = script(Timer::Starved);
             let transport = Bounded::wrap(script, TimeoutSpec { total_ms: Some(100) });
             let (chunks, body) = mpsc::unbounded();
             assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
@@ -206,7 +202,7 @@ proptest! {
 #[test]
 fn unbounded_request_waits_only_on_its_producers() {
     runtime().block_on(async {
-        let (script, headers) = script(Timer::Early);
+        let (script, observations, headers) = script(Timer::Early);
         let transport = Bounded::wrap(script.clone(), TimeoutSpec::DEFAULT);
         let (chunks, body) = mpsc::unbounded();
         let mut send = pin!(transport.send(request()));
@@ -226,11 +222,11 @@ fn unbounded_request_waits_only_on_its_producers() {
         );
         drop(chunks);
         assert!(body.next().await.is_none());
-        assert_eq!(script.arms.load(Ordering::SeqCst), 0);
-        assert_eq!(script.clock_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(observations.arms.load(Ordering::SeqCst), 0);
+        assert_eq!(observations.clock_reads.load(Ordering::SeqCst), 0);
 
         // Losing a producer terminates the unbounded wait with its typed error.
-        let (script, headers) = self::script(Timer::Early);
+        let (script, _, headers) = self::script(Timer::Early);
         let transport = Bounded::wrap(script, TimeoutSpec::DEFAULT);
         drop(headers);
         assert!(matches!(
@@ -247,7 +243,7 @@ fn unbounded_request_waits_only_on_its_producers() {
 fn a_failed_or_early_timer_is_terminal_instead_of_rearmed() {
     runtime().block_on(async {
         for timer in [Timer::Early, Timer::ProducerDropped] {
-            let (script, headers) = script(timer);
+            let (script, observations, headers) = script(timer);
             let transport = Bounded::wrap(
                 script.clone(),
                 TimeoutSpec {
@@ -259,7 +255,7 @@ fn a_failed_or_early_timer_is_terminal_instead_of_rearmed() {
             let mut body = transport.send(request()).await.unwrap().body;
             assert!(matches!(body.next().await, Some(Err(Error::Invalid(_)))));
             assert!(body.next().await.is_none());
-            assert_eq!(script.arms.load(Ordering::SeqCst), 1);
+            assert_eq!(observations.arms.load(Ordering::SeqCst), 1);
             assert!(chunks.unbounded_send(Ok(Bytes::new())).is_err());
         }
     });

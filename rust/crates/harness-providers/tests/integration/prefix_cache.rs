@@ -31,9 +31,10 @@ use acyclic_harness_core::{
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope},
 };
+use acyclic_harness_provider_core::fixtures::ScriptedHttp;
 use acyclic_harness_providers::{
-    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
-    ModelSpec, PromptCache, ProviderSpec, Registry, TokenCountField, TokenCounterSpec,
+    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, ModelFeatures, ModelSpec,
+    PromptCache, ProviderSpec, Registry, TokenCountField, TokenCounterSpec,
 };
 use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use bytes::Bytes;
@@ -45,7 +46,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 /// The summary the capacity backstop's context call returns for older turns.
@@ -149,54 +149,22 @@ impl Scripted {
     }
 }
 
-impl HttpTransport for Scripted {
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn now(&self) -> Duration {
-        Duration::ZERO
-    }
-    fn delay_with_native_work(
-        &self,
-        _: Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async { Ok(()) })
-    }
-    fn send(
-        &self,
-        request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
-        Box::pin(async move {
-            let bytes = self.reply(request)?;
-            Ok(HttpResponse {
-                retry_after: None,
-                request_id: None,
-                status: 200,
-                body: Box::pin(futures::stream::iter([Ok(bytes)])),
+impl Scripted {
+    fn transport(self: Arc<Self>) -> Arc<ScriptedHttp> {
+        let ordinary = self.clone();
+        Arc::new(
+            ScriptedHttp::respond_owned(move |request| {
+                let ordinary = ordinary.clone();
+                Box::pin(async move { ScriptedHttp::reply(200, ordinary.reply(request)?) })
             })
-        })
-    }
-    fn supports_native(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let bytes = self.reply(request)?;
-            HttpResponse::with_native_body(200, futures::stream::iter([Ok(bytes)]), work)
-        })
+            .with_native(true, move |request, work| {
+                let native = self.clone();
+                acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                    let bytes = native.reply(request)?;
+                    HttpResponse::with_native_body(200, futures::stream::iter([Ok(bytes)]), work)
+                })
+            }),
+        )
     }
 }
 
@@ -342,7 +310,10 @@ fn registry(
     prompt_cache: PromptCache,
     transport: Arc<Scripted>,
 ) -> TestResult<Registry> {
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::new()),
+        transport.transport(),
+    );
     registry.register(
         "recorded".into(),
         ProviderSpec {

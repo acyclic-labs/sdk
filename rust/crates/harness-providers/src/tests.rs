@@ -1,4 +1,5 @@
 use super::*;
+use crate::fixtures::ScriptedHttp;
 use acyclic_harness_core::{
     context::ModelContextCapacity,
     conversation::Limits,
@@ -272,56 +273,21 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
     assert_eq!(call.arguments, arguments);
 }
 
-pub(super) struct Script {
-    adapter: Adapter,
-    status: u16,
-    pub(crate) sent: Mutex<Vec<HttpRequest>>,
-    counted: Mutex<Option<Bytes>>,
+fn is_count_request(request: &HttpRequest) -> bool {
+    request.url.ends_with("count_tokens")
+        || request.url.ends_with("input_tokens")
+        || request.url.ends_with(":countTokens")
 }
 
-impl HttpTransport for Script {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            if let Some(response) = fixture_count(&request) {
-                *self
-                    .counted
-                    .lock()
-                    .map_err(|_| invalid("poisoned fixture"))? = Some(request.body.clone());
-                return Ok(response);
-            }
-            self.sent
-                .lock()
-                .map_err(|_| invalid("poisoned fixture"))?
-                .push(request);
-            let fixture = fixtures()
-                .into_iter()
-                .find(|(adapter, _)| *adapter == self.adapter)
-                .ok_or_else(|| invalid("missing fixture"))?
-                .1;
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: self.status,
-                body: chunks(fixture, 1),
-            })
-        })
-    }
+pub(crate) fn generation_requests(requests: &[HttpRequest]) -> Vec<&HttpRequest> {
+    requests
+        .iter()
+        .filter(|request| !is_count_request(request))
+        .collect()
 }
 
 fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
-    if !(request.url.ends_with("count_tokens")
-        || request.url.ends_with("input_tokens")
-        || request.url.ends_with(":countTokens"))
-    {
+    if !is_count_request(request) {
         return None;
     }
     // The fixture tokenizer counts one token per encoded byte plus framing.
@@ -338,13 +304,23 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     })
 }
 
-pub(super) fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
-    let script = Arc::new(Script {
-        adapter,
-        status,
-        sent: Mutex::new(Vec::new()),
-        counted: Mutex::new(None),
-    });
+pub(super) fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<ScriptedHttp>) {
+    let script = Arc::new(ScriptedHttp::respond(move |request| {
+        if let Some(response) = fixture_count(request) {
+            return Ok(response);
+        }
+        let fixture = fixtures()
+            .into_iter()
+            .find(|(candidate, _)| *candidate == adapter)
+            .ok_or_else(|| invalid("missing fixture"))?
+            .1;
+        Ok(HttpResponse {
+            request_id: None,
+            retry_after: None,
+            status,
+            body: chunks(fixture, 1),
+        })
+    }));
     let provider = provider_with(adapter, "http://127.0.0.1:1234/v1", script.clone());
     (provider, script)
 }
@@ -677,10 +653,8 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                 );
             }
         }
-        let sent = script
-            .sent
-            .lock()
-            .map_err(|_| invalid("poisoned fixture"))?;
+        let requests = script.requests().unwrap();
+        let sent = generation_requests(&requests);
         assert_eq!(sent.len(), 1);
         // Every adapter names the journal dispatch, so relay and provider
         // request logs join this step's usage record.
@@ -895,10 +869,8 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             .generate(&prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
-        let sent = script
-            .sent
-            .lock()
-            .map_err(|_| invalid("poisoned fixture"))?;
+        let requests = script.requests().unwrap();
+        let sent = generation_requests(&requests);
         let body = acyclic_harness_provider_response::json(&sent[0].body)?;
         assert!(
             (u64::from(count.fixed_tokens)

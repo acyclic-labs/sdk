@@ -19,10 +19,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             .replace("\"prompt_tokens\":5", "\"prompt_tokens\":512")
             .replace("\"promptTokenCount\":5", "\"promptTokenCount\":512");
         provider.transport = crate::deadline::Bounded::wrap(
-            Arc::new(ToolLoop {
-                replies: Mutex::new(VecDeque::from([dense, fixture.into()])),
-                sent: Mutex::new(Vec::new()),
-            }),
+            Arc::new(tool_loop([dense, fixture.into()])),
             crate::TimeoutSpec::DEFAULT,
         );
         let (prepared, dispatch) = request(&provider)?;
@@ -84,7 +81,7 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         assert!(policy.needs_compaction(capacity, count, 0)?);
         // No generation has started. A fresh process uses the verified count;
         // previous usage and a sparse calibration cannot weaken admission.
-        assert!(script.sent.lock().expect("fixture requests").is_empty());
+        assert!(generation_requests(&script.requests().unwrap()).is_empty());
     }
     Ok(())
 }
@@ -123,93 +120,75 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
 #[tokio::test]
 async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<()> {
     use std::time::Duration;
-    struct RateLimited {
+    fn outcomes(
         success: &'static str,
         mixed: bool,
         count: bool,
         failure: acyclic_harness_core::ModelTransportFailure,
-        sent: Mutex<Vec<HttpRequest>>,
-        waits: Mutex<Vec<Duration>>,
-    }
-    impl HttpTransport for RateLimited {
-        fn now(&self) -> Duration {
-            crate::fixtures::now()
+    ) -> impl Iterator<Item = Result<HttpResponse>> {
+        (0..=303).map(move |index| {
+        if index < 300
+            && !matches!(
+                failure,
+                acyclic_harness_core::ModelTransportFailure::Status(_)
+            )
+        {
+            return Err(acyclic_harness_provider_response::transport_failure(
+                false,
+                failure,
+                "recorded transport failure",
+            ));
         }
-        fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
-            self.waits.lock().unwrap().push(wait);
-            crate::fixtures::delay(wait)
+        if mixed && index == 301 {
+            return Err(acyclic_harness_provider_response::transport_failure(
+                false,
+                acyclic_harness_core::ModelTransportFailure::Connect,
+                "fixture",
+            ));
         }
-        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-            Box::pin(async move {
-                let index = {
-                    let mut sent = self.sent.lock().unwrap();
-                    let index = sent.len();
-                    sent.push(request);
-                    index
-                };
-                if index < 300
-                    && !matches!(
-                        self.failure,
-                        acyclic_harness_core::ModelTransportFailure::Status(_)
-                    )
-                {
-                    return Err(acyclic_harness_provider_response::transport_failure(
+        if mixed && count && index == 302 {
+            return Ok(HttpResponse {
+                status: 200,
+                request_id: None,
+                retry_after: None,
+                body: Box::pin(futures::stream::iter([Err(
+                    acyclic_harness_provider_response::transport_failure(
                         false,
-                        self.failure,
-                        "recorded transport failure",
-                    ));
-                }
-                if self.mixed && index == 301 {
-                    return Err(acyclic_harness_provider_response::transport_failure(
-                        false,
-                        acyclic_harness_core::ModelTransportFailure::Connect,
+                        acyclic_harness_core::ModelTransportFailure::Interrupted,
                         "fixture",
-                    ));
-                }
-                if self.mixed && self.count && index == 302 {
-                    return Ok(HttpResponse {
-                        status: 200,
-                        request_id: None,
-                        retry_after: None,
-                        body: Box::pin(futures::stream::iter([Err(
-                            acyclic_harness_provider_response::transport_failure(
-                                false,
-                                acyclic_harness_core::ModelTransportFailure::Interrupted,
-                                "fixture",
-                            ),
-                        )])),
-                    });
-                }
-                Ok(HttpResponse {
-                    status: if index < 300 {
-                        match self.failure {
-                            acyclic_harness_core::ModelTransportFailure::Status(status) => status,
-                            _ => unreachable!(),
-                        }
-                    } else if self.mixed && index == 300 {
-                        503
-                    } else {
-                        200
-                    },
-                    request_id: None,
-                    // No hint in the recorded failure. Also cover a provider wait
-                    // longer than max_delay_ms, before and after the former cap.
-                    retry_after: matches!(index, 0 | 299).then_some(Duration::from_secs(60)),
-                    body: if index == 0 {
-                        Box::pin(futures::stream::pending())
-                    } else {
-                        chunks(
-                            if index < 300 {
-                                r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
-                            } else {
-                                self.success
-                            },
-                            7,
-                        )
-                    },
-                })
-            })
+                    ),
+                )])),
+            });
         }
+        Ok(HttpResponse {
+            status: if index < 300 {
+                match failure {
+                    acyclic_harness_core::ModelTransportFailure::Status(status) => status,
+                    _ => unreachable!(),
+                }
+            } else if mixed && index == 300 {
+                503
+            } else {
+                200
+            },
+            request_id: None,
+            // No hint in the recorded failure. Also cover a provider wait
+            // longer than max_delay_ms, before and after the former cap.
+            retry_after: matches!(index, 0 | 299).then_some(Duration::from_secs(60)),
+            body: if index == 0 {
+                Box::pin(futures::stream::pending())
+            } else {
+                chunks(
+                    if index < 300 {
+                        r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#
+                    } else {
+                        success
+                    },
+                    7,
+                )
+            },
+        })
+        })
     }
     for (adapter, success) in fixtures() {
         for failure in [
@@ -222,18 +201,21 @@ async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<
             acyclic_harness_core::ModelTransportFailure::Tls,
         ] {
             for (mixed, count) in [(false, false), (true, false), (true, true)] {
-                let transport = Arc::new(RateLimited {
-                    success: if count {
-                        r#"{"input_tokens":7}"#
-                    } else {
-                        success
-                    },
-                    mixed,
-                    count,
-                    failure,
-                    sent: Mutex::new(Vec::new()),
-                    waits: Mutex::new(Vec::new()),
-                });
+                let waits = Arc::new(Mutex::new(Vec::new()));
+                let observed = waits.clone();
+                let success = if count {
+                    r#"{"input_tokens":7}"#
+                } else {
+                    success
+                };
+                let transport = Arc::new(
+                    ScriptedHttp::new(outcomes(success, mixed, count, failure)).with_delay(
+                        move |wait| {
+                            observed.lock().unwrap().push(wait);
+                            crate::fixtures::delay(wait)
+                        },
+                    ),
+                );
                 let provider =
                     provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
                 let (request, mut dispatch) = request(&provider)?;
@@ -260,14 +242,14 @@ async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<
                 } else {
                     301
                 };
-                let sent = transport.sent.lock().unwrap();
+                let sent = transport.requests()?;
                 assert_eq!(sent.len(), exchanges);
                 for request in sent.iter().skip(1) {
                     assert_eq!(request.url, sent[0].url);
                     assert_eq!(request.headers, sent[0].headers);
                     assert_eq!(request.body, sent[0].body);
                 }
-                let waits = transport.waits.lock().unwrap();
+                let waits = waits.lock().unwrap();
                 assert_eq!(waits.len(), exchanges - 1);
                 if matches!(
                     failure,
@@ -318,11 +300,7 @@ async fn http_status_classes_are_distinct_and_refusals_never_disclose_remote_tex
                 .expect_err("HTTP failure");
             assert!(error.to_string().contains(&status.to_string()));
             assert!(!error.to_string().contains("scripted-key"));
-            let sent = script
-                .sent
-                .lock()
-                .map_err(|_| invalid("fixture lock"))?
-                .len();
+            let sent = generation_requests(&script.requests().unwrap()).len();
             match status {
                 // Status-only failures never consume the response body.
                 401 | 403 => {
@@ -454,41 +432,19 @@ async fn token_limits_complete_uniformly_without_publishing_partial_tool_batches
     Ok(())
 }
 
-struct ToolLoop {
-    replies: Mutex<VecDeque<String>>,
-    sent: Mutex<Vec<HttpRequest>>,
-}
-
-impl HttpTransport for ToolLoop {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            self.sent
-                .lock()
-                .map_err(|_| invalid("fixture lock"))?
-                .push(request);
-            let reply = self
-                .replies
-                .lock()
-                .map_err(|_| invalid("fixture lock"))?
-                .pop_front()
-                .ok_or_else(|| invalid("unexpected dispatch"))?;
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: 200,
-                body: chunks(&reply, 1),
-            })
+fn tool_loop(replies: impl IntoIterator<Item = String>) -> crate::fixtures::ScriptedHttp {
+    let mut replies: VecDeque<_> = replies.into_iter().collect();
+    crate::fixtures::ScriptedHttp::respond(move |_| {
+        let reply = replies
+            .pop_front()
+            .ok_or_else(|| invalid("unexpected dispatch"))?;
+        Ok(HttpResponse {
+            request_id: None,
+            retry_after: None,
+            status: 200,
+            body: chunks(&reply, 1),
         })
-    }
+    })
 }
 
 #[tokio::test]
@@ -512,12 +468,9 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
         "data: {}\n\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":1}}}}\n\ndata: {{\"type\":\"message_stop\"}}\n\n",
         json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":r#"{"version":1,"drop_through":2,"summary":"earlier facts"}"#}}),
     );
-    let transport = Arc::new(ToolLoop {
-        replies: Mutex::new(VecDeque::from([first, manager,
+    let transport = Arc::new(tool_loop([first, manager,
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\" complete\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into()
-        ])),
-        sent: Mutex::new(Vec::new()),
-    });
+        ]));
     let mut provider = provider_with(
         Adapter::Anthropic,
         "http://127.0.0.1:1234/v1",
@@ -576,7 +529,7 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
     assert_eq!(output.text, format!("{} complete", "p".repeat(100000)));
     assert_eq!(output.steps, 2);
     assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
-    let sent = transport.sent.lock().unwrap();
+    let sent = transport.requests()?;
     assert_eq!(sent.len(), 3);
     assert!(
         sent.iter()
@@ -613,17 +566,14 @@ async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() 
         "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"delegate\",\"name\":\"spawn\",\"arguments\":\"{\\\"name\\\":\\\"worker\\\"}\"}}\n\n",
         "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
     ));
-    let script = Arc::new(ToolLoop {
-        replies: Mutex::new(VecDeque::from([
-            first,
-            concat!(
-                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"delegated\"}\n\n",
-                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
-            )
-            .into(),
-        ])),
-        sent: Mutex::new(Vec::new()),
-    });
+    let script = Arc::new(tool_loop([
+        first,
+        concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"delegated\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        )
+        .into(),
+    ]));
     let (mut provider, _) = provider(Adapter::Responses, 200);
     provider.model.name = "gpt-6-luna".into();
     provider.transport =
@@ -685,7 +635,7 @@ async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() 
     assert!(events.contains(&ModelEvent::Content {
         delta: "delegated".into(),
     }));
-    let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
+    let sent = script.requests()?;
     assert_eq!(sent.len(), 2);
     let body = acyclic_harness_provider_response::json(&sent[1].body)?;
     assert!(crate::validate_input(Adapter::Responses, &body).is_empty());
@@ -737,10 +687,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
                 "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"done\"}]},\"finishReason\":\"STOP\"}]}\n\n"
             }
         };
-        let script = Arc::new(ToolLoop {
-            replies: Mutex::new(VecDeque::from([first.into(), second.into()])),
-            sent: Mutex::new(Vec::new()),
-        });
+        let script = Arc::new(tool_loop([first.into(), second.into()]));
         let (mut provider, _) = provider(adapter, 200);
         provider.transport =
             crate::deadline::Bounded::wrap(script.clone(), crate::TimeoutSpec::DEFAULT);
@@ -841,7 +788,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
                 delta: "done".into()
             }
         );
-        let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
+        let sent = script.requests()?;
         let body = acyclic_harness_provider_response::json(&sent[1].body)?;
         if adapter == Adapter::Gemini {
             // The signed part replays exactly as received, without an id

@@ -1,5 +1,5 @@
 //! Shared shrinking/fuzz probe through verified resolution and request encoding.
-use crate::{Adapter, Credentials, HttpRequest, HttpResponse, HttpTransport, Registry};
+use crate::{Adapter, Credentials, Registry, fixtures::ScriptedHttp};
 use acyclic_harness_core::{
     Result,
     conversation::{
@@ -11,37 +11,13 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolCall, ToolResultContent, image_media_type,
     },
 };
-use acyclic_stream::BoxProviderFuture;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-#[derive(Default)]
-struct NoHttp(AtomicBool);
-
-impl HttpTransport for NoHttp {
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        self.0.store(true, Ordering::Relaxed);
-        Box::pin(std::future::ready(Err(crate::invalid(
-            "encoding must not send HTTP",
-        ))))
-    }
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        self.0.store(true, Ordering::Relaxed);
-        Box::pin(std::future::ready(Err(crate::invalid(
-            "encoding must not wait",
-        ))))
-    }
-    fn now(&self) -> Duration {
-        Duration::ZERO
-    }
-}
 struct Reader {
     bytes: Vec<Vec<u8>>,
     reads: AtomicUsize,
@@ -105,7 +81,23 @@ async fn check_roundtrip(input: &[u8]) -> crate::fuzzing::CheckResult {
             bytes: images.clone(),
             reads: AtomicUsize::new(0),
         });
-        let transport = Arc::new(NoHttp::default());
+        let attempted = Arc::new(AtomicBool::new(false));
+        let send = attempted.clone();
+        let delay = attempted.clone();
+        let transport = Arc::new(
+            ScriptedHttp::respond_owned(move |_| {
+                send.store(true, Ordering::Relaxed);
+                Box::pin(std::future::ready(Err(crate::invalid(
+                    "encoding must not send HTTP",
+                ))))
+            })
+            .with_delay(move |_| {
+                delay.store(true, Ordering::Relaxed);
+                Box::pin(std::future::ready(Err(crate::invalid(
+                    "encoding must not wait",
+                ))))
+            }),
+        );
         let mut registry =
             Registry::with_transport(Credentials::explicit(Default::default()), transport.clone())
                 .with_content(reader.clone(), Some(maximum_bytes * 2));
@@ -136,7 +128,7 @@ async fn check_roundtrip(input: &[u8]) -> crate::fuzzing::CheckResult {
             }
         }
         assert!(
-            !transport.0.load(Ordering::Relaxed),
+            !attempted.load(Ordering::Relaxed),
             "encoding performed HTTP or waited"
         );
     }

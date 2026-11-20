@@ -14,50 +14,6 @@ fn work() -> NativeMaterializationWork {
     .unwrap_or_else(|_| panic!("fixture work"))
 }
 
-struct FailingTransport {
-    failure: ModelTransportFailure,
-    requests: AtomicUsize,
-    completion: futures::future::Shared<futures::channel::oneshot::Receiver<()>>,
-    entered: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
-}
-
-impl HttpTransport for FailingTransport {
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        panic!("native refresh must use its ledger")
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        _: HttpRequest,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            self.requests.fetch_add(1, Ordering::SeqCst);
-            self.entered
-                .lock()
-                .expect("endpoint admission lock")
-                .take()
-                .expect("one refresh request")
-                .send(())
-                .expect("refresh request observer remains live");
-            let failure = match self.completion.clone().await {
-                Ok(()) => self.failure,
-                Err(_) => ModelTransportFailure::Interrupted,
-            };
-            Err(acyclic_harness_provider_response::transport_failure(
-                true,
-                failure,
-                "endpoint failure",
-            ))
-        })
-    }
-}
-
 #[tokio::test]
 async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Result<()> {
     for failure in [
@@ -71,12 +27,37 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
             let fresh = login.fresh();
             let (release, completion) = futures::channel::oneshot::channel();
             let (entered, entering) = futures::channel::oneshot::channel();
-            let transport = FailingTransport {
-                failure,
-                requests: AtomicUsize::new(0),
-                completion: completion.shared(),
-                entered: Mutex::new(Some(entered)),
-            };
+            let requests = Arc::new(AtomicUsize::new(0));
+            let observed = requests.clone();
+            let entered = Arc::new(Mutex::new(Some(entered)));
+            let completion = completion.shared();
+            let transport = crate::fixtures::ScriptedHttp::respond(|_| {
+                panic!("native refresh must use its ledger");
+            })
+            .with_native(false, move |_, work| {
+                let requests = observed.clone();
+                let entered = entered.clone();
+                let completion = completion.clone();
+                acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    entered
+                        .lock()
+                        .expect("endpoint admission lock")
+                        .take()
+                        .expect("one refresh request")
+                        .send(())
+                        .expect("refresh request observer remains live");
+                    let failure = match completion.await {
+                        Ok(()) => failure,
+                        Err(_) => ModelTransportFailure::Interrupted,
+                    };
+                    Err(acyclic_harness_provider_response::transport_failure(
+                        true,
+                        failure,
+                        "endpoint failure",
+                    ))
+                })
+            });
             let leader_work = work();
             let follower_work = work();
             {
@@ -100,7 +81,7 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
                     }
                 }
                 assert!(right.as_mut().now_or_never().is_none());
-                assert_eq!(transport.requests.load(Ordering::SeqCst), 1);
+                assert_eq!(requests.load(Ordering::SeqCst), 1);
                 if producer_lost {
                     drop(release);
                 } else {
@@ -125,7 +106,7 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
                 assert!(
                     matches!(&right, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
                 );
-                assert_eq!(transport.requests.load(Ordering::SeqCst), 1);
+                assert_eq!(requests.load(Ordering::SeqCst), 1);
             }
             assert_eq!(
                 leader_work.live_allocation_bytes(),

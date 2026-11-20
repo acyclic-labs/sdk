@@ -46,16 +46,16 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
             .input_tokens
             > 0
     );
-    assert!(transport.counted.lock().unwrap().is_some());
+    assert!(transport.requests()?.iter().any(is_count_request));
     selected
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     assert_eq!(
-        transport.sent.lock().unwrap()[0].url,
+        generation_requests(&transport.requests().unwrap())[0].url,
         "http://172.17.0.1:9/t/trial/openai/v1/responses"
     );
-    let sent = transport.sent.lock().unwrap().len();
+    let sent = generation_requests(&transport.requests().unwrap()).len();
     for (host, base, count_path) in [
         (None, "http://172.17.0.1:9/v1", "responses/input_tokens"),
         (
@@ -96,7 +96,10 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
         refused.token_counter.as_mut().unwrap().path = count_path.into();
         assert!(registry.register("refused".into(), refused).is_err());
     }
-    assert_eq!(transport.sent.lock().unwrap().len(), sent);
+    assert_eq!(
+        generation_requests(&transport.requests().unwrap()).len(),
+        sent
+    );
     for base in [
         "https://provider.example/v1",
         "http://localhost:9/v1",
@@ -156,7 +159,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         .try_collect::<Vec<_>>()
         .await?;
     assert!(
-        !script.sent.lock().expect("fixture")[0]
+        !generation_requests(&script.requests().unwrap())[0]
             .headers
             .contains_key("authorization")
     );
@@ -164,7 +167,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
     registry.register("ollama".into(), spec)?;
     let required = registry.resolve("ollama/m")?;
     let (request, dispatch) = crate::tests::request(&required)?;
-    let sent = script.sent.lock().expect("fixture").len();
+    let sent = generation_requests(&script.requests().unwrap()).len();
     let error = required
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
@@ -180,7 +183,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
             .contains("recovery: configure host credentials"),
         "credential refusal explains how to recover before sending a request"
     );
-    assert_eq!(script.sent.lock().expect("fixture").len(), sent);
+    assert_eq!(generation_requests(&script.requests().unwrap()).len(), sent);
     Ok(())
 }
 
@@ -294,7 +297,7 @@ fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<
     Ok(())
 }
 
-fn stock_registry() -> (Registry, Arc<Script>) {
+fn stock_registry() -> (Registry, Arc<ScriptedHttp>) {
     let (_, transport) = provider(Adapter::Responses, 200);
     let registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([
@@ -370,7 +373,7 @@ fn stock_catalog_alloys_support_tools_and_images_and_overrides_fail_closed() -> 
             "missing capability must reject before dispatch"
         );
     }
-    assert!(transport.sent.lock().unwrap().is_empty());
+    assert!(generation_requests(&transport.requests().unwrap()).is_empty());
     Ok(())
 }
 
@@ -403,7 +406,7 @@ proptest! {
         }, ModelFeatures { tools, images });
         if !supported {
             prop_assert!(resolved.is_err());
-            prop_assert!(transport.sent.lock().unwrap().is_empty());
+            prop_assert!(generation_requests(&transport.requests().unwrap()).is_empty());
             return Ok(());
         }
         let alloy = resolved.unwrap();
@@ -413,7 +416,7 @@ proptest! {
         });
         prop_assert_eq!(selected.context_capacity(selected.model()).unwrap(), expected);
         prop_assert!(models.contains(&format!("{}/{}", selected.model().provider, selected.model().name)), "selected model belongs to the stock subset");
-        prop_assert!(transport.sent.lock().unwrap().is_empty());
+        prop_assert!(generation_requests(&transport.requests().unwrap()).is_empty());
     }
 }
 

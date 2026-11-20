@@ -32,21 +32,13 @@ struct RetryTransport {
     count: bool,
 }
 
-impl HttpTransport for RetryTransport {
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        panic!("native exchange must be admitted")
-    }
-
-    fn now(&self) -> Duration {
-        crate::http::native_now()
-    }
-
+impl RetryTransport {
     fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
         self.portable.fetch_add(1, Ordering::SeqCst);
         self.platform.delay(wait)
     }
 
-    fn delay_with_native_work(
+    fn delay_native(
         &self,
         wait: Duration,
         work: &NativeMaterializationWork,
@@ -72,12 +64,12 @@ impl HttpTransport for RetryTransport {
         Ok(timer)
     }
 
-    fn send_with_native_work<'a>(
-        &'a self,
+    fn exchange_native<'a>(
+        self: Arc<Self>,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
     ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, move || async move {
             let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
             {
                 let mut original = self.body.lock().unwrap();
@@ -142,7 +134,17 @@ proptest! {
                 timer_allocations: AtomicU64::new(0),
                 failures, backpressure, hinted, body: Mutex::new(None), reject_timer, count,
             });
-            provider.transport = crate::deadline::Bounded::wrap(transport.clone(), TimeoutSpec::DEFAULT);
+            let ordinary_timer = transport.clone();
+            let native_timer = transport.clone();
+            let exchange = transport.clone();
+            let script = Arc::new(
+                ScriptedHttp::respond(|_| panic!("native exchange must be admitted"))
+                    .with_monotonic_clock(crate::http::native_now)
+                    .with_delay(move |wait| ordinary_timer.delay(wait))
+                    .with_native_delay(move |wait, work| native_timer.delay_native(wait, work))
+                    .with_native(false, move |request, work| exchange.clone().exchange_native(request, work)),
+            );
+            provider.transport = crate::deadline::Bounded::wrap(script.clone(), TimeoutSpec::DEFAULT);
             let (request, dispatch) = request(&provider).unwrap();
             let cancel = CancellationToken::new();
             let work = super::native_tests::work(&cancel).unwrap();
@@ -197,7 +199,7 @@ proptest! {
             assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
             // Negative control: the former retry path allocates a portable timer with no claim.
             let allocated = acyclic_test_support::measure(|| {
-                drop(transport.delay(Duration::from_millis(1)));
+                drop(script.delay(Duration::from_millis(1)));
             });
             assert!(allocated.bytes_total > 0);
             assert_eq!(work.live_allocation_bytes().unwrap(), baseline);

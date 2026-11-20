@@ -1,10 +1,10 @@
 use super::provider_case::{Protocol, ProviderCase};
 use acyclic_harness_core::{Error, Result, context::ModelContextCapacity};
+use acyclic_harness_provider_core::fixtures::ScriptedHttp;
 use acyclic_harness_providers::{
-    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
-    ModelSpec, ProviderSpec, Registry, ResolvedModel, TokenCountField, TokenCounterSpec,
+    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, ModelFeatures, ModelSpec,
+    ProviderSpec, Registry, ResolvedModel, TokenCountField, TokenCounterSpec,
 };
-use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use std::{
@@ -130,54 +130,50 @@ impl Recorded {
         .chain(silence)
     }
 }
-impl HttpTransport for Recorded {
-    // Backoff and the explicitly selected request deadline use the virtual clock.
-    fn delay(&self, wait: Duration) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        let clock = self.clock.clone();
-        Box::pin(async move {
-            elapse(clock, wait).await;
-            Ok(())
-        })
-    }
-    fn now(&self) -> Duration {
-        // Whole virtual milliseconds, as a millisecond platform timer reports them.
-        Duration::from_nanos(self.clock.load(Ordering::SeqCst).saturating_mul(1_000_000))
-    }
-    fn delay_with_native_work(
-        &self,
-        wait: Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
-        let clock = self.clock.clone();
-        acyclic_fs::NativeFutureBundle::new(work, move || async move {
-            elapse(clock, wait).await;
-            Ok(())
-        })
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let (status, bytes, stall) = self.reply(request, false)?;
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status,
-                body: Box::pin(self.chunks(bytes, stall)),
+impl Recorded {
+    pub(super) fn transport(self: Arc<Self>) -> Arc<ScriptedHttp> {
+        let ordinary = self.clone();
+        let monotonic = self.clock.clone();
+        let delay = self.clock.clone();
+        let native_delay = self.clock.clone();
+        Arc::new(
+            ScriptedHttp::respond_owned(move |request| {
+                let ordinary = ordinary.clone();
+                Box::pin(async move {
+                    let (status, bytes, stall) = ordinary.reply(request, false)?;
+                    Ok(HttpResponse {
+                        request_id: None,
+                        retry_after: None,
+                        status,
+                        body: Box::pin(ordinary.chunks(bytes, stall)),
+                    })
+                })
             })
-        })
-    }
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let (status, bytes, stall) = self.reply(request, true)?;
-            HttpResponse::with_native_body(status, self.chunks(bytes, stall), work)
-        })
+            .with_monotonic_clock(move || {
+                Duration::from_nanos(monotonic.load(Ordering::SeqCst).saturating_mul(1_000_000))
+            })
+            .with_delay(move |wait| {
+                let clock = delay.clone();
+                Box::pin(async move {
+                    elapse(clock, wait).await;
+                    Ok(())
+                })
+            })
+            .with_native_delay(move |wait, work| {
+                let clock = native_delay.clone();
+                acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                    elapse(clock, wait).await;
+                    Ok(())
+                })
+            })
+            .with_native(true, move |request, work| {
+                let native = self.clone();
+                acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                    let (status, bytes, stall) = native.reply(request, true)?;
+                    HttpResponse::with_native_body(status, native.chunks(bytes, stall), work)
+                })
+            }),
+        )
     }
 }
 /// Advances the caller's logical clock by the chosen wait.
@@ -192,7 +188,10 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
         Protocol::Chat => Adapter::Chat,
         Protocol::Gemini => Adapter::Gemini,
     };
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::new()),
+        transport.transport(),
+    );
     registry.register(
         "recorded".into(),
         ProviderSpec {

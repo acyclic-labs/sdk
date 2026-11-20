@@ -1,9 +1,9 @@
 //! Real HTTP exchanges replay the original captured llama.cpp bodies.
 use super::*;
+use crate::fixtures::ScriptedHttp;
 use crate::tests::CountTestExt as _;
 use crate::{Authentication, Credentials, HttpRequest, HttpResponse, Registry, ReqwestTransport};
 use acyclic_harness_core::{model::ModelProvider as _, wire::ErrorCode};
-use acyclic_stream::BoxProviderFuture;
 use futures::TryStreamExt as _;
 use std::sync::{Mutex, Weak};
 use tokio::{
@@ -79,61 +79,58 @@ impl CredentialResolver for Host {
                 transport,
             ));
         }
-        Ok(CredentialBinding::protected(
-            scope,
-            Arc::new(Protected {
-                secrets: Arc::downgrade(&self.secrets),
-                lifetime: self.lifetime.subscribe(),
-                origin: origin.into(),
-                scheme,
-                transport,
-            }),
-        ))
+        let protected = Arc::new(Protected {
+            secrets: Arc::downgrade(&self.secrets),
+            lifetime: self.lifetime.subscribe(),
+            origin: origin.into(),
+            scheme,
+            transport: transport.clone(),
+        });
+        let clock = transport.clone();
+        let script = ScriptedHttp::respond_owned(move |request| {
+            let protected = protected.clone();
+            Box::pin(async move { protected.exchange(request).await })
+        })
+        .with_monotonic_clock(move || clock.now())
+        .with_delay(move |duration| transport.delay(duration));
+        Ok(CredentialBinding::protected(scope, Arc::new(script)))
     }
 }
 
-impl HttpTransport for Protected {
-    fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            if crate::spec::validate_url(&request.url, None)?
-                .origin()
-                .ascii_serialization()
-                != self.origin
-            {
-                return Err(Error::Unauthorized("origin denied".into()));
+impl Protected {
+    async fn exchange(&self, mut request: HttpRequest) -> Result<HttpResponse> {
+        if crate::spec::validate_url(&request.url, None)?
+            .origin()
+            .ascii_serialization()
+            != self.origin
+        {
+            return Err(Error::Unauthorized("origin denied".into()));
+        }
+        let mut lifetime = self.lifetime.clone();
+        if lifetime.has_changed().is_err() {
+            return Err(unavailable());
+        }
+        let key = {
+            let owner = self.secrets.upgrade().ok_or_else(unavailable)?;
+            let secrets = owner.lock().unwrap();
+            if secrets.revoked {
+                return Err(Error::Unauthorized("credential revoked".into()));
             }
-            let mut lifetime = self.lifetime.clone();
-            if lifetime.has_changed().is_err() {
-                return Err(unavailable());
-            }
-            let key = {
-                let owner = self.secrets.upgrade().ok_or_else(unavailable)?;
-                let secrets = owner.lock().unwrap();
-                if secrets.revoked {
-                    return Err(Error::Unauthorized("credential revoked".into()));
-                }
-                format!("fixture-{}", secrets.generation)
-            };
-            assert!(!request.headers.contains_key("authorization"));
-            assert!(!request.headers.contains_key("x-api-key"));
-            let (name, value) = match self.scheme {
-                AuthorizationScheme::Bearer => ("authorization", format!("Bearer {key}")),
-                AuthorizationScheme::ApiKey => ("x-api-key", key),
-                AuthorizationScheme::GoogleApiKey => ("x-goog-api-key", key),
-            };
-            request.headers.insert(name.into(), value);
-            tokio::select! {
-                biased;
-                _ = lifetime.changed() => Err(unavailable()),
-                response = self.transport.send(request) => response,
-            }
-        })
-    }
-    fn now(&self) -> std::time::Duration {
-        self.transport.now()
-    }
-    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        self.transport.delay(duration)
+            format!("fixture-{}", secrets.generation)
+        };
+        assert!(!request.headers.contains_key("authorization"));
+        assert!(!request.headers.contains_key("x-api-key"));
+        let (name, value) = match self.scheme {
+            AuthorizationScheme::Bearer => ("authorization", format!("Bearer {key}")),
+            AuthorizationScheme::ApiKey => ("x-api-key", key),
+            AuthorizationScheme::GoogleApiKey => ("x-goog-api-key", key),
+        };
+        request.headers.insert(name.into(), value);
+        tokio::select! {
+            biased;
+            _ = lifetime.changed() => Err(unavailable()),
+            response = self.transport.send(request) => response,
+        }
     }
 }
 

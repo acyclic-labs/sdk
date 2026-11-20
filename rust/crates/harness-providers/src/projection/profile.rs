@@ -324,7 +324,7 @@ mod tests {
                 }
             }
         }
-        assert!(transport.sent.lock().unwrap().is_empty());
+        assert!(crate::tests::generation_requests(&transport.requests().unwrap()).is_empty());
         Ok(())
     }
 

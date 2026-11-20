@@ -1,6 +1,6 @@
+use crate::fixtures::ScriptedHttp;
 use crate::*;
 use acyclic_harness_core::model::ModelProvider as _;
-use acyclic_stream::BoxProviderFuture;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -61,29 +61,16 @@ impl Server {
     }
 }
 
-impl HttpTransport for Server {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(
-        &self,
-        request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
-        Box::pin(async move {
-            let (status, body) = self.reply(request)?;
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status,
-                body: Box::pin(futures::stream::once(async { Ok(Bytes::from(body)) })),
+impl Server {
+    fn transport(self: &Arc<Self>) -> Arc<ScriptedHttp> {
+        let state = self.clone();
+        Arc::new(ScriptedHttp::respond_owned(move |request| {
+            let state = state.clone();
+            Box::pin(async move {
+                let (status, body) = state.reply(request)?;
+                ScriptedHttp::reply(status, body)
             })
-        })
+        }))
     }
 }
 
@@ -145,9 +132,10 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         (200, json!({"access_token":"new-access"}).to_string()),
         (200, RESPONSE.into()),
     ])?;
-    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-        .with_codex_login(login)
-        .resolve("openai/gpt-5")?;
+    let provider =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.transport())
+            .with_codex_login(login)
+            .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     let events = provider
         .generate(&request, dispatch)
@@ -227,7 +215,7 @@ async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
     let login = CodexLogin::from_path(root.path().join("absent-auth.json"));
     let provider = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([("openai".into(), "api-key".into())])),
-        server.clone(),
+        server.transport(),
     )
     .with_codex_login(login)
     .resolve("openai/gpt-5")?;
@@ -259,9 +247,10 @@ async fn a_second_unauthorized_response_is_terminal() -> acyclic_harness_core::R
         (200, json!({"access_token":"new-access"}).to_string()),
         (401, String::new()),
     ])?;
-    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-        .with_codex_login(login)
-        .resolve("openai/gpt-5")?;
+    let provider =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.transport())
+            .with_codex_login(login)
+            .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     assert!(
         provider
@@ -284,8 +273,9 @@ async fn a_second_unauthorized_response_is_terminal() -> acyclic_harness_core::R
 #[test]
 fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_core::Result<()> {
     let (_root, login, server, _) = fixture(Vec::new())?;
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server)
-        .with_codex_login(login);
+    let mut registry =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.transport())
+            .with_codex_login(login);
     registry.register(
         "openai".into(),
         ProviderSpec {
@@ -335,8 +325,9 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
     let login = login.watched(Arc::new(crate::registry::credential_tests::watched(
         changes.clone(),
     )));
-    let registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-        .with_codex_login(login);
+    let registry =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.transport())
+            .with_codex_login(login);
     let active = registry.resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&active)?;
     active
@@ -378,8 +369,9 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
 fn codex_authentication_is_catalog_policy_independent_of_provider_ids()
 -> acyclic_harness_core::Result<()> {
     let (_root, login, server, _) = fixture(Vec::new())?;
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server)
-        .with_codex_login(login);
+    let mut registry =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.transport())
+            .with_codex_login(login);
     let mut spec = registry.catalog()["openai"].as_ref().clone();
     registry.register("research".into(), spec.clone())?;
     let selected = registry.resolve("research/gpt-5")?;

@@ -84,7 +84,14 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         // A native image's compressed wire bytes cannot bound its token cost,
         // even under an unlimited admission ceiling.
         let counted = provider.counted(&request, u64::MAX).await?;
-        let count_body = script.counted.lock().unwrap().take().unwrap();
+        let count_body = script
+            .requests()?
+            .iter()
+            .filter(|request| is_count_request(request))
+            .next()
+            .unwrap()
+            .body
+            .clone();
         assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
         provider.accounting.usage.observe(
             adapter,
@@ -102,7 +109,14 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         let appended = PreparedModelRequest::prepare(appended, Limits::default(), None)?;
         assert_eq!(provider.accounting.usage.bound(&appended)?, None);
         let counted = provider.counted(&appended, u64::MAX).await?;
-        let count_body = script.counted.lock().unwrap().take().unwrap();
+        let count_body = script
+            .requests()?
+            .iter()
+            .filter(|request| is_count_request(request))
+            .nth(1)
+            .unwrap()
+            .body
+            .clone();
         assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
     }
     Ok(())
@@ -143,7 +157,7 @@ async fn image_digest_type_and_size_mismatches_cannot_reach_projection() -> Resu
             .await
             .is_err()
         );
-        assert!(script.sent.lock().unwrap().is_empty());
+        assert!(generation_requests(&script.requests().unwrap()).is_empty());
     }
     Ok(())
 }

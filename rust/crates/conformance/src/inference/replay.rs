@@ -11,9 +11,9 @@ use acyclic_harness_core::{
 };
 use acyclic_harness_providers::{
     Adapter, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures, ModelSpec,
-    ProviderSpec, Registry,
+    ProviderSpec, Registry, fixtures::ScriptedHttp,
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use acyclic_stream::BoxProviderStream;
 use bytes::Bytes;
 use futures::Stream;
 use serde::Deserialize;
@@ -24,11 +24,10 @@ use std::{
     path::Path,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
-    time::Duration,
 };
 
 /// Immutable response body and its original HTTP status.
@@ -93,10 +92,6 @@ impl Manifest {
     }
 }
 
-struct Replay {
-    responses: Mutex<VecDeque<Capture>>,
-    active: Arc<AtomicUsize>,
-}
 struct Body {
     bytes: Bytes,
     active: Arc<AtomicUsize>,
@@ -122,30 +117,36 @@ struct TrackedTransport {
     sent: AtomicBool,
     active: Arc<AtomicUsize>,
 }
-impl HttpTransport for TrackedTransport {
-    fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            if !self.sent.swap(true, Ordering::SeqCst)
-                && let Some((base, first)) = &self.first_route
-            {
-                request.url = request.url.replacen(base, first, 1);
-            }
-            let mut response = self.inner.send(request).await?;
-            self.active.fetch_add(1, Ordering::SeqCst);
-            response.body = Box::pin(TrackedBody {
-                body: response.body,
-                active: self.active.clone(),
-            });
-            Ok(response)
-        })
+impl TrackedTransport {
+    fn transport(self: Arc<Self>) -> Arc<ScriptedHttp> {
+        let exchange = self.clone();
+        let clock = self.clone();
+        Arc::new(
+            ScriptedHttp::respond_owned(move |request| {
+                let exchange = exchange.clone();
+                Box::pin(async move { exchange.exchange(request).await })
+            })
+            .with_monotonic_clock(move || clock.inner.now())
+            .with_delay(move |duration| self.inner.delay(duration)),
+        )
     }
-    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        self.inner.delay(duration)
-    }
-    fn now(&self) -> Duration {
-        self.inner.now()
+
+    async fn exchange(&self, mut request: HttpRequest) -> Result<HttpResponse> {
+        if !self.sent.swap(true, Ordering::SeqCst)
+            && let Some((base, first)) = &self.first_route
+        {
+            request.url = request.url.replacen(base, first, 1);
+        }
+        let mut response = self.inner.send(request).await?;
+        self.active.fetch_add(1, Ordering::SeqCst);
+        response.body = Box::pin(TrackedBody {
+            body: response.body,
+            active: self.active.clone(),
+        });
+        Ok(response)
     }
 }
+
 impl Stream for Body {
     type Item = Result<Bytes>;
     fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -162,52 +163,41 @@ impl Drop for Body {
         self.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
-impl HttpTransport for Replay {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let body: Value = serde_json::from_slice(&request.body)
-                .map_err(|_| Error::Invalid("replay request JSON".into()))?;
-            let mut responses = self
-                .responses
-                .lock()
-                .map_err(|_| Error::Storage("replay response lock".into()))?;
-            let response = if responses.len() > 1 {
-                responses.pop_front()
-            } else {
-                responses.front().cloned()
-            }
-            .ok_or_else(|| Error::Invalid("replay response absent".into()))?;
-            if let Some(url) = &response.request_url {
-                require(
-                    request.url == *url,
-                    "request route differs from real capture",
-                )?;
-            }
-            for (pointer, expected) in &response.assertions {
-                require(
-                    body.pointer(pointer) == Some(expected),
-                    "request differs from captured tool exchange",
-                )?;
-            }
-            self.active.fetch_add(1, Ordering::SeqCst);
-            let body: BoxProviderStream<'static, Result<Bytes>> = Box::pin(Body {
-                bytes: response.bytes,
-                active: self.active.clone(),
-            });
-            Ok(HttpResponse {
-                status: response.status,
-                request_id: None,
-                retry_after: None,
-                body,
-            })
+fn replay(captures: Vec<Capture>, active: Arc<AtomicUsize>) -> ScriptedHttp {
+    let mut responses: VecDeque<_> = captures.into();
+    ScriptedHttp::respond(move |request| {
+        let body: Value = serde_json::from_slice(&request.body)
+            .map_err(|_| Error::Invalid("replay request JSON".into()))?;
+        let response = if responses.len() > 1 {
+            responses.pop_front()
+        } else {
+            responses.front().cloned()
+        }
+        .ok_or_else(|| Error::Invalid("replay response absent".into()))?;
+        if let Some(url) = &response.request_url {
+            require(
+                request.url == *url,
+                "request route differs from real capture",
+            )?;
+        }
+        for (pointer, expected) in &response.assertions {
+            require(
+                body.pointer(pointer) == Some(expected),
+                "request differs from captured tool exchange",
+            )?;
+        }
+        active.fetch_add(1, Ordering::SeqCst);
+        let body: BoxProviderStream<'static, Result<Bytes>> = Box::pin(Body {
+            bytes: response.bytes,
+            active: active.clone(),
+        });
+        Ok(HttpResponse {
+            status: response.status,
+            request_id: None,
+            retry_after: None,
+            body,
         })
-    }
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn now(&self) -> Duration {
-        Duration::ZERO
-    }
+    })
 }
 
 fn read(root: &Path, capture: &FileCapture) -> Result<Capture> {
@@ -283,11 +273,9 @@ fn prepare(
 fn provider(
     manifest: &Manifest,
     captures: Vec<Capture>,
-) -> Result<(acyclic_harness_providers::ResolvedModel, Arc<Replay>)> {
-    let transport = Arc::new(Replay {
-        responses: Mutex::new(captures.into()),
-        active: Arc::new(AtomicUsize::new(0)),
-    });
+) -> Result<(acyclic_harness_providers::ResolvedModel, Arc<AtomicUsize>)> {
+    let active = Arc::new(AtomicUsize::new(0));
+    let transport = Arc::new(replay(captures, active.clone()));
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([(
             manifest.provider_id.clone(),
@@ -302,7 +290,7 @@ fn provider(
     )?;
     registry.register(manifest.provider_id.clone(), config)?;
     let provider = registry.resolve(&format!("{}/{}", manifest.provider_id, manifest.model))?;
-    Ok((provider, transport))
+    Ok((provider, active))
 }
 
 struct Captured {
@@ -365,7 +353,7 @@ impl Backend for Captured {
             requests,
             request,
             dispatch,
-            released: Arc::new(move || transport.active.load(Ordering::SeqCst) == 0),
+            released: Arc::new(move || transport.load(Ordering::SeqCst) == 0),
         })
     }
     fn usage(&self) -> &ExpectedUsage {
@@ -404,7 +392,8 @@ impl Backend for Local {
                 .then(|| (self.base_url.clone(), self.rate_url.clone())),
             sent: AtomicBool::new(false),
             active: active.clone(),
-        });
+        })
+        .transport();
         let keys = if matches!(scenario, Scenario::Authentication) {
             BTreeMap::new()
         } else {

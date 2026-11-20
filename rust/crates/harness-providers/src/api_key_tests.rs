@@ -17,26 +17,6 @@ async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reaso
 {
     use acyclic_harness_core::model::{ReasoningBlock, ReasoningKind, ReasoningOutcome};
 
-    struct Captured {
-        inner: Arc<Script>,
-        requests: Mutex<Vec<(BTreeMap<String, String>, Bytes)>>,
-    }
-    impl HttpTransport for Captured {
-        fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-            self.inner.delay(wait)
-        }
-        fn now(&self) -> std::time::Duration {
-            self.inner.now()
-        }
-        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-            self.requests
-                .lock()
-                .unwrap()
-                .push((request.headers.clone(), request.body.clone()));
-            self.inner.send(request)
-        }
-    }
-
     let generation = Arc::new(AtomicUsize::new(0));
     let source = generation.clone();
     let mut credentials = Credentials::default();
@@ -46,11 +26,7 @@ async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reaso
                 .then(|| format!("fixture-{}", source.load(Ordering::SeqCst))),
         )
     }));
-    let (_, inner) = provider(Adapter::Responses, 200);
-    let transport = Arc::new(Captured {
-        inner,
-        requests: Mutex::new(Vec::new()),
-    });
+    let (_, transport) = provider(Adapter::Responses, 200);
     let registry = Registry::with_transport(credentials, transport.clone());
     let provider = Arc::new(registry.resolve("openai/gpt-5")?);
     let (request, _) = request(&provider)?;
@@ -88,19 +64,19 @@ async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reaso
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
-    let requests = transport.requests.lock().unwrap();
+    let requests = transport.requests()?;
     assert_eq!(requests.len(), 3);
-    for (headers, body) in &requests[..2] {
-        assert_eq!(headers["authorization"], "Bearer fixture-1");
+    for request in &requests[..2] {
+        assert_eq!(request.headers["authorization"], "Bearer fixture-1");
         assert!(
-            std::str::from_utf8(body)
+            std::str::from_utf8(&request.body)
                 .unwrap()
                 .contains("scoped-prepared==")
         );
     }
-    assert_eq!(requests[2].0["authorization"], "Bearer fixture-3");
+    assert_eq!(requests[2].headers["authorization"], "Bearer fixture-3");
     assert!(
-        !std::str::from_utf8(&requests[2].1)
+        !std::str::from_utf8(&requests[2].body)
             .unwrap()
             .contains("scoped-prepared==")
     );
@@ -111,8 +87,8 @@ struct Responses {
     sent: AtomicUsize,
 }
 impl Responses {
-    fn exchange(&self, request: HttpRequest) -> Result<HttpResponse> {
-        if let Some(response) = fixture_count(&request) {
+    fn exchange(&self, request: &HttpRequest) -> Result<HttpResponse> {
+        if let Some(response) = fixture_count(request) {
             assert_eq!(
                 request.url,
                 "https://api.openai.com/v1/responses/input_tokens"
@@ -164,51 +140,27 @@ impl Responses {
         })
     }
 }
-impl HttpTransport for Responses {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn delay_with_native_work(
-        &self,
-        wait: std::time::Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
-        crate::fixtures::native_delay(wait, work)
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move { self.exchange(request) })
-    }
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(true)
-    }
-    fn send_with_native_work<'a>(
-        &'a self,
-        request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let response = self.exchange(request)?;
-            HttpResponse::with_native_body(response.status, response.body, work)
-        })
-    }
-}
-
 #[tokio::test]
 async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_native_paths()
 -> Result<()> {
     for native in [false, true] {
-        let transport = Arc::new(Responses {
+        let responses = Arc::new(Responses {
             sent: AtomicUsize::new(0),
         });
+        let ordinary = responses.clone();
+        let funded = responses.clone();
+        let transport = Arc::new(
+            ScriptedHttp::respond(move |request| ordinary.exchange(request)).with_native(
+                true,
+                move |request, work| {
+                    let funded = funded.clone();
+                    acyclic_fs::NativeFutureBundle::new(work, move || async move {
+                        let response = funded.exchange(&request)?;
+                        HttpResponse::with_native_body(response.status, response.body, work)
+                    })
+                },
+            ),
+        );
         let mut registry = Registry::with_transport(
             Credentials::explicit(BTreeMap::from([(
                 "openai".into(),
@@ -343,7 +295,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
             }
             drop(custody);
         }
-        assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+        assert_eq!(responses.sent.load(Ordering::SeqCst), 2);
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())

@@ -1,11 +1,10 @@
 //! Real-HTTP conformance and protected-origin negative controls.
 
 use acyclic_harness_core::{Error, Result, http::*};
-use acyclic_harness_provider_core::ReqwestTransport;
+use acyclic_harness_provider_core::{ReqwestTransport, fixtures::ScriptedHttp};
 use acyclic_machines::*;
 use acyclic_machines_conformance as conformance;
 use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
-use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{
@@ -308,40 +307,36 @@ async fn range_credit_finishes_before_an_unread_http_suffix_error() -> FixtureRe
 
 // Real HTTP responses are buffered here to make bytes/EOF deterministically
 // ready alongside the original alarm. No wall-clock wait or synthetic reply.
-struct BufferedAlarmTransport {
-    http: ReqwestTransport,
-    wall: AtomicU64,
-    alarm: Mutex<Option<tokio::sync::oneshot::Receiver<Result<()>>>>,
-}
-impl HttpTransport for BufferedAlarmTransport {
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+fn buffered_alarm(
+    wall: Arc<AtomicU64>,
+    alarm: tokio::sync::oneshot::Receiver<Result<()>>,
+) -> Result<ScriptedHttp> {
+    let http = Arc::new(ReqwestTransport::new()?);
+    let clock = wall.clone();
+    let alarm = Mutex::new(Some(alarm));
+    Ok(ScriptedHttp::respond_owned(move |request| {
+        let http = http.clone();
         Box::pin(async move {
-            let mut response = self.http.send(request).await?;
+            let mut response = http.send(request).await?;
             let chunks = response.body.collect::<Vec<_>>().await;
             response.body = Box::pin(futures::stream::iter(chunks));
             Ok(response)
         })
-    }
-    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
+    })
+    .with_clock(
+        move || Duration::from_millis(clock.load(Ordering::SeqCst)),
+        move || Ok(wall.load(Ordering::SeqCst)),
+    )
+    .with_delay(move |duration| {
         assert_eq!(duration, Duration::from_millis(1));
-        let alarm = self
-            .alarm
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let alarm = alarm.lock().unwrap_or_else(PoisonError::into_inner).take();
         Box::pin(async move {
             alarm
                 .ok_or_else(|| Error::Conflict("original alarm already taken".into()))?
                 .await
                 .map_err(|_| Error::Conflict("alarm owner dropped".into()))?
         })
-    }
-    fn unix_ms(&self) -> Result<u64> {
-        Ok(self.wall.load(Ordering::SeqCst))
-    }
-    fn now(&self) -> Duration {
-        Duration::from_millis(self.wall.load(Ordering::SeqCst))
-    }
+    }))
 }
 
 #[tokio::test]
@@ -351,11 +346,8 @@ async fn original_file_alarm_precedes_buffered_bytes_and_eof() -> FixtureResult 
         for bytes in [vec![0, 255, 128], vec![]] {
             let server = Server::start("https://app.daytona.io/toolbox", false).await?;
             let (sender, receiver) = tokio::sync::oneshot::channel();
-            let transport = Arc::new(BufferedAlarmTransport {
-                http: ReqwestTransport::new().unwrap(),
-                wall: AtomicU64::new(DEADLINE - 1),
-                alarm: Mutex::new(Some(receiver)),
-            });
+            let wall = Arc::new(AtomicU64::new(DEADLINE - 1));
+            let transport = Arc::new(buffered_alarm(wall.clone(), receiver)?);
             let provider = server.provider_with_transport(transport.clone())?;
             provider.create(request()?).await.unwrap();
             server
@@ -371,7 +363,7 @@ async fn original_file_alarm_precedes_buffered_bytes_and_eof() -> FixtureResult 
             else {
                 panic!("expected original download");
             };
-            transport.wall.store(DEADLINE + 1, Ordering::SeqCst);
+            wall.store(DEADLINE + 1, Ordering::SeqCst);
             sender
                 .send(if failed {
                     Err(Error::Invalid("original alarm failure".into()))
@@ -407,11 +399,6 @@ fn secret_reference() -> Result<acyclic_auth::secrets::SecretRef> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-struct Protected {
-    address: String,
-    origin: String,
-    transport: Arc<dyn HttpTransport>,
-}
 impl CredentialResolver for Binding {
     fn bind(
         &self,
@@ -428,48 +415,43 @@ impl CredentialResolver for Binding {
         if !ORIGINS.contains(&origin) {
             return Err(Error::Unauthorized("origin refused by fake binding".into()));
         }
-        Ok(CredentialBinding::protected(
-            [3; 32],
-            Arc::new(Protected {
-                address: self.0.clone(),
-                origin: origin.into(),
-                transport,
-            }),
-        ))
-    }
-}
-impl HttpTransport for Protected {
-    fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let url =
-                Url::parse(&request.url).map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(url.origin().ascii_serialization(), self.origin);
-            assert!(
-                !request
+        let address = self.0.clone();
+        let origin = origin.to_owned();
+        let http = transport.clone();
+        let clock = transport.clone();
+        let script = ScriptedHttp::respond_owned(move |mut request| {
+            let http = http.clone();
+            let address = address.clone();
+            let origin = origin.clone();
+            Box::pin(async move {
+                let url =
+                    Url::parse(&request.url).map_err(|error| Error::Invalid(error.to_string()))?;
+                assert_eq!(url.origin().ascii_serialization(), origin);
+                assert!(
+                    !request
+                        .headers
+                        .keys()
+                        .any(|name| name.eq_ignore_ascii_case("authorization"))
+                );
+                request
                     .headers
-                    .keys()
-                    .any(|name| name.eq_ignore_ascii_case("authorization"))
-            );
-            request
-                .headers
-                .insert("authorization".into(), format!("Bearer {HOST_VALUE}"));
-            request.url = format!(
-                "{}{}{}",
-                self.address,
-                url.path(),
-                url.query()
-                    .map_or(String::new(), |query| format!("?{query}"))
-            );
-            self.transport.send(request).await
+                    .insert("authorization".into(), format!("Bearer {HOST_VALUE}"));
+                request.url = format!(
+                    "{}{}{}",
+                    address,
+                    url.path(),
+                    url.query()
+                        .map_or(String::new(), |query| format!("?{query}"))
+                );
+                http.send(request).await
+            })
         })
-    }
-    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        self.transport.delay(duration)
-    }
-    fn now(&self) -> Duration {
-        self.transport.now()
+        .with_monotonic_clock(move || clock.now())
+        .with_delay(move |duration| transport.delay(duration));
+        Ok(CredentialBinding::protected([3; 32], Arc::new(script)))
     }
 }
+
 fn image() -> FixtureResult<Image> {
     Ok(Image::custom([17; 32])?)
 }

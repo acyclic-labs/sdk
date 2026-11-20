@@ -12,45 +12,11 @@ async fn cached_input_observations_preserve_total_through_forwarders()
         Divergence, DivergenceSink, ModelEvent, ModelProvider, RecordedModel, Recording,
     };
     use futures::TryStreamExt as _;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::Arc;
 
     struct Quiet;
     impl DivergenceSink for Quiet {
         fn diverged(&self, _: Divergence) {}
-    }
-    struct Reply {
-        body: String,
-        sent: AtomicUsize,
-    }
-    impl crate::HttpTransport for Reply {
-        fn send(
-            &self,
-            _: crate::HttpRequest,
-        ) -> acyclic_stream::BoxProviderFuture<'_, acyclic_harness_core::Result<crate::HttpResponse>>
-        {
-            self.sent.fetch_add(1, Ordering::SeqCst);
-            let body = self.body.clone();
-            Box::pin(async move {
-                Ok(crate::HttpResponse {
-                    request_id: None,
-                    retry_after: None,
-                    status: 200,
-                    body: crate::tests::chunks(body, 1),
-                })
-            })
-        }
-        fn delay(
-            &self,
-            duration: std::time::Duration,
-        ) -> acyclic_stream::BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
-            crate::fixtures::delay(duration)
-        }
-        fn now(&self) -> std::time::Duration {
-            crate::fixtures::now()
-        }
     }
     for (adapter, fixture) in crate::fixtures::fixtures() {
         let cases = if adapter == crate::Adapter::Anthropic {
@@ -69,10 +35,14 @@ async fn cached_input_observations_preserve_total_through_forwarders()
                 crate::Adapter::Chat => fixture.replace("\"prompt_tokens\":5", &format!("\"prompt_tokens\":5,\"prompt_tokens_details\":{{\"cached_tokens\":{cached}}}")),
                 crate::Adapter::Gemini => fixture.replace("\"promptTokenCount\":5", &format!("\"promptTokenCount\":5,\"cachedContentTokenCount\":{cached}")),
             };
-            let transport = Arc::new(Reply {
-                body,
-                sent: AtomicUsize::new(0),
-            });
+            let transport = Arc::new(crate::fixtures::ScriptedHttp::new([Ok(
+                crate::HttpResponse {
+                    request_id: None,
+                    retry_after: None,
+                    status: 200,
+                    body: crate::tests::chunks(body, 1),
+                },
+            )]));
             let provider =
                 crate::tests::provider_with(adapter, "http://127.0.0.1:1234/v1", transport.clone());
             let (request, dispatch) = crate::tests::request(&provider)?;
@@ -106,7 +76,7 @@ async fn cached_input_observations_preserve_total_through_forwarders()
                 "{adapter:?}"
             );
             assert_eq!(
-                transport.sent.load(Ordering::SeqCst),
+                transport.requests()?.len(),
                 1,
                 "interpreting completed usage must not make another request"
             );

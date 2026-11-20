@@ -1,6 +1,6 @@
 //! Shared model cooldowns, driven through real requests on a paused clock.
 use super::*;
-use crate::Adapter;
+use crate::{Adapter, fixtures::ScriptedHttp};
 use acyclic_harness_core::model::ModelProvider as _;
 use acyclic_stream::BoxProviderFuture;
 
@@ -12,7 +12,6 @@ const SERVICE: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(3);
 
 struct Capacity {
-    origin: tokio::time::Instant,
     active: Arc<Mutex<usize>>,
     /// Every request as (sent at, status).
     log: Mutex<Vec<(Duration, u16)>>,
@@ -27,111 +26,18 @@ impl Drop for Slot {
     }
 }
 
-impl HttpTransport for Capacity {
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        let now = self.now();
-        let slot = {
-            let mut active = self.active.lock().unwrap();
-            (*active < CAPACITY).then(|| {
-                *active += 1;
-                Slot(self.active.clone())
-            })
-        };
-        self.log
-            .lock()
-            .unwrap()
-            .push((now, if slot.is_some() { 200 } else { 429 }));
-        Box::pin(async move {
-            Ok(match slot {
-                Some(slot) => HttpResponse {
-                    status: 200,
-                    body: Box::pin(async_stream::stream! {
-                        let _slot = slot;
-                        tokio::time::sleep(SERVICE).await;
-                        yield Ok(bytes::Bytes::from_static(crate::fixtures::CHAT.as_bytes()));
-                    }),
-                    request_id: None,
-                    retry_after: None,
-                },
-                None => HttpResponse {
-                    status: 429,
-                    body: Box::pin(futures::stream::empty()),
-                    request_id: None,
-                    retry_after: Some(RETRY_AFTER),
-                },
+fn timed(script: ScriptedHttp, origin: tokio::time::Instant) -> ScriptedHttp {
+    script
+        .with_clock(
+            move || origin.elapsed(),
+            move || Ok(1_000_000 + u64::try_from(origin.elapsed().as_millis()).unwrap()),
+        )
+        .with_delay(|wait| -> BoxProviderFuture<'static, Result<()>> {
+            Box::pin(async move {
+                tokio::time::sleep(wait).await;
+                Ok(())
             })
         })
-    }
-
-    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(async move {
-            tokio::time::sleep(wait).await;
-            Ok(())
-        })
-    }
-
-    fn delay_with_native_work(
-        &self,
-        wait: Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, move || async move {
-            tokio::time::sleep(wait).await;
-            Ok(())
-        })
-    }
-
-    fn now(&self) -> Duration {
-        self.origin.elapsed()
-    }
-
-    fn unix_ms(&self) -> Result<u64> {
-        Ok(1_000_000 + u64::try_from(self.now().as_millis()).unwrap())
-    }
-}
-
-/// A rate refusal is independent of how many earlier responses are still open.
-struct RateRefusal {
-    origin: tokio::time::Instant,
-    refuse_at: usize,
-    log: Mutex<Vec<(Duration, u16)>>,
-}
-
-impl HttpTransport for RateRefusal {
-    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        let mut log = self.log.lock().unwrap();
-        let status = if log.len() == self.refuse_at {
-            429
-        } else {
-            200
-        };
-        log.push((self.now(), status));
-        Box::pin(async move {
-            Ok(HttpResponse {
-                status,
-                // Keep every accepted response open: admission must not wait
-                // for one of these bodies to complete after the cooldown.
-                body: Box::pin(futures::stream::pending()),
-                request_id: None,
-                retry_after: (status == 429).then_some(RETRY_AFTER),
-            })
-        })
-    }
-
-    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(async move {
-            tokio::time::sleep(wait).await;
-            Ok(())
-        })
-    }
-
-    fn now(&self) -> Duration {
-        self.origin.elapsed()
-    }
-
-    fn unix_ms(&self) -> Result<u64> {
-        Ok(1_000_000 + u64::try_from(self.now().as_millis()).unwrap())
-    }
 }
 
 #[test]
@@ -139,11 +45,24 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
     use acyclic_harness_core::model::ModelEvent;
     for accepted in [0, 3] {
         paused().block_on(async {
-            let transport = Arc::new(RateRefusal {
-                origin: tokio::time::Instant::now(),
-                refuse_at: accepted,
-                log: Mutex::default(),
-            });
+            let origin = tokio::time::Instant::now();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let observed = log.clone();
+            let transport = Arc::new(timed(
+                ScriptedHttp::respond(move |_| {
+                    let mut log = observed.lock().unwrap();
+                    let status = if log.len() == accepted { 429 } else { 200 };
+                    log.push((origin.elapsed(), status));
+                    Ok(HttpResponse {
+                        status,
+                        // Admission must resume while the accepted bodies remain open.
+                        body: Box::pin(futures::stream::pending()),
+                        request_id: None,
+                        retry_after: (status == 429).then_some(RETRY_AFTER),
+                    })
+                }),
+                origin,
+            ));
             let provider = crate::tests::provider_with(
                 Adapter::Chat,
                 "https://provider.test/v1",
@@ -176,7 +95,7 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
             for response in &mut queued {
                 assert!(response.next().now_or_never().is_none());
             }
-            assert_eq!(transport.log.lock().unwrap().len(), accepted + 1);
+            assert_eq!(log.lock().unwrap().len(), accepted + 1);
             tokio::time::advance(Duration::from_nanos(1)).await;
             for response in &mut queued {
                 assert!(matches!(response.next().now_or_never(), Some(Some(Ok(
@@ -184,7 +103,7 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
                 ))) if waited_for == RETRY_AFTER));
                 assert!(response.next().now_or_never().is_none());
             }
-            let log = transport.log.lock().unwrap();
+            let log = log.lock().unwrap();
             assert_eq!(log.len(), accepted + 11);
             assert!(
                 log[accepted + 1..]
@@ -206,12 +125,55 @@ fn paused() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn capacity() -> Arc<Capacity> {
-    Arc::new(Capacity {
-        origin: tokio::time::Instant::now(),
+fn capacity() -> (Arc<ScriptedHttp>, Arc<Capacity>) {
+    let origin = tokio::time::Instant::now();
+    let state = Arc::new(Capacity {
         active: Arc::default(),
         log: Mutex::default(),
-    })
+    });
+    let observed = state.clone();
+    let transport = timed(
+        ScriptedHttp::respond(move |_| {
+            let slot = {
+                let mut active = observed.active.lock().unwrap();
+                (*active < CAPACITY).then(|| {
+                    *active += 1;
+                    Slot(observed.active.clone())
+                })
+            };
+            observed
+                .log
+                .lock()
+                .unwrap()
+                .push((origin.elapsed(), if slot.is_some() { 200 } else { 429 }));
+            Ok(match slot {
+                Some(slot) => HttpResponse {
+                    status: 200,
+                    body: Box::pin(async_stream::stream! {
+                        let _slot = slot;
+                        tokio::time::sleep(SERVICE).await;
+                        yield Ok(bytes::Bytes::from_static(crate::fixtures::CHAT.as_bytes()));
+                    }),
+                    request_id: None,
+                    retry_after: None,
+                },
+                None => HttpResponse {
+                    status: 429,
+                    body: Box::pin(futures::stream::empty()),
+                    request_id: None,
+                    retry_after: Some(RETRY_AFTER),
+                },
+            })
+        }),
+        origin,
+    )
+    .with_native_delay(|wait, work| {
+        acyclic_fs::NativeFutureBundle::new(work, move || async move {
+            tokio::time::sleep(wait).await;
+            Ok(())
+        })
+    });
+    (Arc::new(transport), state)
 }
 
 #[test]
@@ -219,7 +181,7 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
     use acyclic_harness_core::model::ModelEvent;
 
     paused().block_on(async {
-        let transport = capacity();
+        let (transport, state) = capacity();
         let fixture = crate::tests::provider_with(
             Adapter::Chat,
             "https://provider.test/v1",
@@ -253,14 +215,14 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
         let peer = registry.resolve("fixture/limited")?;
         let independent = registry.resolve("fixture/independent")?;
         // Existing provider work refuses the first model's real HTTP request.
-        *transport.active.lock().unwrap() = CAPACITY;
+        *state.active.lock().unwrap() = CAPACITY;
         let (request, dispatch) = crate::tests::request(&limited)?;
         let mut refused = limited.generate(&request, dispatch);
         assert!(matches!(
             refused.next().now_or_never(),
             Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
         ));
-        *transport.active.lock().unwrap() = 0;
+        *state.active.lock().unwrap() = 0;
         let (peer_request, peer_dispatch) = crate::tests::request(&peer)?;
         let mut queued = peer.generate(&peer_request, peer_dispatch);
         // Separate selections of the same model still share its cooldown.
@@ -277,12 +239,12 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
         // The other model reached HTTP immediately; only its body is pending.
         // Omitting the model from the key instead yields AdmissionStarted here.
         assert_eq!(
-            *transport.log.lock().unwrap(),
+            *state.log.lock().unwrap(),
             [(Duration::ZERO, 429), (Duration::ZERO, 200)]
         );
         assert_eq!(transport.now(), Duration::ZERO);
         drop((other, queued, refused));
-        assert_eq!(*transport.active.lock().unwrap(), 0);
+        assert_eq!(*state.active.lock().unwrap(), 0);
         Ok(())
     })
 }
@@ -290,7 +252,7 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
 #[test]
 fn a_cooldown_outlives_every_permit_and_waiter_of_its_endpoint() {
     paused().block_on(async {
-        let transport = capacity();
+        let (transport, _) = capacity();
         let provider = crate::tests::provider_with(
             Adapter::Chat,
             "https://provider.test/v1",
@@ -329,7 +291,7 @@ fn a_cooldown_outlives_every_permit_and_waiter_of_its_endpoint() {
 fn selecting_another_model_collects_only_expired_unused_cooldowns() {
     for expired in [false, true] {
         paused().block_on(async {
-            let transport = capacity();
+            let (transport, _) = capacity();
             let mut provider = crate::tests::provider_with(
                 Adapter::Chat,
                 "https://provider.test/v1",
@@ -360,7 +322,7 @@ fn selecting_another_model_collects_only_expired_unused_cooldowns() {
 fn a_grant_not_yet_resumed_is_revoked_when_the_endpoint_closes() {
     for revoked in [true, false] {
         paused().block_on(async {
-            let transport = capacity();
+            let (transport, _) = capacity();
             let gate = Arc::new(Gate::default());
             let mut first = gate
                 .clone()
@@ -403,7 +365,7 @@ fn a_grant_not_yet_resumed_is_revoked_when_the_endpoint_closes() {
 #[test]
 fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() -> Result<()> {
     paused().block_on(async {
-        let transport = capacity();
+        let (transport, _) = capacity();
         let work = crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new()).unwrap();
         let gate = Arc::new(Gate::default());
         let mut held = gate
@@ -439,7 +401,7 @@ fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() -> Result<()> {
 #[test]
 fn admission_span_starts_before_grant_and_retains_cause_changes() {
     paused().block_on(async {
-        let transport = capacity();
+        let (transport, _) = capacity();
         let gate = Arc::new(Gate::default());
         let mut held = gate
             .clone()
@@ -475,7 +437,7 @@ fn admission_span_starts_before_grant_and_retains_cause_changes() {
 fn cancelling_an_observed_admission_releases_original_queue_custody() -> Result<()> {
     for at_finish in [false, true] {
         paused().block_on(async {
-            let transport = capacity();
+            let (transport, _) = capacity();
             let work =
                 crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new()).unwrap();
             let gate = Arc::new(Gate::default());

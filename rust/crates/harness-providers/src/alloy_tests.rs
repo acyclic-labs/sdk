@@ -1,4 +1,5 @@
 use super::*;
+use crate::fixtures::ScriptedHttp;
 use acyclic_harness_core::{
     OperationId,
     model::{ModelContentPart, ToolResultContent},
@@ -12,46 +13,20 @@ const MEMBERS: [(&str, Adapter); 4] = [
     ("chat", Adapter::Chat),
 ];
 
-struct Routing {
-    sent: Mutex<Vec<HttpRequest>>,
-}
-impl HttpTransport for Routing {
-    fn delay(
-        &self,
-        wait: std::time::Duration,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
-        crate::fixtures::delay(wait)
-    }
-    fn now(&self) -> std::time::Duration {
-        crate::fixtures::now()
-    }
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
-        Box::pin(async move {
-            let name = request
-                .url
-                .split('/')
-                .nth(3)
-                .ok_or_else(|| invalid("fixture route"))?;
-            let fixtures: serde_json::Value =
-                serde_json::from_str(include_str!("fixtures/alloy-turns.json")).unwrap();
-            let body = fixtures[name]
-                .as_str()
-                .ok_or_else(|| invalid("fixture route"))?
-                .to_owned();
-            self.sent.lock().unwrap().push(request);
-            Ok(HttpResponse {
-                request_id: None,
-                retry_after: None,
-                status: 200,
-                body: Box::pin(futures::stream::iter([Ok(Bytes::from(body))])),
-            })
-        })
-    }
-}
-fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
-    let transport = Arc::new(Routing {
-        sent: Mutex::new(Vec::new()),
-    });
+fn registry(capacities: &[u32]) -> (Registry, Arc<ScriptedHttp>) {
+    let transport = Arc::new(ScriptedHttp::respond(|request| {
+        let name = request
+            .url
+            .split('/')
+            .nth(3)
+            .ok_or_else(|| invalid("fixture route"))?;
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/alloy-turns.json")).unwrap();
+        let body = fixtures[name]
+            .as_str()
+            .ok_or_else(|| invalid("fixture route"))?;
+        ScriptedHttp::reply(200, body.to_owned())
+    }));
     let mut registry =
         Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport.clone());
     for ((name, adapter), &context_tokens) in MEMBERS.iter().zip(capacities) {
@@ -220,14 +195,14 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         );
     }
     assert!(
-        transport.sent.lock().unwrap().is_empty(),
+        transport.requests()?.is_empty(),
         "resolution must not invoke a model"
     );
     Ok(())
 }
 
 #[test]
-fn invalid_and_undeclared_policies_fail_before_dispatch() {
+fn invalid_and_undeclared_policies_fail_before_dispatch() -> Result<()> {
     let (registry, transport) = registry(&[8192; 4]);
     let mut invalid = vec![
         spec(AlloySelection::Weighted { weights: vec![1] }),
@@ -267,7 +242,8 @@ fn invalid_and_undeclared_policies_fail_before_dispatch() {
         )
         .unwrap();
     assert_eq!(fallback.select(turn(u64::MAX)).model().provider, "chat");
-    assert!(transport.sent.lock().unwrap().is_empty());
+    assert!(transport.requests()?.is_empty());
+    Ok(())
 }
 
 proptest! {
@@ -398,7 +374,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             .try_collect::<Vec<_>>()
             .await?;
         {
-            let sent = transport.sent.lock().unwrap();
+            let sent = transport.requests()?;
             let captured = sent.last().expect("captured provider request");
             assert_eq!(captured.body.as_ref(), body.as_slice());
             assert_foreign_wire(&captured.body, provider.config.adapter, ordinal);
@@ -448,7 +424,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             content: ModelContent::Text("continue".into()),
         });
     }
-    assert_eq!(transport.sent.lock().unwrap().len(), 5);
+    assert_eq!(transport.requests()?.len(), 5);
     Ok(())
 }
 
