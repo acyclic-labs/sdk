@@ -461,7 +461,7 @@ test("repository-sources gives a build script every file of each package it link
   }
 });
 
-test("a script a test reads brings its relative import closure, a generated module by its label", () => {
+test("a script a test reads brings its relative import and import.meta.url closure, a generated module by its label", () => {
   const { root, run } = fixture();
   try {
     const workspace = join(root, "Cargo.toml");
@@ -470,7 +470,10 @@ test("a script a test reads brings its relative import closure, a generated modu
     writeFileSync(join(root, "tools/run.mjs"), 'import { steps } from "./lib/steps.mjs";\nawait import("./lib/late.mjs");\nconsole.log(steps);\n');
     writeFileSync(join(root, "tools/lib/steps.mjs"), 'import data from "./data.json" with { type: "json" };\nexport * from "../dist/manifest.mjs";\nexport const steps = data;\n');
     writeFileSync(join(root, "tools/lib/data.json"), "[]\n");
-    writeFileSync(join(root, "tools/lib/late.mjs"), "export {};\n");
+    writeFileSync(join(root, "tools/lib/late.mjs"), 'const resources = new URL("./resources.json", import.meta.url);\nconst helper = new URL(\'helper.mjs\', import.meta.url);\nconst checkout = new URL("../../", import.meta.url);\nexport { resources, helper, checkout };\n');
+    writeFileSync(join(root, "tools/lib/resources.json"), "{}\n");
+    writeFileSync(join(root, "tools/lib/helper.mjs"), 'export const deep = new URL("./deep.txt", import.meta.url);\n');
+    writeFileSync(join(root, "tools/lib/deep.txt"), "deep\n");
     writeFileSync(join(root, "tools/unused.mjs"), "export {};\n");
     const lib = join(root, "member/src/lib.rs");
     writeFileSync(lib, readFileSync(lib, "utf8") + '\n#[test]\nfn runs_script() {\n    assert!(std::path::Path::new("tools/run.mjs").is_file());\n}\n');
@@ -479,7 +482,7 @@ test("a script a test reads brings its relative import closure, a generated modu
     assert.equal(result.status, 0, result.stderr);
     const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
     const data = build.slice(build.indexOf("rust_test("));
-    for (const label of ["//:tools/run.mjs", "//:tools/lib/steps.mjs", "//:tools/lib/data.json", "//:tools/lib/late.mjs", "//bazel:manifest-parser"]) {
+    for (const label of ["//:tools/run.mjs", "//:tools/lib/steps.mjs", "//:tools/lib/data.json", "//:tools/lib/late.mjs", "//:tools/lib/resources.json", "//:tools/lib/helper.mjs", "//:tools/lib/deep.txt", "//bazel:manifest-parser"]) {
       assert.ok(data.includes(`"${label}"`), `${label} in ${data}`);
     }
     assert.doesNotMatch(data, /unused\.mjs|tools\/dist/);

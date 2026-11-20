@@ -519,10 +519,10 @@ rust_test(
         "//:.cargo/config.toml",
         "//:scripts/mold-linker.sh",
         "//:typescript/packages/sdk/native/process-completion.mjs",
+        "//:typescript/packages/sdk/native/process.mjs",
         "//:typescript/packages/sdk/test/process-completion.fuzz.mjs",
         "//:typescript/packages/sdk/test/process.test.mjs",
         "//:typescript/packages/sdk/package.json",
-        "//:typescript/packages/sdk/native/process.mjs",
     ] + [
         ":acyclic-process-host",
         "@nodejs//:node",

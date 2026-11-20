@@ -463,13 +463,16 @@ const NAMED = /\b(source_path|crate_path!|crate_path_str!)\(\s*"([^"\\\n]+)"/g;
 // A generated module is no tracked file: [workspace.metadata.bazel] generated-files maps its path to the
 // label that places it there in runfiles.
 const SCRIPT = /\.(?:[cm]?js|[cm]?ts)$/;
-const IMPORT = /(?:\bfrom|\bimport|\bimport\s*\()\s*(['"])(\.{1,2}\/[^'"\n]+)\1/g;
+// A module also reads a file it names as `new URL("<relative>", import.meta.url)`; a directory URL names
+// no tracked file, so it adds nothing.
+const IMPORT = /(?:\bfrom|\bimport|\bimport\s*\()\s*(['"])(\.{1,2}\/[^'"\n]+)\1|\bnew\s+URL\s*\(\s*(['"])([^'"\n:/][^'"\n:]*)\3\s*,\s*import\.meta\.url\s*\)/g;
 const generatedFiles = bazelWorkspace?.["generated-files"] ?? {};
 function scriptClosure(files) {
   const found = new Set(), queue = files.filter(file => SCRIPT.test(file));
   while (queue.length) {
     const file = queue.pop();
-    for (const [, , specifier] of fs.readFileSync(path.join(root, file), "utf8").matchAll(IMPORT)) {
+    for (const [, , imported, , url] of fs.readFileSync(path.join(root, file), "utf8").matchAll(IMPORT)) {
+      const specifier = imported ?? url;
       const named = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
       if (found.has(named) || files.includes(named) || !(trackedSet.has(named) || generatedFiles[named])) continue;
       found.add(named);
