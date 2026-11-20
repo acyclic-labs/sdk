@@ -40,8 +40,6 @@ fail() { echo "privileged.sh: $*" >&2; exit 1; }
 has() { case " $ACYCLIC_TEST_PRIVILEGES " in *" $1 "*) return 0 ;; esac; return 1; }
 # Whether the case runs as real host root (machines-native, host-root).
 native() { has machines-native || has host-root; }
-# Runs an administration tool, which a test action's PATH (no /usr/sbin or /sbin) may not reach; the case keeps its PATH.
-admin() { PATH=$PATH:/usr/sbin:/sbin "$@"; }
 # Claims a fresh case directory under $1 as $claimed, locked on descriptor 9, which every exec to the case inherits.
 claim() {
   { mkdir -p -m 0755 "$1" && exec 8>>"$1/.lock" && flock 8; } || fail "cannot lock $1"
@@ -55,6 +53,12 @@ claim() {
 }
 stage=${ACYCLIC_TEST_PRIVILEGE_STAGE:-}
 unset ACYCLIC_TEST_PRIVILEGE_STAGE
+# The wrapper runs its own tools from the system's directories, whatever PATH its caller gives (a test action's has no
+# /usr/sbin), and hands the case exactly the caller's PATH, carried across the wrapper's own re-execs.
+[ -n "$stage" ] || export ACYCLIC_TEST_CASE_PATH=${PATH-}
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# Restores the caller's PATH, under which the case's command (or setpriv's exec of it) resolves.
+case_path() { PATH=$ACYCLIC_TEST_CASE_PATH; unset ACYCLIC_TEST_CASE_PATH; }
 if [ -z "$stage" ]; then
   # The one list of privileges, which the generator reads too.
   known=$(dirname -- "$0")/privileges.txt
@@ -67,6 +71,7 @@ if [ -z "$stage" ]; then
     [ "$(tr -s ' ' </proc/self/uid_map)" = " 0 0 4294967295" ] ||
       fail "fs-verity: the case runs in a user namespace (uid_map $(tr -s ' ' </proc/self/uid_map)), where host root reads as overflow"
     claim "$ACYCLIC_TEST_VERITY_DIR"
+    case_path
     ACYCLIC_TEST_VERITY_DIR=$claimed exec "$@"
   fi
   if native; then
@@ -91,7 +96,7 @@ if [ "$stage" = root ]; then
     { cp -- "$source" "$sealed" && chown -- "${owner:-0:0}" "$sealed" && chmod -- "${mode:-0555}" "$sealed"; } ||
       fail "machines-native: cannot copy $binary into $claimed"
     # chown clears file capabilities, so they are set after it; fs-verity seals last.
-    if [ -n "$capabilities" ]; then admin setcap "$capabilities" "$sealed" || fail "machines-native: setcap $capabilities $sealed"; fi
+    if [ -n "$capabilities" ]; then setcap "$capabilities" "$sealed" || fail "machines-native: setcap $capabilities $sealed"; fi
     fsverity enable "$sealed" || fail "machines-native: cannot seal $sealed (is $claimed on an fs-verity filesystem?)"
     export "$variable=$sealed"
   done <<<"${ACYCLIC_TEST_SEALED:-}"
@@ -119,13 +124,15 @@ if [ "$stage" = scope ]; then
   ACYCLIC_TEST_PRIVILEGE_STAGE=namespace exec unshare --net "$@"
 fi
 # The namespace's loopback is down until a holder of CAP_NET_ADMIN raises it.
-admin ip link set lo up || fail "the namespace's loopback did not come up"
+ip link set lo up || fail "the namespace's loopback did not come up"
+setpriv=$(command -v setpriv) || fail "no setpriv"
+case_path
 if has root || has host-root; then exec "$@"; fi
 if has machines-native; then
   caps=-all,+setuid,+setgid,+net_admin
-  exec setpriv --securebits=+noroot,+noroot_locked --inh-caps="$caps" --ambient-caps="$caps" -- "$@"
+  exec "$setpriv" --securebits=+noroot,+noroot_locked --inh-caps="$caps" --ambient-caps="$caps" -- "$@"
 fi
 caps=-all
 if has net-admin || has nft; then caps=$caps,+net_admin; fi
 if has seccomp; then caps=$caps,+sys_admin; fi
-exec setpriv --inh-caps="$caps" --ambient-caps="$caps" --bounding-set="$caps" -- "$@"
+exec "$setpriv" --inh-caps="$caps" --ambient-caps="$caps" --bounding-set="$caps" -- "$@"

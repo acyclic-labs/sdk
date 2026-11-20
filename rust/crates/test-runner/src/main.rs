@@ -999,18 +999,21 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_privileged_wrapper_passes_every_variable_to_its_case() {
+        // The caller's PATH reaches no system directory: the wrapper finds its tools anyway, and the case gets it back.
         let output = Command::new("./privileged.sh")
             .arg("/usr/bin/env")
             .env("ACYCLIC_TEST_PRIVILEGES", "user-namespace")
             .env("CARGO_BIN_EXE_a-b", "hyphenated")
+            .env("PATH", "/caller/bin")
             .output()
             .unwrap();
         let out = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = out.lines().collect();
         assert!(
             output.status.success()
-                && out
-                    .lines()
-                    .any(|line| line == "CARGO_BIN_EXE_a-b=hyphenated"),
+                && lines.contains(&"CARGO_BIN_EXE_a-b=hyphenated")
+                && lines.contains(&"PATH=/caller/bin")
+                && !out.contains("ACYCLIC_TEST_CASE_PATH"),
             "{out}{}",
             String::from_utf8_lossy(&output.stderr)
         );
