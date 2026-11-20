@@ -280,14 +280,8 @@ macro_rules! mutation_callbacks {
                         .map_err(lazy_error)
                 })?;
                 if matches!(
-                    source_lookup,
-                    LazyLookup::Source {
-                        node: SourceNode {
-                            kind: SourceNodeKind::Directory,
-                            ..
-                        },
-                        ..
-                    }
+                    &source_lookup,
+                    LazyLookup::Source { node, .. } if matches!(node.kind, SourceNodeKind::Directory)
                 ) {
                     // Promote the subtree before renaming its source paths.
                     self.promote_subtree_locked(source, work)?;

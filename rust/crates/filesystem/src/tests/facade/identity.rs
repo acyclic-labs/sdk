@@ -56,10 +56,12 @@ async fn named_retention_preserves_the_exact_reference_without_a_cached_proof() 
         let result = fs
             .retain_workspace_generation(
                 &volume,
-                GenerationId::from_root(target),
-                crate::kernel::RetentionKind::Pin,
-                Owned::new(label.clone(), KernelOwnedAllocation::Standalone, bytes),
-                None,
+                crate::facade::GenerationRetention {
+                    generation_id: GenerationId::from_root(target),
+                    kind: crate::kernel::RetentionKind::Pin,
+                    label: Owned::new(label.clone(), KernelOwnedAllocation::Standalone, bytes),
+                    publication: None,
+                },
                 B,
                 &cancellation,
             )

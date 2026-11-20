@@ -91,8 +91,10 @@ where
                                 &mut checkout,
                                 &text,
                                 cursor,
-                                maximum_entries,
-                                Some((&removed, opaque)),
+                                crate::LazyDirectoryBound {
+                                    maximum: maximum_entries,
+                                    mask: Some((&removed, opaque)),
+                                },
                                 &mut accounting,
                             )
                         })?

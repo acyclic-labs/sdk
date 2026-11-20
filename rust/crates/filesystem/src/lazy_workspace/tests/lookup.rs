@@ -184,14 +184,14 @@ async fn observation_and_transient_inspection_pin_their_versions() {
         "/file.txt",
         &LazyLookup::Source {
             source: pinned.clone(),
-            node,
+            node: node.clone(),
         },
         accounting!(),
     )
     .await
     .unwrap();
     let file = root
-        .open_source_file("/file.txt", pinned, node, accounting!())
+        .open_source_file("/file.txt", pinned, *node, accounting!())
         .await
         .unwrap();
     assert_eq!(

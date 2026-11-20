@@ -69,10 +69,12 @@ async fn selected_restore_replaces_both_shapes_atomically_and_preserves_outside_
         let cancel = CancellationToken::new();
         let denied = workspace
             .restore_paths_from(
-                &source,
-                &paths,
-                original.id(),
-                IdempotencyKey::new(),
+                crate::PathRestore {
+                    source: &source,
+                    paths: &paths,
+                    if_current: original.id(),
+                    idempotency_key: IdempotencyKey::new(),
+                },
                 crate::PublicationPermit::Unrestricted,
                 budget,
                 &cancel,
@@ -104,10 +106,12 @@ async fn selected_restore_replaces_both_shapes_atomically_and_preserves_outside_
         let original_id = original.id();
         let restored = workspace
             .restore_paths_from(
-                &source,
-                &paths,
-                original_id,
-                IdempotencyKey::new(),
+                crate::PathRestore {
+                    source: &source,
+                    paths: &paths,
+                    if_current: original_id,
+                    idempotency_key: IdempotencyKey::new(),
+                },
                 crate::PublicationPermit::Unrestricted,
                 budget,
                 &cancel,

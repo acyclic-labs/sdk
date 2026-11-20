@@ -74,10 +74,12 @@ async fn restored(
 ) -> bool {
     workspace
         .restore_paths_from(
-            source,
-            paths,
-            current.id(),
-            IdempotencyKey::new(),
+            acyclic_fs::PathRestore {
+                source,
+                paths,
+                if_current: current.id(),
+                idempotency_key: IdempotencyKey::new(),
+            },
             PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

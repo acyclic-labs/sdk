@@ -423,10 +423,10 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
     let shadow = crate::LazyShadow::Node {
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
-        authored: Some(crate::lazy_workspace::LazyStoredRecord {
+        authored: Some(Box::new(crate::lazy_workspace::LazyStoredRecord {
             record: vec![1, 2, 3],
             metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
-        }),
+        })),
         observed: None,
         left: empty_shadows,
         right: empty_shadows,

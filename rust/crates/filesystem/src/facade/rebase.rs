@@ -171,7 +171,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         operation_id,
                         generation_root: candidate,
                     },
-                    intent: PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+                    intent: Box::new(PublicationIntent::guarded(
+                        None,
+                        PublicationPermit::Unrestricted,
+                    )),
                     limits: closure_limits(target.config),
                     resolutions_digest: candidate.digest,
                     source_hold: None,
@@ -336,14 +339,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await;
-        let certificate = match &outcome {
-            Ok(Some(_)) => certificate,
-            _ => {
-                if let Some(certificate) = certificate {
-                    certificate.retire(accounting)?;
-                }
-                None
+        let certificate = if let Ok(Some(_)) = &outcome {
+            certificate
+        } else {
+            if let Some(certificate) = certificate {
+                certificate.retire(accounting)?;
             }
+            None
         };
         let merged = match (outcome, settled) {
             (Ok(Some(merged)), settled) => (merged, settled),

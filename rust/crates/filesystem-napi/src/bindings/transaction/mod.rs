@@ -136,13 +136,13 @@ impl NativeWorkspaceTransaction {
         let length = bigint_u64(&length, "length")?;
         sdk_value!(unbounded_future!(
             self.inner.lock().await,
-            clone_range(
-                &source,
+            clone_range(FileCloneRequest {
+                source: &source,
                 source_offset,
-                &destination,
+                destination: &destination,
                 destination_offset,
-                length
-            )
+                length,
+            })
         ))
     }
 

@@ -161,10 +161,14 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
         limit: ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        let mut accounting = work.accounting();
         let (page, custody) = self
-            .read_page(authority, after, limit, &mut work.accounting())
+            .read_page(authority, after, limit, &mut accounting)
             .map_err(authority_error)?;
-        Ok((page, custody.into_authority_allocation()))
+        let custody = custody
+            .into_authority_allocation(&accounting)
+            .map_err(authority_error)?;
+        Ok((page, custody))
     }
     async fn fence(
         &self,

@@ -528,7 +528,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         Ok(lookup.0.record.ok_or(FsError::NotFound)?.file_id)
     }
 
-    pub(super) fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
+    pub(super) async fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
         &'a mut self,
         parent_components: &'a [LogicalName],
         target: &'a LogicalName,
@@ -536,126 +536,119 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
         unique: bool,
-    ) -> impl std::future::Future<
-        Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>,
-    > + ProviderTask
-    + 'a {
-        async move {
-            let mut frame_custody = None;
-            let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
-                (
-                    &mut *self,
-                    parent_components,
-                    target,
-                    allowed_file_ids,
-                    &mut *accounting,
-                ),
-                |(_, _, _, _, context), bytes| {
-                    frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
-                    Ok::<(), FsError>(())
-                },
-                |(this, parent_components, target, allowed_file_ids, accounting)| async move {
-                    let allocation = accounting.claim_owned(0, 0)?;
-                    let mut parent = (
-                        NamespacePath::new(Vec::new(), this.volume.config.limits)
-                            .map_err(name_path_error)?,
-                        allocation,
-                    );
-                    for name in parent_components {
-                        let next = parent.0.child_with_accounting(
-                            name,
-                            this.volume.config.limits,
+    ) -> Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError> {
+        let mut frame_custody = None;
+        let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
+            (
+                &mut *self,
+                parent_components,
+                target,
+                allowed_file_ids,
+                &mut *accounting,
+            ),
+            |(_, _, _, _, context), bytes| {
+                frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
+                Ok::<(), FsError>(())
+            },
+            |(this, parent_components, target, allowed_file_ids, accounting)| async move {
+                let allocation = accounting.claim_owned(0, 0)?;
+                let mut parent = (
+                    NamespacePath::new(Vec::new(), this.volume.config.limits)
+                        .map_err(name_path_error)?,
+                    allocation,
+                );
+                for name in parent_components {
+                    let next = parent.0.child_with_accounting(
+                        name,
+                        this.volume.config.limits,
+                        accounting,
+                        cancellation,
+                    )?;
+                    let bytes = parent.0.retained_bytes();
+                    retire_name_owned(std::mem::replace(&mut parent, next), bytes, accounting)?;
+                }
+                let folded_target = name_fold_key(target, accounting)?;
+                let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
+                let mut found = None;
+                loop {
+                    accounting.check()?;
+                    this.synchronize_live_with_accounting(accounting, cancellation)
+                        .await?;
+                    let (lookup, _allocation) = this
+                        .lookup_no_follow_at_current_with_accounting(
+                            &parent.0,
                             accounting,
                             cancellation,
-                        )?;
-                        let bytes = parent.0.retained_bytes();
-                        retire_name_owned(std::mem::replace(&mut parent, next), bytes, accounting)?;
-                    }
-                    let folded_target = name_fold_key(target, accounting)?;
-                    let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
-                    let mut found = None;
-                    loop {
-                        accounting.check()?;
-                        this.synchronize_live_with_accounting(accounting, cancellation)
-                            .await?;
-                        let (lookup, _allocation) = this
-                            .lookup_no_follow_at_current_with_accounting(
-                                &parent.0,
-                                accounting,
-                                cancellation,
-                                false,
-                            )
-                            .await?;
-                        let page = this
-                            .list_directory_record_with_accounting(
-                                lookup.record.ok_or(FsError::NotFound)?,
-                                after
-                                    .as_ref()
-                                    .map(|owned| &owned.0)
-                                    .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
-                                (CASE_FOLD_COLLISION_SCAN_PAGE, false),
-                                accounting,
-                                cancellation,
-                            )
-                            .await?;
-                        if let Some(name) = folded_binding_match(
-                            target,
-                            &folded_target.0,
-                            unique,
-                            allowed_file_ids,
-                            page.0.entries.iter(),
+                            false,
+                        )
+                        .await?;
+                    let page = this
+                        .list_directory_record_with_accounting(
+                            lookup.record.ok_or(FsError::NotFound)?,
+                            after
+                                .as_ref()
+                                .map(|owned| &owned.0)
+                                .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                            (CASE_FOLD_COLLISION_SCAN_PAGE, false),
                             accounting,
-                        )? {
-                            if found.is_some() {
-                                return Err(FsError::NameCollision);
-                            }
-                            found = Some(name.clone_with_accounting(accounting, cancellation)?);
+                            cancellation,
+                        )
+                        .await?;
+                    if let Some(name) = folded_binding_match(
+                        target,
+                        &folded_target.0,
+                        unique,
+                        allowed_file_ids,
+                        page.0.entries.iter(),
+                        accounting,
+                    )? {
+                        if found.is_some() {
+                            return Err(FsError::NameCollision);
                         }
-                        let has_more = page.0.has_more;
-                        if let Some(old) = after.take() {
-                            let bytes = old.0.retained_bytes() as u64;
-                            retire_name_owned(old, bytes, accounting)?;
-                        }
-                        after = match page
-                            .0
-                            .entries
-                            .last()
-                            .filter(|_| has_more && (unique || found.is_none()))
-                        {
-                            Some(entry) => {
-                                Some(entry.name.clone_with_accounting(accounting, cancellation)?)
-                            }
-                            None => None,
-                        };
-                        let bytes = page.0.entries.iter().try_fold(
-                            (page.0.entries.capacity() * size_of::<crate::kernel::TreeEntry>())
-                                as u64,
-                            |bytes, entry| {
-                                bytes
-                                    .checked_add(entry.name.retained_bytes() as u64)
-                                    .ok_or(WorkError::Overflow)
-                            },
-                        )?;
-                        retire_name_owned(page, bytes, accounting)?;
-                        if (!unique && found.is_some()) || !has_more {
-                            break;
-                        }
+                        found = Some(name.clone_with_accounting(accounting, cancellation)?);
                     }
-                    let bytes = parent.0.retained_bytes();
-                    retire_name_owned(parent, bytes, accounting)?;
-                    let bytes = folded_target.0.capacity() as u64;
-                    retire_name_owned(folded_target, bytes, accounting)?;
-                    Ok(found)
-                },
-            )?;
-            let mut future = future;
-            let result = future.as_mut().await;
-            drop(future);
-            let mut frame_custody =
-                frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
-            accounting.release_owned(&mut frame_custody, frame_bytes)?;
-            result
-        }
+                    let has_more = page.0.has_more;
+                    if let Some(old) = after.take() {
+                        let bytes = old.0.retained_bytes() as u64;
+                        retire_name_owned(old, bytes, accounting)?;
+                    }
+                    after = match page
+                        .0
+                        .entries
+                        .last()
+                        .filter(|_| has_more && (unique || found.is_none()))
+                    {
+                        Some(entry) => {
+                            Some(entry.name.clone_with_accounting(accounting, cancellation)?)
+                        }
+                        None => None,
+                    };
+                    let bytes = page.0.entries.iter().try_fold(
+                        (page.0.entries.capacity() * size_of::<crate::kernel::TreeEntry>()) as u64,
+                        |bytes, entry| {
+                            bytes
+                                .checked_add(entry.name.retained_bytes() as u64)
+                                .ok_or(WorkError::Overflow)
+                        },
+                    )?;
+                    retire_name_owned(page, bytes, accounting)?;
+                    if (!unique && found.is_some()) || !has_more {
+                        break;
+                    }
+                }
+                let bytes = parent.0.retained_bytes();
+                retire_name_owned(parent, bytes, accounting)?;
+                let bytes = folded_target.0.capacity() as u64;
+                retire_name_owned(folded_target, bytes, accounting)?;
+                Ok(found)
+            },
+        )?;
+        let mut future = future;
+        let result = future.as_mut().await;
+        drop(future);
+        let mut frame_custody = frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
+        accounting.release_owned(&mut frame_custody, frame_bytes)?;
+        result
     }
 }
 

@@ -83,10 +83,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         self.volume
             .fs
             .fork_ephemeral_workspace(
-                name,
-                &options.generation,
-                options.idempotency_key,
-                crate::kernel::Owned::new(options.paths, allocation, bytes),
+                crate::facade::WorkspaceFork {
+                    destination: name,
+                    source: &options.generation,
+                    idempotency_key: options.idempotency_key,
+                    paths: crate::kernel::Owned::new(options.paths, allocation, bytes),
+                },
                 accounting,
             )
             .await
@@ -128,10 +130,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 self.volume
                     .fs
                     .fork_workspace(
-                        name,
-                        &options.generation,
-                        options.idempotency_key,
-                        crate::kernel::Owned::new(options.paths, allocation, bytes),
+                        crate::facade::WorkspaceFork {
+                            destination: name,
+                            source: &options.generation,
+                            idempotency_key: options.idempotency_key,
+                            paths: crate::kernel::Owned::new(options.paths, allocation, bytes),
+                        },
                         permit,
                         accounting,
                         Some(&mut guard),
@@ -167,10 +171,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .fs
             .retain_workspace_generation(
                 &self.volume,
-                generation.id,
-                crate::kernel::RetentionKind::Checkpoint,
-                crate::kernel::Owned::new(text, KernelOwnedAllocation::Standalone, bytes),
-                None,
+                crate::facade::GenerationRetention {
+                    generation_id: generation.id,
+                    kind: crate::kernel::RetentionKind::Checkpoint,
+                    label: crate::kernel::Owned::new(
+                        text,
+                        KernelOwnedAllocation::Standalone,
+                        bytes,
+                    ),
+                    publication: None,
+                },
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -287,7 +297,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .live_rebase_workspace(request, accounting, cancellation)
             .await?;
         let bytes = outcome.bytes;
-        let allocation = super::paths::workspace_allocation(outcome.allocation, accounting)?;
+        let allocation = outcome.allocation.into_authority_allocation(accounting)?;
         let generation = |id| Generation {
             workspace: self.clone(),
             id,

@@ -5,7 +5,8 @@ use crate::{NativeAllocation, NativeMaterializationWork};
 use acyclic_stream::ProviderTask;
 
 /// Work supplied as a standalone budget or an original native invocation.
-pub trait FsWork: Sync + ProviderTask {
+/// A work source is a copyable handle: a budget value or a borrowed ledger.
+pub trait FsWork: Copy + Sync + ProviderTask {
     /// Result shape for this work source.
     type Output<T, E>;
     /// Result shape for an owned output buffer, preserving its operation error.
@@ -132,7 +133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .authority
                 .durability_barrier(&mut authority)
                 .await;
-            finish_authority_work(authority)?;
+            authority.finish()?;
             result.map_err(FsError::from)
         }
         .await;
@@ -182,15 +183,4 @@ pub(crate) fn measured<T, E: From<FsError>>(
     crate::performance::finish_measured(result, accounting.spent(), |error| {
         E::from(FsError::from(error))
     })
-}
-
-pub(crate) fn finish_authority_work(
-    authority: crate::async_storage::AuthorityFrame<'_>,
-) -> Result<(), FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if authority.original.is_some() {
-        return Ok(());
-    }
-    authority.spent()?.verify(authority.budget)?;
-    Ok(())
 }

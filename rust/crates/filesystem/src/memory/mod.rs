@@ -44,17 +44,6 @@ fn allocate<T>(
     Ok((values, custody))
 }
 
-impl KernelOwnedAllocation {
-    /// The authority allocation this custody hands to a store's caller.
-    fn into_authority_allocation(self) -> crate::AuthorityAllocation {
-        match self {
-            KernelOwnedAllocation::Standalone => None,
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(custody) => Some(custody),
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "../tests/memory/mod.rs"]
 mod tests;

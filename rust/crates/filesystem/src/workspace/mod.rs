@@ -140,7 +140,7 @@ pub use outcomes::{
 };
 use paths::{
     copy_workspace_label, merge_workspace_backend, path_conflict_kind, regular_file_bytes,
-    restore_absolute_path, workspace_allocation, workspace_allocation_error,
+    restore_absolute_path, workspace_allocation_error,
 };
 pub(crate) use paths::{
     customer_path, customer_path_with_accounting, workspace_owned_strings_bytes,
@@ -150,6 +150,7 @@ use read_core::{
     list, matches_content, plan, read_link, read_range, read_selected,
     read_selected_with_accounting, stat,
 };
+pub use restore::PathRestore;
 pub use transaction::Transaction;
 
 #[cfg(test)]

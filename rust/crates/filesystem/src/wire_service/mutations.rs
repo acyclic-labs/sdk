@@ -116,11 +116,13 @@ async fn change_range<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 's
         Mutation::CloneRange(value) => {
             transaction
                 .clone_range(
-                    &value.source,
-                    value.source_offset,
-                    &value.destination,
-                    value.destination_offset,
-                    value.length,
+                    crate::FileCloneRequest {
+                        source: &value.source,
+                        source_offset: value.source_offset,
+                        destination: &value.destination,
+                        destination_offset: value.destination_offset,
+                        length: value.length,
+                    },
                     WorkBudget::UNBOUNDED,
                     cancellation,
                 )

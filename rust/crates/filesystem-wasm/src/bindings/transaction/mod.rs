@@ -174,13 +174,13 @@ impl BrowserTransaction {
     ) -> Result<(), JsValue> {
         sdk_value!(unbounded_future!(
             self.engine,
-            clone_range(
-                &source,
+            clone_range(FileCloneRequest {
+                source: &source,
                 source_offset,
-                &destination,
+                destination: &destination,
                 destination_offset,
-                length
-            )
+                length,
+            })
         ))
     }
 

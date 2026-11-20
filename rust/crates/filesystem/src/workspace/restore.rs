@@ -1,5 +1,18 @@
 use super::*;
 
+/// Exact paths of one source generation, restored into a workspace only while
+/// its head is still `if_current`.
+pub struct PathRestore<'a, A: 'static, O: 'static> {
+    /// The immutable generation the paths are restored from.
+    pub source: &'a Generation<A, O>,
+    /// Paths restored exactly, removed where the source lacks them.
+    pub paths: &'a [String],
+    /// The head the restore is conditioned on.
+    pub if_current: GenerationId,
+    /// Replay identity of the restore's publication.
+    pub idempotency_key: IdempotencyKey,
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Restores one exact generation only while the supplied writer permit remains valid.
     pub async fn restore_generation(
@@ -43,10 +56,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     /// Restores exact records and prepares selected directories before one publication seal.
     pub async fn restore_paths_from<F, Fut>(
         &self,
-        source: &Generation<A, O>,
-        paths: &[String],
-        if_current: GenerationId,
-        idempotency_key: IdempotencyKey,
+        restore: PathRestore<'_, A, O>,
         permit: crate::PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -56,6 +66,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
+        let PathRestore {
+            source,
+            paths,
+            if_current,
+            idempotency_key,
+        } = restore;
         crate::heap_future::in_heap_measured(
             move |budget| async move {
                 let mut accounting = KernelAccounting::standalone(budget, cancellation);
@@ -147,10 +163,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn restore_paths_from_with_native_work<'original, E, F, Fut>(
         &self,
-        source: &Generation<A, O>,
-        paths: &[String],
-        if_current: GenerationId,
-        idempotency_key: IdempotencyKey,
+        restore: PathRestore<'_, A, O>,
         permit: crate::PublicationPermit,
         original: &'original crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
@@ -161,6 +174,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
+        let PathRestore {
+            source,
+            paths,
+            if_current,
+            idempotency_key,
+        } = restore;
         if !self.volume.fs.same_deployment(&source.workspace.volume.fs) {
             return Err(E::from(WorkspaceError::ForeignGeneration));
         }

@@ -248,21 +248,23 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyShadowId, LazyWorkspaceError> {
         let observed = records.observed.as_ref().map(|(_, _, record, _)| *record);
-        let (durable, count) = match (records.authored, observed) {
-            (Some((authored, _)), Some(observed)) => ([authored, observed], 2),
-            (Some((record, _)), None) | (None, Some(record)) => ([record, record], 1),
+        let (pair, single);
+        let durable: &[_] = match (records.authored, observed) {
+            (Some((authored, _)), Some(observed)) => {
+                pair = [authored, observed];
+                &pair
+            }
+            (Some((record, _)), None) | (None, Some(record)) => {
+                single = record;
+                std::slice::from_ref(&single)
+            }
             (None, None) => return Err(LazyWorkspaceError::OriginalSnapshotUnavailable),
         };
         let hold = accounted!(ctx, |work, cancel| self
             .workspace
             .volume
             .fs
-            .make_records_durable(
-                self.workspace.volume.config,
-                &durable[..count],
-                work,
-                cancel
-            ));
+            .make_records_durable(self.workspace.volume.config, durable, work, cancel));
         let hold = hold?;
         ctx.charge(WorkCounters {
             bytes_hashed: 16,
@@ -320,8 +322,8 @@ impl<
         let node = LazyShadow::Node {
             file_id: id,
             priority: shadow_priority(id),
-            authored,
-            observed,
+            authored: authored.map(Box::new),
+            observed: observed.map(Box::new),
             left: root,
             right: root,
         };

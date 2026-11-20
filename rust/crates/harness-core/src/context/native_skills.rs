@@ -728,7 +728,7 @@ impl SkillReader for ProjectCatalog<'_> {
             let pinned = match &lookup {
                 acyclic_fs::LazyLookup::Source { node, .. } => {
                     self.sources
-                        .retain(self.records, &self.native, self.root, &path, *node)?
+                        .retain(self.records, &self.native, self.root, &path, **node)?
                 }
                 acyclic_fs::LazyLookup::Authored { record, .. }
                 | acyclic_fs::LazyLookup::Shadow { record, .. } => self.records.retain(

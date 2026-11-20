@@ -8,8 +8,7 @@
 use crate::async_storage::{AsyncObjectStore, AuthorityWork, PublicationScope};
 use crate::storage::{HashedObject, ObjectId, ObjectReadRequest, ObjectWrite};
 use crate::{AuthorityAllocation, ObjectRead, ObjectStoreError, PublicationHold};
-use acyclic_stream::{BoxProviderFuture, OwnedBytes, ProviderPlatform, ProviderTask};
-use std::future::Future;
+use acyclic_stream::{BoxProviderFuture, OwnedBytes, ProviderPlatform};
 
 type Erased<'a, T> = BoxProviderFuture<'a, Result<T, ObjectStoreError>>;
 type Reads = (Vec<ObjectRead>, AuthorityAllocation);
@@ -283,12 +282,12 @@ impl AsyncObjectStore for dyn DynObjectStore {
     fn maximum_reference_bytes(&self) -> usize {
         self.dyn_maximum_reference_bytes()
     }
-    fn prepare_hashed(
+    async fn prepare_hashed(
         &self,
         object: HashedObject,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<HashedObject, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_prepare_hashed(object, context).await }
+    ) -> Result<HashedObject, ObjectStoreError> {
+        self.dyn_prepare_hashed(object, context).await
     }
     fn supports_decoded_cache(&self) -> bool {
         self.dyn_supports_decoded_cache()
@@ -299,108 +298,104 @@ impl AsyncObjectStore for dyn DynObjectStore {
     ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
         self.dyn_decoded_cache_lookup(key)
     }
-    fn put(
+    async fn put(
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put(object_id, bytes, context).await }
+    ) -> Result<(), ObjectStoreError> {
+        self.dyn_put(object_id, bytes, context).await
     }
-    fn put_stored(
+    async fn put_stored(
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_stored(object_id, bytes, context).await }
+    ) -> Result<(), ObjectStoreError> {
+        self.dyn_put_stored(object_id, bytes, context).await
     }
-    fn put_hashed(
+    async fn put_hashed(
         &self,
         object: HashedObject,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_hashed(object, context).await }
+    ) -> Result<(), ObjectStoreError> {
+        self.dyn_put_hashed(object, context).await
     }
-    fn put_many(
+    async fn put_many(
         &self,
         writes: &[ObjectWrite],
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_many(writes, context).await }
+    ) -> Result<(), ObjectStoreError> {
+        self.dyn_put_many(writes, context).await
     }
-    fn put_many_hashed(
+    async fn put_many_hashed(
         &self,
         objects: &[HashedObject],
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_many_hashed(objects, context).await }
+    ) -> Result<(), ObjectStoreError> {
+        self.dyn_put_many_hashed(objects, context).await
     }
-    fn flush_before_publish(
+    async fn flush_before_publish(
         &self,
         scope: PublicationScope<'_>,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<PublicationHold, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_flush_before_publish(scope, context).await }
+    ) -> Result<PublicationHold, ObjectStoreError> {
+        self.dyn_flush_before_publish(scope, context).await
     }
-    fn historical_generation_evidence(
+    async fn historical_generation_evidence(
         &self,
         authority_id: crate::AuthorityId,
         record: &crate::DurableCommit,
         maximum_bytes: u64,
         maximum_objects: u64,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<Evidence, ObjectStoreError>> + ProviderTask {
-        async move {
-            self.dyn_historical_generation_evidence(
-                authority_id,
-                record,
-                maximum_bytes,
-                maximum_objects,
-                context,
-            )
+    ) -> Result<Evidence, ObjectStoreError> {
+        self.dyn_historical_generation_evidence(
+            authority_id,
+            record,
+            maximum_bytes,
+            maximum_objects,
+            context,
+        )
+        .await
+    }
+    async fn read(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        self.dyn_read(object_id, maximum_bytes, context).await
+    }
+    async fn read_stored(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        self.dyn_read_stored(object_id, maximum_bytes, context)
             .await
-        }
     }
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<ObjectRead, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_read(object_id, maximum_bytes, context).await }
-    }
-    fn read_stored(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<ObjectRead, ObjectStoreError>> + ProviderTask {
-        async move {
-            self.dyn_read_stored(object_id, maximum_bytes, context)
-                .await
-        }
-    }
-    fn read_many(
+    async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<Reads, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_read_many(requests, context).await }
+    ) -> Result<Reads, ObjectStoreError> {
+        self.dyn_read_many(requests, context).await
     }
-    fn read_many_stored(
+    async fn read_many_stored(
         &self,
         requests: &[ObjectReadRequest],
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<Reads, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_read_many_stored(requests, context).await }
+    ) -> Result<Reads, ObjectStoreError> {
+        self.dyn_read_many_stored(requests, context).await
     }
-    fn contains(
+    async fn contains(
         &self,
         object_id: ObjectId,
         context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<bool, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_contains(object_id, context).await }
+    ) -> Result<bool, ObjectStoreError> {
+        self.dyn_contains(object_id, context).await
     }
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         self.dyn_collection()

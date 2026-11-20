@@ -83,16 +83,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                             accounting,
                         )?,
                     };
+                    let metadata = self
+                        .stage_authored_metadata_with_accounting(
+                            metadata,
+                            staged_metadata,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
                     return self
                         .compile_create_file_with_accounting(
-                            path,
+                            AuthoredFile {
+                                path,
+                                file_id,
+                                metadata,
+                            },
                             content,
-                            metadata,
-                            file_id,
-                            operations,
-                            &mut allocation,
-                            &mut bytes,
-                            staged_metadata,
+                            AuthoredBatch {
+                                operations: &mut *operations,
+                                allocation: &mut allocation,
+                                bytes: &mut bytes,
+                            },
                             accounting,
                             cancellation,
                         )
@@ -123,13 +134,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         )?,
                     };
                     self.compile_regular_content_with_accounting(
-                        path,
+                        AuthoredFile {
+                            path,
+                            file_id,
+                            metadata,
+                        },
                         content,
-                        metadata,
-                        file_id,
-                        operations,
-                        &mut allocation,
-                        &mut bytes,
+                        AuthoredBatch {
+                            operations: &mut *operations,
+                            allocation: &mut allocation,
+                            bytes: &mut bytes,
+                        },
                         accounting,
                     )?;
                     return Ok(Some(file_id));
@@ -252,13 +267,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     };
                     return self
                         .compile_record_with_accounting(
-                            operations,
-                            path,
-                            kind,
-                            payload,
-                            (metadata, file_id),
-                            &mut allocation,
-                            &mut bytes,
+                            AuthoredBatch {
+                                operations: &mut *operations,
+                                allocation: &mut allocation,
+                                bytes: &mut bytes,
+                            },
+                            AuthoredRecord {
+                                path,
+                                kind,
+                                payload,
+                                metadata,
+                                file_id,
+                            },
                             staged_metadata,
                             accounting,
                             cancellation,

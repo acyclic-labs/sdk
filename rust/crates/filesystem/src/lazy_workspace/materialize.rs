@@ -295,7 +295,10 @@ impl<
                     SourceNodeKind::SymbolicLink => {
                         let target = self
                             .read_resolved(
-                                &LazyLookup::Source { source, node },
+                                &LazyLookup::Source {
+                                    source,
+                                    node: Box::new(node),
+                                },
                                 path,
                                 None,
                                 maximum,
@@ -392,10 +395,10 @@ impl<
             .await?;
         let result = async {
             // A second live source binding is not a rename. Never admit directory hard links.
-            if let Some(node) = self.source_lookup(&source, &old.value, ctx).await? {
-                if self.source_file_id(&node.file_identity, ctx)? == id {
-                    return Err(crate::FsError::FileIdentityCollision.into());
-                }
+            if let Some(node) = self.source_lookup(&source, &old.value, ctx).await?
+                && self.source_file_id(&node.file_identity, ctx)? == id
+            {
+                return Err(crate::FsError::FileIdentityCollision.into());
             }
             accounted!(ctx, |work, cancel| transaction.rename(
                 &old.value,

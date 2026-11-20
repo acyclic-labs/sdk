@@ -83,6 +83,13 @@ impl From<OperationId> for CreationOperation<'_> {
     }
 }
 
+/// The objects a creation's generation reaches, proved live as of one
+/// collection sweep.
+pub(super) struct CreationClosure<'c> {
+    pub(super) objects: &'c [ObjectId],
+    pub(super) proven_at: u64,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a fresh volume and its authenticated empty generation using
     /// the supplied standalone budget or original native invocation.
@@ -194,8 +201,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     initial_generation_root: manifest.generation_root,
                 },
                 Some(operation_id),
-                &manifest.objects,
-                proven_at,
+                CreationClosure {
+                    objects: &manifest.objects,
+                    proven_at,
+                },
                 &mut accounting,
                 cancellation,
                 None::<&mut ()>,
@@ -245,8 +254,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     initial_generation_root: generation_root,
                 },
                 operation_id,
-                &proof.objects,
-                proven_at,
+                CreationClosure {
+                    objects: &proof.objects,
+                    proven_at,
+                },
                 accounting,
                 cancellation,
                 guard,
@@ -259,8 +270,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         creation: VolumeCreated,
         operation_id: Option<OperationId>,
-        closure: &[ObjectId],
-        proven_at: u64,
+        closure: CreationClosure<'_>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
         guard: Option<&mut G>,
@@ -277,8 +287,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .prepare_creation_commit(
                 creation,
                 operation_id,
-                closure,
-                proven_at,
+                closure.objects,
+                closure.proven_at,
                 accounting,
                 cancellation,
             )
@@ -295,7 +305,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 guard,
             )
             .await;
-        let recorded = finish_authority_work(authority);
+        let recorded = authority.finish();
         if let Some(changes) = prepared.changes {
             changes.retire(accounting)?;
         }
@@ -394,7 +404,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut work,
             )
             .await;
-        finish_authority_work(work)?;
+        work.finish()?;
         let (records, _allocation) = result.map_err(|error| match error {
             #[cfg(not(target_arch = "wasm32"))]
             AuthorityStoreError::NativeStream(error)
@@ -474,14 +484,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// writes nothing. The caller releases the standalone read custody.
     pub(super) async fn initial_generation_matches(
         &self,
-        volume_id: VolumeId,
-        config: VolumeConfig,
-        generation_root: ObjectId,
+        creation: VolumeCreated,
         files: &[(&str, acyclic_stream::OwnedBytes)],
         attributes: &[CreationAttribute],
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
+        let VolumeCreated {
+            volume_id,
+            config,
+            initial_generation_root: generation_root,
+        } = creation;
         let groups = group_creation_attributes(files, attributes, accounting)?;
         let result = async {
             let volume = Volume {
@@ -942,14 +955,11 @@ fn group_creation_attributes<'a>(
         matched.value.push(false);
     }
     for (name, _) in files {
-        let found = match crate::kernel::binary_search_with_accounting(
-            &groups.value,
-            accounting,
-            |group| group.0.cmp(*name),
-        )? {
-            Ok(index) => Some(index),
-            Err(_) => None,
-        };
+        let found =
+            crate::kernel::binary_search_with_accounting(&groups.value, accounting, |group| {
+                group.0.cmp(*name)
+            })?
+            .ok();
         if let Some(index) = found {
             let slot = matched.value.get_mut(index).ok_or(FsError::InvalidDiff)?;
             *slot = true;

@@ -623,6 +623,27 @@ pub enum KernelOwnedAllocation {
 }
 
 impl KernelOwnedAllocation {
+    /// The authority allocation this custody hands to its caller: the original
+    /// native ledger's allocation, or none when standalone accounting tracks it.
+    /// Native work never yields standalone custody.
+    pub(crate) fn into_authority_allocation(
+        self,
+        accounting: &KernelAccounting<'_>,
+    ) -> Result<crate::AuthorityAllocation, crate::FsError> {
+        let _ = accounting;
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal(allocation) => Ok(Some(allocation)),
+            Self::Standalone => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if accounting.native_work().is_some() {
+                    return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+                }
+                Ok(None)
+            }
+        }
+    }
+
     /// Whether this custody funds no bytes.
     pub(crate) fn funds_nothing(&self) -> bool {
         match self {

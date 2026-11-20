@@ -54,10 +54,12 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
     let dirty = unbounded!(workspace, head())?;
     let outcome = workspace
         .restore_paths_from(
-            &source,
-            &["tree/tracked".to_owned()],
-            dirty.id(),
-            IdempotencyKey::from_bytes([0x62; 16]),
+            acyclic_fs::PathRestore {
+                source: &source,
+                paths: &["tree/tracked".to_owned()],
+                if_current: dirty.id(),
+                idempotency_key: IdempotencyKey::from_bytes([0x62; 16]),
+            },
             PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -176,10 +178,12 @@ async fn directory_record_restore_preserves_unselected_descendants() -> Result<(
     let current = unbounded!(workspace, head())?;
     let restored = workspace
         .restore_paths_from(
-            &source,
-            &["tree".to_owned()],
-            current.id(),
-            IdempotencyKey::new(),
+            acyclic_fs::PathRestore {
+                source: &source,
+                paths: &["tree".to_owned()],
+                if_current: current.id(),
+                idempotency_key: IdempotencyKey::new(),
+            },
             PublicationPermit::Unrestricted,
             selected_transaction_budget(),
             &CancellationToken::new(),

@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &mut authority,
             )
             .await;
-        finish_authority_work(authority)?;
+        authority.finish()?;
         let position = result?.ok_or(FsError::NotFound)?;
         if position == Sequence::GENESIS || position > head {
             return Err(FsError::InvalidAuthorityHistory);

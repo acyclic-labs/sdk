@@ -64,10 +64,12 @@ where
         let outcome = self
             .current
             .restore_paths_from(
-                &source,
-                paths,
-                current.id(),
-                IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                acyclic_fs::PathRestore {
+                    source: &source,
+                    paths,
+                    if_current: current.id(),
+                    idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                },
                 self.permit,
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),

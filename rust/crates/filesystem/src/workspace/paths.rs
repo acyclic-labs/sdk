@@ -168,20 +168,13 @@ pub(super) fn restore_absolute_path(
     copy_owned_text("/", relative, accounting)
 }
 
-pub(super) fn workspace_allocation(
-    allocation: KernelOwnedAllocation,
-    accounting: &KernelAccounting<'_>,
-) -> Result<crate::AuthorityAllocation, WorkspaceError> {
-    let _ = accounting;
-    match allocation {
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(allocation) => Ok(Some(allocation)),
-        KernelOwnedAllocation::Standalone => {
+impl KernelOwnedAllocation {
+    /// Releases the backing now instead of at the end of its scope.
+    pub(super) fn release(self) {
+        match self {
             #[cfg(not(target_arch = "wasm32"))]
-            if accounting.native_work().is_some() {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-            }
-            Ok(None)
+            Self::NativeOriginal(allocation) => drop(allocation),
+            Self::Standalone => {}
         }
     }
 }

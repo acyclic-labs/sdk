@@ -291,12 +291,14 @@ pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,
     decode_generation_export_manifest, encode_generation_export_manifest,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use lazy_workspace::SelectedImportPlan;
 pub use lazy_workspace::{
-    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing, LazyDirectoryNode,
-    LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay, LazyOverlayId,
-    LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef, LazySourceRecord, LazyStat,
-    LazyStoredRecord, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
-    MemoryLazyWorkspaceStore, NativePublicationSnapshot, SelectedImportPlan,
+    LazyDirectoryBound, LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing,
+    LazyDirectoryNode, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay,
+    LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef, LazySourceRecord,
+    LazyStat, LazyStoredRecord, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState,
+    LazyWorkspaceStore, MemoryLazyWorkspaceStore, NativePublicationSnapshot,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use ledger::{NativeAllocation, NativeMaterializationWork, NativeWorkReservation};
@@ -431,10 +433,10 @@ pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, ChangedPathEntry, ChangedPaths, DrivenJoinError,
     EphemeralFork, FileCondition, FileIdentityPaths, ForkOptions, Generation, IdempotencyKey,
     JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, OperationPublication,
-    Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
-    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
-    WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
-    WorkspaceRestore, WorkspaceStat,
+    PathRestore, Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete,
+    WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId,
+    WorkspaceMetadata, WorkspaceName, WorkspaceNameError, WorkspacePathApply,
+    WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,

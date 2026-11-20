@@ -31,10 +31,12 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
         |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
     let denied = workspace
         .restore_paths_from_with_native_work(
-            &frozen,
-            &paths,
-            current.id(),
-            key,
+            crate::PathRestore {
+                source: &frozen,
+                paths: &paths,
+                if_current: current.id(),
+                idempotency_key: key,
+            },
             crate::PublicationPermit::Unrestricted,
             &original,
             &cancellation,
@@ -58,10 +60,12 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     };
     let restored = workspace
         .restore_paths_from_with_native_work(
-            &frozen,
-            &paths,
-            current.id(),
-            key,
+            crate::PathRestore {
+                source: &frozen,
+                paths: &paths,
+                if_current: current.id(),
+                idempotency_key: key,
+            },
             permit,
             &original,
             &cancellation,

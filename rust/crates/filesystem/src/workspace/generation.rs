@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                     cancellation,
                 )
                 .await?;
-            let allocation = workspace_allocation(allocation, &accounting)?;
+            let allocation = allocation.into_authority_allocation(&accounting)?;
             Ok::<_, WorkspaceError>((
                 ChangeSet {
                     from: self.clone(),
@@ -217,7 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             if root.value.volume_id != volume.id {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let allocation = workspace_allocation(root.allocation, &scope)?;
+            let allocation = root.allocation.into_authority_allocation(&scope)?;
             Ok((root.value.parents, allocation))
         }
         .await;
@@ -549,8 +549,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             &self.workspace,
             GenerationSelector::Exact(self.id),
             path,
-            offset,
-            length,
+            crate::ByteRange { offset, length },
             Some(maximum_spans),
             work,
             cancellation,
@@ -592,10 +591,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                     .fs
                     .retain_workspace_generation_with_accounting(
                         &self.workspace.volume,
-                        self.id,
-                        crate::kernel::RetentionKind::Pin,
-                        label,
-                        publication,
+                        crate::facade::GenerationRetention {
+                            generation_id: self.id,
+                            kind: crate::kernel::RetentionKind::Pin,
+                            label,
+                            publication,
+                        },
                         &mut temporary,
                         cancellation,
                     )
@@ -637,7 +638,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized + 'static, O: AsyncObject
                 .authority()
                 .generation_cut(self.workspace.authority_id(), self.id, &mut authority)
                 .await;
-            crate::facade::finish_authority_work(authority)?;
+            authority.finish()?;
             cut.map_err(|error| WorkspaceError::from(FsError::Authority(error)))
         }
         .await;

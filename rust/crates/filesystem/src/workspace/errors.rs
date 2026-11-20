@@ -173,110 +173,119 @@ impl From<crate::MaterializeError> for WorkspaceError {
     }
 }
 
-/// Extracts quota and cancellation causes through transparent error wrappers.
-pub(crate) fn workspace_bounded_error(
-    error: &(dyn std::error::Error + 'static),
-) -> Option<WorkspaceError> {
-    if let Some(error) = error.downcast_ref::<crate::WorkError>() {
-        return Some(WorkspaceError::Work(*error));
-    }
-    if error.is::<crate::CancellationError>() {
-        return Some(WorkspaceError::Cancelled(crate::CancellationError));
-    }
-    if let Some(error) = error.downcast_ref::<Box<FsError>>() {
-        return workspace_bounded_error(error.as_ref());
-    }
-    if let Some(WorkspaceError::WorkMerge {
-        prior,
-        backend,
-        error,
-    }) = error.downcast_ref::<WorkspaceError>()
-    {
-        return Some(WorkspaceError::WorkMerge {
+type BoundedError = dyn std::error::Error + 'static;
+/// One error type's extraction: `None` when `error` is not that type (or not the
+/// variant a probe handles), else the extracted cause, if any.
+type BoundedProbe = fn(&BoundedError) -> Option<Option<WorkspaceError>>;
+
+// Each probe matches one concrete type, so their order only matters for the two
+// probes that handle a single variant ahead of their type's general probe.
+macro_rules! bounded {
+    ($kind:ty; [$($nested:ident),*]; [$($cancelled:ident),*]) => {{
+        fn probe(error: &BoundedError) -> Option<Option<WorkspaceError>> {
+            type Cause = $kind;
+            Some(match error.downcast_ref::<Cause>()? {
+                Cause::Work(cause) => Some(WorkspaceError::Work(*cause)),
+                $(Cause::$nested(cause) => workspace_bounded_error(cause),)*
+                $(Cause::$cancelled => Some(WorkspaceError::Cancelled(crate::CancellationError)),)*
+                _ => None,
+            })
+        }
+        probe as BoundedProbe
+    }};
+}
+
+const BOUNDED_PROBES: &[BoundedProbe] = &[
+    |error| {
+        Some(Some(WorkspaceError::Work(
+            *error.downcast_ref::<crate::WorkError>()?,
+        )))
+    },
+    |error| {
+        error
+            .is::<crate::CancellationError>()
+            .then_some(Some(WorkspaceError::Cancelled(crate::CancellationError)))
+    },
+    |error| {
+        Some(workspace_bounded_error(
+            error.downcast_ref::<Box<FsError>>()?.as_ref(),
+        ))
+    },
+    |error| match error.downcast_ref::<WorkspaceError>()? {
+        WorkspaceError::WorkMerge {
+            prior,
+            backend,
+            error,
+        } => Some(Some(WorkspaceError::WorkMerge {
             prior: prior.clone(),
             backend: backend.clone(),
             error: *error,
-        });
-    }
-    macro_rules! bounded {
-        ($kind:ty; [$($nested:ident),*]; [$($cancelled:ident),*]) => {{
-            type Cause = $kind;
-            if let Some(cause) = error.downcast_ref::<Cause>() {
-                return match cause {
-                    Cause::Work(cause) => Some(WorkspaceError::Work(*cause)),
-                    $(Cause::$nested(cause) => workspace_bounded_error(cause),)*
-                    $(Cause::$cancelled => Some(WorkspaceError::Cancelled(crate::CancellationError)),)*
-                    _ => None,
-                };
-            }
-        }};
-    }
-    bounded!(WorkspaceError; [Cancelled, Filesystem, NamespacePath]; []);
+        })),
+        _ => None,
+    },
+    bounded!(WorkspaceError; [Cancelled, Filesystem, NamespacePath]; []),
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(FsError::NativeKernel(cause)) = error.downcast_ref::<FsError>() {
-        return workspace_bounded_error(cause);
-    }
+    |error| match error.downcast_ref::<FsError>()? {
+        FsError::NativeKernel(cause) => Some(workspace_bounded_error(cause)),
+        _ => None,
+    },
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(crate::ObjectStoreError::Native(cause)) =
-        error.downcast_ref::<crate::ObjectStoreError>()
-    {
-        return workspace_bounded_error(cause);
-    }
+    |error| match error.downcast_ref::<crate::ObjectStoreError>()? {
+        crate::ObjectStoreError::Native(cause) => Some(workspace_bounded_error(cause)),
+        _ => None,
+    },
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(crate::AuthorityStoreError::NativeOriginal(cause)) =
-        error.downcast_ref::<crate::AuthorityStoreError>()
-    {
-        return workspace_bounded_error(cause);
-    }
+    |error| match error.downcast_ref::<crate::AuthorityStoreError>()? {
+        crate::AuthorityStoreError::NativeOriginal(cause) => Some(workspace_bounded_error(cause)),
+        _ => None,
+    },
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(cause) = error.downcast_ref::<crate::native_mount::NativeMountError>() {
-        match cause {
-            crate::native_mount::NativeMountError::Work(cause) => {
-                return Some(WorkspaceError::Work(*cause));
-            }
-            crate::native_mount::NativeMountError::Materialization(cause) => {
-                return workspace_bounded_error(cause);
-            }
-            _ => {}
+    |error| match error.downcast_ref::<crate::native_mount::NativeMountError>()? {
+        crate::native_mount::NativeMountError::Work(cause) => {
+            Some(Some(WorkspaceError::Work(*cause)))
         }
-    }
+        crate::native_mount::NativeMountError::Materialization(cause) => {
+            Some(workspace_bounded_error(cause))
+        }
+        _ => None,
+    },
     #[cfg(not(target_arch = "wasm32"))]
-    bounded!(crate::NativeTreeMaterializationError; [Io]; [Cancelled]);
+    bounded!(crate::NativeTreeMaterializationError; [Io]; [Cancelled]),
     bounded!(FsError;
         [Cancelled, Authority, Object, Closure, Path, Directory, FileRecord, FileRead, BlobBuild,
          BlobRead, AttributeLookup, AttributeList, AttributeMutation, Probe, Rebase, Mutation,
-         DetachedMutation, Checkpoint, Publication, MergeFileTable, MergeTree]; []);
-    bounded!(crate::AuthorityStoreError; []; [Cancelled]);
-    bounded!(crate::ObjectStoreError; []; [Cancelled]);
-    bounded!(crate::kernel::GenerationMutationError; [Plan, Path, FileRecord, Tree, FileTable, Regular, Directory]; []);
-    bounded!(crate::kernel::MutationPlanError; []; []);
-    bounded!(crate::kernel::PathLookupError; [FileTable, Tree, NamespacePath, Dependency]; []);
-    bounded!(crate::kernel::NamespacePathError; []; [Cancelled]);
-    bounded!(crate::kernel::FileRecordReadError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::TreeReadError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::TreeMutationError; [Storage]; []);
-    bounded!(crate::kernel::FileTableMutationError; [Storage]; []);
-    bounded!(crate::kernel::RegularMutationError; [BlobBuild, BlobRead, Extent, Range, Clone, Storage]; []);
-    bounded!(crate::kernel::ExtentMutationError; [Storage]; []);
-    bounded!(crate::kernel::ExtentCloneError; [Source, Destination]; []);
-    bounded!(crate::kernel::ExtentReadError; [Storage, Context]; [Cancelled]);
-    bounded!(crate::kernel::BlobBuildError; [Source, Storage]; [Cancelled]);
-    bounded!(crate::kernel::BlobReadError; [Storage, Context]; [Cancelled]);
-    bounded!(crate::kernel::FileRangeReadError; [Extent, Blob, Context]; [Cancelled]);
-    bounded!(crate::kernel::DirectoryReadError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::AttributeLookupError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::AttributeMutationError; [Storage]; []);
-    bounded!(crate::kernel::AuthenticatedProbeError; [Storage, FileRecord, Tree, Directory, Extent, Blob]; [Cancelled]);
-    bounded!(crate::kernel::RebaseError<crate::kernel::AuthenticatedProbeError>; [Probe]; [Cancelled]);
-    bounded!(crate::kernel::CheckpointError; [Storage]; []);
-    bounded!(crate::kernel::ClosureError; [Storage]; []);
-    bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority, ProjectionValidation]; []);
+         DetachedMutation, Checkpoint, Publication, MergeFileTable, MergeTree]; []),
+    bounded!(crate::AuthorityStoreError; []; [Cancelled]),
+    bounded!(crate::ObjectStoreError; []; [Cancelled]),
+    bounded!(crate::kernel::GenerationMutationError; [Plan, Path, FileRecord, Tree, FileTable, Regular, Directory]; []),
+    bounded!(crate::kernel::MutationPlanError; []; []),
+    bounded!(crate::kernel::PathLookupError; [FileTable, Tree, NamespacePath, Dependency]; []),
+    bounded!(crate::kernel::NamespacePathError; []; [Cancelled]),
+    bounded!(crate::kernel::FileRecordReadError; [Storage]; [Cancelled]),
+    bounded!(crate::kernel::TreeReadError; [Storage]; [Cancelled]),
+    bounded!(crate::kernel::TreeMutationError; [Storage]; []),
+    bounded!(crate::kernel::FileTableMutationError; [Storage]; []),
+    bounded!(crate::kernel::RegularMutationError; [BlobBuild, BlobRead, Extent, Range, Clone, Storage]; []),
+    bounded!(crate::kernel::ExtentMutationError; [Storage]; []),
+    bounded!(crate::kernel::ExtentCloneError; [Source, Destination]; []),
+    bounded!(crate::kernel::ExtentReadError; [Storage, Context]; [Cancelled]),
+    bounded!(crate::kernel::BlobBuildError; [Source, Storage]; [Cancelled]),
+    bounded!(crate::kernel::BlobReadError; [Storage, Context]; [Cancelled]),
+    bounded!(crate::kernel::FileRangeReadError; [Extent, Blob, Context]; [Cancelled]),
+    bounded!(crate::kernel::DirectoryReadError; [Storage]; [Cancelled]),
+    bounded!(crate::kernel::AttributeLookupError; [Storage]; [Cancelled]),
+    bounded!(crate::kernel::AttributeMutationError; [Storage]; []),
+    bounded!(crate::kernel::AuthenticatedProbeError; [Storage, FileRecord, Tree, Directory, Extent, Blob]; [Cancelled]),
+    bounded!(crate::kernel::RebaseError<crate::kernel::AuthenticatedProbeError>; [Probe]; [Cancelled]),
+    bounded!(crate::kernel::CheckpointError; [Storage]; []),
+    bounded!(crate::kernel::ClosureError; [Storage]; []),
+    bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority, ProjectionValidation]; []),
     #[cfg(not(target_arch = "wasm32"))]
-    bounded!(crate::DemandError; []; [Cancelled]);
+    bounded!(crate::DemandError; []; [Cancelled]),
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(error) = error.downcast_ref::<crate::native_mount::MountSourceError>() {
+    |error| {
         use crate::native_mount::MountSourceError as Cause;
-        return match error.semantic_error() {
+        Some(match error.downcast_ref::<Cause>()?.semantic_error() {
             Cause::Work(cause) => Some(WorkspaceError::Work(*cause)),
             Cause::Cancelled => Some(WorkspaceError::Cancelled(crate::CancellationError)),
             Cause::Filesystem(cause) => workspace_bounded_error(cause),
@@ -286,14 +295,24 @@ pub(crate) fn workspace_bounded_error(
                 completion: cause, ..
             } => workspace_bounded_error(cause),
             _ => None,
-        };
-    }
-    if let Some(error) = error.downcast_ref::<std::io::Error>() {
-        return error
-            .get_ref()
-            .and_then(|cause| workspace_bounded_error(cause));
-    }
-    error.source().and_then(workspace_bounded_error)
+        })
+    },
+    |error| {
+        Some(
+            error
+                .downcast_ref::<std::io::Error>()?
+                .get_ref()
+                .and_then(|cause| workspace_bounded_error(cause)),
+        )
+    },
+];
+
+/// Extracts quota and cancellation causes through transparent error wrappers.
+pub(crate) fn workspace_bounded_error(error: &BoundedError) -> Option<WorkspaceError> {
+    BOUNDED_PROBES
+        .iter()
+        .find_map(|probe| probe(error))
+        .unwrap_or_else(|| error.source().and_then(workspace_bounded_error))
 }
 
 impl From<crate::AuthorityStoreError> for WorkspaceError {

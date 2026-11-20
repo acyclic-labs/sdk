@@ -1,5 +1,28 @@
 use super::*;
 
+/// The batch one authored input compiles into, with the backing its path charges.
+pub(super) struct AuthoredBatch<'b> {
+    pub(super) operations: &'b mut crate::kernel::Owned<Vec<Mutation>>,
+    pub(super) allocation: &'b mut KernelOwnedAllocation,
+    pub(super) bytes: &'b mut u64,
+}
+
+/// One authored regular file with its bound identity and staged metadata.
+pub(super) struct AuthoredFile {
+    pub(super) path: NamespacePath,
+    pub(super) file_id: FileId,
+    pub(super) metadata: ObjectId,
+}
+
+/// One authored record of any kind before its identity and metadata are bound.
+pub(super) struct AuthoredRecord {
+    pub(super) path: NamespacePath,
+    pub(super) kind: FileKind,
+    pub(super) payload: FilePayload,
+    pub(super) metadata: FileMetadata,
+    pub(super) file_id: Option<FileId>,
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) fn validate_profile_kind(
         &self,
@@ -15,18 +38,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     pub(super) async fn compile_record_with_accounting(
         &self,
-        operations: &mut crate::kernel::Owned<Vec<Mutation>>,
-        path: NamespacePath,
-        kind: FileKind,
-        payload: FilePayload,
-        definition: (FileMetadata, Option<FileId>),
-        allocation: &mut crate::kernel::allocation::KernelOwnedAllocation,
-        bytes: &mut u64,
+        batch: AuthoredBatch<'_>,
+        record: AuthoredRecord,
         staged_metadata: &mut AuthoredMetadataCache,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
-        let (metadata, file_id) = definition;
+        let AuthoredBatch {
+            operations,
+            allocation,
+            bytes,
+        } = batch;
+        let AuthoredRecord {
+            path,
+            kind,
+            payload,
+            metadata,
+            file_id,
+        } = record;
         let metadata = self
             .stage_authored_metadata_with_accounting(
                 metadata,
@@ -125,25 +154,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     /// Copies inline bytes or stages the actual source before lowering content.
     pub(super) async fn compile_create_file_with_accounting(
         &self,
-        path: NamespacePath,
+        file: AuthoredFile,
         content: acyclic_stream::OwnedBytes,
-        metadata: FileMetadata,
-        file_id: FileId,
-        operations: &mut crate::kernel::Owned<Vec<Mutation>>,
-        allocation: &mut crate::kernel::allocation::KernelOwnedAllocation,
-        bytes: &mut u64,
-        staged_metadata: &mut AuthoredMetadataCache,
+        batch: AuthoredBatch<'_>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
-        let metadata = self
-            .stage_authored_metadata_with_accounting(
-                metadata,
-                staged_metadata,
-                accounting,
-                cancellation,
-            )
-            .await?;
+        let file_id = file.file_id;
         if content.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
             accounting.charge(WorkCounters {
                 bytes_copied: content.len() as u64,
@@ -152,18 +169,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let payload = FilePayload::InlineRegular(InlineFileData::new(&content)?);
             drop(content);
             push_authored_operation(
-                operations,
-                allocation,
-                bytes,
+                batch.operations,
+                batch.allocation,
+                batch.bytes,
                 accounting,
                 Mutation::Create {
-                    path,
+                    path: file.path,
                     record: FileRecord {
                         bindings: None,
                         file_id,
                         kind: FileKind::Regular,
                         link_count: 1,
-                        metadata,
+                        metadata: file.metadata,
                         payload,
                     },
                 },
@@ -172,24 +189,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let content = self
                 .stage_authored_blob_with_accounting(content, accounting, cancellation)
                 .await?;
-            self.compile_regular_content_with_accounting(
-                path, content, metadata, file_id, operations, allocation, bytes, accounting,
-            )?;
+            self.compile_regular_content_with_accounting(file, content, batch, accounting)?;
         }
         Ok(file_id)
     }
 
     pub(super) fn compile_regular_content_with_accounting(
         &self,
-        path: NamespacePath,
+        file: AuthoredFile,
         content: StagedContent,
-        metadata: ObjectId,
-        file_id: FileId,
-        operations: &mut crate::kernel::Owned<Vec<Mutation>>,
-        allocation: &mut crate::kernel::allocation::KernelOwnedAllocation,
-        bytes: &mut u64,
+        batch: AuthoredBatch<'_>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<(), FsError> {
+        let AuthoredFile {
+            path,
+            file_id,
+            metadata,
+        } = file;
+        let AuthoredBatch {
+            operations,
+            allocation,
+            bytes,
+        } = batch;
         let record = FileRecord {
             bindings: None,
             file_id,

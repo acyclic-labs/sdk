@@ -136,33 +136,34 @@ impl<
     ) -> Result<(), LazyWorkspaceError> {
         let lookup = self.lookup(path, ctx).await?;
         let result = async {
-            if let LazyLookup::Authored { record, .. } = &lookup.0 {
-                if self.overlay_mode(path, ctx)? == crate::demand::SourceOverlay::Defaults {
-                    if expected.is_some_and(|id| id != record.file_id) {
-                        return Err(LazyWorkspaceError::StaleIdentity);
-                    }
-                    let mut transaction = accounted!(ctx, |work, cancel| self
-                        .workspace
-                        .begin_transaction(IdempotencyKey::new(), work, cancel))?;
-                    accounted!(ctx, |work, cancel| transaction.remove_if(
-                        path,
-                        record.file_id,
-                        work,
-                        cancel
-                    ))?;
-                    return match self
-                        .commit(
-                            &mut transaction,
-                            crate::PublicationPermit::Unrestricted,
-                            ctx,
-                        )
-                        .await?
-                    {
-                        TransactionCommit::Committed(_)
-                        | TransactionCommit::AlreadyCommitted(_) => Ok(()),
-                        _ => Err(LazyWorkspaceError::Concurrent),
-                    };
+            if let LazyLookup::Authored { record, .. } = &lookup.0
+                && self.overlay_mode(path, ctx)? == crate::demand::SourceOverlay::Defaults
+            {
+                if expected.is_some_and(|id| id != record.file_id) {
+                    return Err(LazyWorkspaceError::StaleIdentity);
                 }
+                let mut transaction = accounted!(ctx, |work, cancel| self
+                    .workspace
+                    .begin_transaction(IdempotencyKey::new(), work, cancel))?;
+                accounted!(ctx, |work, cancel| transaction.remove_if(
+                    path,
+                    record.file_id,
+                    work,
+                    cancel
+                ))?;
+                return match self
+                    .commit(
+                        &mut transaction,
+                        crate::PublicationPermit::Unrestricted,
+                        ctx,
+                    )
+                    .await?
+                {
+                    TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {
+                        Ok(())
+                    }
+                    _ => Err(LazyWorkspaceError::Concurrent),
+                };
             }
             let removed = match &lookup.0 {
                 LazyLookup::Source { node, .. } => Some(node.version),

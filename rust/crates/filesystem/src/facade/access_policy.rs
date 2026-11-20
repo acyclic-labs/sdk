@@ -274,7 +274,7 @@ macro_rules! policy_revision {
                 .authority
                 .head(volume_authority_id(volume.id), &mut authority)
                 .await;
-            finish_authority_work(authority)?;
+            authority.finish()?;
             let current = current?;
             if observed == current {
                 return Ok(Some((GenerationId::from_root(generation), revision)));

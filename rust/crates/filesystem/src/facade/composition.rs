@@ -198,7 +198,7 @@ where
             .authority
             .contribute_publication(commit, prepared, &mut authority)
             .await;
-        finish_authority_work(authority)?;
+        authority.finish()?;
         if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
             return Err(WorkspaceError::StaleGeneration);
         }
@@ -228,7 +228,7 @@ where
             if !publications.is_empty() || !state_changes.is_empty() {
                 let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
                 let preserved = guard.preserve_conditions(&mut authority);
-                finish_authority_work(authority)?;
+                authority.finish()?;
                 preserved.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
             }
             for publication in publications {
@@ -268,7 +268,7 @@ where
                 let contributed = store
                     .contribute_cas(change, guard.commit(), &mut authority)
                     .await;
-                finish_authority_work(authority)?;
+                authority.finish()?;
                 if !contributed
                     .map_err(|error| WorkspaceError::GitCompat(Box::new(error.into_cause())))?
                 {
@@ -301,7 +301,7 @@ where
             if !restores.is_empty() {
                 let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
                 let preserved = guard.preserve_conditions(&mut authority);
-                finish_authority_work(authority)?;
+                authority.finish()?;
                 preserved.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
             }
             let mut generations = Owned::<Vec<_>>::allocate(restores.len(), &mut accounting)?;
@@ -460,7 +460,7 @@ where
             .authority
             .contribute_fork(commit, &prepared.fork, &mut authority)
             .await;
-        let recorded = finish_authority_work(authority);
+        let recorded = authority.finish();
         if let Some(changes) = prepared.changes {
             changes.retire(accounting)?;
         }
@@ -561,7 +561,7 @@ where
                 &mut authority,
             )
             .await;
-        let recorded = finish_authority_work(authority);
+        let recorded = authority.finish();
         if let Some(changes) = prepared.changes {
             changes.retire(accounting)?;
         }
@@ -621,7 +621,7 @@ where
                         &mut authority,
                     )
                     .await;
-                finish_authority_work(authority)?;
+                authority.finish()?;
                 result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
             }
             Ok(())
@@ -643,7 +643,7 @@ where
         let result = (|| {
             let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let result = self.inner.authority.seal(commit, &mut authority);
-            finish_authority_work(authority)?;
+            authority.finish()?;
             result.map_err(FsError::from)
         })();
         work.finish(result, &accounting)
@@ -672,7 +672,7 @@ where
             let result = self.inner.authority.submit(commit, &mut authority).await;
             // Completion accounting cannot discard an unresolved owner or
             // replace a decided result after the provider has returned it.
-            drop(finish_authority_work(authority));
+            drop(authority.finish());
             result.map_err(FsError::from)
         }
         .await;

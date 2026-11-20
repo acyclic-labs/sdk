@@ -2,11 +2,8 @@ use super::*;
 /// Metadata-only selection frozen from an authenticated lazy cut.
 #[derive(Debug)]
 pub struct SelectedImportPlan {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source: LazySnapshotRef,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source_config: VolumeConfig,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source_used: bool,
     pub(crate) roots: Vec<String>,
     pub(crate) entries: Vec<SelectedImportRecord>,
@@ -28,7 +25,6 @@ impl SelectedImportPlan {
                 .map(|e| e.path.capacity() as u64)
                 .sum::<u64>()
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn input_digest(
         &self,
         destination: &LazySnapshotRef,
@@ -160,7 +156,7 @@ impl<
             Ok((entries, used))
         }
         .await;
-        let (mut entries, _used) = match result {
+        let (mut entries, used) = match result {
             Ok(value) => value,
             Err(error) => {
                 roots.retire(ctx)?;
@@ -170,12 +166,9 @@ impl<
         entries.allocation.absorb(&mut roots.allocation)?;
         Ok((
             SelectedImportPlan {
-                #[cfg(not(target_arch = "wasm32"))]
                 source: cut,
-                #[cfg(not(target_arch = "wasm32"))]
                 source_config: self.workspace.volume.config,
-                #[cfg(not(target_arch = "wasm32"))]
-                source_used: _used,
+                source_used: used,
                 roots: roots.value,
                 entries: entries.value,
             },
@@ -199,7 +192,7 @@ impl<
         let mut used = false;
         let result = async {
             for root in roots {
-                let (mut selected, source) = self.enumerate_paths(root, &cut, &state, ctx).await?;
+                let (mut selected, source) = self.enumerate_paths(root, cut, &state, ctx).await?;
                 used |= source;
                 let moved = (|| {
                     for path in selected.value.drain(..) {
@@ -247,7 +240,6 @@ impl<
         Ok((paths, used))
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(super) async fn authored_record(
         &self,
         checkout: &mut crate::Checkout<A, O>,

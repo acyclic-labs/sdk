@@ -321,7 +321,13 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
     )?;
     unbounded!(
         transaction,
-        clone_range("/tree/source", 0, "/tree/destination", 1, 5)
+        clone_range(acyclic_fs::FileCloneRequest {
+            source: "/tree/source",
+            source_offset: 0,
+            destination: "/tree/destination",
+            destination_offset: 1,
+            length: 5,
+        })
     )?;
     unbounded!(
         transaction,

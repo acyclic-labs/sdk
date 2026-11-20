@@ -145,11 +145,10 @@ impl<
                         changed => return Ok(changed),
                     }
                 }
-                Ok(Some(false).filter(|_| {
-                    before.source == after.source
-                        && before.overlay == after.overlay
-                        && before.shadows == after.shadows
-                }))
+                Ok((before.source == after.source
+                    && before.overlay == after.overlay
+                    && before.shadows == after.shadows)
+                    .then_some(false))
             }
             .await;
             cursor.retire(ctx)?;

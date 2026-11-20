@@ -9,6 +9,17 @@ pub(crate) struct AuthorityFrame<'a> {
 }
 
 impl<'a> AuthorityFrame<'a> {
+    /// Ends the frame: a standalone frame's spend must fit its budget, while an
+    /// original native frame was charged as it ran. Dropping restores the original.
+    pub(crate) fn finish(self) -> Result<(), FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original.is_some() {
+            return Ok(());
+        }
+        self.spent()?.verify(self.budget)?;
+        Ok(())
+    }
+
     pub(crate) fn borrow(accounting: &'a mut KernelAccounting<'_>) -> Result<Self, FsError> {
         accounting.check()?;
         let cancellation = accounting.cancellation();

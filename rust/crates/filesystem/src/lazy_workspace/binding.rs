@@ -41,7 +41,7 @@ impl<
         let lazy = Self::bind(generation.workspace().clone(), source, store, ctx).await?;
         lazy.state(ctx)
             .await?
-            .validate_root_binding(lazy.workspace.id(), original.clone())?;
+            .validate_root_binding(lazy.workspace.id(), &original)?;
         if lazy.source.reference(ctx).await? != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -75,7 +75,7 @@ impl<
                     .load_lazy_workspace(workspace.id(), ctx)
                     .await?
                     .ok_or(LazyWorkspaceError::Concurrent)?
-                    .validate_root_binding(workspace.id(), reference)?;
+                    .validate_root_binding(workspace.id(), &reference)?;
             }
         }
         Self::open(workspace, source, store, ctx).await

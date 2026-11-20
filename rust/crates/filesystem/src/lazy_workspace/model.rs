@@ -182,9 +182,9 @@ pub enum LazyShadow {
         /// Deterministic treap priority.
         priority: u64,
         /// Latest authored record, absent for a source-only before-image.
-        authored: Option<LazyStoredRecord>,
+        authored: Option<Box<LazyStoredRecord>>,
         /// Original source content retained independently of authored overrides.
-        observed: Option<LazySourceRecord>,
+        observed: Option<Box<LazySourceRecord>>,
         /// Identities ordered before this one.
         left: LazyShadowId,
         /// Identities ordered after this one.
@@ -260,7 +260,7 @@ pub enum LazyOverlayChange {
         /// Source generation against which this fact was authenticated.
         source: SourceReference,
         /// Immutable source fact.
-        node: SourceNode,
+        node: Box<SourceNode>,
         /// A complete materialization saved the visible subtree in authored
         /// state for this source cut, preserving authored masks. Unresolved
         /// names remain absent until the source invalidation epoch advances.
@@ -389,13 +389,13 @@ impl LazyWorkspaceState {
     pub fn validate_root_binding(
         &self,
         id: WorkspaceId,
-        source: SourceReference,
+        source: &SourceReference,
     ) -> Result<(), LazyWorkspaceError> {
         if self.schema_version != LAZY_STATE_SCHEMA
             || self.workspace_id != id
             || self.parent_workspace_id.is_some()
             || self.fork_origin.is_some()
-            || !self.source.follows(&source)
+            || !self.source.follows(source)
         {
             return Err(LazyWorkspaceError::StaleSource);
         }

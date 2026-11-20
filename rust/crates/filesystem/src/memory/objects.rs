@@ -299,7 +299,11 @@ impl AsyncObjectStore for MemoryObjectStore {
             })
             .map_err(object_error)?;
         accounting.check().map_err(object_error)?;
-        Ok((output.0, output.1.into_authority_allocation()))
+        let custody = output
+            .1
+            .into_authority_allocation(&accounting)
+            .map_err(object_error)?;
+        Ok((output.0, custody))
     }
     async fn contains(
         &self,

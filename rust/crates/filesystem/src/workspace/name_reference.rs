@@ -95,31 +95,25 @@ pub(super) fn decode(
     }
     let mut output = normalize::NameBuffer::new();
     let result = (|| {
-        let mut length = 0_usize;
         let mut normalized = name.nfc();
         loop {
             accounting.check()?;
             let Some(character) = normalized.next() else {
                 break;
             };
-            let end = length
-                .checked_add(character.len_utf8())
-                .ok_or(crate::WorkError::Overflow)?;
-            let slot = output.slot(length, end, accounting, probe)?;
+            let slot = output.slot(character.len_utf8(), accounting, probe)?;
             let copied = copy_work(character.len_utf8() as u64);
             if !borrowed {
                 accounting.admit(copied)?;
             }
             character.encode_utf8(slot);
-            length = end;
             if !borrowed {
                 probe(2, character as u64, character.len_utf8() as u64);
                 accounting.record_completed(copied)?;
             }
         }
         drop(normalized);
-        let canonical =
-            std::str::from_utf8(output.bytes(length)).map_err(WorkspaceError::engine)?;
+        let canonical = std::str::from_utf8(output.bytes()?).map_err(WorkspaceError::engine)?;
         if canonical.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }
@@ -135,6 +129,7 @@ pub(super) fn decode(
                 return Err(WorkspaceNameError::InvalidCharacter.into());
             }
         }
+        let length = canonical.len();
         let copied = copy_work(length as u64);
         accounting.admit(copied)?;
         let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;

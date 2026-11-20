@@ -44,14 +44,14 @@ pub enum LazyLookup {
         /// Original source cut shared by unresolved native aliases.
         source: SourceReference,
         /// Source version and identity whose authored record supplies bytes.
-        node: SourceNode,
+        node: Box<SourceNode>,
     },
     /// Exact source fact including its pinned epoch.
     Source {
         /// Observed source cut.
         source: SourceReference,
         /// Immutable node/version.
-        node: SourceNode,
+        node: Box<SourceNode>,
     },
 }
 
@@ -147,7 +147,7 @@ impl<
             }) if saved_source == source && saved_node == node);
             let change = LazyOverlayChange::Observe {
                 source: source.clone(),
-                node: *node,
+                node: node.clone(),
                 complete,
             };
             if previous != Some(change.clone()) {
@@ -181,7 +181,7 @@ impl<
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(&cut, ctx).await?;
+        self.validate_snapshot(cut, ctx).await?;
         let mut checkout = self
             .checkout(
                 crate::model::GenerationSelector::Exact(cut.authored_generation),
@@ -229,7 +229,7 @@ impl<
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazyStat>, LazyWorkspaceError> {
-        let (lookup, _, guard) = self.lookup_at_snapshot(&cut, path, ctx).await?;
+        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
         let result = Ok(lookup.as_ref().map(LazyLookup::stat));
         match lookup {
             Some(lookup) => self.retire_lookup((lookup, guard), ctx)?,
@@ -358,11 +358,13 @@ impl<
             }
             _ => {
                 if let Some(node) = basis.listed {
-                    (state.source.clone(), Some(node), false)
+                    (state.source.clone(), Some(Box::new(node)), false)
                 } else {
                     (
                         state.source.clone(),
-                        self.source_lookup(&state.source, path, ctx).await?,
+                        self.source_lookup(&state.source, path, ctx)
+                            .await?
+                            .map(Box::new),
                         true,
                     )
                 }
@@ -385,7 +387,7 @@ impl<
             } else {
                 let record = accounted!(ctx, |work, cancel| checkout
                     .read_file_record_by_id(id, work, cancel));
-                let shadow = match record {
+                match record {
                     Ok(record) => Some((
                         record,
                         crate::WorkspaceMetadata::from_engine(
@@ -411,8 +413,7 @@ impl<
                             })
                         }),
                     Err(error) => return Err(error),
-                };
-                shadow
+                }
             };
             if let Some((record, metadata)) = shadow {
                 return Ok((

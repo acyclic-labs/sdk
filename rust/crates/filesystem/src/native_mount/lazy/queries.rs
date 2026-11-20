@@ -289,7 +289,7 @@ where
             let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
             let opened = self
                 .lazy
-                .open_source_file(text, source.clone(), *node, &mut accounting)
+                .open_source_file(text, source.clone(), **node, &mut accounting)
                 .await;
             match opened {
                 Ok(file) => return Ok((resolution, Some(file))),

@@ -340,13 +340,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let records = [base, ours, theirs];
         let mut record: FileRecord = match resolution {
             MergeConflictResolution::File(Some(record)) => *record,
-            MergeConflictResolution::Select(side) => {
-                records[match side {
-                    MergeConflictSide::Base => 0,
-                    MergeConflictSide::Ours => 1,
-                    MergeConflictSide::Theirs => 2,
-                }]
-            }
+            MergeConflictResolution::Select(side) => match side {
+                MergeConflictSide::Base => base,
+                MergeConflictSide::Ours => ours,
+                MergeConflictSide::Theirs => theirs,
+            },
             other => return Ok(other),
         };
         if record.kind != FileKind::Regular {

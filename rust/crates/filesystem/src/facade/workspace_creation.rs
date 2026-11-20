@@ -106,9 +106,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let before = super::read_accounting::readonly_standalone_live(&accounting);
                 let holds = self
                     .initial_generation_matches(
-                        id.volume_id(),
-                        config,
-                        recorded.initial_generation_root,
+                        VolumeCreated {
+                            volume_id: id.volume_id(),
+                            config,
+                            initial_generation_root: recorded.initial_generation_root,
+                        },
                         requested.files,
                         &requested.attributes,
                         &mut accounting,

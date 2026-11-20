@@ -37,7 +37,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .policy_cut(self.authority_id(), &mut authority_work)
             .await
             .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-        crate::facade::finish_authority_work(authority_work)?;
+        authority_work.finish()?;
         captured
     }
 

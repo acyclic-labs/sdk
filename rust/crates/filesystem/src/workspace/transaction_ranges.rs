@@ -4,14 +4,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     /// Clones one immutable logical range without reading content bytes.
     pub async fn clone_range<W: crate::facade::FsWork>(
         &mut self,
-        source: &str,
-        source_offset: u64,
-        destination: &str,
-        destination_offset: u64,
-        length: u64,
+        request: crate::FileCloneRequest<&str>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
+        let crate::FileCloneRequest {
+            source,
+            source_offset,
+            destination,
+            destination_offset,
+            length,
+        } = request;
         self.mutate_pair(
             source,
             destination,

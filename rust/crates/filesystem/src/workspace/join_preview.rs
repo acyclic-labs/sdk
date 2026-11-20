@@ -192,7 +192,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             Ok(match state.changes.pending.take() {
                 Some(entry) => {
                     state.clean_ready = false;
-                    JoinCleanStep::Entry(entry)
+                    JoinCleanStep::Entry(Box::new(entry))
                 }
                 None => JoinCleanStep::Done,
             })
@@ -588,7 +588,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
 /// One bounded step of the clean projection, without an output buffer.
 pub enum JoinCleanStep {
     /// One clean row retaining its original backing.
-    Entry(ChangedPathEntry),
+    Entry(Box<ChangedPathEntry>),
     /// One conflicting row was skipped; more original rows may remain.
     Excluded,
     /// No further original changed-path rows remain.

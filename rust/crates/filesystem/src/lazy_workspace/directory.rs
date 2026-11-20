@@ -3,6 +3,26 @@ use crate::demand::SourceDirectoryPage;
 #[path = "directory_cursor.rs"]
 pub(super) mod cursor_codec;
 
+/// The bound and name mask one merged directory page is listed under.
+#[derive(Clone, Copy, Debug)]
+pub struct LazyDirectoryBound<'a> {
+    /// Most entries the page may hold; zero is refused.
+    pub maximum: u32,
+    /// Sorted paths hidden beneath the directory, and whether the directory is
+    /// opaque, hiding every source entry.
+    pub mask: Option<(&'a [String], bool)>,
+}
+
+impl LazyDirectoryBound<'_> {
+    /// At most `maximum` entries, with no mask.
+    pub const fn unmasked(maximum: u32) -> Self {
+        Self {
+            maximum,
+            mask: None,
+        }
+    }
+}
+
 /// One merged authored/source directory entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LazyDirectoryEntry {
@@ -210,8 +230,7 @@ impl<
                 &mut checkout.value,
                 path,
                 cursor,
-                maximum,
-                None,
+                LazyDirectoryBound::unmasked(maximum),
                 ctx,
             )
             .await;
@@ -227,7 +246,7 @@ impl<
         maximum: u32,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(&cut, ctx).await?;
+        self.validate_snapshot(cut, ctx).await?;
         let state = LazyWorkspaceState::new(
             cut.workspace_id,
             cut.source.clone(),
@@ -246,8 +265,7 @@ impl<
                 &mut checkout.value,
                 path,
                 cursor,
-                maximum,
-                None,
+                LazyDirectoryBound::unmasked(maximum),
                 ctx,
             )
             .await;
@@ -268,7 +286,14 @@ impl<
     {
         let state = self.state(ctx).await?;
         let (page, _, guard) = self
-            .list_directory_at(&state, checkout, path, cursor, maximum, mask, ctx)
+            .list_directory_at(
+                &state,
+                checkout,
+                path,
+                cursor,
+                LazyDirectoryBound { maximum, mask },
+                ctx,
+            )
             .await?;
         Ok((page, state, guard))
     }
@@ -280,10 +305,10 @@ impl<
         checkout: &mut crate::Checkout<A, O>,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
-        maximum: u32,
-        mask: Option<(&[String], bool)>,
+        bound: LazyDirectoryBound<'_>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
+        let LazyDirectoryBound { maximum, mask } = bound;
         if maximum == 0 {
             return Err(LazyWorkspaceError::InvalidPageBound);
         }
@@ -416,8 +441,7 @@ impl<
                                     checkout,
                                     &directory.value,
                                     &page,
-                                    maximum,
-                                    mask,
+                                    bound,
                                     ctx,
                                 )
                                 .await?;
@@ -520,10 +544,10 @@ impl<
         checkout: &mut crate::Checkout<A, O>,
         directory: &NamespacePath,
         page: &SourceDirectoryPage,
-        maximum: u32,
-        mask: Option<(&[String], bool)>,
+        bound: LazyDirectoryBound<'_>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<LazyDirectoryEntry>>, LazyWorkspaceError> {
+        let LazyDirectoryBound { maximum, mask } = bound;
         if page.entries.len() > maximum as usize {
             return Err(LazyWorkspaceError::TooLarge);
         }
@@ -611,17 +635,14 @@ impl<
     }
 }
 
+/// The phase a page's continuation resumes in, with its retained backing.
+type NextPhase = (LazyDirectoryPhase, KernelOwnedAllocation);
+
 fn authored_entries(
     page: crate::kernel::DirectoryPage,
     mut guard: KernelOwnedAllocation,
     ctx: &mut KernelAccounting<'_>,
-) -> Result<
-    (
-        Owned<Vec<LazyDirectoryEntry>>,
-        Option<(LazyDirectoryPhase, KernelOwnedAllocation)>,
-    ),
-    LazyWorkspaceError,
-> {
+) -> Result<(Owned<Vec<LazyDirectoryEntry>>, Option<NextPhase>), LazyWorkspaceError> {
     let retained = retained_directory_page_bytes(
         &page.entries,
         page.entries.iter().map(|entry| entry.name.retained_bytes()),

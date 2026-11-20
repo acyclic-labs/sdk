@@ -18,6 +18,7 @@ impl LocalCoreStateStore {
                 }) = load_content_addressed::<crate::LazyShadow>(namespace, family, address)?
                 {
                     for content in authored
+                        .map(|record| *record)
                         .into_iter()
                         .chain(observed.map(|record| record.content))
                     {

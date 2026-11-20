@@ -35,21 +35,13 @@ pub(super) fn parse<T, P: FnMut(u8, u64, u64)>(
     admit_scratch(scratch, accounting)?;
     let mut output = NameBuffer::new();
     let result = (|| {
-        let mut length = 0_usize;
-        let mut normalized = name.nfc();
         // Each character's charge also checks cancellation.
-        while let Some(character) = normalized.next() {
-            let end = length
-                .checked_add(character.len_utf8())
-                .ok_or(crate::WorkError::Overflow)?;
-            let slot = output.slot(length, end, accounting, probe)?;
+        for character in name.nfc() {
+            let slot = output.slot(character.len_utf8(), accounting, probe)?;
             encode(character, slot, accounting, probe)?;
-            length = end;
         }
-        drop(normalized);
         accounting.check()?;
-        let canonical =
-            std::str::from_utf8(output.bytes(length)).map_err(WorkspaceError::engine)?;
+        let canonical = std::str::from_utf8(output.bytes()?).map_err(WorkspaceError::engine)?;
         if canonical.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }
@@ -101,10 +93,12 @@ pub(super) fn admit_scratch(
 }
 
 // Small names keep their allocation-free normalization scratch. Larger names
-// spill geometrically under the same original accounting context.
+// spill geometrically under the same original accounting context. The buffer
+// owns its filled length, so a slot always extends exactly the filled prefix.
 pub(super) struct NameBuffer {
     inline: [u8; 255],
     spill: Option<crate::kernel::Owned<Vec<u8>>>,
+    length: usize,
 }
 
 impl NameBuffer {
@@ -112,28 +106,34 @@ impl NameBuffer {
         Self {
             inline: [0; 255],
             spill: None,
+            length: 0,
         }
     }
 
-    pub(super) fn bytes(&self, length: usize) -> &[u8] {
-        match &self.spill {
-            Some(owned) => &owned.value[..length],
-            None => &self.inline[..length],
-        }
+    fn storage(&self) -> &[u8] {
+        self.spill
+            .as_ref()
+            .map_or(self.inline.as_slice(), |owned| owned.value.as_slice())
     }
 
+    /// The filled prefix: every byte a slot has handed out.
+    pub(super) fn bytes(&self) -> Result<&[u8], WorkspaceError> {
+        Ok(self
+            .storage()
+            .get(..self.length)
+            .ok_or(crate::WorkError::Overflow)?)
+    }
+
+    /// The next `width` bytes after the filled prefix, which then includes them.
     pub(super) fn slot(
         &mut self,
-        start: usize,
-        end: usize,
+        width: usize,
         accounting: &mut KernelAccounting<'_>,
         probe: &mut impl FnMut(u8, u64, u64),
     ) -> Result<&mut [u8], WorkspaceError> {
-        let capacity = self
-            .spill
-            .as_ref()
-            .map_or(self.inline.len(), |owned| owned.value.len());
-        if end > capacity {
+        let start = self.length;
+        let end = start.checked_add(width).ok_or(crate::WorkError::Overflow)?;
+        if end > self.storage().len() {
             let capacity = end
                 .checked_next_power_of_two()
                 .ok_or(crate::WorkError::Overflow)?;
@@ -143,18 +143,22 @@ impl NameBuffer {
             let copied = copy_work(copied_bytes);
             accounting.admit(copied)?;
             let mut replacement = crate::kernel::Owned::<Vec<u8>>::allocate(capacity, accounting)?;
+            replacement.value.extend_from_slice(self.bytes()?);
             replacement.value.resize(capacity, 0);
-            replacement.value[..start].copy_from_slice(self.bytes(start));
             accounting.record_completed(copied)?;
             probe(5, copied_bytes, copied_bytes);
             if let Some(previous) = self.spill.replace(replacement) {
                 previous.retire(accounting)?;
             }
         }
-        Ok(match &mut self.spill {
-            Some(owned) => &mut owned.value[start..end],
-            None => &mut self.inline[start..end],
-        })
+        self.length = end;
+        let storage = match &mut self.spill {
+            Some(owned) => owned.value.as_mut_slice(),
+            None => self.inline.as_mut_slice(),
+        };
+        Ok(storage
+            .get_mut(start..end)
+            .ok_or(crate::WorkError::Overflow)?)
     }
 
     pub(super) fn retire(

@@ -6,6 +6,15 @@ pub(super) struct PreparedForkCommit {
     pub(super) hold: crate::PublicationHold,
 }
 
+/// One accounted fork: its destination name, source generation, replay key and
+/// selected paths.
+pub(crate) struct WorkspaceFork<'g, A: 'static, O: 'static> {
+    pub(crate) destination: crate::WorkspaceName,
+    pub(crate) source: &'g crate::Generation<A, O>,
+    pub(crate) idempotency_key: crate::IdempotencyKey,
+    pub(crate) paths: Owned<Option<Vec<String>>>,
+}
+
 pub(super) struct ForkPublication<'a, A: 'static, O: 'static> {
     pub(super) source: &'a crate::Generation<A, O>,
     pub(super) destination_id: crate::WorkspaceId,
@@ -159,12 +168,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
             let meter = ProofMeter::from_accounting(frame.accounting())?;
             let mut context = ProofContext::new(&self.inner.objects, limits, meter);
-            match fork_of {
-                Some(source) => context.prove_fork(generation_root, cache, source).await?,
-                None => {
-                    let (proof, guard) = context.prove(generation_root).await?;
-                    (proof, guard, None)
-                }
+            if let Some(source) = fork_of {
+                context.prove_fork(generation_root, cache, source).await?
+            } else {
+                let (proof, guard) = context.prove(generation_root).await?;
+                (proof, guard, None)
             }
         };
         if proof.root.volume_id != volume_id {
@@ -192,10 +200,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Forks one immutable generation under its publication guard and work context.
     pub(crate) async fn fork_workspace<G, E>(
         &self,
-        destination: crate::WorkspaceName,
-        source: &crate::Generation<A, O>,
-        idempotency_key: crate::IdempotencyKey,
-        paths: Owned<Option<Vec<String>>>,
+        fork: WorkspaceFork<'_, A, O>,
         permit: PublicationPermit,
         accounting: &mut KernelAccounting<'_>,
         guard: Option<&mut G>,
@@ -205,6 +210,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
+        let WorkspaceFork {
+            destination,
+            source,
+            idempotency_key,
+            paths,
+        } = fork;
         let cancellation = accounting.cancellation();
         let destination_id = self.workspace_id_for_name(&destination, accounting)?;
         let volume_id = destination_id.volume_id();
@@ -279,12 +290,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// exactly as long as the fork lives.
     pub(crate) async fn fork_ephemeral_workspace(
         &self,
-        destination: crate::WorkspaceName,
-        source: &crate::Generation<A, O>,
-        idempotency_key: crate::IdempotencyKey,
-        paths: Owned<Option<Vec<String>>>,
+        fork: WorkspaceFork<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(crate::Workspace<A, O>, crate::EphemeralFork), WorkspaceError> {
+        let WorkspaceFork {
+            destination,
+            source,
+            idempotency_key,
+            paths,
+        } = fork;
         let cancellation = accounting.cancellation();
         let destination_id = self.workspace_id_for_name(&destination, accounting)?;
         let volume_id = destination_id.volume_id();
@@ -345,7 +359,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut authority,
             )
             .await;
-        let recorded = finish_authority_work(authority);
+        let recorded = authority.finish();
         if let Some(changes) = changes {
             changes.retire(accounting)?;
         }
@@ -414,7 +428,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .fork_workspace(prepared.fork, permit, &mut authority, guard)
             .await;
-        let recorded = finish_authority_work(authority);
+        let recorded = authority.finish();
         if let Some(changes) = prepared.changes {
             changes.retire(accounting)?;
         }

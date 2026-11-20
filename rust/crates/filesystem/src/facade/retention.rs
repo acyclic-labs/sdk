@@ -1,5 +1,14 @@
 use super::*;
 
+/// One durable retention of a generation under a label.
+pub(crate) struct GenerationRetention<A: 'static, O: 'static> {
+    pub(crate) generation_id: GenerationId,
+    pub(crate) kind: RetentionKind,
+    pub(crate) label: Owned<String>,
+    /// The verified publication the retained generation was proved under.
+    pub(crate) publication: Option<VerifiedPublication<A, O>>,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(crate) async fn workspace_generation_is_retained(
         &self,
@@ -14,7 +23,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .retains_generation(volume_authority_id(volume.id), generation, &mut work)
             .await;
-        finish_authority_work(work)?;
+        work.finish()?;
         result.map_err(Into::into)
     }
 
@@ -22,26 +31,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(crate) async fn retain_workspace_generation<W: FsWork>(
         &self,
         volume: &Volume<A, O>,
-        generation_id: GenerationId,
-        kind: RetentionKind,
-        label: Owned<String>,
-        publication: Option<VerifiedPublication<A, O>>,
+        retention: GenerationRetention<A, O>,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
-            let mut label = label;
+            let mut retention = retention;
             if accounting.standalone_parts().is_some() {
-                label.allocation = accounting.claim_owned(label.bytes, 0)?;
+                retention.label.allocation = accounting.claim_owned(retention.label.bytes, 0)?;
             }
             self.retain_workspace_generation_with_accounting(
                 volume,
-                generation_id,
-                kind,
-                label,
-                publication,
+                retention,
                 &mut accounting,
                 cancellation,
             )
@@ -54,13 +57,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(crate) async fn retain_workspace_generation_with_accounting(
         &self,
         volume: &Volume<A, O>,
-        generation_id: GenerationId,
-        kind: RetentionKind,
-        label: Owned<String>,
-        publication: Option<VerifiedPublication<A, O>>,
+        retention: GenerationRetention<A, O>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
+        let GenerationRetention {
+            generation_id,
+            kind,
+            label,
+            publication,
+        } = retention;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work()
             && (label.bytes != label.value.capacity() as u64
@@ -184,7 +190,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<Head, FsError> {
         let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self.inner.authority.head(authority_id, &mut work).await;
-        finish_authority_work(work)?;
+        work.finish()?;
         result.map_err(|error| match error {
             #[cfg(not(target_arch = "wasm32"))]
             AuthorityStoreError::NativeStream(error)
@@ -209,7 +215,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .find_operation(authority_id, operation_id, &mut work)
             .await;
-        finish_authority_work(work)?;
+        work.finish()?;
         let record = result?;
         Ok(record.map(|record| (record.sequence, record.fingerprint)))
     }
@@ -259,7 +265,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .create_first_record(authority_id, commit, &mut authority, None::<&mut ()>)
             .await;
-        finish_authority_work(authority)?;
+        authority.finish()?;
         result.map_err(|error| FsError::from(error.into_error(std::convert::identity)))
     }
 }

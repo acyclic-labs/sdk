@@ -169,7 +169,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
             let paths = self
                 .changed_paths_with_accounting(maximum_entries, &mut accounting, cancellation)
                 .await?;
-            let allocation = workspace_allocation(paths.allocation, &accounting)?;
+            let allocation = paths.allocation.into_authority_allocation(&accounting)?;
             Ok::<_, WorkspaceError>((paths.value, allocation))
         }
         .await;

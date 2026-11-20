@@ -708,7 +708,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &mut authority,
                 )
                 .await;
-            finish_authority_work(authority)?;
+            authority.finish()?;
             let resolved = resolved.map_err(|error| match error {
                 #[cfg(not(target_arch = "wasm32"))]
                 AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),

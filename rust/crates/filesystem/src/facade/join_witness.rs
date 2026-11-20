@@ -217,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .find_operation(volume_authority_id(workspace.id), operation_id, &mut work)
             .await;
-        finish_authority_work(work)?;
+        work.finish()?;
         let record = result.map_err(FsError::from)?;
         let allocation = KernelOwnedAllocation::Standalone;
         let generation = record
@@ -290,7 +290,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &mut authority,
                 )
                 .await;
-            finish_authority_work(authority)?;
+            authority.finish()?;
             let observed = observed.map_err(FsError::from)?;
             let Some(commit) = observed.as_ref() else {
                 return Ok(false);

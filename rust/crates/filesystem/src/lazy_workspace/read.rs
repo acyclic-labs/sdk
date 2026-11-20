@@ -100,11 +100,11 @@ impl<
                 && matches!(&lookup.0, LazyLookup::Source { .. })
             {
                 let mut bytes = self.read_resolved(&lookup.0, path, None, None, ctx).await?;
-                let total = bytes.bytes.len() as u64;
-                let start = offset.min(total) as usize;
-                let end = offset.saturating_add(length).min(total) as usize;
+                let available = bytes.bytes.len();
+                let clamp = |at: u64| usize::try_from(at).map_or(available, |at| at.min(available));
+                let (start, end) = (clamp(offset), clamp(offset.saturating_add(length)));
                 bytes.bytes = bytes.bytes.slice(start..end);
-                return Ok((bytes, total));
+                return Ok((bytes, available as u64));
             }
             if !matches!(
                 stat.kind,
@@ -184,12 +184,12 @@ impl<
         };
         let source = matches!(lookup, LazyLookup::Source { .. });
         let stat = lookup.stat();
-        let result = if stat.kind != SourceNodeKind::RegularFile {
-            Err(LazyWorkspaceError::NotRegularFile)
-        } else {
+        let result = if stat.kind == SourceNodeKind::RegularFile {
             self.read_resolved(&lookup, path, range, maximum, ctx)
                 .await
                 .map(|bytes| (bytes, stat, used || source))
+        } else {
+            Err(LazyWorkspaceError::NotRegularFile)
         };
         self.retire_lookup((lookup, guard), ctx)?;
         result

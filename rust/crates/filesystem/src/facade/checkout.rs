@@ -163,7 +163,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let (generation_root, authority_head) = self
             .resolve_checkout_generation(selector, mode, accounting, cancellation)
             .await?;
-        let (root, allocation) = self
+        let loaded = self
             .checkout_root(generation_root, accounting, cancellation)
             .await?;
         let authority_head = self
@@ -174,7 +174,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             root,
             dependencies,
             proof_owned_bytes,
-        } = self.checkout_state(generation_root, root, allocation, accounting, cancellation)?;
+        } = self.checkout_state(generation_root, loaded, accounting, cancellation)?;
         accounting.check()?;
         Ok(Checkout {
             volume: self.clone(),
@@ -208,7 +208,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Checkout<A, O>, FsError> {
-        let (root, allocation) = self
+        let loaded = self
             .checkout_root(generation_root, accounting, cancellation)
             .await?;
         let CheckoutState {
@@ -216,7 +216,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             root,
             dependencies,
             proof_owned_bytes,
-        } = self.checkout_state(generation_root, root, allocation, accounting, cancellation)?;
+        } = self.checkout_state(generation_root, loaded, accounting, cancellation)?;
         accounting.check()?;
         Ok(Checkout {
             volume: self.clone(),
@@ -262,8 +262,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     fn checkout_state(
         &self,
         generation_root: ObjectId,
-        root: GenerationRoot,
-        allocation: KernelOwnedAllocation,
+        (root, allocation): (GenerationRoot, KernelOwnedAllocation),
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<CheckoutState, FsError> {
@@ -367,7 +366,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 .authority
                 .fence(volume_authority_id(self.id), expected, &mut work)
                 .await;
-            finish_authority_work(work)?;
+            work.finish()?;
             authority_head = Some(match result? {
                 FenceOutcome::Advanced(head) => head,
                 FenceOutcome::Conflict { actual } => {

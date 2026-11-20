@@ -1,14 +1,15 @@
 use super::*;
 
-/// One within-volume zero-copy logical range clone request.
+/// One within-volume zero-copy logical range clone request. `P` addresses
+/// files: a caller's path text, or a validated namespace path once compiled.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileCloneRequest {
+pub struct FileCloneRequest<P = NamespacePath> {
     /// Existing source regular file.
-    pub source: NamespacePath,
+    pub source: P,
     /// Inclusive source byte offset.
     pub source_offset: u64,
     /// Existing destination regular file.
-    pub destination: NamespacePath,
+    pub destination: P,
     /// Inclusive destination byte offset.
     pub destination_offset: u64,
     /// Positive logical byte count.

@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             }
             .await
             .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-            crate::facade::finish_authority_work(authority_work)?;
+            authority_work.finish()?;
             let reserved = reserved?;
             let reservation = match reserved {
                 crate::ReservationOutcome::Reserved(proof)
@@ -268,7 +268,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 .release_publication(reservation, &mut authority_work)
                 .await
                 .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-            crate::facade::finish_authority_work(authority_work)?;
+            authority_work.finish()?;
             released
         }
         .await;

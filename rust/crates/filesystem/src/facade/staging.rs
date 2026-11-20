@@ -74,7 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .objects
             .flush_before_publish(scope, &mut work)
             .await;
-        finish_authority_work(work)?;
+        work.finish()?;
         result.map_err(FsError::from)
     }
     pub(crate) async fn make_records_durable<W: FsWork>(

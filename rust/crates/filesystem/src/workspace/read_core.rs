@@ -25,7 +25,7 @@ pub(super) async fn lookup_paths<
             .lookup_batch_no_follow_with_accounting::<true>(paths, true, &mut scope, cancellation)
             .await?;
         checkout.retire(&mut scope)?;
-        let allocation = workspace_allocation(allocation, &scope)?;
+        let allocation = allocation.into_authority_allocation(&scope)?;
         Ok((lookup, allocation))
     }
     .await;
@@ -459,7 +459,7 @@ pub(super) async fn list<
                 })?;
             path.retire(&mut scope)?;
             checkout.retire(&mut scope)?;
-            let allocation = workspace_allocation(allocation, &scope)?;
+            let allocation = allocation.into_authority_allocation(&scope)?;
             Ok::<_, WorkspaceError>((page, allocation))
         }
         .await;
@@ -485,12 +485,12 @@ pub(super) async fn plan<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    offset: u64,
-    length: u64,
+    range: crate::ByteRange,
     maximum_spans: Option<u32>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {
+    let crate::ByteRange { offset, length } = range;
     let mut accounting = work.accounting(cancellation);
     let result = async {
         let mut scope = accounting.allocation_scope()?;
@@ -502,7 +502,7 @@ pub(super) async fn plan<
                 .value
                 .plan_file_extents_projected_with_accounting(
                     &path.value,
-                    crate::ByteRange { offset, length },
+                    range,
                     maximum_spans,
                     |span| WorkspaceExtentSpan {
                         offset: span.offset,
@@ -518,41 +518,37 @@ pub(super) async fn plan<
                     cancellation,
                 )
                 .await?;
-            let spans = match plan {
-                Some(plan) => crate::kernel::Owned::new(
-                    plan.spans,
-                    allocation,
-                    plan.retained_allocation_bytes,
-                ),
-                None => {
-                    drop(allocation);
-                    let mut spans = crate::kernel::Owned::<Vec<WorkspaceExtentSpan>>::allocate(
-                        usize::from(length != 0),
-                        &mut scope,
-                    )?;
-                    if length != 0 {
-                        let returned = crate::WorkCounters {
-                            items_returned: 1,
-                            ..crate::WorkCounters::UNCHARGED
-                        };
-                        scope.admit(returned)?;
-                        let source_end = offset
-                            .checked_add(length)
-                            .ok_or(crate::WorkError::Overflow)?;
-                        spans.value.push(WorkspaceExtentSpan {
-                            offset,
-                            length,
-                            source_end,
-                            kind: WorkspaceExtentKind::Content,
-                        });
-                        scope.record_completed(returned)?;
-                    }
-                    spans
+            let spans = if let Some(plan) = plan {
+                crate::kernel::Owned::new(plan.spans, allocation, plan.retained_allocation_bytes)
+            } else {
+                // The empty plan's backing is released before the one-span result is funded.
+                allocation.release();
+                let mut spans = crate::kernel::Owned::<Vec<WorkspaceExtentSpan>>::allocate(
+                    usize::from(length != 0),
+                    &mut scope,
+                )?;
+                if length != 0 {
+                    let returned = crate::WorkCounters {
+                        items_returned: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    };
+                    scope.admit(returned)?;
+                    let source_end = offset
+                        .checked_add(length)
+                        .ok_or(crate::WorkError::Overflow)?;
+                    spans.value.push(WorkspaceExtentSpan {
+                        offset,
+                        length,
+                        source_end,
+                        kind: WorkspaceExtentKind::Content,
+                    });
+                    scope.record_completed(returned)?;
                 }
+                spans
             };
             path.retire(&mut scope)?;
             checkout.retire(&mut scope)?;
-            let allocation = workspace_allocation(spans.allocation, &scope)?;
+            let allocation = spans.allocation.into_authority_allocation(&scope)?;
             Ok::<_, WorkspaceError>((WorkspaceExtentPlan { spans: spans.value }, allocation))
         }
         .await;

@@ -102,11 +102,14 @@ pub(crate) use publication_codec::publication_evidence;
 #[cfg(not(target_arch = "wasm32"))]
 mod selected_apply;
 mod selected_commit;
+// A selected import is applied only by native mounts, so only they plan one.
+#[cfg(not(target_arch = "wasm32"))]
 mod selected_plan;
 #[cfg(not(target_arch = "wasm32"))]
 mod snapshot_write;
 pub use qualification::NativePublicationSnapshot;
 pub(crate) use qualification::NativeSnapshotContext;
+#[cfg(not(target_arch = "wasm32"))]
 pub use selected_plan::SelectedImportPlan;
 mod binding;
 mod exactify;
@@ -123,8 +126,8 @@ mod write;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use directory::cursor_codec::codec_fuzz;
 pub use directory::{
-    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing, LazyDirectoryNode,
-    LazyDirectoryPage,
+    LazyDirectoryBound, LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing,
+    LazyDirectoryNode, LazyDirectoryPage,
 };
 pub use error::LazyWorkspaceError;
 pub use lookup::{LazyLookup, LazyStat};

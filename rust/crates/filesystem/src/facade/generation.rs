@@ -109,7 +109,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut work,
             )
             .await;
-        finish_authority_work(work)?;
+        work.finish()?;
         let (records, allocation) = result.map_err(FsError::from)?;
         let result = match records.as_slice() {
             [record] if record.sequence == position && record.digest == digest => {
@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .authority
             .head_payload(authority_id, maximum_payload_bytes, &mut authority)
             .await;
-        finish_authority_work(authority)?;
+        authority.finish()?;
         // Introduce the payload after its funding, so every exit drops the
         // payload first, including decoding failures and unwinding.
         let (value, _allocation) = result?;
