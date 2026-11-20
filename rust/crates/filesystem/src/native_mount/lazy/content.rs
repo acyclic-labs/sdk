@@ -220,7 +220,7 @@ where
                     text,
                     allocation,
                     id,
-                    node: *node,
+                    node,
                     source,
                     source_file,
                     generation,
@@ -307,13 +307,7 @@ where
             .push(Arc::downgrade(&file));
         Ok((
             crate::native_mount::MountOpenClaim { file, bytes: 0 },
-            Some(mount_lookup(
-                &LazyLookup::Source {
-                    node: Box::new(node),
-                    source,
-                },
-                id,
-            )),
+            Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
             id,
         ))
     }

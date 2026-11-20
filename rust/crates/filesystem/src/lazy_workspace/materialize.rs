@@ -295,10 +295,7 @@ impl<
                     SourceNodeKind::SymbolicLink => {
                         let target = self
                             .read_resolved(
-                                &LazyLookup::Source {
-                                    source,
-                                    node: Box::new(node),
-                                },
+                                &LazyLookup::Source { source, node },
                                 path,
                                 None,
                                 maximum,

@@ -82,7 +82,7 @@ impl<
             _ => self
                 .source_lookup(&cut.source, root, ctx)
                 .await?
-                .map(|node| (cut.source.clone(), Box::new(node))),
+                .map(|node| (cut.source.clone(), node)),
         };
         let state = LazyWorkspaceState::new(
             cut.workspace_id,
@@ -272,7 +272,7 @@ impl<
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
                         Some(LazyOverlayChange::Observe {
                             source: live,
-                            node: Box::new(node),
+                            node,
                             complete: false,
                         })
                     }
@@ -289,7 +289,7 @@ impl<
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
                         Some(LazyOverlayChange::Observe {
                             source: live,
-                            node: Box::new(node),
+                            node,
                             complete: false,
                         })
                     }
@@ -629,7 +629,7 @@ impl<
                         self.stage_exactify_regular(
                             transaction,
                             path,
-                            (source.clone(), **node),
+                            (source.clone(), *node),
                             &mut pending,
                             ctx,
                         )

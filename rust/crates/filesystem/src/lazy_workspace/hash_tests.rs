@@ -108,13 +108,11 @@ proptest! {
         let node = LazyShadow::Node {
             file_id: FileId::from_bytes(file_id),
             priority,
-            authored: (shadow_kind != 0).then(|| Box::new(content.clone())),
-            observed: (shadow_kind != 1).then(|| {
-                Box::new(LazySourceRecord {
-                    source: SourceReference::new(file_id, priority),
-                    version: SourceVersion(right),
-                    content,
-                })
+            authored: (shadow_kind != 0).then(|| content.clone()),
+            observed: (shadow_kind != 1).then(|| LazySourceRecord {
+                source: SourceReference::new(file_id, priority),
+                version: SourceVersion(right),
+                content,
             }),
             left: LazyShadowId::from_bytes(left),
             right: LazyShadowId::from_bytes(right),

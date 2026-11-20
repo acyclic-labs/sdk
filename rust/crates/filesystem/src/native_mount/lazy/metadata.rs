@@ -68,7 +68,7 @@ pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup 
                 _ => None,
             },
         ),
-        LazyLookup::Source { node, .. } => return source_mount_lookup(**node, file_id),
+        LazyLookup::Source { node, .. } => return source_mount_lookup(*node, file_id),
     };
     MountLookup {
         node: MountNode {

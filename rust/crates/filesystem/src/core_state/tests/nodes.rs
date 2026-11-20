@@ -28,7 +28,7 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
         };
         *change = crate::lazy_workspace::LazyOverlayChange::Observe {
             source: source.clone(),
-            node: Box::new(crate::demand::SourceNode {
+            node: crate::demand::SourceNode {
                 kind: crate::demand::SourceNodeKind::RegularFile,
                 file_identity: [0x65; 32],
                 link_count: Some(1),
@@ -36,7 +36,7 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
                 logical_bytes: Some(1),
                 version: crate::demand::SourceVersion([0x66; 32]),
                 metadata: Default::default(),
-            }),
+            },
             complete: false,
         };
         let id = LazyOverlayId::from_bytes(content_address(&node).unwrap());
@@ -101,14 +101,14 @@ async fn reopened_shadow_source_alias_keeps_decoded_credit_until_last_drop() {
         file_id: crate::FileId::from_bytes([0x75; 16]),
         priority: 0,
         authored: None,
-        observed: Some(Box::new(crate::LazySourceRecord {
+        observed: Some(crate::LazySourceRecord {
             source: source.clone(),
             version: crate::demand::SourceVersion([0x76; 32]),
             content: crate::LazyStoredRecord {
                 record: vec![1, 2, 3],
                 metadata: crate::WorkspaceMetadata::from_engine(Default::default()),
             },
-        })),
+        }),
         left: empty,
         right: empty,
     };

@@ -322,8 +322,8 @@ impl<
         let node = LazyShadow::Node {
             file_id: id,
             priority: shadow_priority(id),
-            authored: authored.map(Box::new),
-            observed: observed.map(Box::new),
+            authored,
+            observed,
             left: root,
             right: root,
         };

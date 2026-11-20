@@ -171,10 +171,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         operation_id,
                         generation_root: candidate,
                     },
-                    intent: Box::new(PublicationIntent::guarded(
-                        None,
-                        PublicationPermit::Unrestricted,
-                    )),
+                    intent: PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     limits: closure_limits(target.config),
                     resolutions_digest: candidate.digest,
                     source_hold: None,

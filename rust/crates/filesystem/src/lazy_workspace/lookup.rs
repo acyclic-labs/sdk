@@ -44,14 +44,14 @@ pub enum LazyLookup {
         /// Original source cut shared by unresolved native aliases.
         source: SourceReference,
         /// Source version and identity whose authored record supplies bytes.
-        node: Box<SourceNode>,
+        node: SourceNode,
     },
     /// Exact source fact including its pinned epoch.
     Source {
         /// Observed source cut.
         source: SourceReference,
         /// Immutable node/version.
-        node: Box<SourceNode>,
+        node: SourceNode,
     },
 }
 
@@ -147,7 +147,7 @@ impl<
             }) if saved_source == source && saved_node == node);
             let change = LazyOverlayChange::Observe {
                 source: source.clone(),
-                node: node.clone(),
+                node: *node,
                 complete,
             };
             if previous != Some(change.clone()) {
@@ -358,13 +358,11 @@ impl<
             }
             _ => {
                 if let Some(node) = basis.listed {
-                    (state.source.clone(), Some(Box::new(node)), false)
+                    (state.source.clone(), Some(node), false)
                 } else {
                     (
                         state.source.clone(),
-                        self.source_lookup(&state.source, path, ctx)
-                            .await?
-                            .map(Box::new),
+                        self.source_lookup(&state.source, path, ctx).await?,
                         true,
                     )
                 }

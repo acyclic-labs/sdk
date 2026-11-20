@@ -455,7 +455,7 @@ pub(crate) enum JoinPreparation {
     },
     Candidate {
         request: crate::kernel::PublishGenerationRequest,
-        intent: Box<crate::kernel::PublicationIntent>,
+        intent: crate::kernel::PublicationIntent,
         limits: crate::kernel::ClosureLimits,
         resolutions_digest: crate::Digest,
         source_hold: Option<crate::PublicationHold>,

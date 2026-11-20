@@ -245,7 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 WorkspaceJoinPreparation::Candidate { .. } => unreachable!(),
             };
         };
-        let published = publication(request, *intent, limits, accounting.remaining()?).await;
+        let published = publication(request, intent, limits, accounting.remaining()?).await;
         let (result, spent) = accounting.split_receipt(published)?;
         if accounting.standalone_parts().is_some() {
             merge_creation_backend_work(accounting, spent)?;
@@ -535,7 +535,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     // target. A target that moved only elsewhere composes it in
                     // the same publication round; a change to any key it
                     // writes leaves it stale, to be replanned.
-                    intent: Box::new(PublicationIntent {
+                    intent: PublicationIntent {
                         preconditions: Some(crate::kernel::PublicationPreconditions {
                             base: target_object,
                             config: target.config,
@@ -545,7 +545,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                                 .map_err(FsError::from)?,
                         }),
                         ..PublicationIntent::guarded(Some(operation_context), permit)
-                    }),
+                    },
                     limits: closure_limits(target.config),
                     resolutions_digest,
                     source_hold,

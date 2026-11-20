@@ -467,7 +467,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 } = node
                 {
                     for content in authored
-                        .map(|record| *record)
                         .into_iter()
                         .chain(observed.map(|record| record.content))
                     {

@@ -80,7 +80,7 @@ impl<
                     .await?;
             }
             LazyLookup::Source { source, node } => {
-                self.populate_source_node(transaction, path, source.clone(), **node, maximum, ctx)
+                self.populate_source_node(transaction, path, source.clone(), *node, maximum, ctx)
                     .await?;
             }
         }
