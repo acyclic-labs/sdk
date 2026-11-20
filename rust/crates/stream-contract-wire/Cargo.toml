@@ -17,7 +17,7 @@ categories = ["api-bindings", "data-structures"]
 crate-type = ["rlib"]
 
 [features]
-test-support = ["acyclic-stream-contract-core/test-support"]
+test-support = ["acyclic-stream-contract-core/test-support", "acyclic-auth/test-support"]
 serde = ["acyclic-stream-contract-core/serde"]
 js-bytes = ["acyclic-stream-contract-core/js-bytes"]
 wasm-journal = ["acyclic-stream-contract-core/wasm-journal"]

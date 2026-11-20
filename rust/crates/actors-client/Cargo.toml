@@ -14,6 +14,7 @@ test-support = [
     "acyclic-actors-contract/test-support",
     "acyclic-auth/test-support",
     "acyclic-native-runtime/test-support",
+    "acyclic-grpc-observability/test-support",
 ]
 
 [dependencies]

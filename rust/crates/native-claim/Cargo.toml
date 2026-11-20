@@ -13,7 +13,7 @@ categories = ["filesystem"]
 
 [features]
 model-checking = ["dep:loom"]
-test-support = []
+test-support = ["acyclic-native-file/test-support", "acyclic-native-runtime/test-support"]
 
 [dependencies]
 acyclic-native-file = { version = "=0.2.0", path = "../native-file" }

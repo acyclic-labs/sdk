@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 [features]
 # Admitted JavaScript byte ownership without a provider or transport.
 js-bytes = ["dep:wasm-bindgen"]
-test-support = []
+test-support = ["acyclic-native-runtime/test-support"]
 
 [dependencies]
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }

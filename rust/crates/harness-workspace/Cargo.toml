@@ -16,7 +16,7 @@ documentation = "https://docs.rs/acyclic-harness-workspace"
 unit-test-shards = 8
 
 [features]
-test-support = []
+test-support = ["acyclic-actors/test-support", "acyclic-fs-format/test-support", "acyclic-fs-work/test-support", "acyclic-fs/test-support", "acyclic-harness-core/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 model-checking = ["dep:loom", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 
 [dependencies]
