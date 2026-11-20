@@ -717,10 +717,9 @@ impl LocalStream {
             return Ok(span.in_scope(|| finish(Err(error))));
         }
         let stream = self.worker();
-        let mut failed = self.inner.failed.subscribe();
         // The mutation owns completion as well as durability, even if its caller is dropped.
         let operation = span.clone();
-        let pending = spawn(publication_scope(async move {
+        self.retained(self.work.as_deref(), async move {
             let task = std::pin::pin!(async {
                 let (result, required) = {
                     let _visibility = stream.inner.visibility.write().await;
@@ -740,8 +739,22 @@ impl LocalStream {
             });
             let result = operation.scope(task).await;
             operation.in_scope(|| finish(result))
-        }));
-        LocalInner::observe(&mut failed, pending, self.work.as_deref())
+        })
+        .await
+    }
+
+    /// Runs fenced work on its own task, which keeps custody of its fences,
+    /// publication and completion even when its caller stops polling or
+    /// drops it; the caller only observes the outcome. A failure ends the
+    /// observation unless `owner` recorded it, as in [`LocalInner::observe`].
+    async fn retained<T: Send + 'static>(
+        &self,
+        owner: Option<&crate::native::Work>,
+        task: impl Future<Output = T> + Send + 'static,
+    ) -> Result<T, StreamError> {
+        let mut failed = self.inner.failed.subscribe();
+        let pending = spawn(publication_scope(task));
+        LocalInner::observe(&mut failed, pending, owner)
             .await?
             .map_err(|_| StreamError::Unavailable)
     }

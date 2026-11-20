@@ -1000,8 +1000,8 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
             }
             let meter = Arc::new(Meter::local());
             let (worker, mut events) = acyclic_native_runtime::testing::Schedule::seeded(0);
-            let packet = worker
-                .scope(provider.native_prepare_commit(
+            let (packet, submitted) = prepare_past_fence(
+                worker.scope(provider.native_prepare_commit(
                     request,
                     crate::PreparedRecordCapacity {
                         payload_bytes: 64,
@@ -1009,13 +1009,21 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
                         attributes: 16,
                     },
                     meter.original(),
-                ))
-                .await??;
-            let (packet, guard) = packet.into_parts();
+                )),
+                &mut events,
+            )
+            .await?;
+            let (packet, guard) = packet??.into_parts();
             let drained = worker.drained();
             tokio::pin!(drained);
             assert!(futures::poll!(&mut drained).is_pending());
-            let submitted = events.try_recv()?;
+            let submitted = match submitted {
+                Some(submitted) => submitted,
+                None => events
+                    .recv()
+                    .await
+                    .ok_or("prepared worker was never submitted")?,
+            };
             assert_eq!(submitted.name, "task:submitted");
             if parked {
                 submitted.release();

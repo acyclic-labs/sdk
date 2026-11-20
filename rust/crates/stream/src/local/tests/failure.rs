@@ -342,45 +342,57 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
     let request = super::prepared_fixture(&stream).await?;
     let meter = Arc::new(crate::test_meter::Meter::local());
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    let mut producer = None;
+    // The prepared worker is the producer. Its record is supplied before its
+    // acknowledgement is held, as the packet's caller supplies it.
+    let prepared = if mode == 2 {
+        let (prepared, submitted) = super::prepare_past_fence(
+            schedule.scope(stream.native_prepare_commit(
+                request.clone(),
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )),
+            &mut boundaries,
+        )
+        .await?;
+        producer = submitted.map(|submitted| {
+            let owner = submitted.owner;
+            submitted.release();
+            owner
+        });
+        Some(prepared??.into_parts())
+    } else {
+        None
+    };
+    let file_path = root.path().join(JOURNAL_FILE);
+    let read_only = acyclic_native_runtime::CachedFile::new(
+        std::fs::File::open(&file_path)?,
+        &file_path,
+        true,
+        false,
+    )?;
+    let held = read_only.lease()?;
+    stream
+        .inner
+        .journal
+        .lock()
+        .map_err(|_| "journal poisoned")?
+        .file = read_only;
+    let finishing = prepared.map(|(packet, allocation)| {
+        (
+            packet.finish(crate::OwnedBytes::from_static(b"physical").into()),
+            allocation,
+        )
+    });
     {
         let operation = schedule.scope(async {
-            let prepared = if mode == 2 {
-                Some(
-                    stream
-                        .native_prepare_commit(
-                            request.clone(),
-                            crate::PreparedRecordCapacity {
-                                payload_bytes: 64,
-                                keys: 64,
-                                attributes: 16,
-                            },
-                            meter.original(),
-                        )
-                        .await??,
-                )
-            } else {
-                None
-            };
-            let file_path = root.path().join(JOURNAL_FILE);
-            let read_only = acyclic_native_runtime::CachedFile::new(
-                std::fs::File::open(&file_path)?,
-                &file_path,
-                true,
-                false,
-            )?;
-            let held = read_only.lease()?;
-            stream
-                .inner
-                .journal
-                .lock()
-                .map_err(|_| "journal poisoned")?
-                .file = read_only;
-            let result = match prepared {
-                Some(prepared) => {
-                    let (packet, allocation) = prepared.into_parts();
-                    let result = packet
-                        .finish(crate::OwnedBytes::from_static(b"physical").into())
-                        .await;
+            let result = match finishing {
+                Some((finishing, allocation)) => {
+                    let result = finishing.await;
                     drop(allocation);
                     result.map(|result| result.map(|_| ()))
                 }
@@ -409,7 +421,6 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
             Ok::<_, Box<dyn std::error::Error>>(())
         });
         tokio::pin!(operation);
-        let mut producer = None;
         loop {
             tokio::select! {
                 result = &mut operation, if producer.is_none() => { result?; break; }
@@ -436,5 +447,48 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
     meter.assert_refunded();
     let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
     assert_eq!(reopened.tail(StreamPath::new("prepared/target")?).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_abandoned_prepare_cannot_hold_the_visibility_fence_from_a_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let stream = LocalStream::open(root.path(), Default::default()).await?;
+    let request = super::prepared_fixture(&stream).await?;
+    let meter = Arc::new(crate::test_meter::Meter::local());
+    let held = stream.inner.visibility.write().await;
+    let mut prepare = Box::pin(stream.native_prepare_commit(
+        request,
+        crate::PreparedRecordCapacity {
+            payload_bytes: 64,
+            keys: 64,
+            attributes: 16,
+        },
+        meter.original(),
+    ));
+    // The caller polls once into the fenced preparation and then stops
+    // polling without dropping it. The fair fence hands that queued reader
+    // its permit when the writer leaves.
+    assert!(futures::poll!(&mut prepare).is_pending());
+    drop(held);
+    // Every later visibility writer still completes: the persistence cut,
+    // then a mutation, each waiting on the fence the abandoned caller entered.
+    struct Passthrough;
+    impl PersistenceCut for Passthrough {
+        fn admit(&self) -> bool {
+            true
+        }
+        fn acknowledge(&self) -> bool {
+            true
+        }
+        fn crashed(&self, _: Result<(), CutSimulationError>) {
+            unreachable!("an admitting cut never crashes");
+        }
+    }
+    stream.cut_persistence(Arc::new(Passthrough)).await?;
+    deferring_durability(stream.append(super::keyed_append("after-abandon", 0)?)).await?;
+    drop(prepare);
+    assert_eq!(stream.tail(StreamPath::new("after-abandon")?).await?, 1);
     Ok(())
 }

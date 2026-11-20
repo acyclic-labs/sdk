@@ -100,6 +100,37 @@ pub(super) fn request_control_capacity(request: &CommitRequest) -> usize {
             .sum::<usize>()
 }
 
+/// Awaits a preparation under a simulation scope whose boundaries the caller
+/// holds. The preparation's fenced task is submitted first and completes
+/// before the packet returns; its boundaries are released. The first other
+/// boundary, the prepared worker's own submission when it precedes the
+/// packet, is returned unreleased for the caller to hold.
+pub(super) async fn prepare_past_fence<T>(
+    prepare: impl Future<Output = T>,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<acyclic_native_runtime::testing::Boundary>,
+) -> Result<(T, Option<acyclic_native_runtime::testing::Boundary>), Box<dyn std::error::Error>> {
+    let mut prepare = std::pin::pin!(prepare);
+    let mut fenced = None;
+    let mut worker = None;
+    loop {
+        tokio::select! {
+            output = &mut prepare => return Ok((output, worker)),
+            boundary = events.recv() => {
+                let boundary = boundary.ok_or("preparation boundaries ended")?;
+                match fenced {
+                    None => {
+                        fenced = Some(boundary.owner);
+                        boundary.release();
+                    }
+                    Some(owner) if owner == boundary.owner => boundary.release(),
+                    Some(_) if worker.is_none() => worker = Some(boundary),
+                    Some(_) => return Err("a held prepared worker produced another boundary".into()),
+                }
+            }
+        }
+    }
+}
+
 pub(super) async fn prepared_fixture<P: StreamProvider + ?Sized>(
     provider: &P,
 ) -> Result<CommitRequest, StreamError> {

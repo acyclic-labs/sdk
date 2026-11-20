@@ -23,10 +23,14 @@ impl LocalStream {
                         // as the store closes.
                         let handle = stream.handle.take();
                         let provider = stream.inner.provider.with_context(Arc::clone(&work));
-                        let mut failed = stream.inner.failed.subscribe();
-                        let result = LocalInner::observe(
-                            &mut failed,
-                            async {
+                        // The fenced preparation runs on its own task: a caller
+                        // that stops polling cannot keep the visibility fence or
+                        // the provider's fair-queued publication fence.
+                        let fenced = stream.clone();
+                        let fenced_work = Arc::clone(&work);
+                        let result = stream
+                            .retained(None, async move {
+                                let (stream, work) = (fenced, fenced_work);
                                 let _visibility = stream.inner.visibility.read().await;
                                 stream.check_available()?;
                                 let copied = work.record(request.try_clone_native(&work.meter))?;
@@ -109,11 +113,9 @@ impl LocalStream {
                                     ),
                                     None,
                                 ))
-                            },
-                            None,
-                        )
-                        .await
-                        .and_then(|result| result);
+                            })
+                            .await
+                            .and_then(|result| result);
                         work.finish(result)
                     },
                     |result| crate::native::outcome(result, StreamError::code),
