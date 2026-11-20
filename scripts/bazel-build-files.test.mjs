@@ -82,23 +82,27 @@ const privileges = readFileSync("rust/crates/test-runner/privileges.txt", "utf8"
 test("the privileged wrapper accepts exactly the privileges the generator does", { skip: process.platform === "win32" && "the wrapper runs only in POSIX test actions" }, () => {
   const verity = mkdtempSync(join(tmpdir(), "verity-"));
   try {
-    for (const privilege of [...privileges, "not-a-privilege"]) {
-      const result = spawnSync("sh", ["rust/crates/test-runner/privileged.sh", "true"], { encoding: "utf8",
-        env: { PATH: process.env.PATH, ACYCLIC_TEST_VERITY_DIR: verity, ACYCLIC_TEST_PRIVILEGES: `${privilege} not-a-privilege` } });
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /unknown privilege not-a-privilege/, `${privilege} is accepted before the unlisted one is refused`);
-    }
+    // The wrapper checks the names in order and stops at the first unknown, so refusing only the last
+    // one shows it accepted every listed one before it.
+    const result = spawnSync("sh", ["rust/crates/test-runner/privileged.sh", "true"], { encoding: "utf8",
+      env: { PATH: process.env.PATH, ACYCLIC_TEST_VERITY_DIR: verity, ACYCLIC_TEST_PRIVILEGES: [...privileges, "not-a-privilege"].join(" ") } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^privileged\.sh: unknown privilege not-a-privilege /m, "every listed privilege is accepted before the unlisted one is refused");
   } finally {
     rmSync(verity, { recursive: true, force: true });
   }
   const { root, run } = fixture();
   try {
-    const manifest = join(root, "member/Cargo.toml");
-    for (const privilege of [...privileges, "not-a-privilege"]) {
-      writeFileSync(manifest, readFileSync(manifest, "utf8").replace(/\n\[\[package\.metadata[\s\S]*$/, "\n") + `\n[[package.metadata.bazel.privileged.member_test]]\nrequires = ["${privilege}"]\ncases = ["reads_cargo"]\n`);
-      const result = run("write");
-      assert.equal(result.status, privilege === "not-a-privilege" ? 1 : 0, result.stderr);
-    }
+    const manifest = join(root, "member/Cargo.toml"), original = readFileSync(manifest, "utf8");
+    // One group per privilege in one generation: each is accepted alone.
+    const groups = names => names.map(privilege => `\n[[package.metadata.bazel.privileged.member_test]]\nrequires = ["${privilege}"]\ncases = ["reads_cargo_${privilege.replaceAll("-", "_")}"]\n`).join("");
+    writeFileSync(manifest, original + groups(privileges));
+    const accepted = run("write");
+    assert.equal(accepted.status, 0, accepted.stderr);
+    writeFileSync(manifest, original + groups(["not-a-privilege"]));
+    const refused = run("write");
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /unknown not-a-privilege/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

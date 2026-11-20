@@ -48,6 +48,9 @@ const mode = args[0];
 if (args.length !== 1 || (mode !== "write" && mode !== "check") || (output && mode !== "write")) {
   throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR --source-repository DIRECTORY @REPOSITORY] write [--output FILE]|check; recovery: node scripts/bazel-build-files.mjs write");
 }
+// Each parse is one interpreter start, so the workspace-level files this run reads parse in one; the
+// member manifests the workspace names parse together next, in workspacePackages.
+tomlFiles(root, ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", ".config/nextest.toml"].filter(file => fs.existsSync(path.join(root, file))));
 assertRegistryPinsCurrent(root);
 
 // Bazel builds each crate for these targets. A dependency or feature that differs between
