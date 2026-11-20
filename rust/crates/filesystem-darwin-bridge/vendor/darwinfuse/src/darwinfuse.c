@@ -26,8 +26,6 @@
 #include <stdatomic.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
-#include <dirent.h>
-#include <sys/attr.h>
 
 /* ---- Diagnostics ---- */
 
@@ -498,111 +496,6 @@ static void mounted_io_ready(void *arg)
         DFUSE_ERR("Mounted readiness lookup failed: %s (callback reached=%d)",
                   strerror(test->result), atomic_load(&test->looked_up));
     if (test->result == 0) {
-        int access_error = access(test->root, W_OK | X_OK) != 0 ? errno : 0;
-        {
-            struct stat root_stat;
-            int root_error = lstat(test->root, &root_stat) != 0 ? errno : 0;
-            int read_error = access(test->root, R_OK) != 0 ? errno : 0;
-            int exec_error = access(test->root, X_OK) != 0 ? errno : 0;
-            int write_error = access(test->root, W_OK) != 0 ? errno : 0;
-            int open_error = open(test->root, O_RDONLY | O_DIRECTORY) < 0 ? errno : 0;
-            char parent[4096];
-            snprintf(parent, sizeof(parent), "%s", test->root);
-            char *slash = strrchr(parent, '/');
-            if (slash != NULL && slash != parent) *slash = '\0';
-            int parent_mkdir_error = 0;
-            char parent_child[4096];
-            snprintf(parent_child, sizeof(parent_child), "%s/diag-%d", parent, (int)getpid());
-            if (mkdir(parent_child, 0700) != 0) parent_mkdir_error = errno;
-            else (void)rmdir(parent_child);
-            DFUSE_ERR("DIAG pid=%d owner_pid=%d root_error=%d mode=%o uid=%u "
-                      "read=%d exec=%d write=%d open=%d parent_mkdir=%d",
-                      (int)getpid(), (int)fuse_mount_owner_pid(test->fuse), root_error,
-                      root_error ? 0 : (unsigned)root_stat.st_mode,
-                      root_error ? 0 : (unsigned)root_stat.st_uid,
-                      read_error, exec_error, write_error, open_error, parent_mkdir_error);
-            int r0 = access(test->root, R_OK) != 0 ? errno : 0;
-            int r1 = access(test->root, R_OK) != 0 ? errno : 0;
-            char ready[4096];
-            snprintf(ready, sizeof(ready), "%s/ready", test->root);
-            int r2 = access(ready, R_OK) != 0 ? errno : 0;
-            int fd = open(ready, O_RDONLY);
-            int r3 = fd < 0 ? errno : 0;
-            if (fd >= 0) (void)close(fd);
-            DIR *dir = opendir(test->root);
-            int r4 = dir == NULL ? errno : 0;
-            if (dir != NULL) (void)closedir(dir);
-            struct stat ready_stat;
-            int r5 = lstat(ready, &ready_stat) != 0 ? errno : 0;
-            int r6 = access(test->root, F_OK) != 0 ? errno : 0;
-            fd = open(test->root, O_RDONLY);
-            int r7 = fd < 0 ? errno : 0;
-            if (fd >= 0) (void)close(fd);
-            fd = open(test->root, O_RDONLY | O_DIRECTORY);
-            int r8 = fd < 0 ? errno : 0;
-            if (fd >= 0) (void)close(fd);
-            int r9 = access(test->root, X_OK) != 0 ? errno : 0;
-            int r10 = access(test->root, W_OK) != 0 ? errno : 0;
-            struct statfs root_fs = {0};
-            int r11 = statfs(test->root, &root_fs) != 0 ? errno : 0;
-            struct attrlist list = { .bitmapcount = ATTR_BIT_MAP_COUNT,
-                                     .commonattr = ATTR_CMN_FLAGS };
-            struct { uint32_t length; uint32_t flags; } flags = {0};
-            int r12 = getattrlist(test->root, &list, &flags, sizeof(flags), 0) != 0 ? errno : 0;
-            DFUSE_ERR("DIAG2 r_ok=%d r_ok2=%d ready_r=%d ready_open=%d readdir=%d "
-                      "ready_stat=%d f_ok=%d root_open=%d root_open_dir=%d x_ok=%d w_ok=%d "
-                      "statfs=%d flags=%#x vflags=%#x",
-                      r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11,
-                      root_fs.f_flags, r12 ? 0 : flags.flags);
-            int s0 = access("/", W_OK) != 0 ? errno : 0;
-            int s1 = access("/", R_OK) != 0 ? errno : 0;
-            int s2 = access("/etc/hosts", R_OK) != 0 ? errno : 0;
-            int s3 = access("/tmp", W_OK) != 0 ? errno : 0;
-            int s4 = access(parent, R_OK) != 0 ? errno : 0;
-            int s5 = access(parent, W_OK) != 0 ? errno : 0;
-            int s6 = access(parent, X_OK) != 0 ? errno : 0;
-            DFUSE_ERR("DIAG3 root_w=%d root_r=%d hosts_r=%d tmp_w=%d parent_r=%d "
-                      "parent_w=%d parent_x=%d",
-                      s0, s1, s2, s3, s4, s5, s6);
-            int s7 = access("/etc/hosts", W_OK) != 0 ? errno : 0;
-            int s8 = access("/private/var/root", R_OK) != 0 ? errno : 0;
-            struct attrlist acl_list = { .bitmapcount = ATTR_BIT_MAP_COUNT,
-                                         .commonattr = 0x00000400 /* ATTR_CMN_ACL */ };
-            char acl_buf[4096];
-            int s9 = getattrlist(test->root, &acl_list, acl_buf, sizeof(acl_buf), 0) != 0
-                         ? errno : 0;
-            struct attrlist own_list = { .bitmapcount = ATTR_BIT_MAP_COUNT,
-                                         .commonattr = ATTR_CMN_OWNERID | ATTR_CMN_GRPID |
-                                                       ATTR_CMN_ACCESSMASK };
-            char own_buf[256];
-            int s10 = getattrlist(test->root, &own_list, own_buf, sizeof(own_buf), 0) != 0
-                          ? errno : 0;
-            DFUSE_ERR("DIAG4 hosts_w=%d rootdir_r=%d acl=%d owner=%d", s7, s8, s9, s10);
-            char probe[256];
-            snprintf(probe, sizeof(probe), "/etc/sandbox-probe-%d", (int)getpid());
-            int s11 = mkdir(probe, 0700) != 0 ? errno : 0;
-            if (s11 == 0) (void)rmdir(probe);
-            int s12 = open("/etc/hosts", O_WRONLY) < 0 ? errno : 0;
-            snprintf(probe, sizeof(probe), "/tmp/sandbox-probe-%d", (int)getpid());
-            int s13 = mkdir(probe, 0700) != 0 ? errno : 0;
-            if (s13 == 0) (void)rmdir(probe);
-            DFUSE_ERR("DIAG5 etc_mkdir=%d etc_open_w=%d tmp_mkdir=%d", s11, s12, s13);
-            int d0 = open("/etc/master.passwd", O_RDONLY) < 0 ? errno : 0;
-            char plain[4096];
-            snprintf(plain, sizeof(plain), "%s/diag-plain-%d", parent, (int)getpid());
-            int d1 = 0;
-            int pfd = open(plain, O_CREAT | O_WRONLY, 0600);
-            if (pfd < 0) {
-                d1 = errno;
-            } else {
-                (void)close(pfd);
-                int rfd = open(plain, O_RDONLY);
-                d1 = rfd < 0 ? errno : 0;
-                if (rfd >= 0) (void)close(rfd);
-                (void)unlink(plain);
-            }
-            DFUSE_ERR("DIAG8 shadow_open=%d plain_open=%d", d0, d1);
-        }
         len = snprintf(path, sizeof(path), "%s/created", test->root);
         if (len < 0 || (size_t)len >= sizeof(path))
             test->result = ENAMETOOLONG;
@@ -610,15 +503,9 @@ static void mounted_io_ready(void *arg)
             test->result = errno;
         else if (!S_ISDIR(stat.st_mode) || atomic_load(&test->created_mode) != (S_IFDIR | 0700))
             test->result = EIO;
-        if (test->result != 0) {
-            struct statfs status = {0};
-            int stat_error = statfs(test->root, &status) != 0 ? errno : 0;
-            DFUSE_ERR("Mounted readiness mkdir failed: %s (callback reached=%d, "
-                      "access=%d, statfs=%d, flags=%#x, owner=%u, uid=%u)",
-                      strerror(test->result), atomic_load(&test->created_mode) != 0,
-                      access_error, stat_error, status.f_flags, (unsigned)status.f_owner,
-                      (unsigned)getuid());
-        }
+        if (test->result != 0)
+            DFUSE_ERR("Mounted readiness mkdir failed: %s (callback reached=%d)",
+                      strerror(test->result), atomic_load(&test->created_mode) != 0);
     }
     fuse_exit(test->fuse);
 }
