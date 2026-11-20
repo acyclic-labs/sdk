@@ -1,6 +1,6 @@
 //! Seeded GraphCoder swarms on the production local harness.
 //!
-//! A seed draws a spawn tree (wide and deep) and each agent's steps: spawns,
+//! A seed draws a two-level spawn tree and each agent's steps: spawns,
 //! file writes and waits, then a final answer. A responding scripted model
 //! plays every agent's steps; the seeded executor and entropy choose the
 //! interleaving (children settling mid-parent-turn, concurrently, on any
@@ -60,12 +60,19 @@ fn generate(seed: u64) -> Vec<Step> {
     let mut draws = Draws::new(seed);
     let mut steps = Vec::new();
     let mut pending = vec![("root".to_owned(), 0)];
+    // The smallest tree that still covers both depths: at most two agents
+    // below the root. The root always forks a child; either two children
+    // settle concurrently into it, or its one child forks a grandchild, so a
+    // parent is mid-turn while its own child is a parent. A model request
+    // costs about 0.3 s here, so each further agent would add seconds.
+    let mut below_root = 2;
     while let Some((node, depth)) = pending.pop() {
         let width = match depth {
-            0 => 2 + draws.below(3),
-            1 => draws.below(3),
+            0 => 1 + draws.below(2),
+            1 => draws.below(2).min(below_root),
             _ => 0,
         };
+        below_root -= width;
         let names: Vec<String> = (0..width).map(|index| format!("w{index}")).collect();
         let mut writes = 0;
         let mut write = |steps: &mut Vec<Step>| {
@@ -78,8 +85,8 @@ fn generate(seed: u64) -> Vec<Step> {
             let (batch, tail) = rest.split_at(1 + draws.below(rest.len()));
             steps.push((node.clone(), Action::Spawn(batch.to_vec())));
             rest = tail;
-            // Later steps keep the parent mid-turn while children settle.
-            for _ in 0..draws.below(3) {
+            // A later step keeps the parent mid-turn while children settle.
+            for _ in 0..draws.below(2) {
                 write(&mut steps);
             }
         }
@@ -589,16 +596,82 @@ fn minimal_trace(seed: u64) -> String {
     )
 }
 
-/// Cases the sweep is split across, so each stays well inside the per-case
-/// limit. Case `k` runs the selected seeds congruent to `k`, so a `DST_SEEDS`
-/// sweep is partitioned the same way and never repeated.
-const CASES: u64 = 16;
+/// Cases the sweep is split across: one fast-suite seed per case, so each
+/// stays well inside the per-case limit. Case `k` runs the selected seeds
+/// congruent to `k`, so a `DST_SEEDS` sweep is partitioned the same way and
+/// never repeated.
+const CASES: u64 = 64;
 
 acyclic_test_support::cases! {
     module = seeded_swarms_settle_and_complete_every_turn,
     values: u64,
     runner = super::swarms,
-    cases = [part_0 => 0, part_1 => 1, part_2 => 2, part_3 => 3, part_4 => 4, part_5 => 5, part_6 => 6, part_7 => 7, part_8 => 8, part_9 => 9, part_10 => 10, part_11 => 11, part_12 => 12, part_13 => 13, part_14 => 14, part_15 => 15],
+    cases = [
+        part_0 => 0,
+        part_1 => 1,
+        part_2 => 2,
+        part_3 => 3,
+        part_4 => 4,
+        part_5 => 5,
+        part_6 => 6,
+        part_7 => 7,
+        part_8 => 8,
+        part_9 => 9,
+        part_10 => 10,
+        part_11 => 11,
+        part_12 => 12,
+        part_13 => 13,
+        part_14 => 14,
+        part_15 => 15,
+        part_16 => 16,
+        part_17 => 17,
+        part_18 => 18,
+        part_19 => 19,
+        part_20 => 20,
+        part_21 => 21,
+        part_22 => 22,
+        part_23 => 23,
+        part_24 => 24,
+        part_25 => 25,
+        part_26 => 26,
+        part_27 => 27,
+        part_28 => 28,
+        part_29 => 29,
+        part_30 => 30,
+        part_31 => 31,
+        part_32 => 32,
+        part_33 => 33,
+        part_34 => 34,
+        part_35 => 35,
+        part_36 => 36,
+        part_37 => 37,
+        part_38 => 38,
+        part_39 => 39,
+        part_40 => 40,
+        part_41 => 41,
+        part_42 => 42,
+        part_43 => 43,
+        part_44 => 44,
+        part_45 => 45,
+        part_46 => 46,
+        part_47 => 47,
+        part_48 => 48,
+        part_49 => 49,
+        part_50 => 50,
+        part_51 => 51,
+        part_52 => 52,
+        part_53 => 53,
+        part_54 => 54,
+        part_55 => 55,
+        part_56 => 56,
+        part_57 => 57,
+        part_58 => 58,
+        part_59 => 59,
+        part_60 => 60,
+        part_61 => 61,
+        part_62 => 62,
+        part_63 => 63,
+    ],
 }
 
 fn swarms(part: u64) -> std::result::Result<(), String> {

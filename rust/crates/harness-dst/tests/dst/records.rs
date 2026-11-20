@@ -409,7 +409,6 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             let config = local_harness_config(checkout, (model, provider))
                 .map_err(oracle::failed)?
                 .without_user_settings()
-                .workspace_mounting(acyclic_harness::local::WorkspaceMounting::Physical)
                 .state_directory(directory.path().join("state"));
             let harness = Arc::new(
                 entry(LocalHarness::open(config))

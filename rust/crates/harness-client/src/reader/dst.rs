@@ -494,7 +494,7 @@ fn script(seed: u64) -> Vec<Step> {
         count,
     };
     let listing = Want::Listing {
-        parent: parent,
+        parent,
         index: 0,
         limit: 2,
         tail: Some(status),

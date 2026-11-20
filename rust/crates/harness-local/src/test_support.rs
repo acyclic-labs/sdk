@@ -386,6 +386,13 @@ pub fn local_harness_config(
     };
     #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = config.settings(settings);
+    // A simulation starts no native mount, so its worlds use physical views.
+    #[cfg(not(target_arch = "wasm32"))]
+    let config = if acyclic_native_runtime::testing::Schedule::current().is_some() {
+        config.workspace_mounting(crate::local::WorkspaceMounting::Physical)
+    } else {
+        config
+    };
     Ok(config)
 }
 

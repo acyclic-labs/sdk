@@ -639,3 +639,35 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
     assert!(page.next_cursor.is_none());
     Ok(())
 }
+
+/// A native mount is kernel I/O no simulation can schedule, so inside one the
+/// probe reports it unavailable and a start is refused at entry, typed, before
+/// any mount helper or kernel session exists.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_simulation_refuses_every_native_mount_at_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let source = Arc::new(source(FilesystemProfile::Posix)?);
+    let temporary = tempfile::tempdir()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let (schedule, _boundaries) = acyclic_native_runtime::testing::Schedule::seeded(83);
+    let (probe, started) = runtime.block_on(schedule.scope(async {
+        (
+            crate::probe_native_mount(),
+            mount_source(&source, temporary.path()),
+        )
+    }));
+    let reason = probe
+        .unavailable_reason
+        .ok_or("a simulation admitted a native mount")?;
+    match started {
+        Err(NativeMountError::StartupFailed(failure)) => assert!(matches!(
+            failure.error(),
+            NativeMountError::CapabilityUnavailable(refused) if *refused == reason
+        )),
+        Err(other) => return Err(format!("untyped refusal: {other}").into()),
+        Ok(_) => return Err("a simulation started a native mount".into()),
+    }
+    // The destination stays an ordinary empty directory.
+    assert_eq!(std::fs::read_dir(temporary.path())?.count(), 0);
+    Ok(())
+}

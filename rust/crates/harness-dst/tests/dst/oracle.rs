@@ -5,7 +5,6 @@
 use super::*;
 use acyclic_harness::{
     conversation::{DirectoryEntryKind, DirectoryTarget},
-    local::WorkspaceMounting,
     model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
 };
@@ -585,7 +584,6 @@ impl World {
                         (model, provider.clone()),
                     )?
                     .without_user_settings()
-                    .workspace_mounting(WorkspaceMounting::Physical)
                     .source_entropy(source_entropy)
                     .state_directory(directory.join("state"));
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
@@ -692,7 +690,6 @@ impl World {
             let config =
                 local_harness_config(self.directory.path().join("checkout"), (model, provider))?
                     .without_user_settings()
-                    .workspace_mounting(WorkspaceMounting::Physical)
                     .state_directory(self.directory.path().join("state"));
             let harness = Arc::new(entry(LocalHarness::open(config)).await?);
             let (_, root) = harness.agents().await?;

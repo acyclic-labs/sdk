@@ -21,6 +21,18 @@ pub async fn initialize_native_source_services_async() -> Result<(), NativeMount
     run_native_control(initialize_native_source_services).await?
 }
 
+/// Why no native mount may start here: a deterministic simulation schedules
+/// every boundary its world crosses, and a native mount is kernel I/O it cannot
+/// schedule. Its startup would park the simulated thread on that kernel while
+/// the kernel waits on callbacks only the simulated thread can serve.
+fn simulation_refusal() -> Option<&'static str> {
+    #[cfg(feature = "test-support")]
+    if acyclic_native_runtime::testing::Schedule::current().is_some() {
+        return Some("a deterministic simulation cannot schedule a native mount");
+    }
+    None
+}
+
 /// Probes the target's one canonical native namespace mechanism.
 #[must_use]
 pub fn probe_native_mount() -> NativeMountCapabilities {
@@ -83,7 +95,7 @@ impl NativeMountProbe {
         let (kind, available, reason) = (None, false, "unsupported target");
         NativeMountCapabilities {
             kind,
-            unavailable_reason: (!available).then_some(reason),
+            unavailable_reason: simulation_refusal().or((!available).then_some(reason)),
         }
     }
 }
@@ -281,6 +293,15 @@ pub(super) fn start_native_mount_prepared_with_meter(
     storage: PreparedNativeMountStart,
     destination_custody: Option<crate::NativeAllocation>,
 ) -> Result<NativeMountSession, NativeMountError> {
+    // Every native mount starts here, so none starts inside a simulation.
+    if let Some(reason) = simulation_refusal() {
+        let owner = NativeMountSession::new(request, Some(source), destination_custody);
+        return Err(NativeMountError::StartupFailed(storage.failed(
+            NativeMountError::CapabilityUnavailable(reason),
+            owner,
+            "admit native mount",
+        )));
+    }
     // The existing driver loop accepts its lifetime before this stack factory
     // acquires a physical fence. The factory never escapes or allocates a frame.
     let mut retirement = Some(NativeMountRetirement {

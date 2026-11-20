@@ -7,10 +7,7 @@ use acyclic_harness::{
     LocalHarnessConfig,
     approvals::ApprovalPolicy,
     interaction::ApprovalVerdict,
-    local::{
-        WorkspaceMounting,
-        agent_conversation::{Conversation, Settlement},
-    },
+    local::agent_conversation::{Conversation, Settlement},
     model::{Model, ModelEvent, ModelRole, ToolCall},
     runtime::ToolContext,
     test_support::{
@@ -115,7 +112,6 @@ async fn open(
     std::fs::create_dir_all(&checkout).map_err(storage)?;
     let config: LocalHarnessConfig = local_harness_config(checkout, (model, provider))?
         .without_user_settings()
-        .workspace_mounting(WorkspaceMounting::Physical)
         .state_directory(directory.join("state"))
         .tool(tool)
         .approval_policy(ApprovalPolicy::default());
