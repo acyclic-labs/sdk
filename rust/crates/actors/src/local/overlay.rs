@@ -167,8 +167,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         // Rebinding a child's sources cannot resume work its copied checkpoint
         // still considers suspended. Only the child's own resume transition can.
-        for (id, subscription) in &mut branch.subscriptions {
-            subscription.paused = state.subscriptions[id].paused;
+        // The key sets are equal (checked above), so the ordered maps pair exactly.
+        for (subscription, original) in branch
+            .subscriptions
+            .values_mut()
+            .zip(state.subscriptions.values())
+        {
+            subscription.paused = original.paused;
         }
         let overlay = State {
             subscriptions: branch.subscriptions,

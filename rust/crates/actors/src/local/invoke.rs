@@ -475,10 +475,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .transpose()?
             .flatten();
         let Some((state_path, invocation)) = invocation else {
-            return if !matches!(outcome, Some(Ok(_))) {
-                Ok(None)
-            } else {
+            return if matches!(outcome, Some(Ok(_))) {
                 Err(Error::Invalid("response without an invocation"))
+            } else {
+                Ok(None)
             };
         };
         let record = delivered.ok_or(Error::Invalid("invocation input is missing"))?;
@@ -486,12 +486,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             || self.actor(&previous.path)? != *invocation.actor()
             || trigger.record_position() != Some((invocation.subscription(), record.sequence))
         {
-            return if !matches!(outcome, Some(Ok(_))) {
-                Ok(None)
-            } else {
+            return if matches!(outcome, Some(Ok(_))) {
                 Err(Error::Invalid(
                     "invocation input targets another actor or subscription",
                 ))
+            } else {
+                Ok(None)
             };
         }
         let call = invocation.call(&previous.path)?;

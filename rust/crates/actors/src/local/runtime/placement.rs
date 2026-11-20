@@ -213,13 +213,12 @@ async fn command_control<P: StreamProvider + ?Sized>(
             None
         }
         Some(index) if tail.checked_add(1) == Some(index) => Some(index),
-        Some(_) => return Err(Error::Conflict),
         None if current => None,
         None if owner.places => Some(
             tail.checked_add(1)
                 .ok_or(Error::Invalid("placement index overflow"))?,
         ),
-        None => return Err(Error::Conflict),
+        Some(_) | None => return Err(Error::Conflict),
     };
     let snapshot = match index {
         None => previous,

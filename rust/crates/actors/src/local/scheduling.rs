@@ -153,8 +153,8 @@ pub(super) fn shard(count: std::num::NonZeroU16, actor: &ActorReference) -> u16 
     let mut hash = Sha256::new();
     hash.update(b"acyclic.actors.scheduling.v1\0");
     hash.update(actor.encode());
-    let hash = hash.finalize();
-    u16::from_be_bytes([hash[0], hash[1]]) % count.get()
+    let [high, low, ..]: [u8; 32] = hash.finalize().into();
+    u16::from_be_bytes([high, low]) % count.get()
 }
 
 /// A deadline window's child name: exactly the 20 ASCII decimal digits

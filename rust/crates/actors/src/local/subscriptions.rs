@@ -29,7 +29,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             &request.encode_to_vec(),
             SubscriptionChange::Add {
                 id: spec.subscription_id().to_owned(),
-                path: StreamPath::new(spec.stream_path().to_owned())?,
+                path: StreamPath::new(spec.stream_path())?,
                 from: spec.start().cursor_value(),
             },
         )
@@ -145,8 +145,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     records,
                 } = mutation
                     && *target == path
+                    && let Some(record) = records.first_mut()
                 {
-                    records[0].headers = acyclic_stream::RecordHeaders::new(
+                    record.headers = acyclic_stream::RecordHeaders::new(
                         Vec::new(),
                         vec![acyclic_stream::Attribute {
                             name: INTENT.to_owned(),

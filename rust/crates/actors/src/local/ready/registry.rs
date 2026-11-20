@@ -57,8 +57,10 @@ impl<K> Registry<K> {
     /// Vector growth is amortized O(1); free-slot reuse is worst-case O(1).
     pub(super) fn insert(&mut self, generation: u64, entry: Entry<K>) -> Id {
         visit(0);
-        let slot = if let Some(slot) = self.free {
-            let vacant = &mut self.slots[slot];
+        let reused = self
+            .free
+            .and_then(|slot| Some((slot, self.slots.get_mut(slot)?)));
+        let slot = if let Some((slot, vacant)) = reused {
             self.free = vacant.next_free.take();
             vacant.generation = generation;
             vacant.entry = Some(entry);

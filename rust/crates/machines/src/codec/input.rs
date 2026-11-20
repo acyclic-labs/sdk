@@ -54,7 +54,7 @@ impl Iterator for Chunks {
             return None;
         }
         let end = self.bytes.len().min(self.offset.saturating_add(65_536));
-        let data = self.bytes[self.offset..end].to_vec();
+        let data = self.bytes.get(self.offset..end)?.to_vec();
         self.offset = end;
         self.done = end == self.bytes.len();
         Some((data, self.done))

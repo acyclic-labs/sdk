@@ -20,8 +20,10 @@
 //! Recovery is O(open sockets): the ledger is a current segment of Opened and
 //! Closed entries, compacted once it holds more than twice the open set, and
 //! `epochs` names the segments that can still hold open sockets.
+use super::shards::{self, Shards};
 use super::{Clock, Error, PreparedPublish, Store};
 use crate::addressing::ActorReference;
+use crate::guest::ProviderShared;
 use crate::guest::{
     GuestError, GuestEventResult, SocketCloseInitiator, SocketHost, SocketPayload,
     WebSocketAutoResponse, WebSocketId,
@@ -58,7 +60,6 @@ const BACKOFF_CEILING_MS: u32 = 1_000;
 
 /// Lock partitions, not a socket or actor capacity bound. An actor's sockets
 /// and configuration have one owner; unrelated partitions never share its lock.
-const OWNER_SHARDS: usize = 64;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct EpochWire {
@@ -340,16 +341,19 @@ async fn commit_close<P: StreamProvider + ?Sized>(
     close: &Close,
 ) -> Result<bool, Error> {
     let socket = layout.socket(connection)?;
-    let input = close.input.clone().map(Ok).unwrap_or_else(|| {
-        input_record(
-            connection,
-            SocketInput::Close {
-                code: close.code,
-                reason: close.reason.clone(),
-                initiator: close.initiator.clone(),
-            },
-        )
-    })?;
+    let input = close.input.clone().map_or_else(
+        || {
+            input_record(
+                connection,
+                SocketInput::Close {
+                    code: close.code,
+                    reason: close.reason.clone(),
+                    initiator: close.initiator.clone(),
+                },
+            )
+        },
+        Ok,
+    )?;
     let key = layout.key(&[connection.as_bytes(), b"close", &input.value])?;
     let mut conditions = Vec::with_capacity(1 + usize::from(segment.is_some()));
     conditions.push(CommitCondition::Tail {
@@ -473,14 +477,6 @@ struct Ledger {
     epochs: u64,
 }
 
-/// What an attempted open commit decided.
-enum Opened {
-    Committed(super::InvocationTicket),
-    /// A decided failure that may follow the commit, so the open may have
-    /// reached the actor.
-    Unsettled,
-}
-
 enum Phase {
     /// Admitted; the open commit has not started.
     Unborn,
@@ -512,12 +508,13 @@ struct Entry {
     peer_closed: bool,
     /// Observers share the original close producer; they never own its work.
     completion: Option<CloseCompletion>,
-    completed: Option<oneshot::Sender<Result<(), Arc<Error>>>>,
+    completed: Option<oneshot::Sender<Result<(), ProviderShared<Error>>>>,
     /// Dropped with the entry, which abandons a wait for the open's verdict.
     _abandon: oneshot::Sender<()>,
 }
 
-type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>;
+type CloseCompletion =
+    futures::future::Shared<BoxProviderFuture<'static, Result<(), ProviderShared<Error>>>>;
 
 impl Entry {
     fn close_completion(&mut self) -> CloseCompletion {
@@ -525,11 +522,14 @@ impl Entry {
             return completion.clone();
         }
         let (completed, completion) = oneshot::channel();
-        let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> = Box::pin(async move {
-            completion.await.unwrap_or_else(|_| {
-                Err(Arc::new(Error::Stream(Box::new(StreamError::Unavailable))))
-            })
-        });
+        let completion: BoxProviderFuture<'static, Result<(), ProviderShared<Error>>> =
+            Box::pin(async move {
+                completion.await.unwrap_or_else(|_| {
+                    Err(ProviderShared::new(Error::Stream(Box::new(
+                        StreamError::Unavailable,
+                    ))))
+                })
+            });
         let completion = completion.shared();
         self.completed = Some(completed);
         self.completion = Some(completion.clone());
@@ -541,7 +541,7 @@ impl Entry {
 struct CloseOwner<P: StreamProvider + ?Sized + 'static> {
     shared: Arc<Shared<P>>,
     connection: String,
-    completed: Option<oneshot::Sender<Result<(), Arc<Error>>>>,
+    completed: Option<oneshot::Sender<Result<(), ProviderShared<Error>>>>,
     retire: bool,
 }
 
@@ -591,49 +591,48 @@ impl Table {
 }
 
 struct Tables {
-    owners: Box<[std::sync::Mutex<Table>]>,
+    owners: Shards<std::sync::Mutex<Table>>,
     hash: std::collections::hash_map::RandomState,
 }
 
 impl Default for Tables {
     fn default() -> Self {
         Self {
-            owners: (0..OWNER_SHARDS)
-                .map(|_| std::sync::Mutex::new(Table::default()))
-                .collect(),
+            owners: Shards::new(|| std::sync::Mutex::new(Table::default())),
             hash: std::collections::hash_map::RandomState::new(),
         }
     }
 }
 
 impl Tables {
-    fn actor(&self, actor: &ActorReference) -> usize {
-        (self.hash.hash_one(actor) as usize) % OWNER_SHARDS
+    /// The actor's owner shard, also written into each of its connection ids.
+    fn actor(&self, actor: &ActorReference) -> u64 {
+        self.hash.hash_one(actor) % shards::COUNT as u64
     }
 
-    fn connection(connection: &str) -> usize {
+    fn connection(connection: &str) -> u64 {
         connection
             .rsplit_once('-')
-            .and_then(|(_, owner)| owner.parse::<usize>().ok())
-            .filter(|owner| *owner < OWNER_SHARDS)
+            .and_then(|(_, owner)| owner.parse::<u64>().ok())
+            .filter(|owner| *owner < shards::COUNT as u64)
             .unwrap_or(0)
     }
 
-    fn owner(&self, owner: usize) -> &std::sync::Mutex<Table> {
-        &self.owners[owner]
-    }
-
-    fn lock(&self, owner: usize) -> std::sync::MutexGuard<'_, Table> {
-        self.owner(owner)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self, owner: u64) -> std::sync::MutexGuard<'_, Table> {
+        lock(self.owners.get(owner))
     }
 
     /// Global observations take the fixed partitions in order, preserving one
     /// cut without holding a socket lock across a callback or asynchronous wait.
-    fn all(&self) -> [std::sync::MutexGuard<'_, Table>; OWNER_SHARDS] {
-        std::array::from_fn(|owner| self.lock(owner))
+    fn all(&self) -> Shards<std::sync::MutexGuard<'_, Table>> {
+        self.owners.map(lock)
     }
+}
+
+fn lock(owner: &std::sync::Mutex<Table>) -> std::sync::MutexGuard<'_, Table> {
+    owner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 struct Shared<P: StreamProvider + ?Sized> {
@@ -802,7 +801,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// committed one, including a socket whose open is still committing.
     /// Cancelling this observer leaves each original close running. A decided
     /// publication refusal or loss of its executor returns the original error.
-    pub async fn drain(&self) -> Result<(), Arc<Error>> {
+    pub async fn drain(&self) -> Result<(), ProviderShared<Error>> {
         let close = Close::new(1001, "runtime draining", SocketCloseInitiator::Runtime);
         let claims = {
             let mut tables = self.shared.table.all();
@@ -815,7 +814,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
                 .filter_map(|connection| {
                     self.shared
                         .claim_close(
-                            &mut tables[Tables::connection(&connection)],
+                            tables.get_mut(Tables::connection(&connection)),
                             &connection,
                             &close,
                         )
@@ -870,9 +869,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         connection: &str,
         close: &Close,
     ) -> Option<(Option<CloseOwner<P>>, CloseCompletion)> {
-        let Some(entry) = table.sockets.get_mut(connection) else {
-            return None;
-        };
+        let entry = table.sockets.get_mut(connection)?;
         match &mut entry.phase {
             Phase::Unborn => {
                 table.remove(connection);
@@ -995,7 +992,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             );
         }
         if let Some(completed) = owner.completed.take() {
-            let _observer_gone = completed.send(result.map_err(Arc::new));
+            let _observer_gone = completed.send(result.map_err(ProviderShared::new));
         }
         self.compact_if_due();
     }
@@ -1127,8 +1124,8 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             }
         }
         let (ticket, unsettled) = match self.commit_open(&connection, &open).await {
-            Ok(Opened::Committed(ticket)) => (Some(ticket), false),
-            Ok(Opened::Unsettled) => (None, true),
+            Ok(Some(ticket)) => (Some(ticket), false),
+            Ok(None) => (None, true),
             outcome => {
                 // Refused by a condition, or never attempted: nothing
                 // reached the actor.
@@ -1157,7 +1154,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                 return;
             };
             *committed = true;
-            let pending = pending.take().or_else(|| {
+            pending.take().or_else(|| {
                 unsettled.then(|| {
                     Close::new(
                         1011,
@@ -1165,8 +1162,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                         SocketCloseInitiator::Runtime,
                     )
                 })
-            });
-            pending
+            })
         };
         if let Some(close) = pending {
             if unsettled {
@@ -1246,8 +1242,14 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     }
 
     /// Commit the Open, retrying it identically while its outcome is
-    /// unknown. `Err` means it was never attempted or a condition refused it.
-    async fn commit_open(&self, connection: &str, open: &SocketOpen) -> Result<Opened, Error> {
+    /// unknown. `Err` means it was never attempted or a condition refused it;
+    /// `Ok(None)` is a decided failure that may follow the commit, so the open
+    /// may have reached the actor.
+    async fn commit_open(
+        &self,
+        connection: &str,
+        open: &SocketOpen,
+    ) -> Result<Option<super::InvocationTicket>, Error> {
         let socket = self.layout.socket(connection)?;
         let invocation = open_invocation(socket.clone(), connection, open)?;
         // The epoch condition fences this cut without retaining the lock over
@@ -1287,14 +1289,14 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             }
         };
         let opened = match (outcome, inbox) {
-            (Ok(ticket), Some(inbox)) => (Opened::Committed(ticket), inbox),
+            (Ok(ticket), Some(inbox)) => (Some(ticket), inbox),
             // `enqueue_joined` builds the request before committing, so
             // without an inbox nothing was attempted.
             (Ok(_), None) => return Err(Error::Invalid("socket open has no inbox")),
             // Never attempted, or refused by a condition: nothing reached
             // the actor.
             (Err(error), None) | (Err(error @ Error::Conflict), Some(_)) => return Err(error),
-            (Err(_), Some(inbox)) => (Opened::Unsettled, inbox),
+            (Err(_), Some(inbox)) => (None, inbox),
         };
         {
             let current = self.ledger.read().await;
@@ -1678,9 +1680,10 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         &self,
         actor: &ActorReference,
         socket: &WebSocketId,
-    ) -> Result<Arc<dyn crate::guest::SocketTerminal>, GuestError> {
+    ) -> Result<ProviderShared<dyn crate::guest::SocketTerminal>, GuestError> {
         self.shared.with_entry(actor, socket, |entry| {
-            Ok(Arc::new(entry.close_completion()) as Arc<dyn crate::guest::SocketTerminal>)
+            Ok(ProviderShared::new(entry.close_completion())
+                as ProviderShared<dyn crate::guest::SocketTerminal>)
         })
     }
 
@@ -1858,8 +1861,11 @@ pub mod codec_fuzz {
         epoch_record(segment, from).value
     }
 
+    /// One ledger entry's connection and, for an Open, its actor bytes and inbox.
+    pub type Entry = (String, Option<(Vec<u8>, String)>);
+
     /// Project one real ledger entry, including its original target bytes.
-    pub fn entry(bytes: &[u8]) -> Result<(String, Option<(Vec<u8>, String)>), Error> {
+    pub fn entry(bytes: &[u8]) -> Result<Entry, Error> {
         match decode_ledger(bytes)? {
             LedgerKind::Opened(opened) => Ok((
                 opened.connection,
@@ -1870,6 +1876,11 @@ pub mod codec_fuzz {
     }
 
     /// Exercise both persisted decoders and check the accepted wire image.
+    ///
+    /// # Panics
+    ///
+    /// When a decoder accepts bytes its writer would not reproduce: the
+    /// fuzzer's finding.
     pub fn check(bytes: &[u8]) {
         if let Ok((segment, from, next)) = recover_epoch(bytes) {
             assert_eq!(Some(next), segment.checked_add(1));

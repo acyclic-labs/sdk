@@ -346,7 +346,8 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
     session: Option<String>,
     socket: Option<String>,
     generation: u64,
-    terminal: Option<Arc<dyn acyclic_actors::guest::SocketTerminal>>,
+    terminal:
+        Option<acyclic_actors::guest::ProviderShared<dyn acyclic_actors::guest::SocketTerminal>>,
     wake: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
     grant: Arc<DeviceGrant>,
     devices: watch::Receiver<Devices>,
@@ -399,7 +400,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             None
         } else {
             Some(
-                Arc::clone(
+                acyclic_actors::guest::ProviderShared::clone(
                     self.terminal
                         .as_ref()
                         .ok_or(Error::Indeterminate(invocation.operation_id))?,

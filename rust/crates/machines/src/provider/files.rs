@@ -82,14 +82,17 @@ pub async fn read_file_at(
             let mut bytes = Vec::with_capacity(limit as usize);
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
-                if offset >= chunk.len() as u64 {
+                // A chunk wholly before the offset is skipped; the first one
+                // reaching it supplies its suffix, and every later one starts at 0.
+                let Some(rest) = usize::try_from(offset)
+                    .ok()
+                    .and_then(|start| chunk.get(start..))
+                else {
                     offset -= chunk.len() as u64;
                     continue;
-                }
-                let start = offset as usize;
+                };
                 offset = 0;
-                let count = (limit as usize - bytes.len()).min(chunk.len() - start);
-                bytes.extend_from_slice(&chunk[start..start + count]);
+                bytes.extend(rest.iter().take(limit as usize - bytes.len()));
                 if bytes.len() == limit as usize {
                     break;
                 }

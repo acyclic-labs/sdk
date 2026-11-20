@@ -111,29 +111,26 @@ impl Registry {
                 && !entry.is_closed()
         });
         for (id, selection) in selections {
-            match entries.get(id) {
-                Some(entry) => {
-                    entry.send_if_modified(|current| {
-                        if *current == selection {
-                            return false;
-                        }
-                        *current = selection.clone();
-                        true
-                    });
-                }
-                None => {
-                    let (send, receive) = watch::channel(selection.clone());
-                    entries.insert(id.clone(), send);
-                    registrations.pending.push_back(Watch {
-                        actor: actor.clone(),
-                        receive,
-                        next: selection.subscription.cursor,
-                        selected: selection,
-                        records: None,
-                        wake: wake.clone(),
-                    });
-                    self.changed.wake();
-                }
+            if let Some(entry) = entries.get(id) {
+                entry.send_if_modified(|current| {
+                    if *current == selection {
+                        return false;
+                    }
+                    *current = selection.clone();
+                    true
+                });
+            } else {
+                let (send, receive) = watch::channel(selection.clone());
+                entries.insert(id.clone(), send);
+                registrations.pending.push_back(Watch {
+                    actor: actor.clone(),
+                    receive,
+                    next: selection.subscription.cursor,
+                    selected: selection,
+                    records: None,
+                    wake: wake.clone(),
+                });
+                self.changed.wake();
             }
         }
         if !entries.is_empty() {

@@ -87,7 +87,7 @@ pub mod codec_fuzz {
             let provider = SimulatedMachines::default();
             let key = IdempotencyKey::from_digest([5; 32]);
             let request = CreateMachine::new(key, Some(Image::custom([2; 32])?), [4; 32]);
-            let digest = intent_digest(&MemoryIntent::Create(request.clone()))?;
+            let digest = intent_digest(&MemoryIntent::Create(Box::new(request.clone())))?;
             provider.create(request).await?;
             let created = provider.recover(key).await?;
             let MutationOutcome::Created(machine) = &created else {

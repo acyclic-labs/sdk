@@ -205,11 +205,7 @@ pub fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>>
             if let Some(original) =
                 project::<wire::MachineState, _>(bytes, MachineObservation::try_from)?
             {
-                let foreign = if original.id == MachineId::from_digest([9; 32]) {
-                    MachineId::from_digest([1; 32])
-                } else {
-                    MachineId::from_digest([9; 32])
-                };
+                let foreign = foreign(&original.id, MachineId::from_digest);
                 assert!(
                     decode_machine_observation(wire::MachineState::decode(bytes)?, foreign)
                         .is_err()
@@ -220,11 +216,9 @@ pub fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>>
             for limit in [1, MAX_PAGE_SIZE] {
                 if let Some(original) =
                     project::<wire::MachinePage, _>(bytes, |page| machine_page(page, None, limit))?
+                    && let Some(first) = original.machines.first()
                 {
-                    if let Some(first) = original.machines.first() {
-                        let _ =
-                            machine_page(wire::MachinePage::decode(bytes)?, Some(first.id), limit);
-                    }
+                    let _ = machine_page(wire::MachinePage::decode(bytes)?, Some(first.id), limit);
                 }
             }
         }
@@ -232,11 +226,7 @@ pub fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>>
             if let Some(original) = project::<wire::CheckpointState, _>(bytes, |value| {
                 decode_checkpoint_observation(&value, decode_checkpoint(value.checkpoint.as_ref())?)
             })? {
-                let foreign = if original.id == CheckpointId::from_digest([9; 32]) {
-                    CheckpointId::from_digest([8; 32])
-                } else {
-                    CheckpointId::from_digest([9; 32])
-                };
+                let foreign = foreign(&original.id, CheckpointId::from_digest);
                 assert!(
                     decode_checkpoint_observation(&wire::CheckpointState::decode(bytes)?, foreign)
                         .is_err(),
@@ -248,11 +238,7 @@ pub fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>>
             if let Some(original) = project::<wire::MachineEvent, _>(bytes, |value| {
                 decode_event(&value, decode_machine(value.machine.as_ref())?)
             })? {
-                let foreign = if original.machine == MachineId::from_digest([9; 32]) {
-                    MachineId::from_digest([8; 32])
-                } else {
-                    MachineId::from_digest([9; 32])
-                };
+                let foreign = foreign(&original.machine, MachineId::from_digest);
                 assert!(
                     decode_event(&wire::MachineEvent::decode(bytes)?, foreign).is_err(),
                     "original machine event must refuse a substituted caller identity"
@@ -263,11 +249,7 @@ pub fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>>
             if let Some(original) = project::<wire::OperationState, _>(bytes, |value| {
                 decode_operation_observation(&value, decode_operation(value.operation.as_ref())?)
             })? {
-                let foreign = if original.id == OperationId::from_digest([9; 32]) {
-                    OperationId::from_digest([8; 32])
-                } else {
-                    OperationId::from_digest([9; 32])
-                };
+                let foreign = foreign(&original.id, OperationId::from_digest);
                 assert!(
                     decode_operation_observation(&wire::OperationState::decode(bytes)?, foreign)
                         .is_err(),
@@ -321,8 +303,8 @@ pub fn capture_event(original: &MachineEvent) -> Vec<u8> {
         "original machine event must retain its producer observation"
     );
     let bytes = value.encode_to_vec();
-    for end in 0..=bytes.len() {
-        assert!(check("acyclic.machines.v1.MachineEvent", &bytes[..end]).is_ok());
+    for prefix in prefixes(&bytes) {
+        assert!(check("acyclic.machines.v1.MachineEvent", prefix).is_ok());
     }
     bytes
 }
@@ -337,11 +319,26 @@ pub fn capture_checkpoint(original: &CheckpointObservation) -> Result<Vec<u8>, P
         "original checkpoint must retain its producer observation"
     );
     let bytes = value.encode_to_vec();
-    for end in 0..=bytes.len() {
-        check("acyclic.machines.v1.CheckpointState", &bytes[..end])
+    for prefix in prefixes(&bytes) {
+        check("acyclic.machines.v1.CheckpointState", prefix)
             .map_err(|error| ProviderError::Invalid(error.to_string()))?;
     }
     Ok(bytes)
+}
+
+/// An identity other than `original`, made by the same digest constructor.
+fn foreign<T: PartialEq>(original: &T, digest: fn([u8; 32]) -> T) -> T {
+    let substitute = digest([9; 32]);
+    if *original == substitute {
+        digest([8; 32])
+    } else {
+        substitute
+    }
+}
+
+/// Every prefix of `bytes`, from empty to whole: each truncation a reader can see.
+fn prefixes(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    (0..=bytes.len()).filter_map(|end| bytes.get(..end))
 }
 
 /// An operation summary retains the actual producer's identity and phase.
@@ -353,8 +350,8 @@ pub fn capture_operation(original: OperationObservation) -> Vec<u8> {
         "original operation must retain its producer observation"
     );
     let bytes = value.encode_to_vec();
-    for end in 0..=bytes.len() {
-        assert!(check("acyclic.machines.v1.OperationState", &bytes[..end]).is_ok());
+    for prefix in prefixes(&bytes) {
+        assert!(check("acyclic.machines.v1.OperationState", prefix).is_ok());
     }
     bytes
 }
@@ -378,9 +375,12 @@ pub fn capture_machine_page(
     Ok(bytes)
 }
 
+/// Named fuzz seeds: message, variant and one real writer's bytes.
+pub type Seeds = Vec<(&'static str, &'static str, Vec<u8>)>;
+
 /// Capture the existing request-side codec writers. Service response producers
 /// are a separate provenance obligation, not reconstructed by a reverse codec.
-pub fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, ProviderError> {
+pub fn seeds() -> Result<Seeds, ProviderError> {
     let mut seeds = Vec::new();
     macro_rules! seed {
         ($message:literal, $variant:literal, $wire:expr) => {

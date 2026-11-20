@@ -353,7 +353,9 @@ interface WasmActorsModule extends ActorsNominalBinding {
   readonly encodeInvokeResponse: (status: number, names: string[], values: string[], body: Uint8Array) => Uint8Array;
   readonly encodeManifest: (code: Uint8Array, codecName: string, codecVersion: string, subscriptions: string[],
     handlerTimeoutMillis?: bigint, memoryBytes?: bigint, checkpointBytes?: bigint) => Uint8Array;
-  readonly validateDeploymentBinding: (name: string, capability: string, resource: string, account: Uint8Array, namespace: string | undefined, worker: string | undefined, stateTransaction: boolean, guestAdmission: string | undefined) => void;
+  readonly validateDeploymentBinding: (binding: { readonly name: string; readonly capability: string; readonly resource: string;
+    readonly actorNamespace: string | undefined; readonly workerService: string | undefined; readonly stateTransaction: boolean;
+    readonly guestAdmission: string | undefined }, account: Uint8Array) => void;
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
 }
@@ -377,7 +379,7 @@ function captureDeploymentBinding(input: DeploymentDeclaration) {
 
 function validateCapturedBinding(wasm: WasmActorsModule, binding: ReturnType<typeof captureDeploymentBinding>): void {
   const {name, capability, resource, actorNamespace, workerService, guestAdmission} = binding;
-  wasm.validateDeploymentBinding(name, capability, resource, binding.targetAccount, actorNamespace, workerService, binding.stateTransaction ?? false, guestAdmission);
+  wasm.validateDeploymentBinding({name, capability, resource, actorNamespace, workerService, stateTransaction: binding.stateTransaction ?? false, guestAdmission}, binding.targetAccount);
 }
 
 /** Validate an env declaration through the same Rust admission as deployment RPCs. */

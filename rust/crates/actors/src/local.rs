@@ -19,6 +19,7 @@ pub use record::{
 };
 mod runtime;
 mod scheduling;
+mod shards;
 pub use crate::guest::Subscription;
 pub use runtime::{
     Clock, ClockControl, ClockError, ControlledClock, DeliveryFailure, PlacementRequests, Runtime,
@@ -739,6 +740,13 @@ impl PreparedPublish {
         self.revalidate_foreign = true;
         Ok(())
     }
+    /// The canonical hard publication every prepared commit starts with.
+    fn hard_effect(&mut self) -> Result<&mut CommitEffect, Error> {
+        self.request
+            .effects
+            .first_mut()
+            .ok_or(Error::Invalid("publication has no hard effect"))
+    }
     /// Join admission fences without manufacturing a companion mutation. The
     /// original state fence cannot be weakened, and disagreeing cuts are refused.
     pub fn require(&mut self, required: Vec<CommitCondition>) -> Result<(), Error> {
@@ -752,7 +760,7 @@ impl PreparedPublish {
             if self.own.as_ref() == Some(path) {
                 return Err(Error::Invalid("condition targets actor state stream"));
             }
-            let conditions = &mut self.request.effects[0].conditions;
+            let conditions = &mut self.hard_effect()?.conditions;
             match conditions.binary_search_by(|existing| CommitCondition::path(existing).cmp(path))
             {
                 Ok(index) if conditions.get(index) != Some(&condition) => {
@@ -832,7 +840,7 @@ impl PreparedPublish {
             return Ok(());
         }
         self.require(effect.conditions)?;
-        let mutations = &mut self.request.effects[0].mutations;
+        let mutations = &mut self.hard_effect()?.mutations;
         for mutation in effect.mutations {
             match mutation {
                 CommitMutation::Append { path, records } => {
@@ -1052,7 +1060,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         let mut subscriptions = BTreeMap::new();
         for spec in admitted.subscriptions() {
-            let path = StreamPath::new(spec.stream_path().to_owned())?;
+            let path = StreamPath::new(spec.stream_path())?;
             let cursor = match spec.start().cursor_value() {
                 Some(cursor) => cursor,
                 None => match self.provider.head(path.clone()).await {
@@ -1810,13 +1818,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         prepared = self.confirm_durable(prepared).await?;
                     }
                     // A retry refusal cannot undo an earlier attempt that may have applied.
-                    if prepared.acknowledgement_unknown {
-                        if let Err(source) = &outcome {
-                            return Err(Error::Unknown {
-                                publication: Box::new(prepared),
-                                source: Box::new(source.clone()),
-                            });
-                        }
+                    if prepared.acknowledgement_unknown
+                        && let Err(source) = &outcome
+                    {
+                        return Err(Error::Unknown {
+                            publication: Box::new(prepared),
+                            source: Box::new(source.clone()),
+                        });
                     }
                     if let Err(source) = &outcome
                         && matches!(
@@ -1857,13 +1865,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         && conflicts.iter().all(|conflict| matches!(conflict,
                             acyclic_stream::CommitConflict::Exists { path } if path == call.settled()))));
                     let composed = prepared.composition.is_some();
-                    if let Some(composition) = prepared.composition {
-                        if let Err(source) = composition.settle(outcome.as_ref()).await {
-                            return Err(Error::Settlement {
-                                outcome: Box::new(outcome),
-                                source: Box::new(source),
-                            });
-                        }
+                    if let Some(composition) = prepared.composition
+                        && let Err(source) = composition.settle(outcome.as_ref()).await
+                    {
+                        return Err(Error::Settlement {
+                            outcome: Box::new(outcome),
+                            source: Box::new(source),
+                        });
                     }
                     if let (Ok(CommitOutcome::Committed(receipt)), Some(own)) =
                         (&outcome, &prepared.own)

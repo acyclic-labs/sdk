@@ -17,7 +17,7 @@ pub(super) async fn settle_machine<E: RpcEndpoint>(
         return Err(ProviderError::Indeterminate(key));
     }
     let outcome = wait(provider, key, operation).await?;
-    settled_machine(machine, contract, outcome, attached)
+    settled_machine(machine, &contract, outcome, attached)
         .map_err(|_| ProviderError::Indeterminate(key))
 }
 pub(super) async fn recovered_admission<E: RpcEndpoint>(

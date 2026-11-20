@@ -416,7 +416,16 @@ const ACCEPTED: Option<SocketFrame> = Some(SocketFrame::Accepted { subprotocol: 
 
 /// Run every case against the backend's fresh disposable resources.
 pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
-    // Open, ordered messages, actor sends and the peer's close.
+    echo(target).await?;
+    state(target).await?;
+    reject(target).await?;
+    actor_close(target).await?;
+    auto(target).await?;
+    recovered(target).await
+}
+
+/// Open, ordered messages, actor sends and the peer's close.
+async fn echo<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
     let mut case = Case::create(target, "echo").await?;
     let mut peer = case.connect(None).await?;
     case.expect_frame(&mut peer, ACCEPTED).await?;
@@ -444,10 +453,12 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
         "message binary",
         "close peer 1000",
     ])
-    .await?;
+    .await
+}
 
-    // Tags and attachment from the accept stay with the host, outside the
-    // actor's heap and checkpoint.
+/// Tags and attachment from the accept stay with the host, outside the
+/// actor's heap and checkpoint.
+async fn state<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
     let mut case = Case::create(target, "state").await?;
     let mut peer = case.connect(None).await?;
     case.expect_frame(&mut peer, ACCEPTED).await?;
@@ -455,9 +466,11 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
     case.expect_frame(&mut peer, Some(text("room|a|1"))).await?;
     drop(peer);
     case.expect(&["open", "message state", "close peer 1006"])
-        .await?;
+        .await
+}
 
-    // A rejected open is still followed by exactly one Close.
+/// A rejected open is still followed by exactly one Close.
+async fn reject<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
     let mut case = Case::create(target, "reject").await?;
     let mut peer = case.connect(Some("reject")).await?;
     case.expect_frame(
@@ -469,9 +482,11 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
     )
     .await?;
     case.expect_frame(&mut peer, None).await?;
-    case.expect(&["open", "close actor 1000"]).await?;
+    case.expect(&["open", "close actor 1000"]).await
+}
 
-    // The actor closes; the peer's later frames reach nobody.
+/// The actor closes; the peer's later frames reach nobody.
+async fn actor_close<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
     let mut case = Case::create(target, "actor-close").await?;
     let mut peer = case.connect(None).await?;
     case.expect_frame(&mut peer, ACCEPTED).await?;
@@ -479,9 +494,11 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
     case.expect_frame(&mut peer, close(4000, "bye", SocketCloseInitiator::Actor))
         .await?;
     case.expect(&["open", "message close", "close actor 4000"])
-        .await?;
+        .await
+}
 
-    // Auto-response answers without delivering anything to the actor.
+/// Auto-response answers without delivering anything to the actor.
+async fn auto<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
     let mut case = Case::create(target, "auto").await?;
     let mut peer = case.connect(None).await?;
     case.expect_frame(&mut peer, ACCEPTED).await?;
@@ -500,8 +517,11 @@ pub async fn verify<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure
     ])
     .await?;
     drop(peer);
+    Ok(())
+}
 
-    // A crash closes every socket it held exactly once, with Close(Runtime).
+/// A crash closes every socket it held exactly once, with Close(Runtime).
+async fn recovered<T: SocketBackend + ?Sized>(target: &T) -> Result<(), Failure> {
     let mut case = Case::create(target, "recovered").await?;
     let mut peer = case.connect(None).await?;
     case.expect_frame(&mut peer, ACCEPTED).await?;

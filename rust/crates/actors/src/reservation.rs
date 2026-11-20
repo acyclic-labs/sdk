@@ -384,12 +384,12 @@ impl Book {
                 .insert(grant.generation, grant.clone());
             self.generation = grant.generation;
         }
-        if let Some((deadline, generation)) = release {
-            if let Some(grants) = self.active.get_mut(&deadline) {
-                grants.remove(&generation);
-                if grants.is_empty() {
-                    self.active.remove(&deadline);
-                }
+        if let Some((deadline, generation)) = release
+            && let Some(grants) = self.active.get_mut(&deadline)
+        {
+            grants.remove(&generation);
+            if grants.is_empty() {
+                self.active.remove(&deadline);
             }
         }
         self.used = used;

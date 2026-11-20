@@ -4,7 +4,7 @@ use super::*;
 /// The error stays in the placement until its observer takes it. Dropping an
 /// unread receipt releases the control lock without discarding that error.
 struct Failure {
-    slot: Arc<Slot>,
+    slot: ProviderShared<Slot>,
     acknowledgement: futures::channel::oneshot::Sender<()>,
 }
 
@@ -42,20 +42,17 @@ where
     PlatformExecutor.spawn_owned(Box::pin(async move {
         let slot = &placement.0;
         let _control = slot.control.lock().await;
-        match apply(&store, &actor, slot, owner, paused, transition).await {
-            Ok(value) => {
-                let _ = send.send(Ok(value));
-            }
-            Err(()) => {
-                let (acknowledgement, taken) = futures::channel::oneshot::channel();
-                let _ = send.send(Err(Failure {
-                    slot: Arc::clone(slot),
-                    acknowledgement,
-                }));
-                // The same waiter either takes its result or drops its receipt.
-                // Both close this channel; no independent producer is needed.
-                let _ = taken.await;
-            }
+        if let Ok(value) = apply(&store, &actor, slot, owner, paused, transition).await {
+            let _ = send.send(Ok(value));
+        } else {
+            let (acknowledgement, taken) = futures::channel::oneshot::channel();
+            let _ = send.send(Err(Failure {
+                slot: ProviderShared::clone(slot),
+                acknowledgement,
+            }));
+            // The same waiter either takes its result or drops its receipt.
+            // Both close this channel; no independent producer is needed.
+            let _ = taken.await;
         }
     }));
     async move {

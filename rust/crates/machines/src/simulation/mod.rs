@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) enum MemoryIntent {
-    Create(CreateMachine),
+    Create(Box<CreateMachine>),
     Attach(Platform),
     Checkpoint(MachineId),
     Fork(CheckpointId, u32),

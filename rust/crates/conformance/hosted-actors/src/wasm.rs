@@ -31,6 +31,8 @@ pub struct ActorsDomain {
 
 #[wasm_bindgen]
 impl ActorsDomain {
+    /// Admit the platform's stream port and its pause, restart and complete
+    /// controls as the one provider the suite and every owner dispatch through.
     pub async fn open(
         port: JsValue,
         pause: Function,
@@ -84,13 +86,13 @@ impl ActorsDomain {
         }
         let actors = js_sys::Array::new();
         let mut full = false;
-        for (shard, cursor) in from.iter_mut().enumerate() {
+        for (shard, cursor) in (0..self.store.scheduling_shards()).zip(from.iter_mut()) {
             let records = match self
                 .store
                 .provider()
                 .read(ReadRequest {
                     key: None,
-                    path: self.store.scheduling_path(shard as u16).map_err(failed)?,
+                    path: self.store.scheduling_path(shard).map_err(failed)?,
                     at_least: Default::default(),
                     from: *cursor,
                     limit: 256,
@@ -129,8 +131,17 @@ impl ActorsDomain {
         for index in 0_u64.. {
             let actor = ActorReference::new(b"discovery", b"pages", index.to_string().as_bytes())
                 .map_err(failed)?;
+            // Two pages from shard 0 and one actor from shard 1.
             let shard = self.store.scheduling_shard(&actor);
-            if shard > 1 || selected[usize::from(shard)] >= if shard == 0 { 257 } else { 1 } {
+            let quota = match shard {
+                0 => 257,
+                1 => 1,
+                _ => continue,
+            };
+            let Some(count) = selected.get_mut(usize::from(shard)) else {
+                continue;
+            };
+            if *count >= quota {
                 continue;
             }
             let mut publication = PreparedPublish::foreign(
@@ -148,7 +159,7 @@ impl ActorsDomain {
                 .map_err(failed)?;
             self.store.submit(publication).await.map_err(failed)?;
             expected.insert(actor.encode());
-            selected[usize::from(shard)] += 1;
+            *count += 1;
             if selected == [257, 1] {
                 break;
             }
@@ -182,12 +193,15 @@ impl ActorsDomain {
         .await
         .map_err(failed)
     }
+    /// Run the public Actors conformance suite against this platform.
     pub async fn verify(&self) -> Result<(), JsValue> {
         acyclic_actors::conformance::verify(self)
             .await
             .map_err(failed)
     }
 
+    /// Measure the conformance bench: deliveries, elapsed time and requests
+    /// per class.
     pub async fn bench(&self) -> Result<JsValue, JsValue> {
         let sample = acyclic_actors::conformance::bench(self)
             .await
@@ -262,13 +276,17 @@ pub struct ActorsPackage(Package);
 
 #[wasm_bindgen]
 impl ActorsPackage {
+    /// The conformance package, as the platform hosts it.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<Self, JsValue> {
         Ok(Self(Package::new().map_err(failed)?))
     }
+    /// The package's canonical manifest bytes.
     pub fn manifest(&self) -> Vec<u8> {
         wire::encode_manifest(self.0.manifest())
     }
+    /// Whether the guest accepts an interrupt for the encoded `query`;
+    /// abandoned when `signal` aborts.
     #[wasm_bindgen(js_name = acceptsInterrupt)]
     pub async fn accepts_interrupt(&self, query: &[u8], signal: JsValue) -> Result<bool, JsValue> {
         let (query, handle) = futures::future::abortable(wire::accepts_interrupt(&self.0, query));
@@ -278,6 +296,8 @@ impl ActorsPackage {
             .map_err(|_| failed("guest interrupt aborted"))?
             .map_err(failed)
     }
+    /// Deliver one encoded record and return the encoded transition. `signal`
+    /// abandons the turn; `interrupt` cancels the handler's token.
     #[wasm_bindgen(js_name = onRecord)]
     pub async fn on_record(
         &self,

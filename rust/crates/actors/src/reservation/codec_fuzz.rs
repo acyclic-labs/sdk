@@ -42,8 +42,24 @@ pub fn check(bytes: &[u8]) -> bool {
     true
 }
 
+/// Named fuzz seeds, each one real encoder output.
+pub type Seeds = Vec<(&'static str, Vec<u8>)>;
+
+/// `Ok` when an encoder's round trip reproduced its input; `what` names it otherwise.
+fn same<T: PartialEq>(
+    left: &T,
+    right: &T,
+    what: &'static str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if left == right {
+        Ok(())
+    } else {
+        Err(what.into())
+    }
+}
+
 /// Capture actual reservation request, result and initial checkpoint encoders.
-pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
     let owner = OwnerEvidence::new(
         Bytes::from_static(b"owner"),
         Bytes::from_static(b"evidence"),
@@ -56,13 +72,29 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     };
     let request_bytes = encode(&request)?;
     let admitted = decode::<Request>(&request_bytes)?;
-    assert_eq!(admitted.operation()?, request.operation()?);
-    assert_eq!(encode(&admitted)?, request_bytes);
+    same(
+        &admitted.operation()?,
+        &request.operation()?,
+        "request operation round trip",
+    )?;
+    same(
+        &encode(&admitted)?,
+        &request_bytes,
+        "request encoding round trip",
+    )?;
     let decision = Decision::Exhausted;
     let decision_bytes = encode(&decision)?;
-    assert_eq!(decode::<Decision>(&decision_bytes)?, decision);
+    same(
+        &decode::<Decision>(&decision_bytes)?,
+        &decision,
+        "decision round trip",
+    )?;
     let book_bytes = initial_checkpoint(1)?.bytes;
-    assert_eq!(decode::<Book>(&book_bytes)?, Book::new(1)?);
+    same(
+        &decode::<Book>(&book_bytes)?,
+        &Book::new(1)?,
+        "initial book round trip",
+    )?;
     let mut seeds = vec![
         ("reservation-request", request_bytes.to_vec()),
         ("reservation-decision", decision_bytes.to_vec()),
@@ -74,7 +106,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
 
 // The original Host executes committed invocation records. Keep grants and
 // checkpoints from those publications; never manufacture populated Books.
-async fn publication_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+async fn publication_seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
     use crate::{
         addressing::ActorReference,
         domain::{ActorLimits, CodeSha256},

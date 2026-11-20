@@ -67,7 +67,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Bound lookahead per poll so a busy inbox cannot starve the
                 // handler or its original wall-clock timeout.
                 for _ in 0..ids.len() {
-                    let id = &ids[next];
+                    let Some(id) = ids.get(next) else {
+                        break;
+                    };
                     next = (next + 1) % ids.len();
                     let Some(follow) = inner.follows.get_mut(id) else {
                         return Poll::Ready(Err(Error::Invalid("interrupt follow disappeared")));

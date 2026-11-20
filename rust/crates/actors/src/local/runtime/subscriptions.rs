@@ -208,46 +208,37 @@ impl Subscriptions {
         let Some(watch) = self.paths.get_mut(work.key()) else {
             return Poll::Ready((Vec::new(), Some(StreamError::InvalidResponse)));
         };
-        let mut notification = match watch.notification.take() {
-            Some(notification) => notification,
-            None => {
-                let Some(next) = watch.next.as_mut() else {
-                    return Poll::Ready((Vec::new(), None));
-                };
-                match next.poll_unpin(&mut Context::from_waker(&watch.waker)) {
-                    Poll::Pending => return Poll::Ready((Vec::new(), None)),
-                    Poll::Ready(Ok((sequence, mut records))) => match sequence.checked_add(1) {
-                        Some(from) => {
-                            watch.next_from = from;
-                            watch.next = Some(Box::pin(async move {
-                                let record =
-                                    records.try_next().await?.ok_or(StreamError::Unavailable)?;
-                                Ok((record.sequence, records))
-                            }));
-                            Notification {
-                                through: sequence,
-                                after: None,
-                                error: None,
-                            }
-                        }
-                        None => {
-                            watch.next = None;
-                            Notification {
-                                through: u64::MAX,
-                                after: None,
-                                error: Some(StreamError::InvalidResponse),
-                            }
-                        }
-                    },
-                    Poll::Ready(Err(error)) => {
+        let mut notification = if let Some(notification) = watch.notification.take() {
+            notification
+        } else {
+            let Some(next) = watch.next.as_mut() else {
+                return Poll::Ready((Vec::new(), None));
+            };
+            let (through, error) = match next.poll_unpin(&mut Context::from_waker(&watch.waker)) {
+                Poll::Pending => return Poll::Ready((Vec::new(), None)),
+                Poll::Ready(Ok((sequence, mut records))) => {
+                    if let Some(from) = sequence.checked_add(1) {
+                        watch.next_from = from;
+                        watch.next = Some(Box::pin(async move {
+                            let record =
+                                records.try_next().await?.ok_or(StreamError::Unavailable)?;
+                            Ok((record.sequence, records))
+                        }));
+                        (sequence, None)
+                    } else {
                         watch.next = None;
-                        Notification {
-                            through: u64::MAX,
-                            after: None,
-                            error: Some(error),
-                        }
+                        (u64::MAX, Some(StreamError::InvalidResponse))
                     }
                 }
+                Poll::Ready(Err(error)) => {
+                    watch.next = None;
+                    (u64::MAX, Some(error))
+                }
+            };
+            Notification {
+                through,
+                after: None,
+                error,
             }
         };
         let after = notification.after.clone();

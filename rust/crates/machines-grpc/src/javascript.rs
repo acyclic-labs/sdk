@@ -107,9 +107,9 @@ impl Client {
                 &JsValue::UNDEFINED,
                 &JsValue::from_str(method),
                 pull.as_ref(),
-                &timeout.map(JsValue::from).unwrap_or(JsValue::UNDEFINED),
+                &timeout.map_or(JsValue::UNDEFINED, JsValue::from),
             )
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let output = Output {
             owner: opened,
             input,
@@ -122,8 +122,10 @@ impl Client {
         // both directions even if credentials/connect have not produced headers.
         let ready = property(&output.owner, "ready")?
             .dyn_into::<Promise>()
-            .map_err(status)?;
-        JsFuture::from(ready).await.map_err(status)?;
+            .map_err(|error| status(&error))?;
+        JsFuture::from(ready)
+            .await
+            .map_err(|error| status(&error))?;
         Ok(Response::new(output))
     }
 
@@ -166,8 +168,8 @@ impl<T: Message + Default> Stream for Output<T> {
         }
         if this.pending.is_none() {
             let next = function(&this.owner, "next")
-                .and_then(|next| next.call0(&this.owner).map_err(status))
-                .and_then(|value| value.dyn_into::<Promise>().map_err(status));
+                .and_then(|next| next.call0(&this.owner).map_err(|error| status(&error)))
+                .and_then(|value| value.dyn_into::<Promise>().map_err(|error| status(&error)));
             match next {
                 Ok(next) => this.pending = Some(JsFuture::from(next)),
                 Err(error) => {
@@ -192,7 +194,7 @@ impl<T: Message + Default> Stream for Output<T> {
             Ok(value) => {
                 let decoded = value
                     .dyn_into::<Uint8Array>()
-                    .map_err(status)
+                    .map_err(|error| status(&error))
                     .and_then(|bytes| {
                         T::decode(bytes.to_vec().as_slice())
                             .map_err(|error| Status::data_loss(error.to_string()))
@@ -204,7 +206,7 @@ impl<T: Message + Default> Stream for Output<T> {
             }
             Err(error) => {
                 this.close();
-                Poll::Ready(Some(Err(status(error))))
+                Poll::Ready(Some(Err(status(&error))))
             }
         }
     }
@@ -228,12 +230,12 @@ impl<T> Drop for Output<T> {
 }
 
 fn property(owner: &JsValue, name: &str) -> Result<JsValue, Status> {
-    Reflect::get(owner, &JsValue::from_str(name)).map_err(status)
+    Reflect::get(owner, &JsValue::from_str(name)).map_err(|error| status(&error))
 }
 fn function(owner: &JsValue, name: &str) -> Result<Function, Status> {
     property(owner, name)?
         .dyn_into::<Function>()
-        .map_err(status)
+        .map_err(|error| status(&error))
 }
 fn error_text(error: &JsValue, field: &str) -> Option<String> {
     Reflect::get(error, &JsValue::from_str(field))
@@ -241,26 +243,25 @@ fn error_text(error: &JsValue, field: &str) -> Option<String> {
         .as_string()
 }
 
-fn status(error: JsValue) -> Status {
-    let code = Reflect::get(&error, &JsValue::from_str("code"))
+fn status(error: &JsValue) -> Status {
+    // Only the sixteen defined gRPC codes are named; anything else is Unknown.
+    let code = Reflect::get(error, &JsValue::from_str("code"))
         .ok()
         .and_then(|code| code.as_f64())
-        .filter(|code| code.fract() == 0.0 && (1.0..=16.0).contains(code))
-        .map_or(tonic::Code::Unknown, |code| {
-            tonic::Code::from_i32(code as i32)
-        });
-    let message = error_text(&error, "rawMessage")
-        .or_else(|| error_text(&error, "message"))
+        .and_then(|code| (1..=16).find(|known: &i32| f64::from(*known) == code))
+        .map_or(tonic::Code::Unknown, tonic::Code::from_i32);
+    let message = error_text(error, "rawMessage")
+        .or_else(|| error_text(error, "message"))
         .unwrap_or_else(|| {
             "public Machines transport failed; recovery: retain the original operation identity"
                 .into()
         });
-    if Reflect::get(&error, &JsValue::from_str("requestCredentialAdmission"))
+    if Reflect::get(error, &JsValue::from_str("requestCredentialAdmission"))
         .ok()
         .and_then(|value| value.as_bool())
         == Some(true)
     {
-        let cause = Reflect::get(&error, &JsValue::from_str("cause")).ok();
+        let cause = Reflect::get(error, &JsValue::from_str("cause")).ok();
         return acyclic_machines::codec::request_credential_status(
             message,
             cause
@@ -269,7 +270,7 @@ fn status(error: JsValue) -> Status {
         );
     }
     let mut status = Status::new(code, message);
-    if Reflect::get(&error, &JsValue::from_str("responseCredentialAdmission"))
+    if Reflect::get(error, &JsValue::from_str("responseCredentialAdmission"))
         .ok()
         .and_then(|value| value.as_bool())
         == Some(true)

@@ -227,7 +227,7 @@ async fn admission_close(credit: usize) -> TestResult {
         observed = entered.wait_for(|active| *active == credit) => { assert_eq!(*observed?, credit); }
         result = running.next() => return Err(format!("delivery escaped held admission: {result:?}").into()),
     }
-    runtime.admission[0]
+    runtime.admission[crate::guest::AdmissionClass::Work]
         .as_ref()
         .ok_or("missing admission credit")?
         .close();

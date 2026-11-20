@@ -179,9 +179,16 @@ impl<K: Ord + Clone> Index<K> {
     }
 
     /// The durable alarm no longer needs this host: consumed or suspended.
-    fn burn(&mut self, token: Token) {
-        self.deadlines
-            .remove(&(token.group, token.deadline, token.serial));
+    fn burn(
+        &mut self,
+        Token {
+            serial,
+            group,
+            deadline,
+            ..
+        }: Token,
+    ) {
+        self.deadlines.remove(&(group, deadline, serial));
     }
 
     /// Two claims on one actor's alarm keep the earlier deadline and wake.
@@ -278,8 +285,10 @@ impl<K: 'static> ReadySet<K> {
     /// A ready index whose deadline watermarks are kept per `group` of key,
     /// so an alarm held in one scheduling shard never holds another's.
     pub fn grouped(group: impl Fn(&K) -> u16 + Send + Sync + 'static) -> Self {
-        let mut index = Index::default();
-        index.group = Box::new(group);
+        let index = Index {
+            group: Box::new(group),
+            ..Index::default()
+        };
         Self {
             core: Arc::new(Core {
                 index: SyncMutex::new(index),

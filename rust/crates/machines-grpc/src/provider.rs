@@ -284,7 +284,7 @@ machine_mutations! {
                 return Err(ProviderError::Indeterminate(key));
             }
             let outcome = wait(self, key, operation).await?;
-            settled_checkpoint(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
+            settled_checkpoint(&value, outcome).map_err(|_| ProviderError::Indeterminate(key))
         })
     }
 
@@ -515,7 +515,7 @@ machine_mutations! {
                 })?
                 .into_inner();
             Ok(acyclic_machines::events::checked(machine, after_sequence, events, move |mut events| async move {
-                match events.message().await.map_err(|error| read_error(error))? {
+                match events.message().await.map_err(read_error)? {
                     Some(event) => Ok(Some((decode_event(&event, machine)?, events))),
                     None => Ok(None),
                 }

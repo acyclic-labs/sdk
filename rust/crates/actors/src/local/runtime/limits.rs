@@ -1,11 +1,70 @@
 //! Admission and cooperative work bounds, shared by continuous and event hosts.
 use super::*;
+use crate::guest::AdmissionClass;
+
+/// One value per admission class, addressed by the class itself.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PerClass<T> {
+    work: T,
+    control: T,
+}
+
+impl<T> PerClass<T> {
+    pub(super) fn new(mut value: impl FnMut() -> T) -> Self {
+        Self {
+            work: value(),
+            control: value(),
+        }
+    }
+
+    pub(super) fn iter(&self) -> std::array::IntoIter<&T, 2> {
+        [&self.work, &self.control].into_iter()
+    }
+
+    pub(super) fn map<U>(self, mut project: impl FnMut(T) -> U) -> PerClass<U> {
+        PerClass {
+            work: project(self.work),
+            control: project(self.control),
+        }
+    }
+}
+
+impl<T> std::ops::Index<AdmissionClass> for PerClass<T> {
+    type Output = T;
+
+    fn index(&self, class: AdmissionClass) -> &T {
+        match class {
+            AdmissionClass::Work => &self.work,
+            AdmissionClass::Control => &self.control,
+        }
+    }
+}
+
+impl<T> std::ops::IndexMut<AdmissionClass> for PerClass<T> {
+    fn index_mut(&mut self, class: AdmissionClass) -> &mut T {
+        match class {
+            AdmissionClass::Work => &mut self.work,
+            AdmissionClass::Control => &mut self.control,
+        }
+    }
+}
+
+/// The class whose turn it is; `turn` moves on to the other, so neither
+/// class can starve the other's admission.
+pub(super) fn take_turn(turn: &mut AdmissionClass) -> AdmissionClass {
+    let class = *turn;
+    *turn = match class {
+        AdmissionClass::Work => AdmissionClass::Control,
+        AdmissionClass::Control => AdmissionClass::Work,
+    };
+    class
+}
 
 /// Runtime scheduling credit, independent of a package's resource policy.
 /// The default has no active-delivery ceiling; work batches remain chunked.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeLimits {
-    pub(super) active: [Option<usize>; 2],
+    pub(super) active: PerClass<Option<usize>>,
     pub(super) work: usize,
 }
 
@@ -20,7 +79,10 @@ impl RuntimeLimits {
             ));
         }
         Ok(Self {
-            active: [Some(active), None],
+            active: PerClass {
+                work: Some(active),
+                control: None,
+            },
             work,
         })
     }
@@ -34,11 +96,11 @@ impl RuntimeLimits {
                 "control capacity must be positive and representable",
             ));
         }
-        self.active[1] = capacity;
+        self.active.control = capacity;
         Ok(self)
     }
 
-    pub(super) fn allows(self, class: usize, running: usize) -> bool {
+    pub(super) fn allows(self, class: AdmissionClass, running: usize) -> bool {
         self.active[class].is_none_or(|capacity| running < capacity)
     }
 }
@@ -46,7 +108,7 @@ impl RuntimeLimits {
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
-            active: [None, None],
+            active: PerClass::new(|| None),
             work: 64,
         }
     }

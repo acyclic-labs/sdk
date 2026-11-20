@@ -27,28 +27,38 @@ pub type SocketTerminalError = dyn std::error::Error + Send + Sync;
 #[cfg(target_arch = "wasm32")]
 pub type SocketTerminalError = dyn std::error::Error;
 
+/// Shared ownership with the platform's thread bound: atomic on native
+/// targets, whose owners cross executor threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub type ProviderShared<T> = std::sync::Arc<T>;
+/// Shared ownership retaining browser event-loop ownership: owners never
+/// leave the event loop, so no count is atomic.
+#[cfg(target_arch = "wasm32")]
+pub type ProviderShared<T> = std::rc::Rc<T>;
+
 /// A retained observation of one original host socket's close producer.
 /// Dropping an observer never cancels that producer. The original decided
 /// failure remains reachable after the host retires its live socket entry.
 pub trait SocketTerminal: acyclic_stream::ProviderPlatform {
     /// Joins the original producer and retains its decided failure after retirement.
     fn completion(
-        self: Arc<Self>,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Result<(), Arc<SocketTerminalError>>>;
+        self: ProviderShared<Self>,
+    ) -> BoxProviderFuture<'static, Result<(), ProviderShared<SocketTerminalError>>>;
 }
 
-impl<E> SocketTerminal for futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<E>>>>
+impl<E> SocketTerminal
+    for futures::future::Shared<BoxProviderFuture<'static, Result<(), ProviderShared<E>>>>
 where
     E: std::error::Error + ProviderPlatform + 'static,
 {
     fn completion(
-        self: Arc<Self>,
-    ) -> BoxProviderFuture<'static, Result<(), Arc<SocketTerminalError>>> {
+        self: ProviderShared<Self>,
+    ) -> BoxProviderFuture<'static, Result<(), ProviderShared<SocketTerminalError>>> {
         let result = self.as_ref().clone();
         Box::pin(async move {
             result
                 .await
-                .map_err(|error| error as Arc<SocketTerminalError>)
+                .map_err(|error| error as ProviderShared<SocketTerminalError>)
         })
     }
 }
@@ -65,7 +75,7 @@ pub trait SocketHost: acyclic_stream::ProviderPlatform {
         &self,
         _actor: &ActorReference,
         _socket: &WebSocketId,
-    ) -> Result<Arc<dyn SocketTerminal>, GuestError> {
+    ) -> Result<ProviderShared<dyn SocketTerminal>, GuestError> {
         Err(GuestError::Handler(
             "original socket terminal is unavailable".into(),
         ))

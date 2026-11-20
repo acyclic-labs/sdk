@@ -17,6 +17,8 @@ pub const STATE_RECORD_OVERHEAD: usize =
 // never rewritten after discarding their cursor state. Funding stays host-owned; guest
 // metadata is never promoted into funding authority by the state reader.
 const STATE_FORMAT_V2: &[u8] = b"\xffACS\x02";
+/// [`STATE_FORMAT_V2`] as its magic and version, split at compile time.
+const STATE_HEADER: (&[u8], &[u8]) = STATE_FORMAT_V2.split_at(4);
 /// Host-owned admission fields projected without allocating the checkpoint,
 /// subscriptions or metadata. Authenticate the original actor path separately
 /// and fence its original record when publishing a dependent dispatch.
@@ -31,8 +33,7 @@ pub struct AdmissionState {
 }
 
 fn payload(record: &[u8]) -> Result<&[u8], Error> {
-    acyclic_stream::persistence::header(record, &STATE_FORMAT_V2[..4], &STATE_FORMAT_V2[4..])
-        .map_err(Into::into)
+    acyclic_stream::persistence::header(record, STATE_HEADER.0, STATE_HEADER.1).map_err(Into::into)
 }
 
 impl AdmissionState {
@@ -268,6 +269,8 @@ impl State {
 // Custody intents live on `<actor state>/custody`, never in state records,
 // under their own magic.
 const CUSTODY_FORMAT_V1: &[u8] = b"\xffAPC\x01";
+/// [`CUSTODY_FORMAT_V1`] as its magic and version, split at compile time.
+const CUSTODY_HEADER: (&[u8], &[u8]) = CUSTODY_FORMAT_V1.split_at(4);
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct IntentRecord {
@@ -317,11 +320,8 @@ impl Intent {
     }
 
     pub(super) fn decode(record: &[u8]) -> Result<Self, Error> {
-        let record = acyclic_stream::persistence::header(
-            record,
-            &CUSTODY_FORMAT_V1[..4],
-            &CUSTODY_FORMAT_V1[4..],
-        )?;
+        let record =
+            acyclic_stream::persistence::header(record, CUSTODY_HEADER.0, CUSTODY_HEADER.1)?;
         let record = IntentRecord::decode(record)
             .map_err(|_| Error::Invalid("malformed actor custody record"))?;
         let delivered = match (record.delivered_path, record.delivered_sequence) {

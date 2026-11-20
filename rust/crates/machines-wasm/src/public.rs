@@ -136,15 +136,16 @@ fn provider_error_code(error: &ProviderError) -> &'static str {
         ProviderError::Invalid(_) => "invalid",
         ProviderError::Rejected(_) => "rejected",
         ProviderError::FailedPrecondition(_) => "failed-precondition",
-        ProviderError::Unavailable => "unavailable",
+        ProviderError::Unavailable | ProviderError::DeadlineSourceLost { machine: None, .. } => {
+            "unavailable"
+        }
         ProviderError::Indeterminate(_)
         | ProviderError::OperationIndeterminate(_)
         | ProviderError::CommandIndeterminate(_)
-        | ProviderError::FileIndeterminate(_) => "indeterminate",
-        ProviderError::DeadlineSourceLost {
+        | ProviderError::FileIndeterminate(_)
+        | ProviderError::DeadlineSourceLost {
             machine: Some(_), ..
         } => "indeterminate",
-        ProviderError::DeadlineSourceLost { machine: None, .. } => "unavailable",
         ProviderError::Failed => "failed",
         ProviderError::ForkFailed { .. } => "fork-failed",
         ProviderError::Cancelled => "cancelled",

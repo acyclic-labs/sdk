@@ -85,7 +85,7 @@ impl<E: RpcEndpoint> Provider<E> {
             .map_err(|stop| stop.file(machine))?
             .map_err(|error| ProviderError::FileIndeterminate(machine).with_cause(error))?
             .ok_or(ProviderError::FileIndeterminate(machine))?;
-        decode_write_response(response, machine, access.offset(), length)
+        decode_write_response(&response, machine, access.offset(), length)
     }
 
     async fn file_client(&self, deadline: &E::Deadline) -> Result<E::Client, ProviderError> {

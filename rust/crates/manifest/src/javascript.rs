@@ -12,6 +12,7 @@ use futures::StreamExt as _;
 use js_sys::{Reflect, Uint8Array};
 use prost::Message as _;
 use std::rc::Rc;
+use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -25,6 +26,25 @@ export interface PublishedDeployment {
 }
 export type EntryResult = PublishedDeployment | ObjectsV1BinaryReply;
 ";
+
+fn field(value: &JsValue, name: &str) -> Result<JsValue, JsValue> {
+    Reflect::get(value, &name.into())
+}
+
+fn text_field(value: &JsValue, name: &str) -> Result<String, JsValue> {
+    field(value, name)?
+        .as_string()
+        .ok_or_else(|| js_sys::TypeError::new(&format!("{name} must be text")).into())
+}
+
+/// The field's bytes, copied once before any await.
+fn bytes_field(value: &JsValue, name: &str) -> Result<Vec<u8>, JsValue> {
+    let bytes: Uint8Array = field(value, name)?
+        .dyn_into()
+        .map_err(|_| js_sys::TypeError::new(&format!("{name} must be Uint8Array bytes")))?;
+    let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |_| Ok(()))?;
+    Ok(bytes)
+}
 
 fn entry_error(error: entry::Error) -> JsValue {
     match error {
@@ -67,39 +87,39 @@ impl JavaScriptEntryStore {
     }
 
     /// Admit all selected bytes before the original publication can be polled.
+    /// `selection` is the caller's `EntrySelection`: `manifest`, `environment`
+    /// and `entry` text, the `artifact` bytes, and `files` of `{ path, bytes }`.
     #[wasm_bindgen(js_name = openPublication)]
     pub fn open_publication(
         &self,
         intent: &Uint8Array,
-        input: &str,
-        environment: &str,
-        entry: &str,
-        artifact: &Uint8Array,
-        paths: Vec<String>,
-        files: Vec<Uint8Array>,
-        idempotency_key: String,
+        selection: &JsValue,
+        idempotency_key: &str,
     ) -> Result<EntryRequest, JsValue> {
         let root = root(intent)?;
-        if paths.len() != files.len() {
-            return Err(entry_error(
-                ManifestError::invalid("assets", "undeclared-asset").into(),
-            ));
-        }
-        let (artifact, ()) = acyclic_stream::javascript_bytes::snapshot(artifact, |_| Ok(()))?;
-        let files = paths
-            .into_iter()
-            .zip(files)
-            .map(|(path, bytes)| {
-                let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |_| Ok(()))?;
-                Ok((path, bytes.into()))
+        let artifact = bytes_field(selection, "artifact")?;
+        let files = field(selection, "files")?
+            .dyn_into::<js_sys::Array>()
+            .map_err(|_| js_sys::TypeError::new("files must be an array"))?
+            .iter()
+            .map(|file| {
+                Ok((
+                    text_field(&file, "path")?,
+                    bytes_field(&file, "bytes")?.into(),
+                ))
             })
             .collect::<Result<_, JsValue>>()?;
-        let prepared =
-            PreparedEntry::from_json(input.as_bytes(), environment, entry, artifact.into(), files)
-                .map_err(|error| entry_error(error.into()))?;
+        let prepared = PreparedEntry::from_json(
+            text_field(selection, "manifest")?.as_bytes(),
+            &text_field(selection, "environment")?,
+            &text_field(selection, "entry")?,
+            artifact.into(),
+            files,
+        )
+        .map_err(|error| entry_error(error.into()))?;
         // Lowering admits the original deployment intent before any request.
         let prepared = prepared
-            .into_deployment(&idempotency_key)
+            .into_deployment(idempotency_key)
             .map_err(|error| entry_error(error.into()))?;
         let store = self.inner.clone();
         Ok(EntryRequest::new(async move {
@@ -246,8 +266,8 @@ pub fn validate_json(input: &str) -> Result<(), wasm_bindgen::JsValue> {
 /// admission, returning its canonical JSON with a decimal-string version.
 /// No credential lookup or value resolution runs.
 #[wasm_bindgen(js_name = parseSecretReference)]
-pub fn parse_secret_reference(input: String) -> Result<String, JsValue> {
-    let reference: acyclic_auth::secrets::SecretRef = serde_json::from_str(&input)
+pub fn parse_secret_reference(input: &str) -> Result<String, JsValue> {
+    let reference: acyclic_auth::secrets::SecretRef = serde_json::from_str(input)
         .map_err(|_| entry_error(ManifestError::invalid("reference", "secret-reference").into()))?;
     serde_json::to_string(&reference)
         .map_err(|_| entry_error(ManifestError::invalid("reference", "secret-reference").into()))

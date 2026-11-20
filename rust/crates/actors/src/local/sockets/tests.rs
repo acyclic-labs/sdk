@@ -374,7 +374,7 @@ async fn independent_hosts_keep_same_actor_socket_ids_and_attachments_distinct()
     let mut peers = Vec::new();
     // Every fresh owner starts at incarnation 1, counter 0. More owners than
     // shard choices deterministically exposes IDs that contain only the shard.
-    for owner in 0..=OWNER_SHARDS {
+    for owner in 0..=shards::COUNT {
         let sockets = Sockets::open(
             Store::new(provider.clone(), root()?),
             StreamPath::new(format!("hosts/{owner}/sockets/v1"))?,
@@ -908,7 +908,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         assert_eq!(shared.live.load(Ordering::Acquire), usize::from(committed));
         release.send(()).map_err(|_| "lost delayed Open request")?;
         match opening.await {
-            Ok(Opened::Committed(_)) if committed => {}
+            Ok(Some(_)) if committed => {}
             Err(Error::Conflict) if !committed => {}
             _ => return Err("Open did not retain its original epoch condition".into()),
         }
@@ -1488,7 +1488,7 @@ async fn admitted_close_fixture<P: StreamProvider + ?Sized + 'static>(
     let shared = &sockets.shared;
     assert!(matches!(
         shared.commit_open(&connection, &open).await?,
-        Opened::Committed(_)
+        Some(_)
     ));
     shared
         .lock(&connection)
@@ -1617,12 +1617,13 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         admitted_close_fixture(&sockets, "peer-order").await?;
     {
         let selected = Tables::connection(&connection);
-        let unrelated = shared.table.lock((selected + 1) % OWNER_SHARDS);
+        let unrelated = shared.table.lock((selected + 1) % shards::COUNT as u64);
         // Probe the same mutex selector without waiting: restoring a global
         // owner fails here rather than hanging the original control.
         let table = shared
             .table
-            .owner(selected)
+            .owners
+            .get(selected)
             .try_lock()
             .map_err(|_| "an unrelated owner blocked the original socket")?;
         let actor = table
@@ -2139,7 +2140,7 @@ async fn accepted_open_retries_uncertain_durability_without_closing() -> TestRes
         *provider.durability_fault.lock().unwrap() = Some(error);
         assert!(matches!(
             sockets.shared.commit_open(&connection, &open).await?,
-            Opened::Committed(_)
+            Some(_)
         ));
         entered.await?;
         assert_eq!(provider.replays.load(Ordering::Acquire), 1);

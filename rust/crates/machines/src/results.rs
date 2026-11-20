@@ -205,12 +205,13 @@ pub fn record(machine: &MachineObservation) -> Result<AppendRecord, ProviderErro
         machine,
     })
     .map(AppendRecord::from)
-    .map_err(encoding)
+    .map_err(|error| encoding(&error))
 }
 
 fn decode(bytes: &[u8]) -> Result<MachineObservation, ProviderError> {
     acyclic_auth::format::header(bytes, b"{\"version\":", b"\"1\"", unsupported, unsupported)?;
-    let value: Observation<MachineObservation> = serde_json::from_slice(bytes).map_err(encoding)?;
+    let value: Observation<MachineObservation> =
+        serde_json::from_slice(bytes).map_err(|error| encoding(&error))?;
     Ok(value.machine)
 }
 
@@ -264,7 +265,7 @@ fn invalid(message: &str) -> ProviderError {
     ))
 }
 
-fn encoding(error: serde_json::Error) -> ProviderError {
+fn encoding(error: &serde_json::Error) -> ProviderError {
     ProviderError::Rejected(format!(
         "original result encoding failed: {error}; recovery: restore the original version-one observation"
     ))
@@ -290,9 +291,15 @@ pub mod codec_fuzz {
             return false;
         }
         let offset = b"{\"version\":\"".len();
+        let Some(head) = encoded.value.get(..offset + 2) else {
+            return false;
+        };
         for version in [b'0', b'2', u8::MAX] {
-            let mut header = encoded.value[..offset + 2].to_vec();
-            header[offset] = version;
+            let mut header = head.to_vec();
+            let Some(byte) = header.get_mut(offset) else {
+                return false;
+            };
+            *byte = version;
             if !matches!(decode(&header), Err(ProviderError::Unsupported(_))) {
                 return false;
             }
@@ -303,17 +310,20 @@ pub mod codec_fuzz {
             }
         }
         for end in [offset + 2, offset + 3] {
-            if !matches!(
-                decode(&encoded.value[..end]),
-                Err(ProviderError::Rejected(_))
-            ) {
+            let Some(prefix) = encoded.value.get(..end) else {
+                return false;
+            };
+            if !matches!(decode(prefix), Err(ProviderError::Rejected(_))) {
                 return false;
             }
         }
         let mut foreign_field = encoded.value.to_vec();
         // Mutate only the actual writer's next field, retaining its admitted
         // version. A missing required machine is a payload refusal.
-        foreign_field[offset + 4] = b'x';
+        let Some(field) = foreign_field.get_mut(offset + 4) else {
+            return false;
+        };
+        *field = b'x';
         matches!(decode(&foreign_field), Err(ProviderError::Rejected(_)))
     }
 }

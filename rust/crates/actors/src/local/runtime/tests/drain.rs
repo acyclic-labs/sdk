@@ -136,7 +136,9 @@ async fn delayed_activation_cannot_redeliver_a_failed_attempt() -> TestResult {
             return Err(format!("activation did not commit: {outcome:?}").into());
         };
         runtime.wake_committed(&address, &receipt)?;
-        let work = runtime.ready[0].take().ok_or("activation did not wake")?;
+        let work = runtime.ready[crate::guest::AdmissionClass::Work]
+            .take()
+            .ok_or("activation did not wake")?;
         let mut delivery = Box::pin(runtime.execute(work));
         assert!(futures::poll!(delivery.as_mut()).is_pending());
         // Deliver the same original activation through the shared dispatcher
@@ -164,7 +166,9 @@ async fn delayed_activation_cannot_redeliver_a_failed_attempt() -> TestResult {
             );
         }
         assert!(
-            runtime.ready[0].take().is_none(),
+            runtime.ready[crate::guest::AdmissionClass::Work]
+                .take()
+                .is_none(),
             "duplicate activation queued another delivery"
         );
     }
@@ -206,14 +210,16 @@ async fn unavailability_observers_survive_hibernation_and_cancelled_attempts() -
 
     runtime.host(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing retained slot")?;
-    let work = runtime.ready[0]
+    let work = runtime.ready[crate::guest::AdmissionClass::Work]
         .take()
         .ok_or("missing original delivery work")?;
     assert!(runtime.release(&address));
     runtime.deliver(&address, &slot, Some(work), false).await?;
     let shard = store.scheduling_shard(&address);
     assert!(
-        runtime.ready[0].failed(shard).contains(&address),
+        runtime.ready[crate::guest::AdmissionClass::Work]
+            .failed(shard)
+            .contains(&address),
         "released work lost its scheduling handoff"
     );
     assert!(
@@ -364,7 +370,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
             assert_eq!(handler.active.load(Ordering::SeqCst), active);
             assert_eq!(handler.peak.load(Ordering::SeqCst), active);
             assert_eq!(
-                runtime.admission[0]
+                runtime.admission[crate::guest::AdmissionClass::Work]
                     .as_ref()
                     .expect("reserved work credit")
                     .available_permits(),
@@ -387,7 +393,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         }
         assert_eq!(handler.active.load(Ordering::SeqCst), 0);
         assert_eq!(
-            runtime.admission[0]
+            runtime.admission[crate::guest::AdmissionClass::Work]
                 .as_ref()
                 .expect("reserved work credit")
                 .available_permits(),
@@ -443,7 +449,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         }
         assert_eq!(handler.active.load(Ordering::SeqCst), 0);
         assert_eq!(
-            runtime.admission[0]
+            runtime.admission[crate::guest::AdmissionClass::Work]
                 .as_ref()
                 .expect("reserved work credit")
                 .available_permits(),
@@ -455,7 +461,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         let address = spawn_with(&store, "closed-admission", &[b"emit"]).await?;
         runtime.host(address.clone())?;
         let failed = runtime.unavailable(&address)?;
-        runtime.admission[0]
+        runtime.admission[crate::guest::AdmissionClass::Work]
             .as_ref()
             .expect("reserved work credit")
             .close();
@@ -500,7 +506,7 @@ fn a_delivery_runs_on_a_small_worker_stack() -> TestResult {
     let _: for<'a> fn(
         &'a Runtime<MemoryStream>,
         &'a ActorReference,
-        &'a Arc<Slot>,
+        &'a ProviderShared<Slot>,
         Option<Work<ActorReference>>,
         bool,
     ) -> BoxProviderFuture<'a, Result<bool, Error>> = Runtime::deliver;

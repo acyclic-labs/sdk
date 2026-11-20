@@ -103,7 +103,7 @@ uuid_identity!(CheckpointId, "Stable immutable checkpoint identity.");
 
 // Check the revision-one byte vectors at compile time on every target.
 const _: () = {
-    assert!(OperationId::from_digest([0; 32]).0.as_u128() == 0x5000_8000_000000000000);
+    assert!(OperationId::from_digest([0; 32]).0.as_u128() == 0x5000_8000_0000_0000_0000);
     assert!(
         MachineId::from_digest([0xff; 32]).0.as_u128() == 0xffffffff_ffff_5fff_bfff_ffffffffffff
     );
@@ -261,10 +261,13 @@ pub mod identity_codec_fuzz {
         }
     }
 
+    /// Named fuzz seeds, each one real writer output.
+    pub type Seeds = Vec<(&'static str, Vec<u8>)>;
+
     /// Capture the original public identity writers and the UUID library's nil
     /// writer as a refusal input. Image digests retain their public byte/serde
     /// writers and the zero array writer as refusal inputs.
-    pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    pub fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
         let id = MachineId::from_digest([1; 32]);
         let nil = Uuid::nil();
         let image = ImageDigest::new([1; 32])?;

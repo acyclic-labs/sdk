@@ -34,18 +34,32 @@ fn nominal_error(error: domain::DomainError) -> JsValue {
     js_error(code, error)
 }
 
-/// Admit a deployment declaration through Rust before materializing a JS env handle.
-#[wasm_bindgen(js_name = validateDeploymentBinding)]
-pub fn validate_deployment_binding(
+/// A deployment declaration's text fields, as the JS declaration names them.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeploymentBinding {
     name: String,
     capability: String,
     resource: String,
-    account: &[u8],
-    namespace: Option<String>,
-    worker: Option<String>,
+    actor_namespace: Option<String>,
+    worker_service: Option<String>,
     state_transaction: bool,
     guest_admission: Option<String>,
-) -> Result<(), JsValue> {
+}
+
+/// Admit a deployment declaration through Rust before materializing a JS env handle.
+#[wasm_bindgen(js_name = validateDeploymentBinding)]
+pub fn validate_deployment_binding(binding: JsValue, account: &[u8]) -> Result<(), JsValue> {
+    let DeploymentBinding {
+        name,
+        capability,
+        resource,
+        actor_namespace,
+        worker_service,
+        state_transaction,
+        guest_admission,
+    } = serde_wasm_bindgen::from_value(binding)
+        .map_err(|error| js_error("invalid_argument", error))?;
     domain::Binding::try_from(acyclic_actors::wire::Binding {
         state_transaction,
         guest_admission,
@@ -53,8 +67,8 @@ pub fn validate_deployment_binding(
         capability,
         resource,
         target_account: account.to_vec(),
-        actor_namespace: namespace,
-        worker_service: worker,
+        actor_namespace,
+        worker_service,
     })
     .map(|_| ())
     .map_err(nominal_error)

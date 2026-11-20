@@ -147,7 +147,7 @@ impl MachinesProvider for SimulatedMachines {
             ));
                 }
                 let key = request.idempotency_key;
-                let intent = MemoryIntent::Create(request.clone());
+                let intent = MemoryIntent::Create(Box::new(request.clone()));
                 let capabilities = self.capabilities.clone();
                 let platform = SIMULATED_PLATFORM;
                 self.apply(key, intent, move |state| {

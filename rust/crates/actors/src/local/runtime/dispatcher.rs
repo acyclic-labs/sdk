@@ -61,8 +61,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             },
                         ))
                     })
-                    .collect::<Result<BTreeMap<_, _>, Error>>()?
-                    .into(),
+                    .collect::<Result<BTreeMap<_, _>, Error>>()?,
             },
         };
         let mut advanced = false;

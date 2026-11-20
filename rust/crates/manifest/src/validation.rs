@@ -89,7 +89,10 @@ fn asset_bucket(pattern: &ResourcePattern) -> Result<&str, ManifestError> {
         .and_then(|name| name.split('/').next())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| ManifestError::invalid("assets", "objects-bucket"))?;
-    Ok(&pattern.name[.."objects:/".len() + bucket.len()])
+    pattern
+        .name
+        .get(.."objects:/".len() + bucket.len())
+        .ok_or_else(|| ManifestError::invalid("assets", "objects-bucket"))
 }
 
 /// Admit a complete Rust value using the same rules as JSON and WASM ingress.

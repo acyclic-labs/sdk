@@ -22,7 +22,7 @@ pub fn decode_read_response(
 }
 
 pub fn decode_write_response(
-    response: wire::WriteFileResponse,
+    response: &wire::WriteFileResponse,
     machine: MachineId,
     offset: u64,
     length: usize,

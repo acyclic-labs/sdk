@@ -121,14 +121,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub(super) async fn handled<'f, T>(
         &self,
         inner: &mut Inner,
-        actor: &ActorReference,
-        epoch: u64,
-        cancellation: crate::guest::CancellationToken,
+        attempt: &Attempt<'_>,
         delivery: impl FnOnce(crate::guest::RequestId) -> Delivery,
-        checkpoint: Option<&crate::guest::Checkpoint>,
         cut: &mut Arc<Snapshot>,
         invoke: impl FnOnce(Delivery) -> crate::guest::GuestFuture<'f, T>,
     ) -> Result<T, Error> {
+        let &Attempt {
+            actor,
+            epoch,
+            ref cancellation,
+            checkpoint,
+            ..
+        } = attempt;
         let request = self.requests.open(actor, epoch);
         let stopped = crate::guest::CancellationToken::new();
         let mut owner = self
@@ -164,13 +168,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 |_| None,
             ));
             let delivery = &delivery;
-            let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
-                Box::pin(async move {
-                    self.handler
-                        .accepts_interrupt(delivery, checkpoint, &subscription, &record)
-                        .await
-                })
-            });
+            let interrupted =
+                self.interrupt(inner, cancellation.clone(), |subscription, record| {
+                    Box::pin(async move {
+                        self.handler
+                            .accepts_interrupt(delivery, checkpoint, &subscription, &record)
+                            .await
+                    })
+                });
             let interrupted = core::pin::pin!(interrupted);
             let timeout: BoxProviderFuture<'_, ()> = Box::pin(async {
                 match self.handler.manifest().limits.handler_timeout_millis() {

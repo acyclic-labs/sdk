@@ -5,7 +5,7 @@ use super::*;
 /// its authenticated transport before publishing the result.
 pub fn settled_machine(
     machine: MachineId,
-    contract: MachineContract,
+    contract: &MachineContract,
     outcome: Option<wire::MutationOutcome>,
     attached: bool,
 ) -> Result<MachineObservation, ProviderError> {
@@ -20,7 +20,7 @@ pub fn settled_machine(
         }
     };
     let observation = decode_machine_observation(value, machine)?;
-    if observation.contract != contract {
+    if observation.contract != *contract {
         return Err(ProviderError::Rejected(
             "settled machine contract was substituted".into(),
         ));
@@ -51,19 +51,19 @@ pub fn decode_recovered(
         }
         ResultKind::Create(value) => settled_machine(
             decode_machine(value.machine.as_ref())?,
-            decode_contract(value.contract.as_ref())?,
+            &decode_contract(value.contract.as_ref())?,
             outcome,
             false,
         )
         .map(MutationOutcome::Created),
         ResultKind::AttachVolume(value) => settled_machine(
             decode_machine(value.machine.as_ref())?,
-            decode_contract(value.contract.as_ref())?,
+            &decode_contract(value.contract.as_ref())?,
             outcome,
             true,
         )
         .map(MutationOutcome::VolumeAttached),
-        ResultKind::Checkpoint(value) => settled_checkpoint(value, outcome),
+        ResultKind::Checkpoint(value) => settled_checkpoint(&value, outcome),
         ResultKind::Forked(value) => settled_fork(
             &decode_fork_admissions(&value)?,
             OperationPhase::Succeeded,
@@ -128,13 +128,13 @@ pub fn settled_change(
     if actual != expected {
         return Err(ProviderError::Indeterminate(key));
     }
-    Ok(actual)
+    Ok(expected)
 }
 
 /// Match a checkpoint terminal to its original admission without a provider call.
 /// The caller retains the operation and authenticated transport association.
 pub fn settled_checkpoint(
-    admission: wire::CheckpointAdmission,
+    admission: &wire::CheckpointAdmission,
     outcome: Option<wire::MutationOutcome>,
 ) -> Result<MutationOutcome, ProviderError> {
     let Some(wire::mutation_outcome::Result::Checkpointed(value)) =

@@ -256,7 +256,7 @@ impl Handler for Package {
                         Some(("watch", path)) => {
                             subscriptions.push(SubscriptionChange::Add {
                                 id: MIRROR.into(),
-                                path: StreamPath::new(path.to_owned()).map_err(guest)?,
+                                path: StreamPath::new(path).map_err(guest)?,
                                 from: None,
                             });
                             (AlarmChange::Keep, None)
@@ -859,10 +859,13 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
+/// One delivery the bridge saw: its request, what admitting it bound, and its epoch.
+type Admission = (crate::guest::RequestId, Option<(ActorReference, u64)>, u64);
+
 struct BindsRequests {
     package: Package,
     requests: crate::guest::Requests,
-    admitted: std::sync::Mutex<Vec<(crate::guest::RequestId, Option<(ActorReference, u64)>, u64)>>,
+    admitted: std::sync::Mutex<Vec<Admission>>,
 }
 
 impl Handler for BindsRequests {
@@ -913,7 +916,8 @@ pub async fn request_ledger<P: StreamProvider + ?Sized>(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     suite.require(admitted.len() == 2, "both attempts must run")?;
     suite.require(
-        admitted[0].0 != admitted[1].0,
+        admitted.first().map(|admission| admission.0)
+            != admitted.get(1).map(|admission| admission.0),
         "attempts must have distinct requests",
     )?;
     for (request, bound, epoch) in admitted.iter() {
@@ -966,8 +970,8 @@ impl<P: StreamProvider + ?Sized> Isolated<P> {
             b"isolated",
             format!(
                 "{}-{name}",
-                root[..8]
-                    .iter()
+                root.iter()
+                    .take(8)
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>()
             )
@@ -1129,42 +1133,7 @@ pub async fn placement<P: StreamProvider + ?Sized>(
 
     owner.place(first.clone(), 1).await?;
     other.place(second.clone(), 1).await?;
-    let cut = store.load(&first).await?;
-    let forged = Transition {
-        pause: false,
-        response: None,
-        checkpoint: lab
-            .creation("first", BTreeMap::new())?
-            .checkpoint
-            .ok_or(Error::Invalid("conformance ledger is missing"))?,
-        alarm: AlarmChange::Keep,
-        effects: vec![CommitEffect::hard(
-            Vec::new(),
-            vec![CommitMutation::Append {
-                path: under(cut.path(), "placement")?,
-                records: vec![Bytes::from_static(b"forged placement").into()],
-            }],
-        )],
-        participant: None,
-        subscriptions: Vec::new(),
-    };
-    lab.require(
-        matches!(
-            store.prepare_publish(
-                &cut,
-                1,
-                &Trigger::Record {
-                    subscription: "inbox".into(),
-                    sequence: 0,
-                },
-                None,
-                forged,
-                lab.key("forged-placement")?,
-            ),
-            Err(Error::Invalid("effect changes the host's control records"))
-        ),
-        "an actor effect wrote a placement command",
-    )?;
+    forged_placement(&lab, &first).await?;
     lab.require(
         matches!(other.place(first.clone(), 1).await, Err(Error::Conflict)),
         "a second node took an index another node holds",
@@ -1207,15 +1176,7 @@ pub async fn placement<P: StreamProvider + ?Sized>(
         "fenced nodes did not publish each input exactly once",
     )?;
 
-    let child = lab.actor("child")?;
-    let parent = store.load(&first).await?;
-    let mut fork = PreparedPublish::foreign(lab.key("child/fork")?);
-    fork.join(store.create(
-        Some(&parent),
-        &child,
-        lab.creation("child", BTreeMap::new())?,
-    )?)?;
-    store.submit(fork).await?;
+    let child = fork_child(&lab, &first).await?;
     // Forking data never copies the parent's placement authority or command
     // index: the new actor receives its own first explicit command.
     owner.place(child.clone(), 1).await?;
@@ -1225,6 +1186,67 @@ pub async fn placement<P: StreamProvider + ?Sized>(
         .await
         .map_err(Error::from)?;
     lab.require(commands == 1, "a fork child inherited placement commands")
+}
+
+/// Forks `parent`'s data into a new actor of the lab.
+async fn fork_child<P: StreamProvider + ?Sized>(
+    lab: &Isolated<P>,
+    parent: &ActorReference,
+) -> Result<ActorReference, Failure> {
+    let child = lab.actor("child")?;
+    let parent = lab.store.load(parent).await?;
+    let mut fork = PreparedPublish::foreign(lab.key("child/fork")?);
+    fork.join(lab.store.create(
+        Some(&parent),
+        &child,
+        lab.creation("child", BTreeMap::new())?,
+    )?)?;
+    lab.store.submit(fork).await?;
+    Ok(child)
+}
+
+/// An actor effect that appends to the host's placement records is refused
+/// before it can publish.
+async fn forged_placement<P: StreamProvider + ?Sized>(
+    lab: &Isolated<P>,
+    actor: &ActorReference,
+) -> Result<(), Failure> {
+    let cut = lab.store.load(actor).await?;
+    let forged = Transition {
+        pause: false,
+        response: None,
+        checkpoint: lab
+            .creation("first", BTreeMap::new())?
+            .checkpoint
+            .ok_or(Error::Invalid("conformance ledger is missing"))?,
+        alarm: AlarmChange::Keep,
+        effects: vec![CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: under(cut.path(), "placement")?,
+                records: vec![Bytes::from_static(b"forged placement").into()],
+            }],
+        )],
+        participant: None,
+        subscriptions: Vec::new(),
+    };
+    lab.require(
+        matches!(
+            lab.store.prepare_publish(
+                &cut,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                None,
+                forged,
+                lab.key("forged-placement")?,
+            ),
+            Err(Error::Invalid("effect changes the host's control records"))
+        ),
+        "an actor effect wrote a placement command",
+    )
 }
 
 /// A node whose clock runs ahead of the authority never consumes an alarm
@@ -1834,45 +1856,7 @@ async fn reserved<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Fail
     let Decision::Granted(first_grant) = first.decision() else {
         return fixture.violation("explicit capacity was not granted".into());
     };
-    let foreign_actor = ActorReference::new(
-        b"conformance",
-        b"actors",
-        format!("{run}-foreign-pool").as_bytes(),
-    )
-    .map_err(|_| Error::Invalid("foreign pool fixture actor"))?;
-    if !matches!(
-        Pool::new(
-            acyclic_stream::StreamPath::new("reservation-control/caller").map_err(Error::from)?,
-            target.store(),
-            &foreign_actor,
-            "inbox"
-        )
-        .release(first_grant)
-        .await,
-        Err(Error::Conflict)
-    ) {
-        return fixture.violation("grant released a different pool actor".into());
-    }
-    let another_root = Store::new(
-        target.store().provider().clone(),
-        StreamPath::new(format!("{}/other-root", target.store().root())).map_err(Error::from)?,
-    );
-    if first_grant.state_path() != &target.store().path(&fixture.actor)?
-        || !matches!(
-            Pool::new(
-                acyclic_stream::StreamPath::new("reservation-control/caller")
-                    .map_err(Error::from)?,
-                &another_root,
-                &fixture.actor,
-                "inbox"
-            )
-            .release(first_grant)
-            .await,
-            Err(Error::Conflict)
-        )
-    {
-        return fixture.violation("grant crossed the original Store root".into());
-    }
+    grant_scoped(&fixture, run, first_grant).await?;
     if pool
         .reserve(2, first_id.clone(), owner.clone(), deadline)
         .await?
@@ -1909,8 +1893,11 @@ async fn reserved<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Fail
     // Derive the wrong-owner control from the actual returned grant.
     let mut altered =
         serde_json::to_value(first_grant).map_err(|_| Error::Invalid("grant control encode"))?;
-    altered["owner"]["identity"] = serde_json::to_value(Bytes::from_static(b"wrong"))
-        .map_err(|_| Error::Invalid("grant owner control encode"))?;
+    *altered
+        .pointer_mut("/owner/identity")
+        .ok_or(Error::Invalid("grant control has no owner identity"))? =
+        serde_json::to_value(Bytes::from_static(b"wrong"))
+            .map_err(|_| Error::Invalid("grant owner control encode"))?;
     let altered =
         serde_json::from_value(altered).map_err(|_| Error::Invalid("grant control decode"))?;
     if pool.release(&altered).await?.decision() != &Decision::Stale {
@@ -1963,6 +1950,56 @@ async fn reserved<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Fail
     if pool.reserve(2, first_id, owner, deadline).await? != first {
         return fixture
             .violation("cleanup changed a retained original reservation decision".into());
+    }
+    Ok(())
+}
+
+/// A grant releases only through its own pool actor under its own Store root.
+async fn grant_scoped<T: Backend + ?Sized>(
+    fixture: &Fixture<'_, T>,
+    run: &str,
+    grant: &crate::reservation::Grant,
+) -> Result<(), Failure> {
+    use crate::reservation::Pool;
+    let target = fixture.target;
+    let foreign_actor = ActorReference::new(
+        b"conformance",
+        b"actors",
+        format!("{run}-foreign-pool").as_bytes(),
+    )
+    .map_err(|_| Error::Invalid("foreign pool fixture actor"))?;
+    if !matches!(
+        Pool::new(
+            acyclic_stream::StreamPath::new("reservation-control/caller").map_err(Error::from)?,
+            target.store(),
+            &foreign_actor,
+            "inbox"
+        )
+        .release(grant)
+        .await,
+        Err(Error::Conflict)
+    ) {
+        return fixture.violation("grant released a different pool actor".into());
+    }
+    let another_root = Store::new(
+        target.store().provider().clone(),
+        StreamPath::new(format!("{}/other-root", target.store().root())).map_err(Error::from)?,
+    );
+    if grant.state_path() != &target.store().path(&fixture.actor)?
+        || !matches!(
+            Pool::new(
+                acyclic_stream::StreamPath::new("reservation-control/caller")
+                    .map_err(Error::from)?,
+                &another_root,
+                &fixture.actor,
+                "inbox"
+            )
+            .release(grant)
+            .await,
+            Err(Error::Conflict)
+        )
+    {
+        return fixture.violation("grant crossed the original Store root".into());
     }
     Ok(())
 }
