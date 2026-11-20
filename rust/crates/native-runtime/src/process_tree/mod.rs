@@ -261,7 +261,7 @@ impl ProcessTree {
             let recovery = format!("kill -TERM {}", std::process::id());
             #[cfg(windows)]
             let recovery = format!("taskkill /PID {} /T /F", std::process::id());
-            eprintln!("step=retire native process owner: {error}; recovery: {recovery}");
+            tracing::error!("step=retire native process owner: {error}; recovery: {recovery}");
         }
     }
 

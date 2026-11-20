@@ -1099,12 +1099,16 @@ pub fn run(
         let result = execute(arguments, context).await;
         match result {
             Ok(value) => {
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                writeln!(
+                    std::io::stdout().lock(),
+                    "{}",
+                    serde_json::to_string_pretty(&value)?
+                )?;
                 Ok(())
             }
             Err(error) => {
                 if json_output {
-                    println!("{}", error.json());
+                    writeln!(std::io::stdout().lock(), "{}", error.json())?;
                 }
                 Err(io::Error::other(error))
             }
@@ -1129,21 +1133,23 @@ async fn execute(
             let mut device = identity.device_code("cli", &store).await?;
             if options.json {
                 // Progress goes to stderr so stdout remains one machine-readable result.
-                eprintln!(
+                writeln!(
+                    std::io::stderr().lock(),
                     "{}",
                     json!({"user_code": device.user_code,
                     "verification_uri": device.verification_uri,
                     "verification_uri_complete": device.verification_uri_complete})
-                );
+                )?;
             } else {
-                eprintln!(
+                writeln!(
+                    std::io::stderr().lock(),
                     "Open {} and enter {}",
                     device
                         .verification_uri_complete
                         .as_ref()
                         .unwrap_or(&device.verification_uri),
                     device.user_code
-                );
+                )?;
             }
             let session = identity
                 .login(

@@ -134,9 +134,10 @@ impl Compiler {
             &[manifest.join("proto"), self.shared().to_owned(), include],
         )?;
         std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
-        println!("cargo:rerun-if-changed=proto");
-        println!("cargo:rerun-if-env-changed=PROTOC");
-        println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
+        std::io::Write::write_all(
+            &mut std::io::stdout().lock(),
+            b"cargo:rerun-if-changed=proto\ncargo:rerun-if-env-changed=PROTOC\ncargo:rerun-if-env-changed=PROTOC_INCLUDE\n",
+        )?;
         Ok(())
     }
 

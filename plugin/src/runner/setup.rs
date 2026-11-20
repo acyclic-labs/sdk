@@ -127,10 +127,16 @@ pub(super) async fn first_run(
     let role = acyclic_harness::templates::root()?.model;
     let selected =
         if let Some(role) = acyclic_harness::templates::resolve_model(role.as_deref(), None) {
-            print!("GraphCoder first run: credentials for role model {role}\r\n");
+            write!(
+                std::io::stdout().lock(),
+                "GraphCoder first run: credentials for role model {role}\r\n"
+            )?;
             role.to_owned()
         } else {
-            print!("GraphCoder first run: choose a provider\r\n");
+            write!(
+                std::io::stdout().lock(),
+                "GraphCoder first run: choose a provider\r\n"
+            )?;
             let providers: Vec<String> = registry
                 .catalog()
                 .iter()
@@ -168,7 +174,7 @@ pub(super) async fn first_run(
         }
         let key = input.read_secret("API key (hidden)")?;
         credentials(args)?.store_api_key_in_service(provider, &key)?;
-        print!("Key saved in OS keychain.\r\n");
+        write!(std::io::stdout().lock(), "Key saved in OS keychain.\r\n")?;
     }
     drop(input);
     // Discard cached missing-source observations after publishing a credential,

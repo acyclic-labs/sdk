@@ -809,7 +809,7 @@ fn request_operation_at(
         )
     })();
     if let Err(error) = &result {
-        eprintln!(
+        tracing::warn!(
             "step=exchange native workspace request {operation} in {}: {error}",
             cwd.display()
         );
@@ -1254,7 +1254,7 @@ impl Served {
         outcome: Result<Value>,
     ) -> Result<()> {
         if let Err(error) = &outcome {
-            eprintln!(
+            tracing::warn!(
                 "step=dispatch native workspace request {operation} at {}: {error}",
                 status.path().display()
             );

@@ -3,6 +3,7 @@ use super::*;
 use acyclic_executable_search::host_command;
 use acyclic_plugin::marketplace;
 use std::fs;
+use std::io::Write as _;
 
 mod extensions;
 
@@ -72,7 +73,10 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         "agy" => extensions::install_agy(args, &package, &executable, install)?,
         _ => unreachable!(),
     }
-    println!("{command} {host}: external owner files; native permissions and sandbox retained");
+    writeln!(
+        std::io::stdout().lock(),
+        "{command} {host}: external owner files; native permissions and sandbox retained"
+    )?;
     Ok(())
 }
 
@@ -123,10 +127,11 @@ fn doctor(host: &str) -> Result<()> {
     } else {
         Vec::new()
     };
-    println!(
+    writeln!(
+        std::io::stdout().lock(),
         "{}",
         json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"external host files","directory_environment":acyclic_harness::local::host_files::DIRECTORY_ENV,"writable_paths":additional_sandbox_roots,"additional_sandbox_roots":additional_sandbox_roots,"native_plugins":plugins,"refusals":refusals})
-    );
+    )?;
     if !refusals.is_empty() {
         return Err(format!(
             "{} startup refusal(s): {}",
@@ -202,7 +207,6 @@ fn check_codex() -> Result<()> {
 }
 
 fn codex(args: &[&str]) -> Result<()> {
-    use std::io::Write as _;
     let output = codex_output(args)?;
     io::stdout().write_all(&output.stdout)?;
     io::stderr().write_all(&output.stderr)?;
@@ -462,7 +466,6 @@ pub(super) fn write_config(
         format!("install configuration: {step}: {error}; recovery argv: {recovery}")
     };
     fs::create_dir_all(parent).map_err(|error| failure("create settings directory", error))?;
-    use std::io::Write as _;
     let mut staged =
         acyclic_native_runtime::private_file::StagedFile::create(parent, ".acyclic-install-")
             .map_err(|error| failure("create private staging file", error))?;

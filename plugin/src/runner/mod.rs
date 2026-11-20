@@ -38,7 +38,11 @@ use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, Command, InputFormat, OutputFormat, Template};
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
-use std::{future::Future, io::IsTerminal as _, sync::Arc};
+use std::{
+    future::Future,
+    io::{IsTerminal as _, Write as _},
+    sync::Arc,
+};
 
 // Construct each phase on its own call frame. Boxing an already constructed
 // future in the awaiting frame still retains its construction scratch space
@@ -296,9 +300,10 @@ fn configure(
         args::Mounting::Auto => {
             let (mounting, unavailable) = WorkspaceMounting::detect();
             if let Some(reason) = unavailable {
-                eprintln!(
+                writeln!(
+                    std::io::stderr().lock(),
                     "graphcoder: native workspace mounting is unavailable ({reason}); using physical workspace mounting, which captures changes at each tool boundary"
-                );
+                )?;
             }
             mounting
         }
@@ -501,7 +506,6 @@ async fn run_inner(
                     ..ServerConfig::new(config)
                 }),
                 |endpoint| {
-                    use std::io::Write as _;
                     let mut output = std::io::stdout().lock();
                     let _ = serde_json::to_writer(&mut output, endpoint);
                     let _ = writeln!(output);
@@ -914,7 +918,6 @@ async fn host_workspace(
         acyclic_harness::local::host_files::serve_until(
             local,
             || {
-                use std::io::Write as _;
                 std::io::stdout()
                     .lock()
                     .write_all(
@@ -1209,7 +1212,10 @@ async fn connected(
         report.finish()?;
         // Failed trials are report rows; the operator also sees each one.
         for failure in failures {
-            eprintln!("graphcoder: study trial failed: {failure}");
+            writeln!(
+                std::io::stderr().lock(),
+                "graphcoder: study trial failed: {failure}"
+            )?;
         }
         return Ok(());
     }
@@ -1365,7 +1371,10 @@ async fn drive(
         .await;
         if let Err(error) = exported {
             if result.is_err() {
-                eprintln!("graphcoder: usage export failed: {error}");
+                writeln!(
+                    std::io::stderr().lock(),
+                    "graphcoder: usage export failed: {error}"
+                )?;
             } else {
                 return Err(error.into());
             }

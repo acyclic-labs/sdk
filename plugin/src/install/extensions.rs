@@ -1,6 +1,5 @@
 //! Native extension publication over the same source fence and process pump.
 use super::*;
-
 const WORKSPACE_IMPORT: &str =
     "import { workspace, nativeSession } from \"../shared/workspace.mjs\";";
 
@@ -198,6 +197,10 @@ pub(super) fn install_agy(
     if std::str::from_utf8(&installed.stdout)?.trim() != version {
         return Err(format!("step=verify installed Antigravity release: native release changed during installation; {recovery}").into());
     }
-    println!("{}", json!({"installed_native_host":receipt}));
+    writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        json!({"installed_native_host":receipt})
+    )?;
     Ok(())
 }

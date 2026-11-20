@@ -565,7 +565,6 @@ pub fn execute_profile(
     context.configure(&mut command)?;
     command.args(["--", "-Z", "unstable-options", "--output-format", "json"]);
     let profile_id = profile.id().0;
-    eprintln!("Rustdoc profile {profile_id}: compiling {rustdoc_target:?}");
     let status = command.run_status().map_err(|error| {
         ProfileError::InvalidRustdoc(format!(
             "could not start Cargo for Rustdoc profile {profile_id}: {error}"
@@ -576,7 +575,6 @@ pub fn execute_profile(
             "Cargo profile {profile_id} failed ({status}); compiler diagnostics were streamed to stderr"
         )));
     }
-    eprintln!("Rustdoc profile {profile_id}: compiled");
     let library_target = package
         .targets
         .iter()

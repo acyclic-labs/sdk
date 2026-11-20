@@ -14,10 +14,7 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let view = self
-            .authored
-            .access_snapshot_with_meter(work)
-            .inspect_err(|_| eprintln!("directory probe: access snapshot"))?;
+        let view = self.authored.access_snapshot_with_meter(work)?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
         let namespace = self.authored.namespace_inputs(path, &mut inputs)?;
@@ -37,8 +34,7 @@ where
                             work.cancellation(),
                             Some(self.authored.cancellation()),
                         )
-                        .await
-                        .inspect_err(|_| eprintln!("directory probe: view lease"))?;
+                        .await?;
                     let (removed, opaque, epoch) = self.removal_snapshot(&text)?;
                     if opaque
                         && self
@@ -57,8 +53,7 @@ where
                         Some((stamp, cursor)) => (stamp, Some(cursor)),
                         None => (ViewStamp::current(), None),
                     };
-                    self.check_directory_cut(path, stamp, None, work)
-                        .inspect_err(|_| eprintln!("directory probe: initial cut"))?;
+                    self.check_directory_cut(path, stamp, None, work)?;
                     let mut accounting =
                         crate::kernel::KernelAccounting::native(work, work.cancellation());
                     let observation = self
@@ -70,8 +65,7 @@ where
                             work.cancellation(),
                             Some(self.authored.cancellation()),
                         )
-                        .await
-                        .inspect_err(|_| eprintln!("directory probe: checkout observation"))?;
+                        .await?;
                     let mut checkout = observation
                         .observer(&mut accounting, work.cancellation())
                         .map_err(mount_engine_error)?;
@@ -81,8 +75,7 @@ where
                             self.lazy.mounted_read_state(&observation, &mut accounting)
                         })?
                         .await
-                        .map_err(lazy_error)
-                        .inspect_err(|_| eprintln!("directory probe: mount read state"))?;
+                        .map_err(lazy_error)?;
                     let (mut page, _, _page_allocation) = self
                         .runtime
                         .prepare_future(work, || {
@@ -99,8 +92,7 @@ where
                             )
                         })?
                         .await
-                        .map_err(lazy_error)
-                        .inspect_err(|_| eprintln!("directory probe: source page"))?;
+                        .map_err(lazy_error)?;
                     let (entries, output_allocation) = self
                         .runtime
                         .prepare_future(work, || {
@@ -113,10 +105,8 @@ where
                                 access,
                             )
                         })?
-                        .await
-                        .inspect_err(|_| eprintln!("directory probe: entries"))?;
-                    self.check_directory_cut(path, stamp, Some((&text, epoch)), work)
-                        .inspect_err(|_| eprintln!("directory probe: terminal cut"))?;
+                        .await?;
+                    self.check_directory_cut(path, stamp, Some((&text, epoch)), work)?;
                     let next_cursor =
                         self.next_directory_cursor(&mut page, generation, stamp, work)?;
                     Ok(MountDirectoryPage::new(
