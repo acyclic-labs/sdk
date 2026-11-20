@@ -541,7 +541,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             acyclic_compatibility_golden::frame(&format!("corpus/filesystem_codecs/{name}"))?;
         if !matches!(
             acyclic_fs::distributed::state_record::StateRecord::decode(
-                bytes::Bytes::copy_from_slice(&bytes).into()
+                &bytes::Bytes::copy_from_slice(&bytes).into()
             ),
             Err(acyclic_fs::AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::Unsupported

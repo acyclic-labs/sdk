@@ -122,7 +122,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
                     "state reconciliation requires one snapshot per path",
                 ));
             };
-            let state = StateRecord::decode(expected.value.clone())?;
+            let state = StateRecord::decode(&expected.value)?;
             let provenance = WorkCounters {
                 items_examined: (path.as_str().len() + request.idempotency_key.as_bytes().len())
                     as u64,

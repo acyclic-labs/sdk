@@ -125,22 +125,34 @@ struct ReservedPublication {
 
 impl ReservedPublication {
     fn decode(bytes: [u8; 72]) -> Result<Self, AuthorityStoreError> {
-        let epoch = Epoch::new(u64::from_le_bytes(std::array::from_fn(|i| bytes[16 + i])))
-            .map_err(|_| {
-                AuthorityStoreError::CorruptStatic("invalid reserved publication epoch")
-            })?;
-        let epoch_tail = u64::from_le_bytes(std::array::from_fn(|i| bytes[64 + i]));
+        // The fixed layout: operation, epoch, sequence, digest, epoch tail.
+        fn field<const N: usize>(
+            bytes: &[u8; 72],
+            at: usize,
+        ) -> Result<[u8; N], AuthorityStoreError> {
+            bytes
+                .get(at..)
+                .and_then(<[u8]>::first_chunk)
+                .copied()
+                .ok_or(AuthorityStoreError::CorruptStatic(
+                    "short reserved publication",
+                ))
+        }
+        let epoch = Epoch::new(u64::from_le_bytes(field(&bytes, 16)?)).map_err(|_| {
+            AuthorityStoreError::CorruptStatic("invalid reserved publication epoch")
+        })?;
+        let epoch_tail = u64::from_le_bytes(field(&bytes, 64)?);
         if epoch_tail == 0 {
             return Err(AuthorityStoreError::CorruptStatic(
                 "empty reserved publication epoch tail",
             ));
         }
         Ok(Self {
-            operation: OperationId::from_bytes(std::array::from_fn(|i| bytes[i])),
+            operation: OperationId::from_bytes(field(&bytes, 0)?),
             head: Head {
                 epoch,
-                sequence: Sequence::new(u64::from_le_bytes(std::array::from_fn(|i| bytes[24 + i]))),
-                digest: Digest::from_bytes(std::array::from_fn(|i| bytes[32 + i])),
+                sequence: Sequence::new(u64::from_le_bytes(field(&bytes, 24)?)),
+                digest: Digest::from_bytes(field(&bytes, 32)?),
             },
             epoch_tail,
         })
@@ -176,7 +188,7 @@ use append::seal;
 mod composition;
 pub use composition::{
     FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome, FilesystemCommitResult,
-    PreparedFilesystemAppend, PreparedFilesystemCommit,
+    FilesystemSettlement, PreparedFilesystemAppend, PreparedFilesystemCommit,
 };
 mod state;
 #[cfg(target_arch = "wasm32")]

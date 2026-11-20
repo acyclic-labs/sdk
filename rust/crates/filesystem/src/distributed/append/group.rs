@@ -224,13 +224,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             &output.0,
             &mut outcomes.value,
             work,
-            guard.as_deref_mut(),
+            guard,
         )
         .await?;
         if let CommitOutcome::Committed(envelope) = &output.0 {
             // The receipt is final. A busy cache cannot delay its delivery
             // or require another admission after physical publication.
-            actor.complete_if_available(revision, next_projection.seal(envelope.commit_id));
+            actor.complete_if_available(&revision, next_projection.seal(envelope.commit_id));
         }
         let outcomes = scope
             .finish_owned(outcomes)
@@ -341,24 +341,24 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             })
         };
         for (index, member) in prepared.iter().enumerate() {
-            let recovered = match recovered.value.get_mut(index).and_then(Option::take) {
-                Some((commit, proof)) => {
-                    self.verify_recovered_operation(
-                        member.authority_id,
-                        commit.operation_id,
-                        &proof,
-                        work,
-                    )
-                    .await?;
-                    Some(commit)
-                }
-                None => {
-                    let operation = work.operation_path(
-                        &self.placement,
-                        member.authority_id,
-                        member.commit.operation_id,
-                    )?;
-                    if conflicts.iter().any(|conflict| {
+            let recovered = if let Some((commit, proof)) =
+                recovered.value.get_mut(index).and_then(Option::take)
+            {
+                self.verify_recovered_operation(
+                    member.authority_id,
+                    commit.operation_id,
+                    &proof,
+                    work,
+                )
+                .await?;
+                Some(commit)
+            } else {
+                let operation = work.operation_path(
+                    &self.placement,
+                    member.authority_id,
+                    member.commit.operation_id,
+                )?;
+                if conflicts.iter().any(|conflict| {
                         matches!(conflict, acyclic_stream::CommitConflict::Exists { path } if path == &operation)
                     }) {
                         Some(
@@ -378,7 +378,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     } else {
                         None
                     }
-                }
             };
             receipts.push(
                 Self::settle_conflicted_append(
@@ -538,11 +537,12 @@ pub(in crate::distributed) fn merge_transaction(
         projection: None,
         transaction: Some(prefix),
     };
+    let next_effect = super::super::composition::hard_effect(&mut next, work)?;
     let mut conditions = work.vec(
         super::super::composition::hard(prefix).map_or(0, |effect| effect.conditions.len())
-            + next.effects[0].conditions.len(),
+            + next_effect.conditions.len(),
     )?;
-    for condition in std::mem::take(&mut next.effects[0].conditions) {
+    for condition in std::mem::take(&mut next_effect.conditions) {
         let path = acyclic_stream::CommitCondition::path(&condition);
         if let Some((anchor, records)) = view.staged(path, work)? {
             let tail = anchor
@@ -564,9 +564,9 @@ pub(in crate::distributed) fn merge_transaction(
         super::super::policy::merge_condition(&mut merged, condition, work)?;
     }
     effect.conditions = merged;
-    let mut mutations = work.vec(effect.mutations.len() + next.effects[0].mutations.len())?;
+    let mut mutations = work.vec(effect.mutations.len() + next_effect.mutations.len())?;
     mutations.append(&mut effect.mutations);
-    for mutation in std::mem::take(&mut next.effects[0].mutations) {
+    for mutation in std::mem::take(&mut next_effect.mutations) {
         merge_append(&mut mutations, mutation, work)?;
     }
     effect.mutations = mutations;

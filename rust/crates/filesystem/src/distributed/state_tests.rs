@@ -96,7 +96,7 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
     let observed = store.observe_record(path.clone(), &mut read_work).await?;
     let record = observed.record.as_ref().ok_or("missing published state")?;
     assert_eq!(
-        StateRecord::decode(record.value.clone())?.state,
+        StateRecord::decode(&record.value)?.state,
         state(b"root-and-context")
     );
     assert_eq!(
@@ -376,7 +376,7 @@ async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> Tes
     let receipt = RecordReceipt::from_receipt(&committed, &path, 0).ok_or("missing receipt")?;
     let recorded = store.read_receipt(&receipt, &mut work).await?;
     let record = recorded.record.as_ref().ok_or("missing record")?;
-    let decoded = StateRecord::decode(record.value.clone())?;
+    let decoded = StateRecord::decode(&record.value)?;
     assert_eq!(decoded.state, state(b"overlay+shadows"));
     assert_eq!(decoded.operation.as_bytes(), b"create");
     assert_eq!(decoded.published_at.as_ref(), path.as_str().as_bytes());
@@ -464,7 +464,7 @@ async fn portable_root_rejects_foreign_lineage_before_publication() -> TestResul
         RecordReceipt::from_receipt(&receipt, &path, 0).ok_or("missing sealed receipt")?;
     let read = store.read_receipt(&receipt, &mut work).await?;
     let record = read.record.ok_or("missing sealed root")?;
-    assert_eq!(StateRecord::decode(record.value)?.state, value);
+    assert_eq!(StateRecord::decode(&record.value)?.state, value);
     Ok(())
 }
 
@@ -887,7 +887,7 @@ fn malformed_record_framing_is_rejected_without_panics() {
         OwnedBytes::from_static(b"acyclic-fs-state-v1\0"),
         OwnedBytes::from_static(b"acyclic-fs-state-v1\0\xff\xff"),
     ] {
-        assert!(StateRecord::decode(bytes).is_err());
+        assert!(StateRecord::decode(&bytes).is_err());
     }
 }
 
@@ -1355,7 +1355,7 @@ async fn inherited_state_is_readable_but_cannot_settle_a_destination_append() ->
             &mut work,
         )
         .await?;
-    let decoded = StateRecord::decode(inherited.record.ok_or("missing inherited state")?.value)?;
+    let decoded = StateRecord::decode(&inherited.record.ok_or("missing inherited state")?.value)?;
     assert_eq!(decoded.state, state(b"same"));
     assert_eq!(decoded.published_at.as_ref(), source.as_str().as_bytes());
     assert!(

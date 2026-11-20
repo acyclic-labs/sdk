@@ -116,7 +116,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         cancellation.cancel();
         let mut collecting = Box::pin(collection.begin());
         match prepared {
-            Ok(prepared) => {
+            FilesystemSettlement::Prepared(prepared) => {
                 assert_eq!(prepared.request(), &exact_request);
                 match prepared.outcome() {
                     CommitOutcome::Committed(receipt) => {
@@ -163,7 +163,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                     assert!(original.live_allocation_bytes().unwrap() <= retained - result_bytes);
                 }
             }
-            Err(FilesystemCommitOutcome::Unknown { commit, .. }) if decision == "malformed" => {
+            FilesystemSettlement::Refused { commit, .. } if decision == "malformed" => {
                 assert_eq!(commit.request(), &exact_request);
                 assert!(futures::poll!(collecting.as_mut()).is_pending());
                 drop(commit);
@@ -198,9 +198,8 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
     let actor = commit.contributions[0].actor.clone();
     let lease = actor.journal.lock().await;
     let outcome = store.provider().commit(commit.request().clone()).await?;
-    let prepared = match store.prepare_settlement(commit, outcome) {
-        Ok(prepared) => prepared,
-        Err(_) => return Err("original authority receipt refused".into()),
+    let FilesystemSettlement::Prepared(prepared) = store.prepare_settlement(commit, outcome) else {
+        return Err("original authority receipt refused".into());
     };
     let FilesystemCommitOutcome::Committed(receipt) = store.finish_settlement(prepared)? else {
         return Err("held cache blocked original completion".into());

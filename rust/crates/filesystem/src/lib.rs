@@ -236,8 +236,8 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
-    FilesystemCommitResult, PreparedFilesystemAppend, PreparedFilesystemCommit,
-    StreamAuthorityStore,
+    FilesystemCommitResult, FilesystemSettlement, PreparedFilesystemAppend,
+    PreparedFilesystemCommit, StreamAuthorityStore,
 };
 pub use distributed::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};
 pub use facade::{

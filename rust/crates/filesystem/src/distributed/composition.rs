@@ -11,7 +11,7 @@ use super::*;
 mod append;
 pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
 mod result;
-pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};
+pub use result::{FilesystemCommitResult, FilesystemSettlement, PreparedFilesystemCommit};
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -261,11 +261,9 @@ impl FilesystemCommit {
                 .request
                 .effects
                 .iter()
-                .position(|effect| !effect.soft)
-                .map(|index| {
-                    let effect = &self.request.effects[index];
-                    (index, effect.conditions.len(), effect.mutations.len())
-                }),
+                .enumerate()
+                .find(|(_, effect)| !effect.soft)
+                .map(|(index, effect)| (index, effect.conditions.len(), effect.mutations.len())),
             authorities: self.authorities.len(),
             contributions: self.contributions.len(),
             holds: self.holds.len(),
@@ -335,7 +333,11 @@ impl CommitGuard<'_> {
         if mark.conditions.is_some() {
             return Ok(());
         }
-        let original = &self.commit.request.effects[index].conditions;
+        // Rollback restores only an effect still at the mark's position.
+        let Some(effect) = self.commit.request.effects.get(index) else {
+            return Ok(());
+        };
+        let original = &effect.conditions;
         let mut conditions = work.vec(original.len())?;
         for condition in original {
             conditions.push(super::state::clone_condition(condition, work)?);
@@ -393,17 +395,19 @@ pub(super) fn hard_effect<'r>(
     request: &'r mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<&'r mut CommitEffect, AuthorityStoreError> {
-    let index = match request.effects.iter().position(|effect| !effect.soft) {
-        Some(index) => index,
-        None => {
-            grow(&mut request.effects, 1, work)?;
-            request
-                .effects
-                .push(CommitEffect::hard(Vec::new(), Vec::new()));
-            request.effects.len() - 1
-        }
-    };
-    Ok(&mut request.effects[index])
+    if request.effects.iter().all(|effect| effect.soft) {
+        grow(&mut request.effects, 1, work)?;
+        request
+            .effects
+            .push(CommitEffect::hard(Vec::new(), Vec::new()));
+    }
+    request
+        .effects
+        .iter_mut()
+        .find(|effect| !effect.soft)
+        .ok_or(AuthorityStoreError::RejectedStatic(
+            "a commit request has no hard effect",
+        ))
 }
 
 /// Makes room for `additional` entries through funded authority work. The
@@ -458,28 +462,25 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         else {
             return Ok(false);
         };
-        let effect = hard_effect(&mut commit.request, work)?;
-        grow(
-            &mut effect.conditions,
-            part.effects[0].conditions.len(),
-            work,
-        )?;
-        grow(&mut effect.mutations, part.effects[0].mutations.len(), work)?;
-        grow(&mut commit.authorities, 1, work)?;
-        grow(&mut commit.contributions, 1, work)?;
-        grow(&mut commit.publications, 1, work)?;
-        commit.request.deadline_unix_millis = match (
+        let deadline = match (
             commit.request.deadline_unix_millis,
             part.deadline_unix_millis,
         ) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        let part = hard_effect(&mut part, work)?;
         let effect = hard_effect(&mut commit.request, work)?;
-        for condition in part.effects[0].conditions.drain(..) {
+        grow(&mut effect.conditions, part.conditions.len(), work)?;
+        grow(&mut effect.mutations, part.mutations.len(), work)?;
+        grow(&mut commit.authorities, 1, work)?;
+        grow(&mut commit.contributions, 1, work)?;
+        grow(&mut commit.publications, 1, work)?;
+        for condition in part.conditions.drain(..) {
             super::policy::merge_condition(&mut effect.conditions, condition, work)?;
         }
-        effect.mutations.append(&mut part.effects[0].mutations);
+        effect.mutations.append(&mut part.mutations);
+        commit.request.deadline_unix_millis = deadline;
         commit.authorities.push(append.authority_id);
         commit.contributions.push(Contribution {
             actor,
@@ -528,16 +529,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             source,
             work,
         )?;
+        let part = hard_effect(&mut part, work)?;
         let effect = hard_effect(&mut commit.request, work)?;
-        grow(
-            &mut effect.conditions,
-            part.effects[0].conditions.len(),
-            work,
-        )?;
-        grow(&mut effect.mutations, part.effects[0].mutations.len(), work)?;
-        let effect = hard_effect(&mut commit.request, work)?;
-        effect.conditions.append(&mut part.effects[0].conditions);
-        effect.mutations.append(&mut part.effects[0].mutations);
+        grow(&mut effect.conditions, part.conditions.len(), work)?;
+        grow(&mut effect.mutations, part.mutations.len(), work)?;
+        effect.conditions.append(&mut part.conditions);
+        effect.mutations.append(&mut part.mutations);
         commit.authorities.push(authority);
         commit.contributions.push(Contribution {
             actor,
@@ -690,8 +687,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         match result {
             Ok((outcome, allocation)) => {
                 match self.prepare_retained_settlement(commit, outcome, allocation) {
-                    Ok(prepared) => self.finish_settlement(prepared),
-                    Err(outcome) => Ok(outcome),
+                    FilesystemSettlement::Prepared(prepared) => self.finish_settlement(prepared),
+                    FilesystemSettlement::Refused { commit, error } => {
+                        Ok(FilesystemCommitOutcome::Unknown { commit, error })
+                    }
                 }
             }
             Err(error) => Ok(FilesystemCommitOutcome::Unknown {
@@ -722,8 +721,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         refresh: impl FnOnce(RecordedCommit, acyclic_stream::CommitId),
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
         match self.prepare_settlement(commit, outcome) {
-            Ok(prepared) => self.finish_recorded(prepared, refresh),
-            Err(outcome) => Ok(outcome),
+            FilesystemSettlement::Prepared(prepared) => self.finish_recorded(prepared, refresh),
+            FilesystemSettlement::Refused { commit, error } => {
+                Ok(FilesystemCommitOutcome::Unknown { commit, error })
+            }
         }
     }
 
@@ -750,7 +751,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             projection,
         } in contributions
         {
-            actor.complete_if_available(revision, projection.seal(commit_id));
+            actor.complete_if_available(&revision, projection.seal(commit_id));
         }
         drop(holds);
         drop(publications);

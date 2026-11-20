@@ -393,9 +393,9 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     for omitted in 0..receipt.appends.len() {
         let mut incomplete = receipt.clone();
         incomplete.appends.remove(omitted);
-        let Err(acyclic_fs::FilesystemCommitOutcome::Unknown {
+        let acyclic_fs::FilesystemSettlement::Refused {
             commit: retained, ..
-        }) = store.prepare_settlement(commit, CommitOutcome::Committed(incomplete))
+        } = store.prepare_settlement(commit, CommitOutcome::Committed(incomplete))
         else {
             panic!("missing canonical caller or journal member was accepted")
         };
@@ -404,15 +404,17 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     }
     let mut incomplete = receipt.clone();
     incomplete.forks.clear();
-    let Err(acyclic_fs::FilesystemCommitOutcome::Unknown {
+    let acyclic_fs::FilesystemSettlement::Refused {
         commit: retained, ..
-    }) = store.prepare_settlement(commit, CommitOutcome::Committed(incomplete))
+    } = store.prepare_settlement(commit, CommitOutcome::Committed(incomplete))
     else {
         panic!("missing caller fork was accepted")
     };
-    let validated = store
-        .prepare_settlement(retained, outcome)
-        .map_err(|_| invalid(None))?;
+    let acyclic_fs::FilesystemSettlement::Prepared(validated) =
+        store.prepare_settlement(retained, outcome)
+    else {
+        return Err(invalid(None));
+    };
     // Full membership has already been checked by its original owner. A semantic
     // mismatch cannot retire the prepared result or require a second validation.
     assert!(
@@ -435,9 +437,11 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .seal(&mut replay_commit, &mut fs_work)
         .map_err(|_| invalid(None))?;
     let replay = provider.commit(original.clone()).await?;
-    let validated = store
-        .prepare_settlement(replay_commit, replay)
-        .map_err(|_| invalid(None))?;
+    let acyclic_fs::FilesystemSettlement::Prepared(validated) =
+        store.prepare_settlement(replay_commit, replay)
+    else {
+        return Err(invalid(None));
+    };
     assert_eq!(
         cut.confirm_composed(&validated, 0, &records, &observation, &checkpoint)?,
         Some(committed)
@@ -450,9 +454,10 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         .seal(&mut racing, &mut fs_work)
         .map_err(|_| invalid(None))?;
     let loser = provider.commit(racing.request().clone()).await?;
-    let loser = store
-        .prepare_settlement(racing, loser)
-        .map_err(|_| invalid(None))?;
+    let acyclic_fs::FilesystemSettlement::Prepared(loser) = store.prepare_settlement(racing, loser)
+    else {
+        return Err(invalid(None));
+    };
     assert_eq!(
         cut.confirm_composed(&loser, 0, &records, &observation, &checkpoint)?,
         None

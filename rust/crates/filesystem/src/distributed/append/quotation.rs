@@ -63,8 +63,11 @@ impl AppendPurpose for Quotation {
     ) -> Result<Self::Output<'a>, AuthorityStoreError> {
         let authority_records = prepared.receipt.records;
         let request = store.with_policy_cuts(prepared.request, &[], work)?;
+        let effect = super::super::composition::hard(&request).ok_or(
+            AuthorityStoreError::RejectedStatic("authority quote has no hard effect"),
+        )?;
         let mut records = 0usize;
-        for mutation in &request.effects[0].mutations {
+        for mutation in &effect.mutations {
             visit(work)?;
             let CommitMutation::Append {
                 path,
@@ -93,13 +96,13 @@ impl AppendPurpose for Quotation {
         }
         // A later dense sequence or merged protobuf length can require at
         // most nine more bytes per integer field. No wire encoder is copied.
-        let integers = request.effects[0]
+        let integers = effect
             .conditions
             .len()
             .checked_mul(3)
             .and_then(|n| records.checked_mul(3).and_then(|rows| n.checked_add(rows)))
             .and_then(|n| {
-                request.effects[0]
+                effect
                     .mutations
                     .len()
                     .checked_mul(2)
@@ -113,7 +116,7 @@ impl AppendPurpose for Quotation {
         let bytes = acyclic_stream::request::commit_encoded_len(&request)
             .checked_add(padding)
             .ok_or(crate::WorkError::Overflow)?;
-        for _ in &request.effects[0].conditions {
+        for _ in &effect.conditions {
             visit(work)?;
         }
         Ok(Some(crate::AuthorityGroupCost { bytes, records }))

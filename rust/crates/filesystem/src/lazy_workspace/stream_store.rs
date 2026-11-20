@@ -59,7 +59,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         let value = match observed.record {
             None => None,
             Some(record) => {
-                let recorded = StateRecord::decode(record.value).map_err(failure)?;
+                let recorded = StateRecord::decode(&record.value).map_err(failure)?;
                 let StateRecord::Companion {
                     kind: CompanionKind::SparseWorkspace,
                     payload,

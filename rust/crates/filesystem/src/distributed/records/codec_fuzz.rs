@@ -2,16 +2,21 @@
 use super::*;
 use crate::kernel::decoder_fuzz::records::record;
 
+/// Named seed inputs, or why one could not be encoded.
+pub type Seeds = Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>>;
+
+/// The first `N` bytes of `input`, zero-padded.
+fn padded<const N: usize>(input: impl IntoIterator<Item = u8>) -> [u8; N] {
+    let mut input = input.into_iter();
+    std::array::from_fn(|_| input.next().unwrap_or(0))
+}
+
 fn fields(input: &[u8]) -> (GenerationLocator, GenerationId, OperationId) {
-    let mut bytes = [0; 32];
-    let length = input.len().min(bytes.len());
-    bytes[..length].copy_from_slice(&input[..length]);
-    let mut lineage = [0; 8];
-    lineage.copy_from_slice(&bytes[..8]);
-    let mut changes = [0; 8];
-    changes.copy_from_slice(&bytes[8..16]);
-    let mut operation = [0; 16];
-    operation.copy_from_slice(&bytes[16..]);
+    let bytes: [u8; 32] = padded(input.iter().copied());
+    let mut words = bytes.into_iter();
+    let lineage = padded::<8>(words.by_ref());
+    let changes = padded::<8>(words.by_ref());
+    let operation = padded::<16>(words);
     (
         GenerationLocator {
             lineage: u64::from_le_bytes(lineage),
@@ -56,7 +61,9 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         encode_lineage,
     )?;
     let mut foreign = lineage;
-    foreign[LINEAGE_DOMAIN.len()] = crate::ObjectKind::Metadata.canonical_tag();
+    *foreign
+        .get_mut(LINEAGE_DOMAIN.len())
+        .ok_or("lineage record has no object kind")? = crate::ObjectKind::Metadata.canonical_tag();
     if !(decode_lineage_generation(&foreign).is_err()) {
         return Err("foreign lineage object kind admitted".into());
     };
@@ -89,14 +96,14 @@ pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Library encoder output with distinct fields, boundary words and gate states.
-pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub fn seeds() -> Seeds {
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let mut seeds = Vec::new();
     for (name, input) in [
         ("zero", [0; 32]),
         ("maximum", [255; 32]),
-        ("distinct", std::array::from_fn(|index| index as u8)),
+        ("distinct", padded(0..)),
     ] {
         let (locator, generation, operation) = fields(&input);
         seeds.push((

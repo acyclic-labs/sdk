@@ -52,7 +52,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             #[cfg(all(loom, loom))]
             let payload = replacement.as_deref().unwrap_or(&record.value[offset..]);
             #[cfg(not(all(test, loom, loom)))]
-            let payload = &record.value[offset..];
+            let payload = record.value.get(offset..).ok_or_else(|| {
+                authority_corrupt("authority record payload starts past its end", work)
+            })?;
             if payload.len() as u64 > maximum_payload_bytes {
                 return Err(AuthorityStoreError::ReplayRecordTooLarge {
                     observed: payload.len() as u64,

@@ -78,7 +78,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         let value = match observed.record {
             None => None,
             Some(record) => {
-                let recorded = StateRecord::decode(record.value)?;
+                let recorded = StateRecord::decode(&record.value)?;
                 let StateRecord::Companion {
                     kind: CompanionKind::GitRefs,
                     payload,

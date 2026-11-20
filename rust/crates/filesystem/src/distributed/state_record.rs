@@ -108,10 +108,10 @@ impl StateRecord {
 
     /// Decodes framing without copying its retained provider bytes. The caller
     /// decodes the selected companion payload through its existing typed codec.
-    pub fn decode(bytes: Bytes) -> Result<RecordedState, crate::AuthorityStoreError> {
+    pub fn decode(bytes: &Bytes) -> Result<RecordedState, crate::AuthorityStoreError> {
         let corrupt =
             || crate::AuthorityStoreError::CorruptStatic("invalid filesystem state record");
-        acyclic_auth::format::header(&bytes, b"acyclic-fs-state-v", b"2\0", corrupt, || {
+        acyclic_auth::format::header(bytes, b"acyclic-fs-state-v", b"2\0", corrupt, || {
             crate::AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unsupported)
         })?;
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -196,7 +196,7 @@ pub mod codec_fuzz {
     /// Records with a canonical publication path have one exact encoding,
     /// including the complete ID. An opaque origin alone grants no path authority.
     pub fn check(bytes: &[u8]) -> bool {
-        let decoded = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into());
+        let decoded = StateRecord::decode(&bytes::Bytes::copy_from_slice(bytes).into());
         if bytes
             .strip_prefix(b"acyclic-fs-state-v")
             .is_some_and(|body| !body.starts_with(b"2\0"))
@@ -268,7 +268,7 @@ pub mod codec_fuzz {
             ));
         }
         for (_, bytes) in &seeds {
-            let recorded = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into())?;
+            let recorded = StateRecord::decode(&bytes::Bytes::copy_from_slice(bytes).into())?;
             if recorded.operation != operation
                 || recorded.published_at.as_ref() != path.as_str().as_bytes()
             {
@@ -290,14 +290,14 @@ mod version_tests {
             let mut header = DOMAIN.to_vec();
             header[DOMAIN.len() - 2] = version;
             assert!(matches!(
-                StateRecord::decode(bytes::Bytes::from(header).into()),
+                StateRecord::decode(&bytes::Bytes::from(header).into()),
                 Err(crate::AuthorityStoreError::NativeStream(
                     acyclic_stream::StreamError::Unsupported
                 ))
             ));
         }
         assert!(matches!(
-            StateRecord::decode(bytes::Bytes::from_static(DOMAIN).into()),
+            StateRecord::decode(&bytes::Bytes::from_static(DOMAIN).into()),
             Err(crate::AuthorityStoreError::CorruptStatic(_))
         ));
     }

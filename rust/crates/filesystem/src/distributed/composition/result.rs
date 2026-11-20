@@ -42,6 +42,24 @@ pub struct PreparedFilesystemCommit {
     outcome: FilesystemCommitResult<CommitOutcome>,
 }
 
+/// A settlement's preparation: the validated original result, or the
+/// unchanged commit and why its result was refused.
+///
+/// A refusal returns custody without allocating another owner for it.
+#[must_use]
+pub enum FilesystemSettlement {
+    /// The result passed validation and awaits semantic confirmation.
+    Prepared(PreparedFilesystemCommit),
+    /// Nothing advanced. Retry exactly this commit: its idempotency key and
+    /// bytes are unchanged.
+    Refused {
+        /// The unchanged commit to resubmit.
+        commit: FilesystemCommit,
+        /// Why its result was refused.
+        error: AuthorityStoreError,
+    },
+}
+
 impl PreparedFilesystemCommit {
     /// The exact original normalized request, including key and deadline.
     pub fn request(&self) -> &CommitRequest {
@@ -66,7 +84,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         commit: FilesystemCommit,
         outcome: CommitOutcome,
-    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
+    ) -> FilesystemSettlement {
         self.prepare_retained_settlement(commit, outcome, None)
     }
 
@@ -77,7 +95,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         commit: FilesystemCommit,
         outcome: acyclic_stream::NativeStreamOutput<CommitOutcome>,
-    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
+    ) -> FilesystemSettlement {
         let (outcome, allocation) = outcome.into_parts();
         self.prepare_retained_settlement(commit, outcome, Some(allocation))
     }
@@ -87,29 +105,25 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         commit: FilesystemCommit,
         outcome: CommitOutcome,
         allocation: super::super::io::ProviderAllocation,
-    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
-        if let Err(error) = commit
-            .check_owner(self.operation_claims().owner_identity())
-            .and_then(|()| commit.ensure_sealed())
-        {
-            // Destroy the original value before its allocation on refusal too.
-            drop(outcome);
-            drop(allocation);
-            return Err(FilesystemCommitOutcome::Unknown { commit, error });
-        }
+    ) -> FilesystemSettlement {
+        // The result destroys its value before its allocation, on refusal too.
         let outcome = FilesystemCommitResult {
             value: outcome,
             _allocation: allocation,
         };
-        if let CommitOutcome::Committed(receipt) = &*outcome {
-            if let Err(error) = receipt.validate_request(commit.request()) {
-                return Err(FilesystemCommitOutcome::Unknown {
-                    commit,
-                    error: map_stream_error(error),
-                });
-            }
+        let refusal = commit
+            .check_owner(self.operation_claims().owner_identity())
+            .and_then(|()| commit.ensure_sealed())
+            .and_then(|()| match &*outcome {
+                CommitOutcome::Committed(receipt) => receipt
+                    .validate_request(commit.request())
+                    .map_err(map_stream_error),
+                CommitOutcome::Conflict(_) => Ok(()),
+            });
+        match refusal {
+            Ok(()) => FilesystemSettlement::Prepared(PreparedFilesystemCommit { commit, outcome }),
+            Err(error) => FilesystemSettlement::Refused { commit, error },
         }
-        Ok(PreparedFilesystemCommit { commit, outcome })
     }
 
     /// Completes the filesystem side after the caller confirms its own members.

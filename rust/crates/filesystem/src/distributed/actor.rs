@@ -92,17 +92,22 @@ impl crate::kernel::AuthorityActor {
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
         let mut journal = self.lease(work).await?;
-        self.install_completed(&mut journal, revision, projection);
+        self.install_completed(&mut journal, &revision, projection);
         Ok(())
     }
 
-    pub(super) fn complete_if_available(&self, revision: Revision, projection: Projection) {
+    pub(super) fn complete_if_available(&self, revision: &Revision, projection: Projection) {
         if let Ok(mut journal) = self.journal.try_lock() {
             self.install_completed(&mut journal, revision, projection);
         }
     }
 
-    fn install_completed(&self, journal: &mut Journal, revision: Revision, projection: Projection) {
+    fn install_completed(
+        &self,
+        journal: &mut Journal,
+        revision: &Revision,
+        projection: Projection,
+    ) {
         if self.revision.load(std::sync::atomic::Ordering::Relaxed) == revision.0 {
             *journal = Journal::Ready(projection);
         }

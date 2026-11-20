@@ -526,20 +526,17 @@ impl<'a> AuthorityWork<'a> {
             |domain, fields| self.stream_bytes(domain, fields),
         )
         .map_err(AuthorityStoreError::DurableCodec)??;
-        let headers = match reference {
-            Some(reference) => {
-                let split = GENERATION_INDEX_DOMAIN.len() + reference.len();
-                let keys = self.stream_bytes(
-                    GENERATION_INDEX_DOMAIN,
-                    &[reference.as_slice(), OPERATION_INDEX_DOMAIN, &operation],
-                )?;
-                // The two domains establish canonical order without sorting.
-                self.record_keys([keys.slice(..split), keys.slice(split..)])?
-            }
-            None => {
-                let key = self.stream_bytes(OPERATION_INDEX_DOMAIN, &[&operation])?;
-                self.record_keys([key])?
-            }
+        let headers = if let Some(reference) = reference {
+            let split = GENERATION_INDEX_DOMAIN.len() + reference.len();
+            let keys = self.stream_bytes(
+                GENERATION_INDEX_DOMAIN,
+                &[reference.as_slice(), OPERATION_INDEX_DOMAIN, &operation],
+            )?;
+            // The two domains establish canonical order without sorting.
+            self.record_keys([keys.slice(..split), keys.slice(split..)])?
+        } else {
+            let key = self.stream_bytes(OPERATION_INDEX_DOMAIN, &[&operation])?;
+            self.record_keys([key])?
         };
         Ok(acyclic_stream::AppendRecord { value, headers })
     }
@@ -716,12 +713,20 @@ fn identity_path_bytes<'a>(
     suffix: &'a str,
     identity: Option<&'a [u8]>,
 ) -> impl Iterator<Item = u8> + 'a {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let hex = |byte: u8| [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 15)]];
+    let hex = |byte: u8| [hex_digit(byte >> 4), hex_digit(byte & 15)];
     prefix
         .iter()
         .copied()
         .chain(authority.into_bytes().into_iter().flat_map(hex))
         .chain(suffix.bytes())
         .chain(identity.into_iter().flatten().copied().flat_map(hex))
+}
+
+/// The lowercase hexadecimal digit of a nibble below 16.
+const fn hex_digit(nibble: u8) -> u8 {
+    if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'a' + (nibble - 10)
+    }
 }
