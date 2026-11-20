@@ -335,7 +335,7 @@ where
             .await?;
         Ok(matches!(
             prepared,
-            crate::workspace::JoinPreparation::Candidate { .. }
+            crate::workspace::JoinPreparation::Candidate(_)
                 | crate::workspace::JoinPreparation::Complete(crate::kernel::Owned {
                     value: crate::facade::WorkspaceJoinOutcome::NoChanges(_),
                     ..

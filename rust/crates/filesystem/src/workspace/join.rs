@@ -453,11 +453,25 @@ pub(crate) enum JoinPreparation {
         conflicts: crate::kernel::Owned<Vec<MergeConflict>>,
         hold: crate::PublicationHold,
     },
-    Candidate {
-        request: crate::kernel::PublishGenerationRequest,
-        intent: crate::kernel::PublicationIntent,
-        limits: crate::kernel::ClosureLimits,
-        resolutions_digest: crate::Digest,
-        source_hold: Option<crate::PublicationHold>,
-    },
+    /// A publishable join, boxed with its bytes charged to the preparing work.
+    Candidate(crate::kernel::Owned<Box<JoinCandidate>>),
+}
+
+/// The original join publication and the source parent it protects.
+pub(crate) struct JoinCandidate {
+    pub(crate) request: crate::kernel::PublishGenerationRequest,
+    pub(crate) intent: crate::kernel::PublicationIntent,
+    pub(crate) limits: crate::kernel::ClosureLimits,
+    pub(crate) resolutions_digest: crate::Digest,
+    pub(crate) source_hold: Option<crate::PublicationHold>,
+}
+
+impl JoinPreparation {
+    /// Charges the candidate's box to `accounting` before allocating it.
+    pub(crate) fn candidate(
+        candidate: JoinCandidate,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        crate::kernel::Owned::boxed(candidate, accounting).map(Self::Candidate)
+    }
 }

@@ -162,20 +162,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .await;
                 root.retire(accounting)?;
                 let candidate = candidate?;
-                Ok(crate::workspace::JoinPreparation::Candidate {
-                    request: PublishGenerationRequest {
-                        authority_id: volume_authority_id(target.id),
-                        volume_id: target.id,
-                        epoch: expected_head.epoch,
-                        expected: expected_head,
-                        operation_id,
-                        generation_root: candidate,
+                Ok(crate::workspace::JoinPreparation::candidate(
+                    crate::workspace::JoinCandidate {
+                        request: PublishGenerationRequest {
+                            authority_id: volume_authority_id(target.id),
+                            volume_id: target.id,
+                            epoch: expected_head.epoch,
+                            expected: expected_head,
+                            operation_id,
+                            generation_root: candidate,
+                        },
+                        intent: PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
+                        limits: closure_limits(target.config),
+                        resolutions_digest: candidate.digest,
+                        source_hold: None,
                     },
-                    intent: PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
-                    limits: closure_limits(target.config),
-                    resolutions_digest: candidate.digest,
-                    source_hold: None,
-                })
+                    accounting,
+                )?)
             }
             .await;
             source_root.retire(accounting)?;

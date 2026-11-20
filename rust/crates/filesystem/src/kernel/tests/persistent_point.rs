@@ -472,3 +472,25 @@ fn owned_growth_admits_the_original_and_replacement_before_allocating()
     }
     Ok(())
 }
+
+#[test]
+fn boxed_values_charge_exactly_the_bytes_the_allocator_returns() -> Result<(), crate::FsError> {
+    fn live(accounting: &mut KernelAccounting<'_>) -> Option<u64> {
+        accounting
+            .standalone_parts()
+            .map(|(ledger, ..)| ledger.live_bytes())
+    }
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut boxed = None;
+    let heap = acyclic_test_support::measure(|| {
+        boxed = Some(Owned::<Box<[u64; 61]>>::boxed([7; 61], &mut accounting));
+    });
+    let boxed = boxed.expect("the box was built")?;
+    assert_eq!(heap.count_total, 1);
+    assert_eq!(heap.bytes_total, boxed.bytes);
+    assert_eq!(live(&mut accounting), Some(boxed.bytes));
+    boxed.retire(&mut accounting)?;
+    assert_eq!(live(&mut accounting), Some(0));
+    Ok(())
+}

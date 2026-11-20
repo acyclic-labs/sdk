@@ -69,6 +69,19 @@ impl<T> Owned<T> {
     }
 }
 
+impl<T> Owned<Box<T>> {
+    /// Boxes `value` only after claiming the box's exact heap bytes, so the
+    /// allocation never exists without its charge.
+    pub(crate) fn boxed(
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<T>());
+        let allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+        Ok(Self::new(Box::new(value), allocation, bytes))
+    }
+}
+
 /// Physical backing operations shared by the standard contiguous and ring buffers.
 pub(crate) trait GrowableBuffer: Default {
     type Item;

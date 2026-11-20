@@ -115,8 +115,8 @@ pub use handle::Workspace;
 #[doc(hidden)]
 pub use identity::check_workspace_name;
 pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
-pub(crate) use join::JoinPreparation;
 pub use join::{JoinBuilder, JoinHistory, JoinPlan};
+pub(crate) use join::{JoinCandidate, JoinPreparation};
 pub use join_apply::DrivenJoinError;
 pub use join_directory::{
     MergeCleanFile, MergeConflictFile, MergeConflictFileKind, MergeDirectory, MergeDirectoryPlan,

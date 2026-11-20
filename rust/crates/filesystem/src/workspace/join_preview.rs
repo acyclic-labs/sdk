@@ -189,16 +189,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             if !state.prepare_clean_step(&mut accounting).await? {
                 return Ok(JoinCleanStep::Excluded);
             }
-            Ok(match state.changes.pending.take() {
-                Some(entry) => {
-                    state.clean_ready = false;
-                    JoinCleanStep::Entry(entry)
-                }
-                None => JoinCleanStep::Done,
+            Ok(if state.changes.pending.is_some() {
+                JoinCleanStep::Entry
+            } else {
+                JoinCleanStep::Done
             })
         }
         .await;
         crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from)
+    }
+
+    /// Takes the clean row the last [`Self::clean_step`] reported as
+    /// [`JoinCleanStep::Entry`]. Until it is taken, further steps report the
+    /// same row again, as repeated [`Self::peek_clean`] borrows do.
+    pub fn take_clean(&mut self) -> Option<ChangedPathEntry> {
+        let state = self.owner.borrow().0;
+        state.clean_ready = false;
+        state.changes.pending.take()
     }
 
     /// Exact original conflict count; no path or content expansion is performed.
@@ -586,9 +593,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
 }
 
 /// One bounded step of the clean projection, without an output buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JoinCleanStep {
-    /// One clean row retaining its original backing.
-    Entry(ChangedPathEntry),
+    /// One clean row, retaining its original backing, is ready for
+    /// [`JoinPreview::take_clean`].
+    Entry,
     /// One conflicting row was skipped; more original rows may remain.
     Excluded,
     /// No further original changed-path rows remain.

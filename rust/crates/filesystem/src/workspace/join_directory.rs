@@ -540,7 +540,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                         .ok_or(WorkspaceError::ContentLengthOverflow)?;
                 }
                 match row {
-                    JoinCleanStep::Entry(entry) => {
+                    JoinCleanStep::Entry => {
+                        let entry = self
+                            .preview
+                            .take_clean()
+                            .ok_or(crate::FsError::InvalidDiff)?;
                         let row = entry.value();
                         let file = MergeCleanFile {
                             version: 1,

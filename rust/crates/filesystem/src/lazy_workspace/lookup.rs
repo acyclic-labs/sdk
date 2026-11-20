@@ -43,8 +43,9 @@ pub enum LazyLookup {
         source_link_count: u64,
         /// Original source cut shared by unresolved native aliases.
         source: SourceReference,
-        /// Source version and identity whose authored record supplies bytes.
-        node: SourceNode,
+        /// Source version and identity whose authored record supplies bytes,
+        /// boxed with its bytes charged to the lookup's guard.
+        node: Box<SourceNode>,
     },
     /// Exact source fact including its pinned epoch.
     Source {
@@ -56,6 +57,16 @@ pub enum LazyLookup {
 }
 
 impl LazyLookup {
+    /// Heap bytes this lookup owns, all charged to its guard.
+    pub(crate) fn owned_bytes(&self) -> u64 {
+        match self {
+            Self::Authored { path, .. } => path.capacity() as u64,
+            Self::Shadow { .. } => {
+                crate::foundation::usize_to_u64(std::mem::size_of::<SourceNode>())
+            }
+            Self::Source { .. } => 0,
+        }
+    }
     /// Scalar classification.
     pub fn stat(&self) -> LazyStat {
         let (kind, logical_bytes, authored) = match self {
@@ -138,9 +149,12 @@ impl<
         lookup: &LazyLookup,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyOverlayId, LazyWorkspaceError> {
-        if let LazyLookup::Source { source, node } | LazyLookup::Shadow { source, node, .. } =
-            lookup
-        {
+        let observed = match lookup {
+            LazyLookup::Source { source, node } => Some((source, node)),
+            LazyLookup::Shadow { source, node, .. } => Some((source, &**node)),
+            LazyLookup::Authored { .. } => None,
+        };
+        if let Some((source, node)) = observed {
             let previous = self.overlay_fact(overlay, path, ctx).await?;
             let complete = matches!(&previous, Some(LazyOverlayChange::Observe {
                 source: saved_source, node: saved_node, complete: true,
@@ -414,16 +428,21 @@ impl<
                 }
             };
             if let Some((record, metadata)) = shadow {
+                let crate::kernel::Owned {
+                    value: boxed,
+                    allocation,
+                    ..
+                } = crate::kernel::Owned::boxed(node, ctx)?;
                 return Ok((
                     Some(LazyLookup::Shadow {
                         record,
                         metadata,
                         source_link_count: node.link_count.unwrap_or(1),
                         source,
-                        node,
+                        node: boxed,
                     }),
                     used,
-                    ctx.claim_owned(0, 0)?,
+                    allocation,
                 ));
             }
         }
@@ -501,10 +520,7 @@ impl<
         lookup: (LazyLookup, KernelOwnedAllocation),
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let bytes = match &lookup.0 {
-            LazyLookup::Authored { path, .. } => path.capacity() as u64,
-            _ => 0,
-        };
+        let bytes = lookup.0.owned_bytes();
         drop(lookup.0);
         Ok(crate::kernel::retire_allocation(lookup.1, bytes, ctx)?)
     }

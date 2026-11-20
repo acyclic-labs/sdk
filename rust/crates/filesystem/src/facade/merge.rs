@@ -6,7 +6,7 @@ use crate::workspace::JoinPreparation as WorkspaceJoinPreparation;
 impl WorkspaceJoinPreparation {
     pub(crate) fn candidate_root(&self) -> Option<ObjectId> {
         match self {
-            Self::Candidate { request, .. } => Some(request.generation_root),
+            Self::Candidate(candidate) => Some(candidate.value.request.generation_root),
             Self::Complete(_) | Self::Preview { .. } => None,
         }
     }
@@ -228,23 +228,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = MeasuredResult<OperationReceipt<LivePublicationObservation>, E>>
             + ProviderTask,
     {
-        let WorkspaceJoinPreparation::Candidate {
-            request,
-            intent,
-            limits,
-            resolutions_digest,
-            source_hold: _source_hold,
-        } = prepared
-        else {
+        let WorkspaceJoinPreparation::Candidate(candidate) = prepared else {
             return match prepared {
                 WorkspaceJoinPreparation::Complete(outcome) => Ok(outcome),
                 WorkspaceJoinPreparation::Preview { conflicts, .. } => {
                     conflicts.retire(accounting)?;
                     Err(WorkspaceError::InvalidMergeResolution.into())
                 }
-                WorkspaceJoinPreparation::Candidate { .. } => unreachable!(),
+                WorkspaceJoinPreparation::Candidate(_) => unreachable!(),
             };
         };
+        let Owned {
+            value: candidate,
+            allocation,
+            bytes,
+        } = candidate;
+        let crate::workspace::JoinCandidate {
+            request,
+            intent,
+            limits,
+            resolutions_digest,
+            source_hold: _source_hold,
+        } = *candidate;
+        crate::kernel::retire_allocation(allocation, bytes, accounting)?;
         let published = publication(request, intent, limits, accounting.remaining()?).await;
         let (result, spent) = accounting.split_receipt(published)?;
         if accounting.standalone_parts().is_some() {
@@ -522,34 +528,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 } else {
                     None
                 };
-                Ok(WorkspaceJoinPreparation::Candidate {
-                    request: PublishGenerationRequest {
-                        authority_id: volume_authority_id(target.id),
-                        volume_id: target.id,
-                        epoch: expected_head.epoch,
-                        expected: expected_head,
-                        operation_id,
-                        generation_root: candidate,
+                Ok(WorkspaceJoinPreparation::candidate(
+                    crate::workspace::JoinCandidate {
+                        request: PublishGenerationRequest {
+                            authority_id: volume_authority_id(target.id),
+                            volume_id: target.id,
+                            epoch: expected_head.epoch,
+                            expected: expected_head,
+                            operation_id,
+                            generation_root: candidate,
+                        },
+                        // The join changes exactly its delta against the planned
+                        // target. A target that moved only elsewhere composes it in
+                        // the same publication round; a change to any key it
+                        // writes leaves it stale, to be replanned.
+                        intent: PublicationIntent {
+                            preconditions: Some(crate::kernel::PublicationPreconditions {
+                                base: target_object,
+                                config: target.config,
+                                head: expected_head,
+                                rebase: true,
+                                reads: crate::kernel::CheckoutDependencies::new([], [])
+                                    .map_err(FsError::from)?,
+                            }),
+                            ..PublicationIntent::guarded(Some(operation_context), permit)
+                        },
+                        limits: closure_limits(target.config),
+                        resolutions_digest,
+                        source_hold,
                     },
-                    // The join changes exactly its delta against the planned
-                    // target. A target that moved only elsewhere composes it in
-                    // the same publication round; a change to any key it
-                    // writes leaves it stale, to be replanned.
-                    intent: PublicationIntent {
-                        preconditions: Some(crate::kernel::PublicationPreconditions {
-                            base: target_object,
-                            config: target.config,
-                            head: expected_head,
-                            rebase: true,
-                            reads: crate::kernel::CheckoutDependencies::new([], [])
-                                .map_err(FsError::from)?,
-                        }),
-                        ..PublicationIntent::guarded(Some(operation_context), permit)
-                    },
-                    limits: closure_limits(target.config),
-                    resolutions_digest,
-                    source_hold,
-                })
+                    accounting,
+                )?)
             }
             .await;
             target_root.retire(accounting)?;
