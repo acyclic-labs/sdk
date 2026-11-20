@@ -721,10 +721,12 @@ fn compile_paths(
         )]
     } else {
         determinize(
-            &nfa,
-            starts,
-            &symbols,
-            other,
+            Automaton {
+                nfa: &nfa,
+                starts,
+                alphabet: &symbols,
+                other,
+            },
             outcomes,
             ends.len(),
             available,

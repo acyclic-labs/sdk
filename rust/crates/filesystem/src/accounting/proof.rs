@@ -114,10 +114,10 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     let (proof, guard) = crate::kernel::closure::ProofContext::new(objects, limits, meter)
         .prove(root)
         .await?;
-    let result = if proof.root.volume_id != volume_id {
-        Err(AccountingError::InvalidHistory)
-    } else {
+    let result = if proof.root.volume_id == volume_id {
         Ok(proof.logical_file_bytes)
+    } else {
+        Err(AccountingError::InvalidHistory)
     };
     drop(proof);
     drop(guard);

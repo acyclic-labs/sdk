@@ -1,5 +1,16 @@
 use super::*;
 
+/// One root's join as its publisher prepares it: the planned join, the
+/// operation that publishes it, and the resolutions and permit it publishes under.
+struct RootJoin<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> {
+    root_id: WorkspaceRootId,
+    root: &'a MultiRootMergeRoot,
+    plan: &'a crate::JoinPlan<A, O>,
+    operation: IdempotencyKey,
+    resolutions: &'a BTreeMap<ConflictKey, MergeResolution>,
+    permit: PublicationPermit,
+}
+
 impl<A, O, R> WorkspaceMultiRootPublisher<A, O, R>
 where
     A: AsyncAuthorityStore + 'static,
@@ -135,12 +146,14 @@ where
             crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let prepared = self
             .prepare_plan(
-                root_id,
-                root,
-                plan,
-                operation,
-                resolutions,
-                permit,
+                RootJoin {
+                    root_id,
+                    root,
+                    plan,
+                    operation,
+                    resolutions,
+                    permit,
+                },
                 &mut accounting,
                 &cancellation,
             )
@@ -161,12 +174,14 @@ where
 
     async fn prepare_plan(
         &self,
-        root_id: WorkspaceRootId,
-        root: &MultiRootMergeRoot,
-        plan: &crate::JoinPlan<A, O>,
-        operation: IdempotencyKey,
-        resolutions: &BTreeMap<ConflictKey, MergeResolution>,
-        permit: PublicationPermit,
+        RootJoin {
+            root_id,
+            root,
+            plan,
+            operation,
+            resolutions,
+            permit,
+        }: RootJoin<'_, A, O>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::workspace::JoinPreparation, WorkspaceMultiRootPublisherError<R::Error>> {
@@ -306,12 +321,14 @@ where
             crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let prepared = self
             .prepare_plan(
-                root_id,
-                root,
-                &plan,
-                publisher_key(operation_id, root_id, b"preview-apply"),
-                resolutions,
-                PublicationPermit::Unrestricted,
+                RootJoin {
+                    root_id,
+                    root,
+                    plan: &plan,
+                    operation: publisher_key(operation_id, root_id, b"preview-apply"),
+                    resolutions,
+                    permit: PublicationPermit::Unrestricted,
+                },
                 &mut accounting,
                 &cancellation,
             )

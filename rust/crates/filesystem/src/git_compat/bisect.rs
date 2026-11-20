@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn execute_bisect<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     branch: &GitBranch,
-    workspace: GitTreeRef,
+    workspace: &GitTreeRef,
     arguments: &[String],
 ) -> Result<GitCommandOutput, GitCompatError<E>> {
     let subcommand = arguments.first().map_or("start", String::as_str);
@@ -28,7 +28,7 @@ pub(super) fn execute_bisect<E: std::error::Error + 'static>(
                 .commits
                 .get(&bad)
                 .ok_or(GitCompatError::InvalidState)?;
-            if bad_record.workspace_tree != workspace {
+            if bad_record.workspace_tree != *workspace {
                 return Err(GitCompatError::InvalidCommand(
                     "the working copy must match the bad commit before bisect starts".to_owned(),
                 ));

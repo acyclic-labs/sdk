@@ -96,7 +96,7 @@ impl DemandSource for Empty {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
-        empty_read(work, cancellation)
+        empty_read(&work, cancellation)
     }
 
     async fn open_file<W: FsWork + Send>(
@@ -107,7 +107,7 @@ impl DemandSource for Empty {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Box<dyn DemandFile>, DemandError> {
-        empty_read(work, cancellation)
+        empty_read(&work, cancellation)
     }
 
     async fn read_link<W: FsWork + Send>(
@@ -119,7 +119,7 @@ impl DemandSource for Empty {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
-        empty_read(work, cancellation)
+        empty_read(&work, cancellation)
     }
 }
 
@@ -152,7 +152,7 @@ impl SourceWatch for EmptyWatch {
 }
 
 fn empty_read<W: FsWork, T>(
-    work: W,
+    work: &W,
     cancellation: &CancellationToken,
 ) -> W::Output<T, DemandError> {
     let ctx = work.accounting(cancellation);

@@ -53,10 +53,14 @@ pub(super) fn write_buffer<const N: usize>(
             .ok_or(hex::FromHexError::InvalidStringLength)?,
     )?;
     cursor += lease.len() * 2;
-    text[cursor] = b'/';
+    let (slash, digits) = text
+        .get_mut(cursor..length)
+        .and_then(<[u8]>::split_first_mut)
+        .ok_or(hex::FromHexError::InvalidStringLength)?;
+    *slash = b'/';
     let mut number = expires_at_millis;
-    for position in (cursor + 1..length).rev() {
-        text[position] = b'0' + (number % 10) as u8;
+    for digit in digits.iter_mut().rev() {
+        *digit = b'0' + (number % 10) as u8;
         number /= 10;
     }
     Ok(())

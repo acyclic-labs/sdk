@@ -90,13 +90,13 @@ impl MemoryAuthorityStore {
             .get(&authority)
             .map_or(Head::genesis(Epoch::GENESIS), AuthorityState::head);
         accounting.admit(append_work(bytes))?;
-        let envelope = if !authorities.contains_key(&authority) {
+        let envelope = if authorities.contains_key(&authority) {
+            KernelOwnedAllocation::Standalone
+        } else {
             let envelope =
                 accounting.claim_owned(size_of::<(AuthorityId, AuthorityState)>() as u64, 0)?;
             reserve(&mut authorities, accounting)?;
             envelope
-        } else {
-            KernelOwnedAllocation::Standalone
         };
         let operation = accounting.claim_owned(
             size_of::<(OperationId, (usize, KernelOwnedAllocation))>() as u64,

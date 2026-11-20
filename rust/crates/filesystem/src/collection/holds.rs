@@ -6,9 +6,11 @@ pub(super) struct Holds {
     pub(super) free: Option<usize>,
 }
 
-pub(super) enum Slot {
-    Occupied(Held),
-    Free(Option<usize>),
+/// One hold's place: occupied while `held` is set. A vacant slot links the next
+/// vacant one, so registration reuses slots without a separate free list.
+pub(super) struct Slot {
+    pub(super) held: Option<Held>,
+    pub(super) next_free: Option<usize>,
 }
 
 impl Collection {
@@ -99,16 +101,18 @@ impl Collection {
                 .slots
                 .get_mut(id)
                 .ok_or(crate::FsError::HandleAllocationFailed)?;
-            let Slot::Free(next) = slot else {
-                unreachable!("free list names a vacant slot");
-            };
-            let next = *next;
-            *slot = Slot::Occupied(held);
-            holds.free = next;
+            if slot.held.is_some() {
+                return Err(crate::FsError::HandleAllocationFailed);
+            }
+            slot.held = Some(held);
+            holds.free = slot.next_free.take();
             id
         } else {
             let id = holds.slots.len();
-            holds.slots.push(Slot::Occupied(held));
+            holds.slots.push(Slot {
+                held: Some(held),
+                next_free: None,
+            });
             id
         };
         Ok(Hold {
@@ -227,7 +231,7 @@ impl Hold {
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         let holds = self.collection.holds();
-        let Slot::Occupied(held) = &holds.slots[self.id] else {
+        let Some(held) = holds.slots.get(self.id).and_then(|slot| slot.held.as_ref()) else {
             unreachable!("live hold remains registered until drop");
         };
         held_owned_bytes(held)
@@ -236,7 +240,7 @@ impl Hold {
     pub(super) fn update(&self, held: Held) {
         let mut holds = self.collection.holds();
         if let Some(slot) = holds.slots.get_mut(self.id) {
-            *slot = Slot::Occupied(held);
+            slot.held = Some(held);
         }
     }
 }
@@ -246,7 +250,10 @@ impl Drop for Hold {
         let mut holds = self.collection.holds();
         let next = holds.free;
         if let Some(slot) = holds.slots.get_mut(self.id) {
-            *slot = Slot::Free(next);
+            *slot = Slot {
+                held: None,
+                next_free: next,
+            };
             holds.free = Some(self.id);
         }
     }

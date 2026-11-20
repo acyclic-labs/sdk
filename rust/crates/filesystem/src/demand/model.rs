@@ -238,12 +238,14 @@ impl SourceReference {
 
 fn reference_node(body: &[u8], from: usize) -> Option<([u8; 16], u64, &[u8], usize)> {
     let head = body.get(from..from.checked_add(32)?)?;
-    let length = usize::try_from(u64::from_le_bytes(head[24..32].try_into().ok()?)).ok()?;
+    let (id, rest) = head.split_first_chunk::<16>()?;
+    let (version, rest) = rest.split_first_chunk::<8>()?;
+    let length = usize::try_from(u64::from_le_bytes(*rest.first_chunk::<8>()?)).ok()?;
     let start = from.checked_add(32)?;
     let end = start.checked_add(length)?;
     Some((
-        head[..16].try_into().ok()?,
-        u64::from_le_bytes(head[16..24].try_into().ok()?),
+        *id,
+        u64::from_le_bytes(*version),
         body.get(start..end)?,
         end,
     ))

@@ -325,10 +325,7 @@ impl Collection {
         self.holds()
             .slots
             .iter()
-            .filter_map(|slot| match slot {
-                Slot::Occupied(held) => Some(held.clone()),
-                Slot::Free(_) => None,
-            })
+            .filter_map(|slot| slot.held.clone())
             .collect()
     }
 }

@@ -102,6 +102,8 @@ mod error;
 pub mod facade;
 pub mod foundation;
 mod publication_changes;
+// Only native work ledgers need the loaded-frameworks proof.
+#[cfg(not(target_arch = "wasm32"))]
 mod services;
 pub use publication_changes::PublicationEntry;
 pub use publication_changes::{

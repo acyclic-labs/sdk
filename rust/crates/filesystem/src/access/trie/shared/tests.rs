@@ -215,10 +215,12 @@ fn policy_determinization_admits_discovered_states_and_preserves_finite_denials(
     };
     let mut remaining = usize::MAX;
     let states = determinize(
-        &nfa,
-        vec![start],
-        &['a'],
-        'b',
+        Automaton {
+            nfa: &nfa,
+            starts: vec![start],
+            alphabet: &['a'],
+            other: 'b',
+        },
         decisions,
         1,
         &mut remaining,
@@ -253,10 +255,12 @@ fn policy_determinization_admits_discovered_states_and_preserves_finite_denials(
     let mut remaining = usize::MAX;
     assert_eq!(
         determinize(
-            &nfa,
-            vec![start],
-            &['a'],
-            'b',
+            Automaton {
+                nfa: &nfa,
+                starts: vec![start],
+                alphabet: &['a'],
+                other: 'b',
+            },
             decisions,
             1,
             &mut remaining,
@@ -274,10 +278,12 @@ fn policy_determinization_admits_discovered_states_and_preserves_finite_denials(
     let mut remaining = 0;
     assert!(
         determinize(
-            &nfa,
-            vec![start],
-            &['a'],
-            'b',
+            Automaton {
+                nfa: &nfa,
+                starts: vec![start],
+                alphabet: &['a'],
+                other: 'b',
+            },
             decisions,
             1,
             &mut remaining,

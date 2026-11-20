@@ -82,14 +82,13 @@ impl MemoryAuthorityStore {
                 payload_bytes = next;
                 count += 1;
             }
-            let end = start.checked_add(count).ok_or(WorkError::Overflow)?;
             accounting.charge(WorkCounters {
                 authority_records_read: count as u64,
                 authority_bytes_read: payload_bytes,
                 ..WorkCounters::UNCHARGED
             })?;
             let mut page = commits(count, accounting)?;
-            for commit in &state.commits[start..end] {
+            for commit in state.commits.iter().skip(start).take(count) {
                 examine(accounting)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if accounting.native_work().is_some() {
@@ -140,7 +139,7 @@ impl MemoryAuthorityStore {
             let commit = state
                 .operations
                 .get(&operation)
-                .map(|&(index, _)| &state.commits[index]);
+                .and_then(|&(index, _)| state.commits.get(index));
             if let Some(commit) = commit {
                 accounting.charge(WorkCounters {
                     authority_records_read: 1,

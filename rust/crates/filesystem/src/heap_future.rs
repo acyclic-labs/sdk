@@ -36,12 +36,11 @@ impl FrameObservation<'_> {
 }
 impl Drop for FrameObservation<'_> {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.filter(|_| self.bytes != 0) {
-            if let Err(error) = owner
+        if let Some(owner) = self.owner.filter(|_| self.bytes != 0)
+            && let Err(error) = owner
                 .record_heap_future_event(crate::heap_future::HeapFutureEvent::Released(self.bytes))
-            {
-                tracing::error!(?error, "path frame retirement failed during drop");
-            }
+        {
+            tracing::error!(?error, "path frame retirement failed during drop");
         }
     }
 }
@@ -293,10 +292,10 @@ struct HeapFutureRelease<'a> {
 
 impl Drop for HeapFutureRelease<'_> {
     fn drop(&mut self) {
-        if let Some(observer) = self.observer {
-            if let Err(error) = observer(HeapFutureEvent::Released(self.bytes)) {
-                tracing::error!(?error, "future frame retirement failed during drop");
-            }
+        if let Some(observer) = self.observer
+            && let Err(error) = observer(HeapFutureEvent::Released(self.bytes))
+        {
+            tracing::error!(?error, "future frame retirement failed during drop");
         }
     }
 }

@@ -209,6 +209,10 @@ impl Capability {
     /// volume selection, rather than a caller-supplied resource wildcard.
     #[must_use]
     pub fn whole_volume(volume: Option<String>, actions: &[Action]) -> Self {
+        Self::one_path(volume, actions, "**".into())
+    }
+    /// One layer holding one grant of `actions` on `path` in every generation.
+    fn one_path(volume: Option<String>, actions: &[Action], path: String) -> Self {
         Self {
             layers: vec![vec![Grant {
                 actions: actions.iter().copied().collect(),
@@ -216,7 +220,7 @@ impl Capability {
                     lineage_root: None,
                     volume,
                     generations: super::Generations::All,
-                    path: "**".into(),
+                    path,
                 },
             }]],
             expires_at: None,
@@ -229,11 +233,14 @@ impl Capability {
         root: &str,
         actions: &[Action],
     ) -> Result<Self, InvalidPolicy> {
-        let mut grant = Self::whole_volume(volume, actions);
-        if !root.is_empty() {
-            grant.layers[0][0].resource.path = super::glob::literal_subtree(root)?;
+        if root.is_empty() {
+            return Ok(Self::whole_volume(volume, actions));
         }
-        Ok(grant)
+        Ok(Self::one_path(
+            volume,
+            actions,
+            super::glob::literal_subtree(root)?,
+        ))
     }
     /// Encode the complete grant as one capability in an existing signed scope.
     pub fn to_scope_label(&self) -> Result<String, serde_json::Error> {

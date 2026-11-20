@@ -39,10 +39,10 @@ impl PublicationContext {
     pub fn from_bytes(mut input: &[u8]) -> Result<Self, acyclic_stream::StreamError> {
         let invalid = || acyclic_stream::StreamError::InvalidArgument;
         let (prefix, remaining) = input.split_at_checked(PREFIX_BYTES).ok_or_else(invalid)?;
-        if prefix[0] != VERSION {
+        let Some((&VERSION, volume)) = prefix.split_first() else {
             return Err(invalid());
-        }
-        let volume = VolumeId::from_bytes(prefix[1..].try_into().map_err(|_| invalid())?);
+        };
+        let volume = VolumeId::from_bytes(volume.try_into().map_err(|_| invalid())?);
         input = remaining;
         let before = input.len();
         let length = prost::encoding::decode_varint(&mut input).map_err(|_| invalid())?;
@@ -103,13 +103,20 @@ pub(crate) struct EncodedContext {
 
 impl EncodedContext {
     pub(crate) fn set_records_after(&mut self, count: u64) {
-        self.bytes[self.length - 8..self.length].copy_from_slice(&count.to_le_bytes());
+        // Every encoding ends in its eight-byte record count.
+        if let Some(records) = self
+            .bytes
+            .get_mut(..self.length)
+            .and_then(<[u8]>::last_chunk_mut::<8>)
+        {
+            *records = count.to_le_bytes();
+        }
     }
 }
 
 impl AsRef<[u8]> for EncodedContext {
     fn as_ref(&self) -> &[u8] {
-        &self.bytes[..self.length]
+        self.bytes.get(..self.length).unwrap_or_default()
     }
 }
 

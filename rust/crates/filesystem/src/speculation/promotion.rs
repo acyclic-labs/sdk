@@ -746,11 +746,11 @@ fn has_duplicate_by<T>(
     }
     let mut inline = [StorageLocationId::from_bytes([0; 16]); 16];
     let mut heap;
-    let keys = if values.len() <= inline.len() {
-        for (slot, value) in inline.iter_mut().zip(values) {
+    let keys = if let Some(keys) = inline.get_mut(..values.len()) {
+        for (slot, value) in keys.iter_mut().zip(values) {
             *slot = key(value);
         }
-        &mut inline[..values.len()]
+        keys
     } else {
         heap = Vec::new();
         heap.try_reserve_exact(values.len())
@@ -759,7 +759,9 @@ fn has_duplicate_by<T>(
         heap.as_mut_slice()
     };
     keys.sort_unstable();
-    Ok(keys.windows(2).any(|pair| pair[0] == pair[1]))
+    Ok(keys
+        .windows(2)
+        .any(|pair| matches!(pair, [first, second] if first == second)))
 }
 
 fn checked_increment(value: u64) -> Result<u64, PromotionSpeculatorError> {

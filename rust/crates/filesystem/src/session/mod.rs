@@ -15,8 +15,7 @@ pub fn changes_path<A: crate::AsyncAuthorityStore, O: 'static>(
             volume,
             &mut text,
         )
-        .ok_or(acyclic_stream::StreamError::InvalidArgument)?
-        .to_owned(),
+        .ok_or(acyclic_stream::StreamError::InvalidArgument)?,
     )
 }
 

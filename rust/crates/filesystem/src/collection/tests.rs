@@ -272,9 +272,9 @@ fn file_table_replacement_rejects_a_missing_checkout_registration()
         None,
     )?;
     let id = roots.hold.as_ref().ok_or("missing registration")?.id;
-    let saved = std::mem::replace(&mut collection.holds().slots[id], Slot::Free(None));
+    let saved = collection.holds().slots[id].held.take();
     let result = roots.set_file_table(object(9));
-    collection.holds().slots[id] = saved;
+    collection.holds().slots[id].held = saved;
     assert!(matches!(result, Err(crate::FsError::InvalidDiff)));
     assert_eq!(roots.file_table, original);
     Ok(())

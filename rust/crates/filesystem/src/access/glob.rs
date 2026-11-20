@@ -144,10 +144,9 @@ fn component_matches(pattern: &str, text: &str, folded: bool) -> bool {
                     if chars
                         .get(index..end)
                         .is_some_and(|part| part.iter().copied().eq(expansion.chars()))
+                        && let Some(out) = next.get_mut(end)
                     {
-                        if let Some(out) = next.get_mut(end) {
-                            *out = true;
-                        }
+                        *out = true;
                     }
                 }
             }
@@ -379,15 +378,18 @@ impl Nfa {
         scratch: &mut ClosureScratch,
     ) -> Result<(), InvalidPolicy> {
         scratch.begin(work)?;
-        let mut unique = 0;
-        for index in 0..states.len() {
-            spend(work, 1)?;
-            if scratch.insert(states[index])? {
-                states[unique] = states[index];
-                unique += 1;
-            }
-        }
-        states.truncate(unique);
+        let mut failure = Ok(());
+        states.retain(|&state| {
+            failure.is_ok()
+                && match spend(work, 1).and_then(|()| scratch.insert(state)) {
+                    Ok(first) => first,
+                    Err(error) => {
+                        failure = Err(error);
+                        false
+                    }
+                }
+        });
+        failure?;
         self.close(states, work, scratch)
     }
 

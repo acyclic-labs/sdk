@@ -125,6 +125,71 @@ fn allow(
     }))
 }
 
+/// Exact whole-file and range bytes of one `size`, kept by the generation that
+/// wrote them after a later publication, and the typed refusal of a read bound.
+async fn exact_bytes<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    workspace: &crate::Workspace<A, O>,
+    cancellation: &CancellationToken,
+    size: usize,
+) -> Result<(), Failure> {
+    let path = format!("/bytes-{size}");
+    let bytes = Bytes::from((0..=250u8).cycle().take(size).collect::<Vec<_>>());
+    let old = published(workspace.write(&path, bytes.clone()).await?)?;
+    let actual = value(
+        workspace
+            .read(&path, size as u64, WorkBudget::UNBOUNDED, cancellation)
+            .await,
+    )?;
+    if actual.as_ref() != bytes.as_ref() {
+        return Err(Failure::Invariant(
+            "whole-file read changed exact binary bytes",
+        ));
+    }
+    published(
+        workspace
+            .write(&path, Bytes::from_static(b"replacement"))
+            .await?,
+    )?;
+    let pinned = value(
+        old.read(&path, size as u64, WorkBudget::UNBOUNDED, cancellation)
+            .await,
+    )?;
+    if pinned.as_ref() != bytes.as_ref() {
+        return Err(Failure::Invariant(
+            "later publication changed an immutable generation",
+        ));
+    }
+    if size > 0 {
+        let offset = size / 2;
+        let length = (size - offset).min(17);
+        let range = value(
+            old.read_range(
+                &path,
+                offset as u64,
+                length as u64,
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await,
+        )?;
+        if Some(range.bytes.as_ref()) != bytes.get(offset..offset + length) {
+            return Err(Failure::Invariant(
+                "exact immutable range changed its offset or bytes",
+            ));
+        }
+        let refused = old
+            .read(&path, size as u64 - 1, WorkBudget::UNBOUNDED, cancellation)
+            .await;
+        if !matches!(refused, Err(ref failure) if matches!(failure.error, WorkspaceError::ReadLimitExceeded))
+        {
+            return Err(Failure::Invariant(
+                "read bound did not retain its typed refusal",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Runs exact byte boundaries, immutable generations, typed read refusals,
 /// cancellation, fork isolation, removal and steady-state request budgets.
 /// Supply a fresh backend independently of bench. The historical workload
@@ -138,65 +203,7 @@ pub async fn verify<B: Backend + ?Sized>(backend: &B) -> Result<(), Failure> {
             .await,
     )?;
     for size in [0usize, 1, 63, 64, 65, 4095, 4096, 4097, 131073] {
-        let path = format!("/bytes-{size}");
-        let bytes = Bytes::from(
-            (0..size)
-                .map(|index| (index % 251) as u8)
-                .collect::<Vec<_>>(),
-        );
-        let old = published(workspace.write(&path, bytes.clone()).await?)?;
-        let actual = value(
-            workspace
-                .read(&path, size as u64, WorkBudget::UNBOUNDED, &cancellation)
-                .await,
-        )?;
-        if actual.as_ref() != bytes.as_ref() {
-            return Err(Failure::Invariant(
-                "whole-file read changed exact binary bytes",
-            ));
-        }
-        published(
-            workspace
-                .write(&path, Bytes::from_static(b"replacement"))
-                .await?,
-        )?;
-        let pinned = value(
-            old.read(&path, size as u64, WorkBudget::UNBOUNDED, &cancellation)
-                .await,
-        )?;
-        if pinned.as_ref() != bytes.as_ref() {
-            return Err(Failure::Invariant(
-                "later publication changed an immutable generation",
-            ));
-        }
-        if size > 0 {
-            let offset = size / 2;
-            let length = (size - offset).min(17);
-            let range = value(
-                old.read_range(
-                    &path,
-                    offset as u64,
-                    length as u64,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await,
-            )?;
-            if range.bytes.as_ref() != &bytes[offset..offset + length] {
-                return Err(Failure::Invariant(
-                    "exact immutable range changed its offset or bytes",
-                ));
-            }
-            let refused = old
-                .read(&path, size as u64 - 1, WorkBudget::UNBOUNDED, &cancellation)
-                .await;
-            if !matches!(refused, Err(ref failure) if matches!(failure.error, WorkspaceError::ReadLimitExceeded))
-            {
-                return Err(Failure::Invariant(
-                    "read bound did not retain its typed refusal",
-                ));
-            }
-        }
+        exact_bytes(&workspace, &cancellation, size).await?;
     }
     let missing = workspace
         .read("/absent", 1, WorkBudget::UNBOUNDED, &cancellation)

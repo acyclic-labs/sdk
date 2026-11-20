@@ -86,8 +86,8 @@ impl CheckoutRoots {
             return true;
         };
         let holds = hold.collection.holds();
-        match &holds.slots[hold.id] {
-            Slot::Occupied(Held::Checkout {
+        match holds.slots.get(hold.id).and_then(|slot| slot.held.as_ref()) {
+            Some(Held::Checkout {
                 working, control, ..
             }) => control.is_native_original(original, root_parent_bytes(working)),
             _ => false,
@@ -111,9 +111,12 @@ impl CheckoutRoots {
             crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(&self.working));
         if let Some(hold) = &self.hold {
             let mut holds = hold.collection.holds();
-            if let Slot::Occupied(Held::Checkout {
+            if let Some(Held::Checkout {
                 working, control, ..
-            }) = &mut holds.slots[hold.id]
+            }) = holds
+                .slots
+                .get_mut(hold.id)
+                .and_then(|slot| slot.held.as_mut())
             {
                 *control =
                     crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(working));
@@ -125,7 +128,10 @@ impl CheckoutRoots {
     pub(crate) fn set_file_table(&mut self, table: ObjectId) -> Result<(), crate::FsError> {
         if let Some(hold) = &self.hold {
             let mut holds = hold.collection.holds();
-            let Some(Slot::Occupied(Held::Checkout { working, .. })) = holds.slots.get_mut(hold.id)
+            let Some(Held::Checkout { working, .. }) = holds
+                .slots
+                .get_mut(hold.id)
+                .and_then(|slot| slot.held.as_mut())
             else {
                 return Err(crate::FsError::InvalidDiff);
             };

@@ -37,9 +37,8 @@ impl PolicyWatch {
     /// earlier edits are awaited: later ones never delay admission.
     pub(crate) async fn admitted(&self) -> Result<(), crate::FsError> {
         futures::future::poll_fn(|cx| {
-            let entries = match self.registration.owner.entries.lock() {
-                Ok(entries) => entries,
-                Err(_) => return std::task::Poll::Ready(Err(crate::FsError::MutationNotAllowed)),
+            let Ok(entries) = self.registration.owner.entries.lock() else {
+                return std::task::Poll::Ready(Err(crate::FsError::MutationNotAllowed));
             };
             if entries.editors_before(self.registration.key) == 0 {
                 return std::task::Poll::Ready(Ok(()));

@@ -12,14 +12,7 @@ impl ServicesInitialized {
     /// The gate behind [`crate::watch::native_services`], the one initializer
     /// that loads every process-global framework. Nothing else may call it.
     #[doc(hidden)]
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn __after_framework_init() -> Self {
-        Self(())
-    }
-
-    /// A proof for builds with no native frameworks to load.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) const fn without_native_frameworks() -> Self {
         Self(())
     }
 

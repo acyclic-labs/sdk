@@ -129,7 +129,7 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
         ) {
             work.check()?;
         } else if native {
-            seal(guard.as_deref_mut(), work).await?;
+            seal(guard, work).await?;
         }
         self.publish_append(&request, plan, &mut work.accounting())
             .map_err(authority_error)
@@ -164,7 +164,7 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
         let (page, custody) = self
             .read_page(authority, after, limit, &mut work.accounting())
             .map_err(authority_error)?;
-        Ok((page, allocation(custody)))
+        Ok((page, custody.into_authority_allocation()))
     }
     async fn fence(
         &self,

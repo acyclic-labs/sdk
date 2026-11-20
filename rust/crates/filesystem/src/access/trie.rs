@@ -824,11 +824,22 @@ impl StateAdmission<'_> {
     }
 }
 
-fn determinize(
-    nfa: &Nfa,
-    mut starts: Vec<usize>,
-    alphabet: &[char],
+/// The automaton one determinization walks: its NFA, start states, the symbols
+/// policy patterns name, and the one symbol standing for every other character.
+struct Automaton<'a> {
+    nfa: &'a Nfa,
+    starts: Vec<usize>,
+    alphabet: &'a [char],
     other: char,
+}
+
+fn determinize(
+    Automaton {
+        nfa,
+        mut starts,
+        alphabet,
+        other,
+    }: Automaton<'_>,
     decide: impl Fn(&[usize]) -> [Outcome; Action::ALL.len()],
     rules: usize,
     work: &mut usize,
@@ -1013,10 +1024,12 @@ impl<'a> CompiledPatterns<'a> {
             )]
         } else {
             determinize(
-                &self.nfa,
-                self.starts,
-                &self.symbols,
-                self.other,
+                Automaton {
+                    nfa: &self.nfa,
+                    starts: self.starts,
+                    alphabet: &self.symbols,
+                    other: self.other,
+                },
                 |subset| {
                     outcomes(
                         policy,

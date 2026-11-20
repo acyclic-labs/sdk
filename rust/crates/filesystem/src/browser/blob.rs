@@ -28,7 +28,7 @@ pub async fn blob_bytes(
     let capacity = usize::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
     let Retained { value, allocation } =
         retained_promise(|| Ok(blob.array_buffer()), length, accounting, cancellation).await?;
-    let buffer = value.map_err(rejected)?;
+    let buffer = value.map_err(|error| rejected(&error))?;
     let mut allocation_error = None;
     let copied = javascript_bytes::snapshot_buffer_with(&buffer, |count| {
         if count != length {
@@ -54,7 +54,7 @@ pub async fn blob_bytes(
                 if error.is_undefined() {
                     ObjectStoreError::Corrupt
                 } else {
-                    rejected(error)
+                    rejected(&error)
                 }
             },
             object_error,
@@ -72,16 +72,12 @@ pub async fn blob_bytes(
 
 /// Validates the browser's integral Blob extent before physical materialization.
 pub fn blob_length(blob: &Blob) -> Result<u64, ObjectStoreError> {
-    let length = blob.size();
-    // Reject fractional, negative and overflowing extents before conversion.
-    if !length.is_finite()
-        || length < 0.0
-        || length >= 18_446_744_073_709_551_616.0
-        || length.fract() != 0.0
-    {
-        return Err(ObjectStoreError::Corrupt);
-    }
-    Ok(length as u64)
+    // Display spells an integral f64 as its exact decimal integer, so the parse
+    // refuses every fractional, negative, non-finite or overflowing extent.
+    blob.size()
+        .to_string()
+        .parse()
+        .map_err(|_| ObjectStoreError::Corrupt)
 }
 
 /// Waits for one metadata Promise with funded result and producer storage.
@@ -196,7 +192,7 @@ async fn wait<T>(
     .await
 }
 
-fn rejected(error: JsValue) -> ObjectStoreError {
+fn rejected(error: &JsValue) -> ObjectStoreError {
     ObjectStoreError::Rejected(
         error
             .as_string()

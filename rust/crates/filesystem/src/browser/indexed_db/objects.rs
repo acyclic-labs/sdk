@@ -238,10 +238,10 @@ impl IndexedDbObjectStore {
                 .map_err(crate::async_storage::object_error)?
                 .into_value(Self::key(id));
             let stored = Self::object(io, &tx, &key.value).await?;
-            if let Some(stored) = &stored {
-                if work::blob_length(stored).map_err(object_error)? != bytes.len() as u64 {
-                    return Err(ObjectStoreError::Corrupt);
-                }
+            if let Some(stored) = &stored
+                && work::blob_length(stored).map_err(object_error)? != bytes.len() as u64
+            {
+                return Err(ObjectStoreError::Corrupt);
             }
             observed.value.push((id, stored, bytes));
         }

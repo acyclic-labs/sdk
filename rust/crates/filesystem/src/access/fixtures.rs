@@ -41,11 +41,11 @@ pub async fn publish_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         )
         .await?
         .value;
-    assert!(matches!(
-        result,
-        LivePublicationObservation::Committed { .. }
-    ));
-    Ok(())
+    if matches!(result, LivePublicationObservation::Committed { .. }) {
+        Ok(())
+    } else {
+        Err("the policy publication was not committed".into())
+    }
 }
 
 /// Builds a policy with a deny rule for the requested action and path.

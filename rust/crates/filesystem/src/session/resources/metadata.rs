@@ -5,6 +5,7 @@ use acyclic_auth::authority::PolicyDecision;
 use acyclic_auth::contract::{Attribute, RecordAttributes};
 use acyclic_stream::{AppendRecord, Record};
 
+#[derive(Clone, Copy)]
 pub(super) struct Projection<'a> {
     pub volume: VolumeId,
     pub scope: [u8; 16],

@@ -71,7 +71,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             work,
         )
         .await?;
-        let written = settle(id, length, put)?;
+        let written = settle(id, length, &put)?;
         record_write(work, written)?;
         work.check()
     }
@@ -140,7 +140,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
 }
 
 /// Accepts only a verified outcome for exactly these bytes.
-fn settle(id: ObjectId, length: u64, put: Put) -> Result<u64, ObjectStoreError> {
+fn settle(id: ObjectId, length: u64, put: &Put) -> Result<u64, ObjectStoreError> {
     match put.verified() {
         Some(verified) if verified.digest == blob(id) && verified.length == length => {
             Ok(if matches!(put, Put::Created { .. }) {
@@ -174,7 +174,7 @@ impl<T: ObjectWriteSource> invocation::BatchFinish<Put> for WriteBatch<'_, T> {
         for (write, result) in writes.iter().zip(results) {
             let (id, body, _) = write.parts();
             let length = body.len() as u64;
-            match result.and_then(|put| settle(id, length, put)) {
+            match result.and_then(|put| settle(id, length, &put)) {
                 Ok(written) => record_write(work, written)?,
                 Err(error) => {
                     failure.get_or_insert(error);

@@ -56,10 +56,13 @@ impl AuthorityState {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<AppendOutcome>, FsError> {
         examine(accounting)?;
-        let Some(&(index, _)) = self.operations.get(&commit.operation_id) else {
+        let Some(durable) = self
+            .operations
+            .get(&commit.operation_id)
+            .and_then(|&(index, _)| self.commits.get(index))
+        else {
             return Ok(None);
         };
-        let durable = &self.commits[index];
         accounting.charge(WorkCounters {
             authority_records_read: 1,
             authority_bytes_read: durable.payload.len() as u64,

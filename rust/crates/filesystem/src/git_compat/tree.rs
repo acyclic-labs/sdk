@@ -297,27 +297,28 @@ pub async fn grep_git_generation<
         let allowance = maximum_matches.map(|maximum| maximum.saturating_sub(matches.len()));
         loop {
             let mut requests = Vec::with_capacity(batch.len());
-            let mut selected = Vec::with_capacity(batch.len());
-            for (index, (path, file)) in batch.iter().enumerate() {
-                let scan = &mut scans[index];
-                if maximum_file_bytes
-                    .is_some_and(|maximum| file.description().logical_bytes > maximum)
-                {
+            // Each file's requested length this round, None when it reads nothing.
+            let mut lengths = Vec::with_capacity(batch.len());
+            for ((_, file), scan) in batch.iter().zip(&scans) {
+                let logical = file.description().logical_bytes;
+                let length = if maximum_file_bytes.is_some_and(|maximum| logical > maximum) {
                     truncated = true;
-                    continue;
+                    None
+                } else {
+                    Some(logical - scan.offset)
+                        .filter(|remaining| !scan.invalid && *remaining != 0)
+                        .map(|remaining| remaining.min(64 * 1024))
+                };
+                if let Some(length) = length {
+                    requests.push(ResolvedFileRangeReadRequest {
+                        file,
+                        range: ByteRange {
+                            offset: scan.offset,
+                            length,
+                        },
+                    });
                 }
-                let remaining = file.description().logical_bytes - scan.offset;
-                if scan.invalid || remaining == 0 {
-                    continue;
-                }
-                requests.push(ResolvedFileRangeReadRequest {
-                    file,
-                    range: ByteRange {
-                        offset: scan.offset,
-                        length: remaining.min(64 * 1024),
-                    },
-                });
-                selected.push((index, path, remaining.min(64 * 1024)));
+                lengths.push(length);
             }
             if requests.is_empty() {
                 break;
@@ -332,18 +333,22 @@ pub async fn grep_git_generation<
                 .await
                 .map_err(|failure| WorkspaceError::from(failure.error))?
                 .value;
-            for ((index, path, length), read) in selected.into_iter().zip(reads) {
-                if read.bytes.len() as u64 != length {
+            let mut reads = reads.into_iter();
+            for (((path, file), scan), length) in batch.iter().zip(&mut scans).zip(lengths) {
+                let Some(length) = length else {
+                    continue;
+                };
+                let Some(read) = reads
+                    .next()
+                    .filter(|read| read.bytes.len() as u64 == length)
+                else {
                     return Err(WorkspaceError::Engine(
                         "incomplete Git file range".to_owned(),
                     ));
-                }
-                let scan = &mut scans[index];
+                };
                 scan.offset += read.bytes.len() as u64;
                 scan.push(path, pattern, &read.bytes, allowance);
-                if scan.offset == batch[index].1.description().logical_bytes
-                    && !scan.pending.is_empty()
-                {
+                if scan.offset == file.description().logical_bytes && !scan.pending.is_empty() {
                     scan.line(path, pattern, &[], false, allowance);
                 }
             }
@@ -376,15 +381,17 @@ struct GrepScan {
 }
 
 impl GrepScan {
-    fn push(&mut self, path: &str, pattern: &str, mut bytes: &[u8], allowance: Option<usize>) {
-        while let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
-            self.line(path, pattern, &bytes[..newline], true, allowance);
+    fn push(&mut self, path: &str, pattern: &str, bytes: &[u8], allowance: Option<usize>) {
+        let mut lines = bytes.split(|byte| *byte == b'\n');
+        // The part after the last newline stays pending; split always yields it.
+        let rest = lines.next_back().unwrap_or_default();
+        for line in lines {
+            self.line(path, pattern, line, true, allowance);
             if self.invalid {
                 return;
             }
-            bytes = &bytes[newline + 1..];
         }
-        self.pending.extend_from_slice(bytes);
+        self.pending.extend_from_slice(rest);
     }
 
     fn line(

@@ -439,7 +439,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             GitCommandOutput::Action(GitFilesystemAction::ApplyPatch { patch })
         }
         GitCommand::Bisect { arguments } => {
-            execute_bisect::<E>(state, &current, workspace, &arguments)?
+            execute_bisect::<E>(state, &current, &workspace, &arguments)?
         }
         GitCommand::RevParse { argument } => {
             let value = match argument.as_str() {

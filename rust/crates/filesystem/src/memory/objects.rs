@@ -299,7 +299,7 @@ impl AsyncObjectStore for MemoryObjectStore {
             })
             .map_err(object_error)?;
         accounting.check().map_err(object_error)?;
-        Ok((output.0, allocation(output.1)))
+        Ok((output.0, output.1.into_authority_allocation()))
     }
     async fn contains(
         &self,

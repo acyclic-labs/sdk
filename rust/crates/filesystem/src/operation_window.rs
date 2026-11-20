@@ -185,7 +185,7 @@ enum FinalClose {
 }
 
 /// Bounds applied when the last tool lease reconciles a fork with its parent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OperationReconcileLimits {
     /// Maximum immutable generations inspected while finding ancestry.
     pub maximum_generations: Option<u32>,
@@ -193,16 +193,6 @@ pub struct OperationReconcileLimits {
     pub maximum_changes: Option<u32>,
     /// Maximum conflicts returned to the caller.
     pub maximum_conflicts: Option<u32>,
-}
-
-impl Default for OperationReconcileLimits {
-    fn default() -> Self {
-        Self {
-            maximum_generations: None,
-            maximum_changes: None,
-            maximum_conflicts: None,
-        }
-    }
 }
 
 #[cfg(kani)]

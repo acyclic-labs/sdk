@@ -44,11 +44,14 @@ fn allocate<T>(
     Ok((values, custody))
 }
 
-fn allocation(custody: KernelOwnedAllocation) -> crate::AuthorityAllocation {
-    match custody {
-        KernelOwnedAllocation::Standalone => None,
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(custody) => Some(custody),
+impl KernelOwnedAllocation {
+    /// The authority allocation this custody hands to a store's caller.
+    fn into_authority_allocation(self) -> crate::AuthorityAllocation {
+        match self {
+            KernelOwnedAllocation::Standalone => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelOwnedAllocation::NativeOriginal(custody) => Some(custody),
+        }
     }
 }
 
