@@ -39,6 +39,10 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Seeds in the fast suite. `DST_SEEDS=<a>..<b>` runs a deeper sweep.
 const SEEDS: std::ops::Range<u64> = 0..16;
 
+/// An agent outside every world's admission. A world's root repeats one
+/// seed byte, so these distinct bytes never name it, whatever the seed.
+const OUTSIDE: [u8; 16] = *b"outside-agent-id";
+
 /// A seeded draw stream, independent of the runtime's own entropy.
 struct Draws(blake3::OutputReader);
 
@@ -186,6 +190,8 @@ struct World {
     owner: Arc<Owner>,
     server: Arc<crate::Server<Counted<MemoryStream>, LogicalObjectStore<dyn Blobs>>>,
     client: Client,
+    /// Holds the session directory's authority as well as the tree's.
+    directory: Client,
     root: AgentPath,
     trace: Vec<String>,
 }
@@ -266,6 +272,24 @@ impl World {
             None,
         );
         client.register_credential(0, credential(server.resource()))?;
+        // A tree credential never acquires directory authority, so the
+        // session directory's owner pages sessions through its own client.
+        let directory = Client::in_process_with_products(
+            stream.clone(),
+            acyclic_stream::session::testing::authority(),
+            None,
+            server.clone(),
+            Some(server.clone()),
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            None,
+        );
+        directory.register_credential(
+            0,
+            crate::hosting_test_support::credentials(&[
+                server.resource(),
+                &server.session_resource(),
+            ]),
+        )?;
         let root = server.root().clone();
         Ok(Self {
             stream,
@@ -273,6 +297,7 @@ impl World {
             owner,
             server,
             client,
+            directory,
             root,
             trace: Vec::new(),
         })
@@ -447,7 +472,25 @@ impl World {
         let command = self.command(step)?;
         let before = self.stream.requests();
         self.owner.denied.store(deny, Ordering::SeqCst);
-        let result = call(&self.client, "agents", &command).await;
+        // A spawn is answered by the parent's own step, so the server runs
+        // while it is in flight, as it does for every admitted spawn.
+        let runner = (!deny && matches!(step, Step::Spawn)).then(|| {
+            let server = self.server.clone();
+            tokio::spawn(async move { server.run(|_, _| {}).await })
+        });
+        let client = if matches!(
+            step,
+            Step::Sessions | Step::MergeSession | Step::NewSession | Step::ForkSession
+        ) {
+            &self.directory
+        } else {
+            &self.client
+        };
+        let result = call(client, "agents", &command).await;
+        if let Some(runner) = runner {
+            runner.abort();
+            let _ = runner.await;
+        }
         self.owner.denied.store(false, Ordering::SeqCst);
         let requests = self.stream.requests().since(before);
         if deny {
@@ -467,7 +510,7 @@ impl World {
         self.trace.push(format!("{step:?}:{reply:?}"));
         if idempotent(step) {
             let before = self.revision().await?;
-            let replay = call(&self.client, "agents", &command).await?;
+            let replay = call(client, "agents", &command).await?;
             assert_eq!(
                 format!("{reply:?}"),
                 format!("{replay:?}"),
@@ -552,9 +595,10 @@ impl World {
                 assert_eq!(bytes, expected, "read at {offset} of {length}");
             }
         }
-        // A denied read is refused after admission and touches no storage.
+        // A read revoked after admission may read its source, but the
+        // revalidation before disclosure refuses it, and it commits nothing.
         world.owner.revoke_read.store(true, Ordering::SeqCst);
-        let before = world.stream.requests();
+        let before = world.revision().await?;
         let denied = AgentCommand::Read {
             agent: world.root.clone(),
             target: ReadTarget::ToolOutput {
@@ -567,11 +611,10 @@ impl World {
             format!("content disclosed after owner revocation: {reply:?}")
         })?;
         assert!(access_denied(&*refused), "{refused:?}");
-        let requests = world.stream.requests().since(before);
         assert_eq!(
-            (requests.data(), requests.control()),
-            (0, 0),
-            "a denied read touched storage"
+            before,
+            world.revision().await?,
+            "a revoked read committed a record"
         );
         world.owner.denied.store(false, Ordering::SeqCst);
         // A journal file outside the tool output prefix is never tool output.
@@ -622,7 +665,7 @@ impl World {
             );
         }
         // An agent outside the served admission is refused by the command admission.
-        let outside = read(AgentPath::root(&AgentId::from_bytes([9; 16])), path);
+        let outside = read(AgentPath::root(&AgentId::from_bytes(OUTSIDE)), path);
         let refused = refusal(call(&world.client, "agents", &outside).await, |reply| {
             format!("an agent outside the admission answered a read: {reply:?}")
         })?;
@@ -632,7 +675,7 @@ impl World {
             provider()?,
             "another-private".into(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
+            VolumeOwner::Agent(crate::AgentId::from_bytes(OUTSIDE)),
             &mut None,
         )?;
         let foreign = crate::conversation::FileRef::new(
@@ -794,7 +837,7 @@ impl World {
             );
         }
         // A foreign tree needs its own credential: refuse before dispatch.
-        let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
+        let stranger = AgentPath::root(&AgentId::from_bytes(OUTSIDE));
         let before = world.stream.requests();
         // The session's credential does not cover the stranger's actor, so the
         // refusal is the call's own, before any command reply.
@@ -976,6 +1019,12 @@ impl World {
     /// A closed input settles both live queries.
     async fn closed_input_settles(&self) -> Result {
         let world = self;
+        // The archive settles in the server's own step, so the server runs
+        // until both live queries have observed it.
+        let runner = {
+            let server = world.server.clone();
+            tokio::spawn(async move { server.run(|_, _| {}).await })
+        };
         call(
             &world.client,
             "agents",
@@ -1023,6 +1072,8 @@ impl World {
                 ..
             })
         ));
+        runner.abort();
+        let _ = runner.await;
         Ok(())
     }
 }
