@@ -1042,7 +1042,7 @@ function buildFile(p, graph) {
   const manifest = path.relative(root, p.manifest_path).replaceAll("\\", "/");
   const inheritedLints = toml(root, manifest).lints?.workspace === true;
   const checkCfg = checkCfgFlags(manifest, Object.keys(p.features).sort());
-  if (!graph && linkedUnits.size && (!lib?.test
+  if (!graph && linkedUnits.size && (!lib
     || [...linkedUnits].some(name => !integrationTests.some(target => target.name === name)))) {
     throw new Error(`STEP_FAILED bazel-build-files: ${p.name} linked-unit-tests must name test targets of a library suite`);
   }
@@ -1292,7 +1292,12 @@ ${platformSources.map(([platform, sources]) =>
     // A crate with unit tests compiles its library in test configuration; a crate whose
     // tests are all integration tests only links the library's rlib. rust_test does not inherit
     // compile_data.
-    if (!graph && lib.test && (libUnitTests || linkedUnits.size)) {
+    // A linked unit test is one of the library suite's targets. One whose sources include the library
+    // root (include!("lib.rs")) runs the library's own cases with the package binaries, so no library
+    // test target reruns them without: its cases would find no binaries.
+    const includesLibrary = !graph && [...linkedUnits].some(name =>
+      closure(dir(p), repoRelative(integrationTests.find(target => target.name === name))).has(repoRelative(lib)));
+    if (!graph && ((lib.test && libUnitTests) || linkedUnits.size)) {
       const unitName = `${crateName(lib)}_test`;
       // A crate's unit tests compile once, in one test configuration: `#[cfg(test)]` code exists
       // only in a test-config compile, so one compile per area would compile the whole crate per
@@ -1311,15 +1316,14 @@ ${platformSources.map(([platform, sources]) =>
         ...common(lib).filter(([k]) => k !== "rustc_env"),
         ...deps(["dev"]),
       ];
-      covered.add(`test ${lib.kind[0]} ${lib.name}`);
+      if (lib.test) covered.add(`test ${lib.kind[0]} ${lib.name}`);
       const reads = runtimeData(lib);
+      const unit = lib.test && libUnitTests && !includesLibrary;
       if (!linkedUnits.size) {
         test(unitName, testOnlySources.length ? unitAttrs() : linkedAttrs(), reads, {}, p.name, false, bazel?.["unit-test-shards"]);
       } else {
-        const data = [...reads, ...testData(p, unitName)];
-        const tools = testTools(p, unitName);
-        const areas = libUnitTests
-          ? [test(`${unitName}_internal`, testOnlySources.length ? unitAttrs() : linkedAttrs(), data, tools, p.name, false, bazel?.["unit-test-shards"])]
+        const areas = unit
+          ? [test(`${unitName}_internal`, testOnlySources.length ? unitAttrs() : linkedAttrs(), [...reads, ...testData(p, unitName)], testTools(p, unitName), p.name, false, bazel?.["unit-test-shards"])]
           : [];
         names.add(unitName);
         unitSuite = { name: unitName, tests: areas };

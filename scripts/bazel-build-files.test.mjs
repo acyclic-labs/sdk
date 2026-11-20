@@ -538,7 +538,7 @@ test("the generator refuses multiple integration binaries and repeated roots", (
   }
 });
 
-test("unit-test-only sources compile only in the one test-config target, and linked unit tests join its suite", () => {
+test("unit-test-only sources compile only in the one test-config target, and linked unit tests join its suite, without it when one includes the library", () => {
   const { root, run } = fixture();
   try {
     const manifest = join(root, "member/Cargo.toml");
@@ -583,6 +583,15 @@ test("unit-test-only sources compile only in the one test-config target, and lin
     assert.match(linked, /deps = \[\s+":member",/);
     assert.match(build, /name = "linked",\s+binary = ":linked_cases",\s+id = "member",/);
     assert.match(build, /test_suite\(\s+name = "member_test",\s+tests = \[\s+":member_test_internal",\s+":linked",\s*\]/);
+    // A linked target that includes the library root runs the library's cases with the package binaries,
+    // so no library test target reruns them, and the library needs no test = true.
+    writeFileSync(join(root, "member/tests/linked.rs"), 'include!("../src/lib.rs");\n');
+    writeFileSync(manifest, readFileSync(manifest, "utf8").replace("\n[package.metadata.bazel]\n", '\n[lib]\ntest = false\n\n[package.metadata.bazel]\n'));
+    const included = run("write");
+    assert.equal(included.status, 0, included.stderr);
+    const includedBuild = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    assert.doesNotMatch(includedBuild, /member_test_internal/);
+    assert.match(includedBuild, /test_suite\(\s+name = "member_test",\s+tests = \[\s+":linked",\s*\]/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
