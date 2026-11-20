@@ -1,20 +1,24 @@
 //! Session admission modes over the shared persistent source scheduler.
+#[cfg(test)]
 #[cfg(loom)]
 use super::sync::{AtomicU64, Ordering};
 use super::*;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 use crate::runtime::sources::OPENING;
-#[cfg(any(test, loom))]
+#[cfg(test)]
 use crate::runtime::sources::Wake;
 use crate::runtime::sources::{ALL, EITHER, LATEST};
-#[cfg(any(test, loom))]
+#[cfg(test)]
 use futures::task::ArcWake;
-#[cfg(any(test, loom))]
+#[cfg(test)]
 use std::task::{Context, Poll};
 
+#[cfg(test)]
 #[cfg(loom)]
 pub(super) mod model;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 pub(super) type Sources = crate::runtime::ReadySources<Source>;

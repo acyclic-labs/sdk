@@ -551,6 +551,7 @@ fn describe_commit(request: &CommitRequest) {
     });
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 impl LocalStream {
     fn receipt_for_flushed_snapshot(
@@ -583,7 +584,9 @@ fn flushed_watermarks(
     *durable = (*durable).max(accepted);
     let covered = accepted;
     #[cfg(loom)]
-    let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut) {
+    let covered = if acyclic_stream_contract::verification::fault_is(
+        acyclic_stream_contract::verification::Fault::MixedReceiptCut,
+    ) {
         *durable
     } else {
         covered

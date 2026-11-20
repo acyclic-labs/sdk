@@ -66,7 +66,8 @@ impl LocalStream {
     ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         let open_gate = {
             let mut hook = JOURNAL_OPEN_SUBMITTED
                 .lock()
@@ -90,7 +91,8 @@ impl LocalStream {
             "recover",
             PersistenceKey::new(root.as_os_str().as_encoded_bytes().as_ptr() as usize, 0),
             move || {
-                #[cfg(all(test, not(loom)))]
+                #[cfg(test)]
+                #[cfg(not(loom))]
                 if let Some((_, submitted, release)) = open_gate {
                     let _ = submitted.send(());
                     let _ = release.recv();
@@ -272,7 +274,7 @@ impl LocalStream {
     }
 
     /// Encodes the command and pins its recorded commit timestamp.
-    #[cfg(any(test, loom))]
+    #[cfg(test)]
     fn prepare(&self, command: &WriteRequest) -> Result<PreparedFrame, StreamError> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         let frame = PreparedFrame::encode(command, committed_at_millis, self.work.clone())
@@ -340,7 +342,7 @@ impl LocalStream {
     }
 
     /// Writes one frame through the same ordered owner as a journal batch.
-    #[cfg(any(test, loom))]
+    #[cfg(test)]
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
         self.persist_frames(std::iter::once(frame))
             .await
@@ -427,7 +429,8 @@ impl LocalStream {
                 // Publication owns this offset through completion. Journal
                 // metadata and earlier flush cuts remain available during I/O.
                 file.write(|file| {
-                    #[cfg(all(test, not(loom)))]
+                    #[cfg(test)]
+                    #[cfg(not(loom))]
                     pause_journal_write(&stream.inner.journal)?;
                     acyclic_native_runtime::persistence_syscall(|| {
                         Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
@@ -466,7 +469,7 @@ impl LocalStream {
         let submitted =
             acyclic_native_runtime::FileLease::submit("streams", "append", key, acquire, write);
         #[cfg(loom)]
-        let submitted = query_model::submit_file("streams", "append", key, acquire, write);
+        let submitted = loom_executor::submit_file("streams", "append", key, acquire, write);
         submitted.await.map_err(|_| {
             self.inner
                 .fail(LocalStreamFailure::new("write", "executor"))
@@ -477,8 +480,8 @@ impl LocalStream {
     // guard so the caller retains it through maintenance, exposing the stall.
     fn release_publication<G>(&self, publication: G) -> Option<G> {
         #[cfg(loom)]
-        if crate::verification::fault_is(
-            crate::verification::Fault::HoldPublicationDuringMaintenance,
+        if acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::HoldPublicationDuringMaintenance,
         ) {
             return Some(publication);
         }
@@ -509,7 +512,8 @@ impl LocalStream {
                     .journal
                     .lock()
                     .map_err(|_| LocalStreamError::Corrupt)?;
-                #[cfg(all(test, not(loom)))]
+                #[cfg(test)]
+                #[cfg(not(loom))]
                 {
                     let identity = Arc::as_ptr(&inner.journal) as usize;
                     let gate = {
@@ -671,7 +675,7 @@ impl LocalStream {
                     );
                     #[cfg(loom)]
                     let submitted =
-                        query_model::submit_file("streams", "flush", key, acquire, flush);
+                        loom_executor::submit_file("streams", "flush", key, acquire, flush);
                     let flushed = submitted.await.map_err(|_| {
                         self.inner
                             .fail(LocalStreamFailure::new("flush", "executor"))

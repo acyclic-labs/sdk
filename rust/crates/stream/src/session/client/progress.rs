@@ -4,10 +4,10 @@ const CANCELLED: u64 = 1;
 const OPENING_ADMITTED: u64 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Position {
-    pub(super) next: u64,
-    pub(super) opaque: Vec<u8>,
-    pub(super) preceding: Option<[u8; 32]>,
+pub struct Position {
+    pub next: u64,
+    pub opaque: Vec<u8>,
+    pub preceding: Option<[u8; 32]>,
 }
 struct State {
     position: Position,
@@ -17,7 +17,7 @@ struct State {
     track_records: bool,
     bootstrap: Option<(u64, [u8; 32])>,
 }
-pub(super) struct Progress {
+pub struct Progress {
     // Lock order: this is the only cursor lock. Never nest it with another
     // lock or hold it across an await; sequence, opaque cursor and checked
     // preceding commit form one cut. Received-but-unconsumed records never enter it.
@@ -30,12 +30,12 @@ pub(super) struct Progress {
     ended: AtomicU64,
 }
 impl Progress {
-    #[cfg(any(test, loom))]
-    pub(super) fn new(from: u64) -> Self {
+    #[cfg(test)]
+    pub fn new(from: u64) -> Self {
         Self::with_preceding(from, None)
     }
-    #[cfg(any(test, loom))]
-    pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
+    #[cfg(test)]
+    pub fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
         Self::from_cursor(
             &acyclic_stream_wire::wire::SessionCursor {
                 next: from,
@@ -44,7 +44,7 @@ impl Progress {
             preceding,
         )
     }
-    pub(super) fn from_cursor(
+    pub fn from_cursor(
         cursor: &acyclic_stream_wire::wire::SessionCursor,
         preceding: Option<[u8; 32]>,
     ) -> Self {
@@ -64,16 +64,16 @@ impl Progress {
             ended: AtomicU64::new(0),
         }
     }
-    pub(super) fn end(&self) {
+    pub fn end(&self) {
         self.ended.store(1, Ordering::Release);
     }
-    pub(super) fn ended(&self) -> bool {
+    pub fn ended(&self) -> bool {
         self.ended.load(Ordering::Acquire) != 0
     }
-    pub(super) fn cancel(&self) {
+    pub fn cancel(&self) {
         self.ownership.fetch_or(CANCELLED, Ordering::AcqRel);
     }
-    pub(super) fn cancel_and_remove(&self, removed: &super::signal::Signal<u64>, id: u64) {
+    pub fn cancel_and_remove(&self, removed: &super::signal::Signal<u64>, id: u64) {
         // Once cancellation is visible, the pool's next queue drain must see
         // this removal before admitting another route to the retiring dial.
         if removed
@@ -87,24 +87,24 @@ impl Progress {
             self.cancel();
         }
     }
-    pub(super) fn cancelled(&self) -> bool {
+    pub fn cancelled(&self) -> bool {
         self.ownership.load(Ordering::Acquire) & CANCELLED != 0
     }
-    pub(super) fn reset_opening(&self) {
+    pub fn reset_opening(&self) {
         self.ownership
             .fetch_and(!OPENING_ADMITTED, Ordering::AcqRel);
     }
-    pub(super) fn admit_opening(&self) -> bool {
+    pub fn admit_opening(&self) -> bool {
         self.ownership
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 (state & CANCELLED == 0).then_some(state | OPENING_ADMITTED)
             })
             .is_ok()
     }
-    pub(super) fn opening_admitted(&self) -> bool {
+    pub fn opening_admitted(&self) -> bool {
         self.ownership.load(Ordering::Acquire) & OPENING_ADMITTED != 0
     }
-    pub(super) fn next(&self) -> Result<u64, StreamError> {
+    pub fn next(&self) -> Result<u64, StreamError> {
         Ok(self
             .state
             .lock()
@@ -112,7 +112,7 @@ impl Progress {
             .position
             .next)
     }
-    pub(super) fn fence(&self) -> Result<u64, StreamError> {
+    pub fn fence(&self) -> Result<u64, StreamError> {
         let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
         state.generation = state
             .generation
@@ -120,16 +120,16 @@ impl Progress {
             .ok_or(StreamError::Capacity)?;
         Ok(state.generation)
     }
-    pub(super) fn position(&self) -> Result<(u64, Vec<u8>), StreamError> {
+    pub fn position(&self) -> Result<(u64, Vec<u8>), StreamError> {
         let position = self.subscription()?;
         Ok((position.next, position.opaque))
     }
-    pub(super) fn subscription(&self) -> Result<Position, StreamError> {
+    pub fn subscription(&self) -> Result<Position, StreamError> {
         let state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
         Ok(state.position.clone())
     }
     /// The committed continuation of an indexed read, if one advanced.
-    pub(super) fn read(
+    pub fn read(
         &self,
     ) -> Result<Option<(acyclic_stream_wire::wire::ReadKeySeek, u64)>, StreamError> {
         Ok(self
@@ -139,7 +139,7 @@ impl Progress {
             .read
             .clone())
     }
-    pub(super) fn continue_read(
+    pub fn continue_read(
         &self,
         read: (acyclic_stream_wire::wire::ReadKeySeek, u64),
     ) -> Result<(), StreamError> {
@@ -149,7 +149,7 @@ impl Progress {
             .read = Some(read);
         Ok(())
     }
-    pub(super) fn consume_record(
+    pub fn consume_record(
         &self,
         generation: u64,
         sequence: u64,
@@ -159,7 +159,7 @@ impl Progress {
     }
     /// Admit only the original selected head's jump, without acknowledging its
     /// delivery. An absent/filtered head already proves the selected prefix.
-    pub(super) fn select_bootstrap(
+    pub fn select_bootstrap(
         &self,
         generation: u64,
         selection: &crate::StreamSelection,
@@ -190,7 +190,7 @@ impl Progress {
             Ok(selection.from)
         }
     }
-    pub(super) fn current(&self, generation: u64) -> Result<bool, StreamError> {
+    pub fn current(&self, generation: u64) -> Result<bool, StreamError> {
         Ok(self
             .state
             .lock()
@@ -198,14 +198,14 @@ impl Progress {
             .generation
             == generation)
     }
-    pub(super) fn track_records(&self) -> Result<(), StreamError> {
+    pub fn track_records(&self) -> Result<(), StreamError> {
         self.state
             .lock()
             .map_err(|_| StreamError::Unavailable)?
             .track_records = true;
         Ok(())
     }
-    pub(super) fn consume_progress(
+    pub fn consume_progress(
         &self,
         generation: u64,
         next: u64,
@@ -222,11 +222,7 @@ impl Progress {
         }
         Ok(true)
     }
-    pub(super) fn consume_latest(
-        &self,
-        generation: u64,
-        sequence: u64,
-    ) -> Result<bool, StreamError> {
+    pub fn consume_latest(&self, generation: u64, sequence: u64) -> Result<bool, StreamError> {
         self.consume_cut(generation, sequence, &[], None, true)
     }
     fn consume_cut(
@@ -265,7 +261,7 @@ impl Progress {
     }
 }
 
-pub(super) fn allocate(counter: &AtomicU64) -> Result<u64, StreamError> {
+pub fn allocate(counter: &AtomicU64) -> Result<u64, StreamError> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(2)
@@ -273,6 +269,7 @@ pub(super) fn allocate(counter: &AtomicU64) -> Result<u64, StreamError> {
         .map_err(|_| StreamError::Capacity)
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 #[path = "progress/model.rs"]
 mod model;
@@ -280,5 +277,6 @@ mod model;
 #[cfg(not(loom))]
 #[path = "progress/tests.rs"]
 mod tests;
+#[cfg(test)]
 #[cfg(loom)]
 pub use model::verify_latest_progress;

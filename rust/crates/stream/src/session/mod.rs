@@ -23,6 +23,7 @@ mod authority;
 pub use authority::testing;
 pub use authority::{Authority, AuthorityState, TrustSnapshot};
 mod sources;
+#[cfg(test)]
 #[cfg(loom)]
 pub use sources::model::{
     verify_reserved_capacity, verify_source_disabled, verify_source_recheck,
@@ -42,7 +43,8 @@ pub use sockets::{
     PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
 };
 mod client;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 pub(crate) mod fixture {
     use crate as acyclic_stream;
     include!(concat!(
@@ -55,6 +57,7 @@ pub use read_provider::ReadProvider;
 mod connection;
 mod local;
 pub use connection::Connections;
+#[cfg(test)]
 #[cfg(loom)]
 pub use connection::{verify_connection_retirement, verify_connections};
 mod frame;
@@ -74,6 +77,7 @@ pub use client::{
     ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, CallInputSender,
     Client,
 };
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open,
@@ -81,15 +85,18 @@ pub use client::{
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
     verify_registration_cancellation, verify_terminal_cursor_dial,
 };
+#[cfg(test)]
 #[cfg(loom)]
 pub use client::{verify_admission_binding, verify_admission_cancellation};
 #[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
 const RECEIVE_FRAMES: usize = 2;
+#[cfg(test)]
 #[cfg(loom)]
 pub use client::verify_latest_progress;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 

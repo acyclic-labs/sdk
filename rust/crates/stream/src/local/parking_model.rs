@@ -53,7 +53,7 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
         drop(held);
         // A later reader must also progress behind that writer.
         drop(follow_model::park(writer.inner.publication.read()));
-        assert_eq!(block_on(follow.next()), Some(Ok(())));
+        assert!(matches!(block_on(follow.next()), Some(Ok(()))));
         drop(ManuallyDrop::into_inner(follow));
         drop(ManuallyDrop::into_inner(writer));
         drop(ManuallyDrop::into_inner(keeper));
@@ -62,7 +62,7 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
 
 // Every consumer departure from a real dispatched job on the publication lock.
 pub(crate) fn abandon(
-    departure: crate::snapshot::model::Departure,
+    departure: crate::departure_model::Departure,
     mutant: crate::snapshot::model::Mutant,
 ) {
     loom::model(move || {
@@ -91,7 +91,7 @@ pub(crate) fn abandon(
         };
         eprintln!("snapshot local progress: stage=reservation departure={departure:?}");
         let held = block_on(provider.inner.publication.write());
-        crate::snapshot::model::depart(
+        crate::departure_model::depart(
             follow,
             held,
             || provider.inner.publication.try_write().is_ok(),

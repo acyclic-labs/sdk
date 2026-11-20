@@ -99,7 +99,7 @@ impl futures::Stream for Input {
     }
 }
 
-#[cfg(any(test, loom))]
+#[cfg(test)]
 pub(super) fn endpoint(
     channel: TransportChannel,
     authorization: Option<MetadataValue<Ascii>>,
@@ -199,7 +199,8 @@ impl transport::Transport for Grpc {
 }
 
 impl Client {
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     pub(crate) fn open(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
@@ -249,7 +250,8 @@ impl Client {
         )
     }
 
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     pub(super) fn with_connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,

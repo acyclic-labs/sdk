@@ -57,5 +57,6 @@ mod checked {
 }
 #[cfg(loom)]
 pub use checked::Mutex;
-#[cfg(all(loom, test))]
+#[cfg(test)]
+#[cfg(loom)]
 pub use checked::assert_unlocked;

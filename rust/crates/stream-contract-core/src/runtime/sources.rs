@@ -163,10 +163,13 @@ pub struct Wake<N: SourceWake = ()> {
     pub signal: Arc<signal::Signal<wire::SessionChannel>>,
     /// The provider's own wake, if it has one.
     pub reader: N,
+    /// Loom mutant: a fresh hint skips the owner's signal.
     #[cfg(loom)]
     pub omit_signal: bool,
+    /// Loom mutant: the queued hint clears after the provider recheck.
     #[cfg(loom)]
     pub clear_after_recheck: bool,
+    /// Loom mutant: clearing the hint releases without acquiring.
     #[cfg(loom)]
     pub release_only: bool,
 }

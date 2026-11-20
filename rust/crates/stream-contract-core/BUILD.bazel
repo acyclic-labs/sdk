@@ -55,6 +55,7 @@ rust_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/lib/path_text_tests.rs","src/native/request/tests.rs","src/owned_bytes/header_tests.rs","src/owned_bytes/tests.rs","src/preparation/tests.rs","src/query_sync/parity.rs","src/record_header_tests.rs","src/record_headers/prepared/controls/tests.rs","src/record_headers/prepared/tests.rs"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
+        "//rust/crates/stream/publication-models:probe.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     tags = ["resources:memory:768"],
@@ -117,6 +118,7 @@ rust_test(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
+        "//rust/crates/stream/publication-models:probe.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
@@ -231,6 +233,7 @@ rust_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/lib/path_text_tests.rs","src/native/request/tests.rs","src/owned_bytes/header_tests.rs","src/owned_bytes/tests.rs","src/preparation/tests.rs","src/query_sync/parity.rs","src/record_header_tests.rs","src/record_headers/prepared/controls/tests.rs","src/record_headers/prepared/tests.rs"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
+        "//rust/crates/stream/publication-models:probe.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     tags = ["resources:memory:768"],

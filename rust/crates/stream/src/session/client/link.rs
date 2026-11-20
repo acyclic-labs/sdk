@@ -124,7 +124,7 @@ impl Pool {
         let subscription = match route.subscription(owner, &crate::RevisionCut::default()) {
             Ok(subscription) => subscription,
             Err(error) => {
-                self.reject(owner, error);
+                self.reject(owner, &error);
                 return;
             }
         };
@@ -278,7 +278,7 @@ impl Pool {
         let subscription = match route.subscription(id, served) {
             Ok(subscription) => subscription,
             Err(error) => {
-                self.reject(id, error);
+                self.reject(id, &error);
                 return Ok(());
             }
         };
@@ -300,7 +300,7 @@ impl Pool {
         let bytes = value.encoded_len();
         match link.sender.push(value, bytes) {
             Ok(()) => link.revision = revision,
-            Err(error) => self.reject(id, error),
+            Err(error) => self.reject(id, &error),
         }
         Ok(())
     }
@@ -433,7 +433,7 @@ impl Pool {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in interrupted {
-            self.reject(id, StreamError::Unavailable);
+            self.reject(id, &StreamError::Unavailable);
         }
         // The authenticated discovery endpoint may now host a replacement
         // node. Rediscover there without retaining the previous destination;

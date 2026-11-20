@@ -72,6 +72,7 @@ build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/strea
 build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/verification/sdk-fixtures:@--cfg=loom
 build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract:@--cfg=loom
 build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract-core:@--cfg=loom
+build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream-contract-engine:@--cfg=loom
 # `--config=fuzz-smoke` builds a fuzz target with libFuzzer's sanitizer coverage, as the fuzz READMEs'
 # RUSTFLAGS do under Cargo. The prefix `//` matches every crate in this repository, so the code under
 # test is instrumented, and no build script, which does not link the libFuzzer runtime. Registry crates

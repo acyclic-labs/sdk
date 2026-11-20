@@ -13,10 +13,11 @@ pub(super) fn queue_error<T>(error: &mpsc::error::TrySendError<T>) -> StreamErro
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 #[cfg(not(target_arch = "wasm32"))]
 use crate::grpc::ChannelConnector as Connect;
-#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
@@ -46,25 +47,31 @@ type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
 mod routes;
+#[cfg(test)]
 #[cfg(loom)]
 pub use admissions::{verify_admission_binding, verify_admission_cancellation};
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use cache::verify_cache;
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_cancelled_queued_open,
     verify_follow_data, verify_interest_accounting, verify_link_isolation, verify_node_dials,
     verify_pool_lifetime, verify_registration_cancellation, verify_terminal_cursor_dial,
 };
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
 use routes::Routes;
 mod progress;
 use progress::Progress;
+#[cfg(test)]
 #[cfg(loom)]
 pub use progress::verify_latest_progress;
 // The client tests drive the native gRPC transport; they are not loom models.
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 type Ready = (String, Link, Response);

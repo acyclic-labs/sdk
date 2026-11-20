@@ -385,7 +385,8 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[tokio::test]
 pub(super) async fn selected_child_tails_preserve_missing_empty_and_original_record_cut()
 -> Result<(), Box<dyn std::error::Error>> {

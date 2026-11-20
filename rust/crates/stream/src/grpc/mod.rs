@@ -28,13 +28,17 @@ use acyclic_stream_wire::wire;
 
 mod client;
 #[cfg(test)]
+#[cfg(not(loom))]
 mod credential_tests;
 #[cfg(test)]
+#[cfg(not(loom))]
 use crate::StreamPath;
 #[cfg(test)]
+#[cfg(not(loom))]
 mod receipt_tests;
 mod server;
 #[cfg(test)]
+#[cfg(not(loom))]
 pub(crate) mod tests;
 
 /// Connection configuration failure.

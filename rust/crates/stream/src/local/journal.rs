@@ -308,7 +308,8 @@ impl Journal {
     }
 
     /// Whether frames were written since the journal last flushed.
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     fn unflushed(&self) -> bool {
         self.appended > self.synced
     }

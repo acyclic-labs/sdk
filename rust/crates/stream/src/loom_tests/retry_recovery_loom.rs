@@ -1,8 +1,7 @@
 //! The original lost-ack recovery history, against the Stream primitive itself.
-#![cfg(loom)]
 
-use acyclic_stream::{AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, StreamPath};
-use acyclic_stream::{StreamProvider, StreamProviderExt as _};
+use crate::{AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, StreamPath};
+use crate::{StreamProvider, StreamProviderExt as _};
 use futures::{Stream as _, StreamExt as _};
 use loom::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,8 +16,8 @@ impl Wake for Pushed {
 }
 
 fn lost_ack_restart_and_append(replace_retry_key: bool) {
-    acyclic_stream::verification::check(move || {
-        use acyclic_stream::verification::block_on;
+    crate::verification::check(move || {
+        use crate::verification::block_on;
 
         let path = StreamPath::new("inbox")?;
         let request = AppendRequest {
@@ -31,7 +30,7 @@ fn lost_ack_restart_and_append(replace_retry_key: bool) {
         // The publication commits before its caller loses the acknowledgement.
         let original = block_on(retained.append(request.clone()))?;
         let restarted = MemoryStream::default();
-        block_on(acyclic_stream::verification::recover(&restarted, &retained))?;
+        block_on(crate::verification::recover(&restarted, &retained))?;
         let first = block_on(restarted.append(request.clone()))?;
         let (AppendOutcome::Committed(before), AppendOutcome::Committed(after)) =
             (&original, &first)
@@ -54,8 +53,8 @@ fn lost_ack_restart_and_append(replace_retry_key: bool) {
             "recovery changed the immutable envelope"
         );
         drop(retained);
-        let mut follow = acyclic_stream::records_only(block_on(
-            restarted.follow(acyclic_stream::FollowRequest::new(path.clone(), 1)),
+        let mut follow = crate::records_only(block_on(
+            restarted.follow(crate::FollowRequest::new(path.clone(), 1)),
         )?);
         let pushed = Arc::new(Pushed(AtomicBool::new(false)));
         let waker = Waker::from(pushed.clone());
@@ -89,8 +88,8 @@ fn lost_ack_restart_and_append(replace_retry_key: bool) {
         assert_eq!(delivered.sequence, 1);
         assert_eq!(delivered.value.as_slice(), b"concurrent");
         assert_eq!(block_on(restarted.tail(path.clone()))?, 2);
-        let mut history = acyclic_stream::records_only(block_on(
-            restarted.follow(acyclic_stream::FollowRequest::new(path, 0)),
+        let mut history = crate::records_only(block_on(
+            restarted.follow(crate::FollowRequest::new(path, 0)),
         )?);
         let original = block_on(history.next()).ok_or("restored record missing")??;
         assert_eq!(original.sequence, 0);

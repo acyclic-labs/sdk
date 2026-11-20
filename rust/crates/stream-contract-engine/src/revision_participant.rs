@@ -56,7 +56,8 @@ impl ObservedAuthority {
 }
 
 // Loom schedules of the authority participant (ACYCLIC_LOOM=1 with model-checking).
-#[cfg(all(loom, test))]
+#[cfg(test)]
+#[cfg(loom)]
 fn verify_concurrent_frontier(replace_maximum: bool) {
     loom::model(move || {
         let first = Revision {
@@ -111,13 +112,15 @@ fn verify_concurrent_frontier(replace_maximum: bool) {
     });
 }
 
-#[cfg(all(loom, test))]
+#[cfg(test)]
+#[cfg(loom)]
 #[test]
 fn concurrent_replies_cannot_lower_a_retained_frontier() {
     verify_concurrent_frontier(false);
 }
 
-#[cfg(all(loom, test))]
+#[cfg(test)]
+#[cfg(loom)]
 #[test]
 #[should_panic(expected = "a late reply lowered the required frontier")]
 fn replacing_atomic_maximum_exposes_a_late_reply() {

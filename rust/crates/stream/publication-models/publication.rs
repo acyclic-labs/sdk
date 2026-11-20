@@ -14,9 +14,9 @@ pub use error::{StreamCategory, StreamError};
 #[path = "../../stream-contract-core/src/change.rs"]
 mod change;
 #[path = "../../stream-contract-core/src/interest.rs"]
-mod interest;
+pub mod interest;
 mod probe;
-#[path = "../../stream-contract-core/src/pull.rs"]
+#[path = "../../stream-contract-engine/src/pull.rs"]
 mod pull;
 #[path = "../../stream-contract-core/src/query_sync.rs"]
 pub mod query_sync;

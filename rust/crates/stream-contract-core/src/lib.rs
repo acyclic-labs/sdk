@@ -29,6 +29,7 @@ pub mod interest;
 pub use follow_filter::FollowFilter;
 mod operation_claim;
 pub mod preparation;
+#[doc(hidden)]
 pub mod query_sync;
 pub mod request;
 pub mod runtime;
@@ -38,6 +39,11 @@ pub mod trace;
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod verification;
+// The publication models in change and interest wake through this probe.
+#[cfg(test)]
+#[cfg(loom)]
+#[path = "../../stream/publication-models/probe.rs"]
+mod probe;
 pub use operation_claim::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
 };

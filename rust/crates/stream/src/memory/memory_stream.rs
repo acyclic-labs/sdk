@@ -145,8 +145,17 @@ impl MemoryStream {
     }
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 impl MemoryStream {
+    /// A default ledger whose follows keep (or, as a mutant, retain) pending reads.
+    pub(crate) fn retaining_pending_reads(retain_pending_read: bool) -> Self {
+        Self {
+            retain_pending_read,
+            ..Self::default()
+        }
+    }
+
     pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
         self.state.write().await
     }

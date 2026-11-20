@@ -53,12 +53,18 @@ impl Admissions {
     }
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "admissions/tests.rs"]
 mod tests;
 
+#[cfg(test)]
 #[cfg(loom)]
 /// Withdrawal must precede visible cancellation even while home is rebound.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_admission_cancellation(broken: bool) {
     loom::model(move || {
         let admissions = Arc::new(Admissions::new());
@@ -87,8 +93,13 @@ pub fn verify_admission_cancellation(broken: bool) {
     });
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 /// Home binding and admission registration serialize on the same real lock.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_admission_binding(broken: bool) {
     loom::model(move || {
         let admissions = Arc::new(Admissions::new());

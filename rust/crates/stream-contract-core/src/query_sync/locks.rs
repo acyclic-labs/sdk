@@ -45,7 +45,9 @@ impl Access {
             if self.writer || (waiter.write && self.readers != 0) {
                 break;
             }
-            let waiter = self.waiters.pop_front().unwrap();
+            let Some(waiter) = self.waiters.pop_front() else {
+                break;
+            };
             if waiter.write {
                 self.writer = true;
             } else {
@@ -97,12 +99,11 @@ impl Gate {
                     registration.id = None;
                     return Poll::Ready(Permit { gate: self, write });
                 }
-                let waiter = access
-                    .waiters
-                    .iter_mut()
-                    .find(|waiter| waiter.id == id)
-                    .unwrap();
-                waiter.waker = cx.waker().clone();
+                // A registered permit is granted or waiting; a lost waiter
+                // leaves this task unwoken, which Loom reports as a deadlock.
+                if let Some(waiter) = access.waiters.iter_mut().find(|waiter| waiter.id == id) {
+                    waiter.waker = cx.waker().clone();
+                }
             } else if access.available(write) {
                 if write {
                     access.writer = true;
@@ -153,12 +154,7 @@ impl Drop for Registration<'_> {
                 .unwrap_or_else(|poison| poison.into_inner());
             if let Some(position) = access.waiters.iter().position(|waiter| waiter.id == id) {
                 access.waiters.remove(position);
-            } else {
-                let position = access
-                    .granted
-                    .iter()
-                    .position(|entry| entry.0 == id)
-                    .unwrap();
+            } else if let Some(position) = access.granted.iter().position(|entry| entry.0 == id) {
                 let (_, write) = access.granted.remove(position);
                 access.release(write);
             }

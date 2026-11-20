@@ -598,7 +598,9 @@ impl MemoryStream {
             let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
             // Old behaviour, for negative controls only: the conflict spends the key.
             #[cfg(all(loom, not(target_arch = "wasm32")))]
-            if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
+            if acyclic_stream_contract::verification::fault_is(
+                acyclic_stream_contract::verification::Fault::RetainConflictKey,
+            ) {
                 admit_replay(state, self.limits)?;
                 state
                     .retained
@@ -1033,15 +1035,16 @@ fn stage_namespace(
                     .ok_or(StreamError::NotFound)?
                     .clone();
                 #[cfg(all(loom, not(target_arch = "wasm32")))]
-                let subtree =
-                    if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
-                        build.node(subtree.data.clone(), None, subtree.origin.clone())?
-                    } else {
-                        subtree
-                    };
+                let subtree = if acyclic_stream_contract::verification::fault_is(
+                    acyclic_stream_contract::verification::Fault::RootOnlyFork,
+                ) {
+                    build.node(subtree.data.clone(), None, subtree.origin.clone())?
+                } else {
+                    subtree
+                };
                 #[cfg(all(loom, not(target_arch = "wasm32")))]
-                let excludes = if crate::verification::fault_is(
-                    crate::verification::Fault::IgnoreForkExclusions,
+                let excludes = if acyclic_stream_contract::verification::fault_is(
+                    acyclic_stream_contract::verification::Fault::IgnoreForkExclusions,
                 ) {
                     &[][..]
                 } else {
@@ -1140,7 +1143,9 @@ fn install_namespace(
             CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
         };
         #[cfg(all(loom, not(target_arch = "wasm32")))]
-        let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
+        let notify = !acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::OmitAppendWake,
+        );
         #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {

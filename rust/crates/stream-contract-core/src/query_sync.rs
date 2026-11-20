@@ -1,5 +1,6 @@
 //! Synchronization used by stream publication and observation.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "query_sync/parity.rs"]
 pub mod parity;
 

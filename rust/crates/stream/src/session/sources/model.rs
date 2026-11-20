@@ -11,6 +11,10 @@ impl ArcWake for Root {
 }
 
 /// Explores provider publication racing source and session waiter registration.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_source_wakes(omit_signal: bool) {
     loom::model(move || {
         let identity = wire::SessionChannel {
@@ -88,6 +92,10 @@ pub fn verify_source_wakes(omit_signal: bool) {
 
 /// Repeated/coalesced wakes can be spurious: the provider may recheck Pending.
 /// Both notifications and rechecks use the production source scheduler.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_source_recheck(fault: u8) {
     if fault == 2 {
         return visibility::verify(true);

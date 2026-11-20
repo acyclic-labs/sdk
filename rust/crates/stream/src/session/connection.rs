@@ -116,8 +116,13 @@ impl Drop for Change<'_> {
     }
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 /// Explores handshake publication concurrent with a waiter parking or cancelling.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_connections(omit_wake: bool) {
     loom::model(move || {
         use futures::task::{ArcWake, waker};
@@ -165,8 +170,13 @@ pub fn verify_connections(omit_wake: bool) {
     });
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 /// Explores retirement against actual registration, cancellation and late waits.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_connection_retirement(omit_retirement: bool) {
     loom::model(move || {
         use futures::task::{ArcWake, waker};

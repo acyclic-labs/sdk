@@ -171,7 +171,7 @@ proptest::proptest! {
                     1 => {
                         let result = queue.poll(&mut Context::from_waker(&wake));
                         if closed { assert_eq!(result.map_err(|error| error.category()), Poll::Ready(Err(StreamCategory::Unavailable))); }
-                        else if let Some(value) = expected.pop_front() { used -= value; assert_eq!(result, Poll::Ready(Ok(value))); }
+                        else if let Some(value) = expected.pop_front() { used -= value; assert_eq!(result.map_err(|error| error.category()), Poll::Ready(Ok(value))); }
                         else { assert!(result.is_pending()); }
                     }
                     _ => { queue.close().unwrap(); expected.clear(); used = 0; closed = true; }

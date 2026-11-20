@@ -1,9 +1,10 @@
 //! Bounded crash-recoverable local Stream provider.
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 use crate::NativeStreamProvider as _;
 
-#[cfg(any(test, loom))]
+#[cfg(test)]
 use crate::StreamProviderExt as _;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
@@ -12,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 use crate::{ForkRequest, OwnedBytes as Bytes};
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
@@ -22,19 +24,21 @@ use acyclic_native_runtime::{Durability, OwnershipAnchor, PersistenceKey, sync_p
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(loom)]
-use query_model::{spawn, spawn_blocking};
+use loom_executor::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 #[cfg(all(not(loom), not(any(test, feature = "test-support"))))]
 use tokio::spawn;
 use tokio::sync::mpsc;
 
+#[cfg(test)]
 #[cfg(loom)]
 pub(crate) mod parking_model;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod snapshot_ready;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
@@ -67,38 +71,52 @@ const INCARNATION_TEMPORARY: &str = "stream.incarnation.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
+#[cfg(test)]
 #[cfg(loom)]
 pub(crate) mod compaction_model;
+#[cfg(test)]
 #[cfg(loom)]
 pub(crate) mod follow_model;
 #[cfg(loom)]
+pub(crate) mod loom_executor;
+#[cfg(test)]
+#[cfg(loom)]
 pub(crate) mod query_model;
+#[cfg(test)]
 #[cfg(loom)]
 pub(crate) mod receipt_model;
+#[cfg(test)]
 #[cfg(loom)]
 pub(crate) mod replay_model;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 type JournalOpenGate = (
     PathBuf,
     tokio::sync::oneshot::Sender<()>,
     std::sync::mpsc::Receiver<()>,
 );
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<JournalOpenGate>> = Mutex::new(None);
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 type JournalPersistBlocker = (
     usize,
     tokio::sync::oneshot::Sender<()>,
     std::sync::mpsc::Receiver<()>,
 );
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 static JOURNAL_FLUSHED_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 static JOURNAL_WRITE_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 fn pause_journal_write(journal: &Arc<Mutex<Journal>>) -> std::io::Result<()> {
     let identity = Arc::as_ptr(journal) as usize;
     let blocker = {
@@ -123,10 +141,12 @@ fn pause_journal_write(journal: &Arc<Mutex<Journal>>) -> std::io::Result<()> {
     Ok(())
 }
 // Lock order: journal -> test hook; release the hook before a device-gate wait.
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 include!("storage.rs");

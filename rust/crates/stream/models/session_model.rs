@@ -14,7 +14,7 @@ mod checked;
 mod eager;
 mod native_registration;
 #[path = "../src/session/client/progress.rs"]
-mod progress;
+pub mod progress;
 mod outbound {
     include!("../src/session/client/outbound.rs");
     include!("outbound.rs");
@@ -23,7 +23,7 @@ mod gate {
     include!("../src/session/gate.rs");
     include!("gate.rs");
 }
-pub(crate) mod signal {
+pub mod signal {
     include!("../../stream-contract-core/src/runtime/signal.rs");
     include!("signal.rs");
 }
@@ -246,17 +246,5 @@ fn allocate(broken: bool) {
             );
             assert_eq!(ids.len(), if start == 1 { 2 } else { 1 });
         });
-    }
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
-    // Reserving a maximum-record slot keeps one independently credited channel
-    // admissible while every uncredited/latest channel is backpressured.
-    #[test]
-    fn reserved_capacity_is_available_only_to_credited_channels(
-        frames in 2_usize..1024, largest in 1_usize..65536,
-    ) {
-        acyclic_stream::session::verify_reserved_capacity(frames, largest);
     }
 }

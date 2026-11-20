@@ -2,13 +2,15 @@ use super::*;
 use crate::StreamCategory;
 
 // The pool fixtures and searches drive the native gRPC transport.
-#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(super) mod fixture;
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(super) mod model;
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod ordering;
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(super) mod retry_model;
 #[cfg(test)]
@@ -73,7 +75,7 @@ impl Pool {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in stale {
-            self.reject(id, StreamError::Unavailable);
+            self.reject(id, &StreamError::Unavailable);
         }
         Ok(())
     }
@@ -111,7 +113,7 @@ impl Pool {
                             .get(&opening.channel_id)
                             .is_some_and(|route| !route.resumable())
                     {
-                        self.reject(opening.channel_id, StreamError::Unavailable);
+                        self.reject(opening.channel_id, &StreamError::Unavailable);
                     }
                     ready.0.clone()
                 } else {
@@ -583,7 +585,7 @@ impl Pool {
             }
             Some(Body::Moved(moved)) => {
                 if !route.resumable() {
-                    self.reject(id, StreamError::Unavailable);
+                    self.reject(id, &StreamError::Unavailable);
                     return Ok(());
                 }
                 let destination = moved.node.ok_or(StreamError::Unavailable)?;
@@ -892,9 +894,9 @@ impl Pool {
         }));
     }
 
-    pub(super) fn reject(&mut self, id: u64, error: StreamError) {
+    pub(super) fn reject(&mut self, id: u64, error: &StreamError) {
         if let Some(route) = self.routes.remove(&id) {
-            self.fail_route(route, &error);
+            self.fail_route(route, error);
         }
     }
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
@@ -946,5 +948,6 @@ pub(super) fn poll_dials(
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod filtered_credit_tests;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod credential_ownership_tests;

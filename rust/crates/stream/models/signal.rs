@@ -1,3 +1,4 @@
+use std::task::Poll;
 #[test]
 fn delivery_registration_cannot_lose_a_wakeup() {
     registration(0);
@@ -39,10 +40,10 @@ fn registration(broken: u8) {
             let mut state = signal.state.lock().unwrap();
             state.0.push_back(7_u8);
             let wake = state.1.take();
-            if broken == 2 {
-                if let Some(wake) = wake {
-                    wake.wake();
-                }
+            if broken == 2
+                && let Some(wake) = wake
+            {
+                wake.wake();
             }
         } else {
             signal.send(7_u8).unwrap();

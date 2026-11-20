@@ -1,7 +1,8 @@
 use super::*;
 use crate::StreamCategory;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn private_namespace_pages_preserve_public_ranks() -> Result<(), Failure> {
     verify(&crate::MemoryStream::default()).await

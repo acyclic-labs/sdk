@@ -45,6 +45,10 @@ impl transport::Transport for Peer {
 
 /// The real reconnect must yield before retrying an unopened subscription,
 /// including when clock release races its owner's withdrawal and late Welcome.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_initial_retry_yield(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

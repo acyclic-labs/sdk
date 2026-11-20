@@ -32,7 +32,7 @@ pub(super) fn verify(release_only: bool) {
                 identity,
                 Ok(Event::Record(crate::Record {
                     sequence: 0,
-                    value: vec![current as u8].into(),
+                    value: vec![u8::try_from(current).unwrap()].into(),
                     commit_id: crate::CommitId::from_bytes([7; 32]),
                     committed_at_micros: 0,
                     origin: crate::StreamPath::new("origin").unwrap(),

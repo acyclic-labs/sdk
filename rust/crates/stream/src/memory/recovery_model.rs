@@ -1,4 +1,5 @@
 use super::*;
+use crate::OwnedBytes as Bytes;
 use crate::StreamCategory;
 use futures::StreamExt as _;
 use futures::TryFutureExt as _;
@@ -22,12 +23,6 @@ fn expect_model_failure(run: impl FnOnce(), expected: &str) {
         .or_else(|| error.downcast_ref::<&str>().copied())
         .expect("model failure message");
     assert!(message.contains(expected), "{message}");
-}
-
-impl UnixMillisClock for loom::sync::atomic::AtomicU64 {
-    fn now_unix_millis(&self) -> u64 {
-        self.load(std::sync::atomic::Ordering::SeqCst)
-    }
 }
 
 /// Drives the real state machine with the same executor as snapshot workers.
@@ -143,7 +138,7 @@ fn subscription_and_append(omit_wake: bool) {
                     bootstrap_head: false,
                     until: None,
                     when_absent: Default::default(),
-                    path: path,
+                    path,
                     from: 1,
                     preceding: Some(anchor),
                     filter: crate::FollowFilter::default(),
@@ -188,7 +183,7 @@ fn subscription_and_recovery(retain_old: bool) {
                     bootstrap_head: false,
                     until: None,
                     when_absent: Default::default(),
-                    path: path,
+                    path,
                     from: 1,
                     preceding: Some(anchor),
                     filter: crate::FollowFilter::default(),
@@ -259,7 +254,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
         block_on(provider.commit(request))?;
         recovery.join().map_err(|_| "recovery panicked")??;
         assert_eq!(
-            block_on(provider.tail(path)),
+            block_on(provider.tail(path)).map_err(|error| error.category()),
             Ok(1),
             "obsolete generation published"
         );
@@ -414,8 +409,13 @@ pub fn snapshot_executor_shutdown(discard: bool, checked: bool, cancel: bool, po
 
 /// Every consumer departure from real dispatched snapshot jobs, on the memory
 /// provider state lock and the local publication lock, under one mutant.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn snapshot_consumer_departures(mutant: &str) {
-    use crate::snapshot::model::{Departure, Mutant};
+    use crate::departure_model::Departure;
+    use crate::snapshot::model::Mutant;
     let mutant = match mutant {
         "none" => Mutant::None,
         "leak-reservation" => Mutant::LeakReservation,
@@ -469,6 +469,10 @@ pub(crate) fn probe() -> (std::sync::Arc<Probe>, std::task::Waker) {
 
 /// Explores one subtree fork racing a two-stream coordinated write.
 /// Both inherited heads must come from one commit cut.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn subtree_cut(root_only: bool) {
     check_with_bound(Some(2), move || {
         let provider = MemoryStream::default();
@@ -541,6 +545,10 @@ pub fn subtree_cut(root_only: bool) {
 }
 
 /// The old fork API has no exclusions: an existing sibling leaks into the child.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn subtree_exclusions(ignore: bool) {
     check_with_bound(Some(1), move || {
         let provider = MemoryStream::default();
@@ -561,8 +569,9 @@ pub fn subtree_exclusions(ignore: bool) {
             idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         assert_eq!(
-            block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)),
-            Err(StreamError::NotFound),
+            block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?))
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound),
             "excluded sibling must not leak into the fork"
         );
         assert_eq!(
@@ -592,6 +601,10 @@ pub fn page_tail_bytes(ignore: bool) {
 }
 
 /// Projection must keep both statuses from the same coordinated publication.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn page_tail_cut(split_reads: bool) {
     check_with_bound(Some(2), move || {
         let provider = MemoryStream::default();
@@ -626,7 +639,6 @@ pub fn page_tail_cut(split_reads: bool) {
             }
         });
         let projection = thread::spawn({
-            let provider = provider.clone();
             move || {
                 let request = crate::ChildrenPageRequest {
                     offset: 0,
@@ -724,6 +736,10 @@ pub fn agent_fork_lineage(root_only: bool) {
 /// A conditional commit racing an unconditional writer either commits under
 /// its key or conflicts without spending it; one stable key then succeeds at
 /// the observed tail and replays exactly.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn stable_intent_key(retain_conflicts: bool) {
     check_with_bound(Some(2), move || {
         let provider = MemoryStream::default();

@@ -26,3 +26,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
 model-checking = ["dep:loom"]
+# The contract-core runtime sources this crate includes select on these; the
+# models never enable them.
+wasm = []
+test-support = []

@@ -8,6 +8,10 @@ mod cancellation;
 pub use cancellation::{verify_cancel_before_open, verify_cancelled_queued_open};
 
 /// Models the real abandonment fence, wake registration, new Open and late error.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_abandoned_reconnect(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -126,6 +130,10 @@ pub fn verify_abandoned_reconnect(broken: bool) {
 }
 
 /// Uses the real cursor reservation/drop, dispatcher, idle cleanup and link locks.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_pool_lifetime(fault: u8) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -195,18 +203,17 @@ pub fn verify_pool_lifetime(fault: u8) {
         abort.join().unwrap();
         open.join().unwrap();
         for _ in 0..2 {
-            match loom::future::block_on(events.next()).unwrap() {
-                Some(command) => pool.command(command).unwrap(),
-                None => {
-                    if let Some(id) = pool.removed.try_next().unwrap() {
-                        pool.remove(id).unwrap();
-                    } else {
-                        // Open may already have drained this cancellation.
-                        assert!(!pool.routes.contains_key(&1));
-                    }
-                    if fault == 1 {
-                        pool.dials.clear();
-                    }
+            if let Some(command) = loom::future::block_on(events.next()).unwrap() {
+                pool.command(command).unwrap();
+            } else {
+                if let Some(id) = pool.removed.try_next().unwrap() {
+                    pool.remove(id).unwrap();
+                } else {
+                    // Open may already have drained this cancellation.
+                    assert!(!pool.routes.contains_key(&1));
+                }
+                if fault == 1 {
+                    pool.dials.clear();
                 }
             }
             if fault == 2 && pool.routes.is_empty() {
@@ -249,6 +256,10 @@ pub fn verify_pool_lifetime(fault: u8) {
 }
 
 /// Checks real cursor reservation/drop against an arbitrary live-cursor fold.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
         let (commands, _) = mpsc::channel(2);
@@ -289,6 +300,10 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
 }
 
 /// Models actual pool dispatch with a malformed peer and an independent delivery.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_link_isolation(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -483,6 +498,10 @@ pub fn verify_link_isolation(broken: bool) {
 
 /// Original ready-producer completion/drop races cursor cancellation, with
 /// Loom-instrumented admission, cancellation and removal state.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_registration_cancellation(broken: bool) {
     use std::future::Future as _;
     for (complete, cancel) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -518,11 +537,11 @@ pub fn verify_registration_cancellation(broken: bool) {
                     future::pending::<()>().await;
                 }
                 assert_eq!(
-                    result,
+                    result.map_err(|error| error.category()),
                     if complete {
                         Ok(1)
                     } else {
-                        Err(StreamError::Unavailable)
+                        Err(StreamCategory::Unavailable)
                     }
                 );
                 drop(cursor); // Existing guard owns cancellation and removal.
@@ -572,6 +591,10 @@ impl std::task::Wake for RegistrationWake {
 /// Exhausts real Cursor drop versus dial cleanup and live-owner selection.
 /// One dispatch thread and one withdrawing cursor are the complete race;
 /// independent nodes have no additional shared state or ordering constraints.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_node_dials(fault: u8) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -693,6 +716,10 @@ pub fn verify_node_dials(fault: u8) {
 
 /// B has received terminal Closed, but its output is intentionally unpolled.
 /// Its cursor reservation is not an admission and cannot own A's reconnect.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_terminal_cursor_dial(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

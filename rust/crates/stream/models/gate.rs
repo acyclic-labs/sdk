@@ -39,10 +39,10 @@ fn registration(broken: u8) {
             let mut state = gate.state.lock().unwrap();
             state.0 = true;
             let wake = state.1.take();
-            if broken == 2 {
-                if let Some(wake) = wake {
-                    wake.wake();
-                }
+            if broken == 2
+                && let Some(wake) = wake
+            {
+                wake.wake();
             }
         } else {
             gate.set(true).unwrap();
@@ -63,33 +63,7 @@ fn registration(broken: u8) {
 }
 
 #[test]
-fn a_saturated_channel_cannot_block_an_independent_follow() {
-    saturated(false);
-}
-#[test]
-#[should_panic(expected = "the reserved slot must enable the healthy channel")]
-fn saturation_negative_control_applies_one_global_gate() {
-    saturated(true);
-}
-fn saturated(broken: bool) {
-    acyclic_stream::session::verify_source_saturation(broken);
-}
-
-#[test]
 #[should_panic(expected = "wake must run outside the admission lock")]
 fn notification_negative_control_wakes_while_locked() {
     registration(2);
-}
-
-#[test]
-fn disabling_an_idle_source_preserves_its_next_record() {
-    disabling(false);
-}
-#[test]
-#[should_panic(expected = "a disabled source must not consume a record")]
-fn disabling_negative_control_keeps_polling_the_provider() {
-    disabling(true);
-}
-fn disabling(broken: bool) {
-    acyclic_stream::session::verify_source_disabled(broken);
 }

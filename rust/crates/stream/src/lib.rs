@@ -48,31 +48,43 @@ pub use wasm::{
 #[cfg(any(feature = "test-support", all(test, not(target_arch = "wasm32"))))]
 #[doc(hidden)]
 pub mod codec_fuzz;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod follow_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod head_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use acyclic_stream_contract_bytes::test_meter;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod test_trace;
 
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "memory/recovery_model.rs"]
 /// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use local::replay_model::{
     negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
 };
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
+#[cfg(test)]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
+mod departure_model;
+#[cfg(test)]
+#[cfg(loom)]
+mod loom_tests;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
@@ -82,11 +94,6 @@ pub use local::{
     deferring_durability, deferring_provider_durability, requiring_durability,
 };
 pub use memory::{CommitAdmission, MemoryLimits, MemoryStream, admit_commit};
-
-// The publication models in change and interest wake through this probe.
-#[cfg(all(loom, test))]
-#[path = "../publication-models/probe.rs"]
-mod probe;
 
 // Contract unit tests that exercise the contract through the providers that build on it.
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -122,13 +129,15 @@ mod receipt_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "request_tests.rs"]
 mod request_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "search_tests.rs"]
 mod search_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "session_wire_tests.rs"]
 mod session_wire_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "sources_tests.rs"]
 mod sources_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]

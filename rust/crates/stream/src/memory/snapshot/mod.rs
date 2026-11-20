@@ -58,13 +58,13 @@ impl MemoryStream {
     }
 
     /// Encodes the whole state.
-    #[cfg(any(test, loom))]
+    #[cfg(test)]
     pub(crate) async fn encode_state(&self) -> Vec<u8> {
         self.capture_state().await.encode()
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
-    #[cfg(any(test, loom))]
+    #[cfg(test)]
     pub(crate) async fn install_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
         self.restore_state(encoded).await
     }
@@ -100,7 +100,9 @@ impl MemoryStream {
         }
         let _publication = self.publication.lock().await;
         #[cfg(all(loom, not(target_arch = "wasm32")))]
-        if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
+        if acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::RetainReplacedState,
+        ) {
             let previous = std::mem::replace(&mut *self.state.write().await, decoded);
             std::mem::forget(previous);
             return Ok(());

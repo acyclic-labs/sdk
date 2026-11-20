@@ -46,8 +46,9 @@ impl LocalInner {
 
     fn fail(&self, failure: LocalStreamFailure) -> StreamError {
         #[cfg(loom)]
-        let notify =
-            !crate::verification::fault_is(crate::verification::Fault::OmitPoisonPublication);
+        let notify = !acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::OmitPoisonPublication,
+        );
         #[cfg(not(loom))]
         let notify = true;
         if notify {
@@ -104,12 +105,13 @@ impl LocalInner {
     /// Publishes only the strength completed by the device operation.
     fn publish_synced(&self, journal: &mut Journal, target: u64, completion: SyncCompletion) {
         #[cfg(loom)]
-        let completion =
-            if crate::verification::fault_is(crate::verification::Fault::BarrierAsFlushed) {
-                SyncCompletion::Flushed(DeviceFlushed)
-            } else {
-                completion
-            };
+        let completion = if acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::BarrierAsFlushed,
+        ) {
+            SyncCompletion::Flushed(DeviceFlushed)
+        } else {
+            completion
+        };
         journal.synced = journal.synced.max(target);
         if matches!(completion, SyncCompletion::Flushed(_)) {
             journal.flushed_sequence = Some(journal.flushed_sequence.unwrap_or(0).max(target));
@@ -130,7 +132,8 @@ impl LocalInner {
         durability: LocalDurability,
         work: Option<&crate::native::Work>,
     ) -> Option<(u64, u64, u64)> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
             let blocker = JOURNAL_PERSIST_BLOCKER.lock().ok().and_then(|mut hook| {
@@ -155,7 +158,8 @@ impl LocalInner {
             Some(work) => file.flush(|file| work.sync(|| sync_file_data(file, durability))),
             None => file.flush(|file| sync_file_data(file, durability)),
         };
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         {
             let identity = Arc::as_ptr(&self.journal) as usize;
             let gate = {

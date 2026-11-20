@@ -3,7 +3,7 @@
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::NativeStreamProvider as _;
 
-#[cfg(any(test, loom))]
+#[cfg(test)]
 use crate::StreamProviderExt as _;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use std::collections::VecDeque;
@@ -34,6 +34,7 @@ use prost::Message;
 // Native prepared commits and the native memory tests build effects.
 #[cfg(not(target_arch = "wasm32"))]
 use crate::CommitEffect;
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.
@@ -50,6 +51,7 @@ use crate::{
     StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
+#[cfg(test)]
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 /// Models checked cursor preparation and publication interests against recovery.
 pub mod browser_follow_model;

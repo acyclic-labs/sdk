@@ -1,6 +1,9 @@
+//! The Loom executor and mutant registry production snapshot jobs use under
+//! `cfg(loom)`. Model drivers live in the test targets that run them.
 use std::{cell::RefCell, future::Future, pin::Pin};
 
-type Worker = Pin<Box<dyn Future<Output = ()> + Send>>;
+/// A task the model executor holds instead of spawning it.
+pub type Worker = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// Targeted production mutants, selected per model execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,19 +51,16 @@ pub fn discard_on_drop() -> bool {
     EXECUTOR.with(|executor| executor.borrow().as_ref().is_some_and(|entry| entry.0))
 }
 
-pub fn take() -> Worker {
-    let workers = take_pending();
-    assert_eq!(workers.len(), 1);
-    workers.into_iter().fold(None, |_, worker| Some(worker))
-}
-
 /// Returns the executor tasks dispatched by the observed consumer poll.
 /// Wake assertions are meaningful only after these independently owned jobs
 /// have had a chance to finish, just as on a running production executor.
 pub fn take_pending() -> Vec<Worker> {
     EXECUTOR.with(|executor| {
-        let (_, workers) = executor.borrow_mut().take().unwrap();
-        workers
+        executor
+            .borrow_mut()
+            .take()
+            .map(|(_, workers)| workers)
+            .unwrap_or_default()
     })
 }
 
@@ -78,97 +78,4 @@ pub fn spawn(worker: impl Future<Output = ()> + Send + 'static) {
     if let Some(worker) = worker {
         loom::thread::spawn(move || super::park(worker));
     }
-}
-
-/// How a consumer leaves the real job it dispatched.
-#[derive(Clone, Copy, Debug)]
-pub enum Departure {
-    /// The consumer receives the read; the queued job is handed the reservation.
-    Keep,
-    /// Dropping the consumer races the job's first poll under the writer.
-    CancelRacesFirstPoll,
-    /// After the job queued, dropping the consumer races releasing the writer
-    /// and so the handoff of a reservation to the job.
-    CancelRacesRelease,
-}
-
-struct Flag(loom::sync::atomic::AtomicBool);
-impl std::task::Wake for Flag {
-    fn wake(self: std::sync::Arc<Self>) {
-        self.0.store(true, loom::sync::atomic::Ordering::SeqCst);
-    }
-}
-impl Flag {
-    fn take(&self) -> bool {
-        self.0.swap(false, loom::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-/// Drives one consumer of a provider stream while `held` excludes its read.
-/// `available` observes whether a writer could take the lock right now.
-pub fn depart<H>(
-    mut follow: futures::stream::BoxStream<'static, Result<(), crate::StreamError>>,
-    held: H,
-    available: impl Fn() -> bool,
-    departure: Departure,
-) {
-    use futures::StreamExt as _;
-    use std::task::{Context, Waker};
-    capture(false);
-    assert!(
-        follow
-            .as_mut()
-            .poll_next(&mut Context::from_waker(Waker::noop()))
-            .is_pending()
-    );
-    let mut worker = take();
-    let woken = std::sync::Arc::new(Flag(loom::sync::atomic::AtomicBool::new(false)));
-    let waker = Waker::from(woken.clone());
-    let mut cx = Context::from_waker(&waker);
-    match departure {
-        Departure::Keep => {
-            assert!(worker.as_mut().poll(&mut cx).is_pending());
-            drop(held);
-            assert!(
-                !available(),
-                "the queued job holds the handed-off reservation"
-            );
-            assert!(worker.as_mut().poll(&mut cx).is_ready());
-            woken.take();
-            assert!(matches!(super::park(Box::pin(follow.next())), Some(Ok(()))));
-            drop(follow);
-            assert!(!woken.take(), "a completed job was woken for cancellation");
-            assert!(available());
-        }
-        Departure::CancelRacesFirstPoll => {
-            let consumer = loom::thread::spawn(move || drop(follow));
-            let first = worker.as_mut().poll(&mut cx);
-            consumer.join().unwrap();
-            if first.is_pending() {
-                assert!(woken.take(), "cancellation did not wake the queued job");
-                assert!(
-                    worker.as_mut().poll(&mut cx).is_ready(),
-                    "an abandoned job kept its queued reservation"
-                );
-            }
-            drop(held);
-            assert!(available(), "an abandoned job took the reservation");
-        }
-        Departure::CancelRacesRelease => {
-            assert!(worker.as_mut().poll(&mut cx).is_pending());
-            let consumer = loom::thread::spawn(move || drop(follow));
-            drop(held);
-            consumer.join().unwrap();
-            assert!(
-                woken.take(),
-                "neither handoff nor cancellation woke the job"
-            );
-            assert!(
-                worker.as_mut().poll(&mut cx).is_ready(),
-                "an abandoned job kept its reservation"
-            );
-            assert!(available(), "the handed-off reservation was not returned");
-        }
-    }
-    drop(worker);
 }

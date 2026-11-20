@@ -67,9 +67,10 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
         drop(state);
         #[cfg(all(loom, not(target_arch = "wasm32")))]
-        let state =
-            crate::verification::fault_is(crate::verification::Fault::HoldStateDuringDurability)
-                .then_some(state);
+        let state = acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::HoldStateDuringDurability,
+        )
+        .then_some(state);
         // Failure or cancellation drops the uninstalled plan. There is
         // no visible mutation or notification before this succeeds.
         let at_millis = persist.await?;
@@ -98,9 +99,10 @@ impl MemoryStream {
         use crate::{WriteOutcome, WriteRequest};
         let _publication = self.publication.lock().await;
         #[cfg(all(loom, not(target_arch = "wasm32")))]
-        let _publication =
-            (!crate::verification::fault_is(crate::verification::Fault::ReleasePendingPublication))
-                .then_some(_publication);
+        let _publication = (!acyclic_stream_contract::verification::fault_is(
+            acyclic_stream_contract::verification::Fault::ReleasePendingPublication,
+        ))
+        .then_some(_publication);
         let mut state = self.state.write().await;
         match &canonical.command {
             WriteRequest::Append(request) => {

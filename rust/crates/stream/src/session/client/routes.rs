@@ -1,6 +1,7 @@
 //! Route identities indexed by their current physical node.
 use super::{BTreeMap, Route};
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 use std::cell::Cell;
 use std::{collections::BTreeSet, ops::Deref};
 
@@ -8,9 +9,11 @@ use std::{collections::BTreeSet, ops::Deref};
 pub(super) struct Routes {
     values: BTreeMap<u64, Route>,
     nodes: BTreeMap<String, BTreeSet<u64>>,
-    #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
     searches: Cell<usize>,
-    #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
     visits: Cell<usize>,
 }
 
@@ -18,12 +21,14 @@ impl Routes {
     pub(super) fn new() -> Self {
         Self::default()
     }
-    #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
     pub(super) fn searches(&self) -> usize {
         self.searches.get()
     }
     fn searched(&self) {
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         self.searches.set(self.searches.get() + 1);
     }
     pub(super) fn get(&self, id: &u64) -> Option<&Route> {
@@ -70,7 +75,8 @@ impl Routes {
     }
     pub(super) fn on_node(&self, node: &str) -> impl Iterator<Item = (&u64, &Route)> {
         self.nodes.get(node).into_iter().flatten().filter_map(|id| {
-            #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(not(loom), not(target_arch = "wasm32")))]
             self.visits.set(self.visits.get() + 1);
             self.values.get(id).map(|route| (id, route))
         })
@@ -106,5 +112,6 @@ impl IntoIterator for Routes {
     }
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod tests;

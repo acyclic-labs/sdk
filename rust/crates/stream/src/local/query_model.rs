@@ -5,51 +5,6 @@ use crate::verification::{block_on, check, check_with_bound};
 use futures::TryFutureExt as _;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-// Use the same model executor as snapshot workers: production tasks own their
-// future independently of the caller, including after its join is dropped.
-pub(super) fn spawn<F: Future + Send + 'static>(
-    future: F,
-) -> impl Future<Output = std::result::Result<F::Output, StreamError>>
-where
-    F::Output: Send + 'static,
-{
-    let (completed, received) = tokio::sync::oneshot::channel();
-    crate::snapshot::model::spawn(async move {
-        let _ = completed.send(future.await);
-    });
-    async move { received.await.map_err(|_| StreamError::Unavailable) }
-}
-
-pub(super) fn spawn_blocking<T, F: FnOnce() -> T>(
-    _medium: &'static str,
-    _operation: &'static str,
-    _key: PersistenceKey,
-    work: F,
-) -> impl Future<Output = std::result::Result<T, tokio::task::JoinError>> + use<T, F> {
-    async move { Ok(work()) }
-}
-
-// The same owned lease boundary, executed by the existing model worker.
-pub(super) fn submit_file<C, T, E, A, F>(
-    medium: &'static str,
-    kind: &'static str,
-    key: PersistenceKey,
-    acquire: A,
-    operation: F,
-) -> impl Future<Output = std::result::Result<std::result::Result<T, E>, tokio::task::JoinError>>
-+ use<C, T, E, A, F>
-where
-    A: FnOnce() -> std::result::Result<(acyclic_native_runtime::FileLease, C), E>,
-    F: FnOnce(&acyclic_native_runtime::FileLease, &mut C) -> std::result::Result<T, E>,
-{
-    spawn_blocking(medium, kind, key, move || {
-        // Fields drop in order even when the operation unwinds, matching the
-        // production owner: the lease retires before its original custody.
-        let mut owned = acquire()?;
-        operation(&owned.0, &mut owned.1)
-    })
-}
-
 pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
     // The claim and the journal outlive their temporary directory: releasing
@@ -223,7 +178,7 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
                     bootstrap_head: false,
                     until: None,
                     when_absent: Default::default(),
-                    path: path,
+                    path,
                     from: 1,
                     preceding: Some(seed.commit_id),
                     filter: crate::FollowFilter::default(),

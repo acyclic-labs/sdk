@@ -2,6 +2,10 @@ use super::super::super::*;
 use super::super::fixture::fixture;
 
 /// Dispatch a queued Open on either side of its real cursor's cancellation.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_cancelled_queued_open() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -58,6 +62,10 @@ pub fn verify_cancelled_queued_open() {
 
 /// The real Cursor drop, removal signal and Open dispatcher, with both wake
 /// registration orders. No Tokio synchronization is used for model ordering.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_cancel_before_open(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

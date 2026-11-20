@@ -166,13 +166,14 @@ const wasm = await wasmResolution();
 const [base] = runs;
 // The workspace metadata the tests read instead of running Cargo. It holds the workspace members
 // only, with manifest paths relative to the workspace root, so the file is relocatable and small.
+// Each package and member is one line, so landings that change different packages merge cleanly.
 const workspaceMetadata = (() => {
   const members = new Set(base.workspace_members);
   const relative = p => path.relative(base.workspace_root, p).replaceAll("\\", "/");
   // Cargo's package id embeds the absolute checkout path; the tests only compare ids, so keep
   // them stable across worktrees.
   const stableId = id => id.replaceAll(base.workspace_root, ".");
-  return JSON.stringify({
+  const fields = Object.entries({
     packages: base.packages.filter(p => members.has(p.id)).map(({workspace_member, ...p}) => ({
       ...p,
       id: stableId(p.id),
@@ -187,7 +188,10 @@ const workspaceMetadata = (() => {
     version: base.version,
     workspace_root: ".",
     metadata: base.metadata,
-  }) + "\n";
+  }).map(([key, value]) => Array.isArray(value) && value.length
+    ? `${JSON.stringify(key)}:[\n${value.map(item => JSON.stringify(item)).join(",\n")}\n]`
+    : `${JSON.stringify(key)}:${JSON.stringify(value)}`);
+  return `{\n${fields.join(",\n")}\n}\n`;
 })();
 const packages = new Map([...runs, ...(wasm ? [wasm.run] : [])].flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
@@ -657,6 +661,148 @@ for (const id of workspace) {
     const flag = `build:loom --@rules_rust//rust/settings:per_crate_rustc_flag=//${path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/")}:@--cfg=loom`;
     if (!target.test) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} loom model ${target.name} sets test = false, which leaves it out of every Bazel target; recovery: drop test = false (it compiles empty without cfg(loom))`);
     if (!bazelrcLines.has(flag)) throw new Error(`STEP_FAILED bazel-build-files: .bazelrc lacks "${flag}" for ${p.name} loom model ${target.name}; recovery: add that line`);
+  }
+}
+// Loom code a library build reaches is only a swap: a Loom primitive, executor or mutant hook that
+// production paths select under cfg(loom). Models, verify and check functions and their drivers are
+// verification code: they compile only under cfg(test) (a separate #[cfg(test)], which clippy's
+// in-test allowances recognise) or in a models test crate. So Loom code a non-test library build
+// reaches never unwraps, expects or panics, and no library build reaches a Loom model or test.
+// Each package is a directory relative to the repository root whose library this walks.
+const LOOM_SPLIT_PACKAGES = ["rust/crates/stream", "rust/crates/stream-contract", "rust/crates/stream-contract-core", "rust/crates/stream-contract-engine"];
+// A #[cfg] predicate as a tree: { op: "all" | "any" | "not", args } or { atom }, where an atom is
+// a bare name (`test`, `loom`) or a `key = "value"` pair.
+function parseCfg(expr) {
+  let i = 0;
+  const space = () => { while (/\s/.test(expr[i] ?? "")) i++; };
+  const predicate = () => {
+    space();
+    const name = /^[A-Za-z_]\w*/.exec(expr.slice(i))?.[0];
+    if (!name) throw new Error(`STEP_FAILED bazel-build-files: loom split: unparsed cfg predicate "${expr}"; recovery: fix the attribute`);
+    i += name.length;
+    space();
+    if (expr[i] === "=") {
+      i++;
+      space();
+      const end = stringEnd(expr, i), atom = `${name}=${expr.slice(i, end)}`;
+      i = end;
+      return { atom };
+    }
+    if (expr[i] !== "(") return { atom: name };
+    i++;
+    const args = [];
+    for (space(); expr[i] !== ")"; space()) {
+      args.push(predicate());
+      space();
+      if (expr[i] === ",") i++;
+      if (i >= expr.length) throw new Error(`STEP_FAILED bazel-build-files: loom split: unclosed cfg predicate "${expr}"; recovery: fix the attribute`);
+    }
+    i++;
+    return { op: name, args };
+  };
+  const tree = predicate();
+  space();
+  if (i !== expr.length) throw new Error(`STEP_FAILED bazel-build-files: loom split: trailing input in cfg predicate "${expr}"; recovery: fix the attribute`);
+  return tree;
+}
+// The values a predicate can take when `fixed` sets some atoms and every other atom is free, as
+// { yes, no }. Conjunctions and disjunctions treat their arguments as independent, which can only
+// widen the set: a check that asks whether a build can reach code never misses one that can.
+function values(tree, fixed) {
+  if (tree.atom !== undefined) return tree.atom in fixed ? { yes: fixed[tree.atom], no: !fixed[tree.atom] } : { yes: true, no: true };
+  const args = tree.args.map(arg => values(arg, fixed));
+  if (tree.op === "not") return { yes: args[0].no, no: args[0].yes };
+  if (tree.op === "all") return { yes: args.every(v => v.yes), no: args.some(v => v.no) };
+  if (tree.op === "any") return { yes: args.some(v => v.yes), no: args.every(v => v.no) };
+  throw new Error(`STEP_FAILED bazel-build-files: loom split: unknown cfg operator ${tree.op}; recovery: extend values()`);
+}
+// Whether code under these enclosing predicates is Loom code a non-test library build compiles:
+// some build with test off and loom on reaches it, and no build with both off does.
+function libraryLoom(context) {
+  const tree = { op: "all", args: context };
+  return values(tree, { test: false, loom: true }).yes && !values(tree, { test: false, loom: false }).yes;
+}
+// The source with comments and string and char literals blanked, offsets kept.
+function codeOnly(text) {
+  const blank = (from, to) => text.slice(from, to).replace(/[^\n]/g, " ");
+  let out = "";
+  for (let i = 0; i < text.length;) {
+    let end = i + 1;
+    if (text.startsWith("//", i)) end = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i);
+    else if (text.startsWith("/*", i)) {
+      let depth = 0;
+      for (end = i; end < text.length;) {
+        if (text.startsWith("/*", end)) depth++, end += 2;
+        else if (text.startsWith("*/", end)) { end += 2; if (!--depth) break; }
+        else end++;
+      }
+    } else if (text[i] === '"' || (/^b?r#*"/.test(text.slice(i)) && !/\w/.test(text[i - 1] ?? ""))) end = stringEnd(text, i);
+    else if (text[i] === "'" && (text[i + 1] === "\\" || text[i + 2] === "'")) {
+      for (end = i + 1; end < text.length && text[end] !== "'"; end += text[end] === "\\" ? 2 : 1);
+      end++;
+    } else {
+      out += text[i++];
+      continue;
+    }
+    out += blank(i, end);
+    i = end;
+  }
+  return out;
+}
+// The end of what an outer attribute ending at `at` applies to: an item's `;` or closing brace, or
+// a field, variant, argument or arm at its `,` or at the bracket that closes its list. An item's
+// generics hold commas, so only a non-item stops at one.
+const ITEM = /^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe|const|extern)\s+)*(?:fn|impl|struct|enum|trait|mod|type|const|static|use|macro_rules!?|union)\b/;
+function itemEnd(code, at) {
+  const item = ITEM.test(code.slice(at, at + 400));
+  let depth = 0;
+  for (let i = at; i < code.length; i++) {
+    const c = code[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (--depth < 0) return i;
+      if (c === "}" && depth === 0) return i + 1;
+    } else if (depth === 0 && (c === ";" || (c === "," && !item))) return i + 1;
+  }
+  return code.length;
+}
+const LOOM_FORBIDDEN = /\bloom::model\b|#\[test\]|\.unwrap\(\)|\.expect\(|\bpanic!\(/g;
+for (const dir of LOOM_SPLIT_PACKAGES) {
+  const p = [...packages.values()].find(candidate => dir === path.relative(root, path.dirname(candidate.manifest_path)).replaceAll("\\", "/"));
+  const lib = p?.targets.find(target => target.kind.some(kind => kind === "lib" || kind === "rlib"));
+  if (!lib) throw new Error(`STEP_FAILED bazel-build-files: loom split: LOOM_SPLIT_PACKAGES names ${dir}, which has no library; recovery: correct the list`);
+  const queue = [[path.relative(root, lib.src_path).replaceAll("\\", "/"), []]], seen = new Set();
+  while (queue.length) {
+    const [file, inherited] = queue.pop();
+    if (seen.has(file) || !trackedSet.has(file)) continue;
+    seen.add(file);
+    const text = fs.readFileSync(path.join(root, file), "utf8"), code = codeOnly(text);
+    const fileContext = [...inherited], spans = [], paths = [];
+    for (const { path: name, args, start, end } of attributes(text)) {
+      const inner = text[start + 1] === "!";
+      const tree = name === "cfg" ? parseCfg(args) : name === "test" ? { atom: "test" } : undefined;
+      const named = /^#\[\s*path\s*=\s*"([^"]+)"\s*\]$/.exec(text.slice(start, end));
+      if (named) paths.push({ end, file: named[1] });
+      if (!tree) continue;
+      if (inner) fileContext.push(tree);
+      else spans.push({ start, end: itemEnd(code, end), tree });
+    }
+    // A #[test] is not its own gate: the module holding it is what a library build must not reach.
+    const contextAt = (offset, self = -1) => [...fileContext, ...spans.filter(span => span.start <= offset && offset < span.end && span.start !== self).map(span => span.tree)];
+    for (const match of code.matchAll(LOOM_FORBIDDEN)) {
+      if (!libraryLoom(contextAt(match.index, match.index))) continue;
+      const line = text.slice(0, match.index).split("\n").length;
+      throw new Error(`STEP_FAILED bazel-build-files: loom split: ${file}:${line} ${match[0]} is Loom code the ${p.name} library build reaches; recovery: keep library Loom code to swaps without unwrap, expect or panic, and put models, verify/check functions and drivers under a separate #[cfg(test)] or in a models test crate`);
+    }
+    const here = path.posix.dirname(file);
+    const stem = /(^|\/)(lib|main|mod)\.rs$/.test(file) ? here : path.posix.join(here, path.posix.basename(file, ".rs"));
+    for (const match of code.matchAll(MOD)) {
+      const context = contextAt(match.index);
+      if (!values({ op: "all", args: context }, { test: false }).yes) continue;
+      const named = paths.findLast(attribute => attribute.end <= match.index && !/[;{}]/.test(code.slice(attribute.end, match.index)));
+      const next = named ? [path.posix.normalize(path.posix.join(here, named.file))] : [`${stem}/${match[1]}.rs`, `${stem}/${match[1]}/mod.rs`];
+      for (const candidate of next) queue.push([candidate, context]);
+    }
   }
 }
 // rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks

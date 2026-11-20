@@ -163,7 +163,7 @@ proptest::proptest! {
             let registry = Interests::new();
             let mut live: Vec<Option<Interest<u8>>> = (0..8).map(|_| None).collect();
             for &(slot, add, key) in &actions {
-                if add && live[slot].is_none() { live[slot] = Some(registry.subscribe((slot % 4) as u8).unwrap()); }
+                if add && live[slot].is_none() { live[slot] = Some(registry.subscribe(u8::try_from(slot % 4).unwrap()).unwrap()); }
                 if !add { live[slot] = None; }
                 registry.notify(&key).unwrap();
                 let mut expected = BTreeMap::<u8, usize>::new();

@@ -79,6 +79,10 @@ fn opening_retirement_negative_control_separates_removal_from_cancellation() {
 
 /// One application thread races one placement fence over the production lock.
 /// No Tokio synchronization or transport state is substituted for this cut.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_latest_progress(broken: bool) {
     loom::model(move || {
         let progress = Arc::new(Progress::new(1));

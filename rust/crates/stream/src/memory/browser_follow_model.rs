@@ -90,6 +90,10 @@ pub fn rejects_replaced_history_without_lost_wakeup() {
 }
 
 /// Runs the same checker with its immutable-history anchor deliberately omitted.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn negative_control_omitting_the_anchor_is_detected() {
     let failure = std::panic::catch_unwind(check::<true>)
         .expect_err("the broken follow unexpectedly rejected replaced history");
@@ -139,7 +143,7 @@ fn creation<const WAIT: bool>() {
         });
         writer.join().unwrap();
         assert_eq!(
-            result,
+            result.map_err(|error| error.category()),
             Ok(vec![
                 (0, Bytes::from_static(b"created")),
                 (1, Bytes::from_static(b"appended")),
@@ -155,6 +159,10 @@ pub fn creation_during_registration_retains_the_requested_cursor() {
 }
 
 /// The former NotFound path fails the same creation/registration schedules.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn negative_control_refusing_initial_absence_is_detected() {
     let failure = std::panic::catch_unwind(creation::<false>)
         .expect_err("the old absence refusal satisfied a waiting follow");

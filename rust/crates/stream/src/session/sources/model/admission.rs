@@ -59,6 +59,10 @@ fn poll(
 }
 
 /// The reserved data slot must remain available to an independent credited source.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_source_saturation(global_gate: bool) {
     for latest in [false, true] {
         loom::model(move || {
@@ -125,6 +129,10 @@ pub fn verify_source_saturation(global_gate: bool) {
 }
 
 /// Disabling an already parked provider must preserve its next unpublished record.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_source_disabled(keep_polling: bool) {
     loom::model(move || {
         let identity = wire::SessionChannel {
@@ -146,8 +154,7 @@ pub fn verify_source_disabled(keep_polling: bool) {
             Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
         ));
         assert!(poll(&mut sources, (true, true, true), &mut cx).is_pending());
-        let published = records.clone();
-        let writer = loom::thread::spawn(move || published.send(record()).unwrap());
+        let writer = loom::thread::spawn(move || records.send(record()).unwrap());
         channel.credit.frames = 0;
         if !keep_polling {
             sources.mode(1, channel.source_mode());
@@ -166,6 +173,10 @@ pub fn verify_source_disabled(keep_polling: bool) {
 }
 
 /// Generated capacity cases traverse the real queue admission, not a copied policy.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_reserved_capacity(frames: usize, largest: usize) {
     loom::model(move || {
         let room = policy::room(frames, 4 * largest, frames - 1, 0, largest, true);

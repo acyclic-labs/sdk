@@ -2,6 +2,10 @@ use super::*;
 
 /// Explores LATEST cursor consumption racing a placement fence, then exercises
 /// standalone watermark conflation through the production receive/credit path.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_follow_data(broken: u8) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

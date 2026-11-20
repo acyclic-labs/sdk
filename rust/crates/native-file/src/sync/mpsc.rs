@@ -15,11 +15,15 @@ struct Channel<T> {
     state: Mutex<State<T>>,
     ready: Condvar,
 }
+/// The sending half of a bounded channel.
 pub struct SyncSender<T>(Arc<Channel<T>>);
+/// The receiving half of a bounded channel.
 pub struct Receiver<T>(Arc<Channel<T>>);
 
+/// A channel holding at most `capacity` values. A zero capacity admits no
+/// value: every `try_send` is `Full`, as std's rendezvous channel is with no
+/// receiver blocked in `recv`.
 pub fn sync_channel<T>(capacity: usize) -> (SyncSender<T>, Receiver<T>) {
-    assert_ne!(capacity, 0, "native queues have positive capacity");
     let channel = Arc::new(Channel {
         state: Mutex::new(State {
             items: VecDeque::new(),
@@ -33,6 +37,7 @@ pub fn sync_channel<T>(capacity: usize) -> (SyncSender<T>, Receiver<T>) {
 }
 
 impl<T> SyncSender<T> {
+    /// Queues `value` if the channel has room and its receiver is alive.
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         let Ok(mut state) = self.0.state.lock() else {
             return Err(TrySendError::Disconnected(value));
@@ -49,6 +54,7 @@ impl<T> SyncSender<T> {
     }
 }
 impl<T> Receiver<T> {
+    /// Waits for the next value, or for every sender to drop.
     pub fn recv(&self) -> Result<T, RecvError> {
         let mut state = self.0.state.lock().map_err(|_| RecvError)?;
         loop {

@@ -337,8 +337,14 @@ pub fn watch_progress() {
             ));
         }};
     }
-    progress!(tokio::sync::watch::channel);
-    progress!(super::watch::channel);
+    fn tokio_progress() {
+        progress!(tokio::sync::watch::channel);
+    }
+    fn model_progress() {
+        progress!(super::watch::channel);
+    }
+    tokio_progress();
+    model_progress();
 }
 
 #[cfg(test)]

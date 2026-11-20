@@ -6,8 +6,13 @@ pub(crate) struct Cache<T = PoolHandle> {
     client: Mutex<Option<T>>,
 }
 
+#[cfg(test)]
 #[cfg(loom)]
 /// Models the real cache lock and detects split publication.
+///
+/// # Panics
+///
+/// Panics when Loom finds a schedule that breaks the modeled property.
 pub fn verify_cache(broken: bool) {
     loom::model(move || {
         // Only publication is modeled here. The payload is a Copy identity;

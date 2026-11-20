@@ -94,8 +94,7 @@ pub(crate) fn publication(retain_state: bool, release_order: bool, cancel: bool)
 // handoff, then require a real append to finish before polling that stream again.
 pub(crate) fn verify(retain_pending: bool, checked: bool) {
     loom::model(move || {
-        let mut provider = MemoryStream::default();
-        provider.retain_pending_read = retain_pending;
+        let provider = MemoryStream::retaining_pending_reads(retain_pending);
         let keeper = ManuallyDrop::new(provider.clone());
         let path = StreamPath::new("watched").unwrap();
         let AppendOutcome::Committed(seed) = block_on(provider.append(AppendRequest {
@@ -161,7 +160,7 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
             idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
-        assert_eq!(block_on(follow.next()), Some(Ok(())));
+        assert!(matches!(block_on(follow.next()), Some(Ok(()))));
         drop(ManuallyDrop::into_inner(follow));
         drop(ManuallyDrop::into_inner(keeper));
     });
@@ -230,7 +229,7 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                 .poll_next(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
         );
-        let mut worker = crate::snapshot::model::take();
+        let mut worker = crate::departure_model::take();
         if poll_worker {
             assert!(
                 worker
@@ -258,7 +257,7 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
             drop(ManuallyDrop::into_inner(follow));
             drop(held);
             park(provider.append(AppendRequest {
-                path: path.clone(),
+                path,
                 records: vec![Bytes::from_static(b"next").into()],
                 if_tail: Some(1),
                 idempotency_key: crate::IdempotencyKey::unique(),
@@ -285,7 +284,7 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
 
 // Every consumer departure from a real dispatched memory snapshot job.
 pub(crate) fn abandon(
-    departure: crate::snapshot::model::Departure,
+    departure: crate::departure_model::Departure,
     mutant: crate::snapshot::model::Mutant,
 ) {
     loom::model(move || {
@@ -311,7 +310,7 @@ pub(crate) fn abandon(
             .boxed()
         };
         let held = block_on(provider.state.write());
-        crate::snapshot::model::depart(
+        crate::departure_model::depart(
             follow,
             held,
             || provider.state.try_write().is_ok(),
