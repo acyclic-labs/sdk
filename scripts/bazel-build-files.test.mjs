@@ -417,6 +417,26 @@ test("a library and a binary of the same name get distinct rule names", () => {
   }
 });
 
+test("repository-sources gives a build script every file of each package it links, but the skipped directories", () => {
+  const { root, run } = fixture();
+  try {
+    writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["member", "local"]\nresolver = "3"\n\n[workspace.metadata.bazel]\nsources-skip-directories = ["target", "node_modules"]\n');
+    const manifest = join(root, "member/Cargo.toml");
+    writeFileSync(manifest, readFileSync(manifest, "utf8").replace("[dependencies]", 'build = "build.rs"\n\n[package.metadata.bazel]\nrepository-sources = true\n\n[dependencies]'));
+    writeFileSync(join(root, "member/build.rs"), "fn main() {}\n");
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const result = run("write");
+    assert.equal(result.status, 0, result.stderr);
+    const member = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    const script = member.slice(member.indexOf("cargo_build_script("), member.indexOf("\n)\n", member.indexOf("cargo_build_script(")));
+    assert.match(script, /"\/\/local:sources",\n\s*"\/\/member:sources",/);
+    assert.match(readFileSync(join(root, "local/BUILD.bazel"), "utf8"),
+      /filegroup\(\n    name = "sources",\n    srcs = glob\(\["\*\*"\], exclude = \["target\/\*\*","\*\*\/target\/\*\*","node_modules\/\*\*","\*\*\/node_modules\/\*\*"\], allow_empty = True\),/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a #[path] or mod inside an inline module resolves under that module's directory", () => {
   const { root, run } = fixture();
   try {

@@ -553,19 +553,25 @@ function devLibraries(p) {
 // Every other first-party library a test of this package links, through normal dependencies at any
 // depth. Its library build's code reads at run time the files it names outside its own package (golden
 // fixtures, say) in whichever test links it; its own tests' code and package files are its own business.
-const linkedReads = new Map();
-function linkedLibraryReads(p) {
-  if (linkedReads.has(p.id)) return linkedReads.get(p.id);
-  const found = new Set(), queue = [p.id, ...devLibraries(p).map(other => other.id)];
+// The first-party libraries `starts` reach through normal dependencies at any depth; a proc macro
+// shapes the code but runs in the compiler, never in what links it.
+function normalLibraries(starts, { procMacros }) {
+  const found = new Set(), queue = [...starts];
   while (queue.length) {
     const id = queue.pop();
     for (const byId of nodes) for (const dep of byId.get(id)?.deps ?? []) {
       const lib = members.has(dep.pkg) && libOf(packages.get(dep.pkg));
-      if (!lib || lib.kind.includes("proc-macro") || found.has(dep.pkg) || !dep.dep_kinds.some(k => k.kind === null)) continue;
+      if (!lib || (!procMacros && lib.kind.includes("proc-macro")) || found.has(dep.pkg) || !dep.dep_kinds.some(k => k.kind === null)) continue;
       found.add(dep.pkg);
       queue.push(dep.pkg);
     }
   }
+  return found;
+}
+const linkedReads = new Map();
+function linkedLibraryReads(p) {
+  if (linkedReads.has(p.id)) return linkedReads.get(p.id);
+  const found = normalLibraries([p.id, ...devLibraries(p).map(other => other.id)], { procMacros: false });
   const reads = { files: new Set(), dirs: new Set(), labels: new Set() };
   for (const id of found) {
     const other = packages.get(id), own = dir(other), outside = file => ownerOf(file) !== own;
@@ -670,9 +676,19 @@ const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === 
 const repositorySources = [...members].some(id => readsRepository(packages.get(id)))
   ? ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()]
   : [];
-const sourcesRule = repositorySources.length
+// A package with [package.metadata.bazel] repository-sources = true runs its build script over every
+// file of itself and each first-party package it links (a source stamp, say); each package then exports
+// them as `sources`: all its files but those under a directory [workspace.metadata.bazel]
+// sources-skip-directories names (build output, tool caches), at any depth.
+const readsLinkedSources = p => p.metadata?.bazel?.["repository-sources"] === true;
+const linkedSources = p => [p.id, ...normalLibraries([p.id], { procMacros: true })]
+  .map(id => `//${dir(packages.get(id))}:sources`).sort();
+const skippedDirectories = bazelWorkspace?.["sources-skip-directories"] ?? [];
+const sourcesRule = (repositorySources.length
   ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
-  : "";
+  : "") + ([...members].some(id => readsLinkedSources(packages.get(id)))
+  ? `\n${rule("filegroup", [["name", q("sources")], ["srcs", glob(["**"], skippedDirectories.flatMap(name => [`${name}/**`, `**/${name}/**`]))], ["visibility", q(["//visibility:public"])]])}\n`
+  : "");
 // Build script paths name tracked files or directories relative to the package.
 // build-script-inputs replaces the package-wide defaults. build-script-data adds inputs.
 function scriptData(p, key) {
@@ -1233,7 +1249,7 @@ ${platformSources.map(([platform, sources]) =>
       ["srcs", list(extra.srcs)],
       rustMemory(extra.rustFiles),
       ["compile_data", plus(defaultInputs ? glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]) : undefined, list(extra.data))],
-      ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
+      ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...(readsLinkedSources(p) ? linkedSources(p) : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       // A build script is host code: it runs on the exec platform and only reads the target
