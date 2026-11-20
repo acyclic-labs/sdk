@@ -17,7 +17,8 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         .read_metadata(&path("source")?, B, &cancel)
         .await?
         .value;
-    let original = acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(
         &mut acyclic_fs::kernel::allocation::KernelAccounting::native(&original, &cancel),
         &cancel,

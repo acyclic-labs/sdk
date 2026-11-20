@@ -142,7 +142,8 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
     )
     .await?;
     commit(&mut checkout, &cancel).await?;
-    let original = acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let reader = checkout
         .private_candidate(
             &mut acyclic_fs::kernel::KernelAccounting::native(&original, &cancel),

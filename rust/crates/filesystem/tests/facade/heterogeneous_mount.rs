@@ -148,7 +148,9 @@ impl AsyncAuthorityStore for Stores {
             authority,
             compare_and_append(request, work, None::<&mut ()>)
         )
-        .map_err(|error| acyclic_fs::AuthorityError::Authority(error.into_error(std::convert::identity)))
+        .map_err(|error| {
+            acyclic_fs::AuthorityError::Authority(error.into_error(std::convert::identity))
+        })
     }
     async fn head(
         &self,
@@ -168,8 +170,13 @@ impl AsyncAuthorityStore for Stores {
         after: acyclic_fs::Sequence,
         limit: acyclic_fs::ReplayLimit,
         work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<(Vec<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError>
-    {
+    ) -> Result<
+        (
+            Vec<acyclic_fs::DurableCommit>,
+            acyclic_fs::AuthorityAllocation,
+        ),
+        acyclic_fs::AuthorityStoreError,
+    > {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
             return Err(acyclic_fs::AuthorityStoreError::NativeOriginalUnsupported);
@@ -387,7 +394,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         .build()?;
     let cancellation = CancellationToken::new();
     let root_path = acyclic_fs::path::PortablePath::parse("/file", VolumeLimits::default())?;
-    let scratch_path = acyclic_fs::path::PortablePath::parse("/.scratch/file", VolumeLimits::default())?;
+    let scratch_path =
+        acyclic_fs::path::PortablePath::parse("/.scratch/file", VolumeLimits::default())?;
     for path in [&root_path, &scratch_path] {
         let route = view.route_mut(path)?;
         assert!(

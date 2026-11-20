@@ -1,7 +1,7 @@
 //! Count final runtime admission after a checkout write has been captured.
 use super::*;
-use acyclic_harness_core::*;
 use crate::conversation::ContentResidencyVerifier as _;
+use acyclic_harness_core::*;
 
 #[test]
 fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Result<()> {

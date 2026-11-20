@@ -204,7 +204,10 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
             .ok_or_else(|| io::Error::other("claim shard out of range"))
     }
 
-    fn entries(&self, key: &Key) -> io::Result<acyclic_native_file::sync::MutexGuard<'_, HashMap<Key, Entry>>> {
+    fn entries(
+        &self,
+        key: &Key,
+    ) -> io::Result<acyclic_native_file::sync::MutexGuard<'_, HashMap<Key, Entry>>> {
         Ok(self
             .shard(key)?
             .entries

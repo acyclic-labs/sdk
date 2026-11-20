@@ -1,8 +1,8 @@
 use super::*;
-use acyclic_harness_core::*;
 use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 use crate::core::AggregateKind;
 use crate::sync::owned::lock_owned;
+use acyclic_harness_core::*;
 use acyclic_harness_workspace::checkout_tools::capture::{
     KILL_BEFORE_CAPTURE, OWED_WRITE_UNAPPLIED,
 };

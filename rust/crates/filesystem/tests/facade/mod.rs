@@ -1,11 +1,11 @@
-use acyclic_fs::*;
+use crate::test_support::allow_publication::allow;
 use acyclic_fs::foundation::Epoch;
 use acyclic_fs::kernel::{InlineFileData, LogicalName, NameEncoding};
 use acyclic_fs::storage::{
     CreateAuthorityOutcome, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError,
     ObjectWrite,
 };
-use crate::test_support::allow_publication::allow;
+use acyclic_fs::*;
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

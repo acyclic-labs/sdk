@@ -621,3 +621,9 @@ filegroup(
     srcs = glob(["rust/crates/**"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "tree/rust/crates/harness-local-tests",
+    srcs = glob(["rust/crates/harness-local-tests/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

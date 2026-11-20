@@ -434,15 +434,15 @@ fn identity_bytes(
 ) -> Result<Identity, ProbeError> {
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
-        let (device, inode) =
-            read_operation(meter, || acyclic_native_runtime::file_identity(file)).map_err(ProbeError::Work)??;
+        let (device, inode) = read_operation(meter, || acyclic_native_runtime::file_identity(file))
+            .map_err(ProbeError::Work)??;
         Identity::copy(&[&device.to_le_bytes(), &inode.to_le_bytes()], meter)
             .map_err(ProbeError::Work)
     }
     #[cfg(windows)]
     {
-        let (volume, id) =
-            read_operation(meter, || acyclic_native_runtime::file_identity(file)).map_err(ProbeError::Work)??;
+        let (volume, id) = read_operation(meter, || acyclic_native_runtime::file_identity(file))
+            .map_err(ProbeError::Work)??;
         Identity::copy(&[&volume.to_le_bytes(), &id], meter).map_err(ProbeError::Work)
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]

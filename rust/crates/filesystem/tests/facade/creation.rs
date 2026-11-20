@@ -30,8 +30,8 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
         for deny_hash in [true, false] {
             let fs = Fs::memory();
             let caller = CancellationToken::new();
-            let original =
-                acyclic_fs::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
+            let original = acyclic_fs::NativeMaterializationWork::new(B, &caller)
+                .map_err(|(cause, _)| cause)?;
             original.charge(WorkCounters {
                 items_examined: 7,
                 ..WorkCounters::UNCHARGED
@@ -171,8 +171,8 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
         acyclic_native_runtime::initialize_native_io_services().expect("native I/O test services");
         for admitted in [0, 2] {
             let caller = CancellationToken::new();
-            let original =
-                acyclic_fs::NativeMaterializationWork::new(B, &caller).map_err(|(cause, _)| cause)?;
+            let original = acyclic_fs::NativeMaterializationWork::new(B, &caller)
+                .map_err(|(cause, _)| cause)?;
             original.charge(WorkCounters {
                 items_examined: 7,
                 ..WorkCounters::UNCHARGED

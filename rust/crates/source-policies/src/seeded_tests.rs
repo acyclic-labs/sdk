@@ -7,9 +7,10 @@
 //! `select!` order and time come from the seed.
 use std::collections::BTreeMap;
 
-const HARNESS_SOURCES: [&str; 5] = [
+const HARNESS_SOURCES: [&str; 6] = [
     "rust/crates/harness/src/",
     "rust/crates/harness-local/src/",
+    "rust/crates/harness-local-tests/",
     "rust/crates/harness-hosting/",
     "rust/crates/harness-suite/src/",
     "rust/crates/harness-workspace/src/",
@@ -23,7 +24,7 @@ const HOST_ENTROPY: &str = "// host entropy:";
 /// lowers its count, and the last one removes the file. A file that moves
 /// keeps its count at its new path. An unseeded test in a file that isn't
 /// listed, or beyond its count, fails the policy.
-const NOT_YET_SEEDED: [(&str, usize); 65] = [
+const NOT_YET_SEEDED: [(&str, usize); 63] = [
     ("rust/crates/harness-hosting/tests/editor_input/cases.rs", 1),
     (
         "rust/crates/harness-hosting/tests/hosted_sessions/merge.rs",
@@ -42,14 +43,6 @@ const NOT_YET_SEEDED: [(&str, usize); 65] = [
         1,
     ),
     (
-        "rust/crates/harness-hosting/tests/session_commands/cases.rs",
-        1,
-    ),
-    (
-        "rust/crates/harness-hosting/tests/session_reads/cases.rs",
-        2,
-    ),
-    (
         "rust/crates/harness-local/src/local/agent_conversation/pending_tests.rs",
         1,
     ),
@@ -64,43 +57,43 @@ const NOT_YET_SEEDED: [(&str, usize); 65] = [
     ("rust/crates/harness-local/src/local/agent_settings.rs", 4),
     ("rust/crates/harness-local/src/local/agents.rs", 1),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/capture.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/capture.rs",
         20,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/checkout_git.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/checkout_git.rs",
         3,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/hooks.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/hooks.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/publisher_mount.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/publisher_mount.rs",
         5,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/publisher.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/publisher.rs",
         14,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/publisher/admission_cost.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/publisher/admission_cost.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/publisher/granted.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/publisher/granted.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/publisher/observed_cost.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/publisher/observed_cost.rs",
         9,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/publisher/recovery.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/publisher/recovery.rs",
         8,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/shell_job.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/shell_job.rs",
         4,
     ),
     ("rust/crates/harness-local/src/local/config.rs", 6),
@@ -129,7 +122,7 @@ const NOT_YET_SEEDED: [(&str, usize); 65] = [
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/host_workspace.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/host_workspace.rs",
         5,
     ),
     (
@@ -146,44 +139,53 @@ const NOT_YET_SEEDED: [(&str, usize); 65] = [
         "rust/crates/harness-local/src/local/sessions/prompt_history/tests.rs",
         1,
     ),
-    ("rust/crates/harness-local/src/local/tests.rs", 1),
-    ("rust/crates/harness-local/src/local/tests/agents.rs", 24),
+    ("rust/crates/harness-local-tests/tests/local.rs", 1),
+    ("rust/crates/harness-local-tests/tests/local/agents.rs", 24),
     (
-        "rust/crates/harness-local/src/local/tests/agents/workspace_files.rs",
+        "rust/crates/harness-local-tests/tests/local/agents/workspace_files.rs",
         2,
     ),
-    ("rust/crates/harness-local/src/local/tests/context.rs", 1),
+    ("rust/crates/harness-local-tests/tests/local/context.rs", 1),
     (
-        "rust/crates/harness-local/src/local/tests/context_documents.rs",
+        "rust/crates/harness-local-tests/tests/local/context_documents.rs",
         2,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/history_retry.rs",
+        "rust/crates/harness-local-tests/tests/local/history_retry.rs",
         1,
     ),
-    ("rust/crates/harness-local/src/local/tests/platform.rs", 2),
-    ("rust/crates/harness-local/src/local/tests/programs.rs", 2),
-    ("rust/crates/harness-local/src/local/tests/questions.rs", 5),
-    ("rust/crates/harness-local/src/local/tests/replay.rs", 2),
-    ("rust/crates/harness-local/src/local/tests/settings.rs", 12),
-    ("rust/crates/harness-local/src/local/tests/settlement.rs", 1),
-    ("rust/crates/harness-local/src/local/tests/signing.rs", 2),
+    ("rust/crates/harness-local-tests/tests/local/platform.rs", 2),
+    ("rust/crates/harness-local-tests/tests/local/programs.rs", 2),
     (
-        "rust/crates/harness-local/src/local/tests/transcripts.rs",
+        "rust/crates/harness-local-tests/tests/local/questions.rs",
+        5,
+    ),
+    ("rust/crates/harness-local-tests/tests/local/replay.rs", 2),
+    (
+        "rust/crates/harness-local-tests/tests/local/settings.rs",
+        12,
+    ),
+    (
+        "rust/crates/harness-local-tests/tests/local/settlement.rs",
+        1,
+    ),
+    ("rust/crates/harness-local-tests/tests/local/signing.rs", 2),
+    (
+        "rust/crates/harness-local-tests/tests/local/transcripts.rs",
         1,
     ),
     ("rust/crates/harness-local/src/local/tool_output.rs", 1),
-    ("rust/crates/harness-local/src/local/web/tests.rs", 6),
+    ("rust/crates/harness-local-tests/tests/local/web.rs", 6),
     (
         "rust/crates/harness-workspace/src/workspace/bootstrap/tests.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/git.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/git.rs",
         2,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/performance.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/performance.rs",
         3,
     ),
     (
@@ -191,15 +193,15 @@ const NOT_YET_SEEDED: [(&str, usize); 65] = [
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/task_views_concurrency.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/task_views_concurrency.rs",
         1,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/task_views.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/task_views.rs",
         4,
     ),
     (
-        "rust/crates/harness-local/src/local/tests/workspace/volumes_publication.rs",
+        "rust/crates/harness-local-tests/tests/local/workspace/volumes_publication.rs",
         9,
     ),
     (
@@ -279,9 +281,9 @@ fn harness_library_tests_cannot_draw_host_entropy() {
         .collect();
     let found = seeded_test_violations(files.iter().copied());
     assert!(found.is_empty(), "unseeded harness tests: {found:#?}");
-    let seeded = "rust/crates/harness-local/src/local/tests/agents.rs";
+    let seeded = "rust/crates/harness-local-tests/tests/local/agents.rs";
     let original = files.iter().find(|(path, _)| *path == seeded).unwrap().1;
-    let fresh = "rust/crates/harness-local/src/local/tests/fresh.rs";
+    let fresh = "rust/crates/harness-local-tests/tests/local/fresh.rs";
     let scan = |planted: (&str, &str)| seeded_test_violations(planted_into(&files, planted));
     // Every unseeded spelling fails, in a listed file and in a new one.
     for plant in [

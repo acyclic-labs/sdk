@@ -1,7 +1,9 @@
 use super::*;
 
 /// Validates the canonical mixed observation request before provider admission.
-pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<acyclic_stream_contract_core::HeadsRequest, StreamError> {
+pub fn heads_from_wire(
+    value: wire::HeadsRequest,
+) -> Result<acyclic_stream_contract_core::HeadsRequest, StreamError> {
     let request = acyclic_stream_contract_core::HeadsRequest {
         at: value.at.as_ref().map(revision_from_wire).transpose()?,
         retained: value
@@ -32,7 +34,9 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<acyclic_stream_contr
 }
 
 /// Encodes one mixed observation without splitting it into separate requests.
-pub fn heads_request_to_wire(value: acyclic_stream_contract_core::HeadsRequest) -> wire::HeadsRequest {
+pub fn heads_request_to_wire(
+    value: acyclic_stream_contract_core::HeadsRequest,
+) -> wire::HeadsRequest {
     wire::HeadsRequest {
         at: value.at.as_ref().map(revision_to_wire),
         retained: value
@@ -60,7 +64,9 @@ pub fn heads_request_to_wire(value: acyclic_stream_contract_core::HeadsRequest) 
 /// Encodes the exact authority snapshot and its ordered observations.
 /// The encoded-size bound is paid at this transport boundary, never by a
 /// trusted in-process provider observation.
-pub fn heads_to_wire(value: acyclic_stream_contract_core::Heads) -> Result<wire::HeadsResponse, StreamError> {
+pub fn heads_to_wire(
+    value: acyclic_stream_contract_core::Heads,
+) -> Result<wire::HeadsResponse, StreamError> {
     if super::requests::heads_len(&value) > acyclic_stream_contract_core::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
@@ -90,7 +96,9 @@ pub fn heads_to_wire(value: acyclic_stream_contract_core::Heads) -> Result<wire:
 }
 
 /// Validates every head and the shared authority cut before exposing the view.
-pub fn heads_from_response(value: wire::HeadsResponse) -> Result<acyclic_stream_contract_core::Heads, StreamError> {
+pub fn heads_from_response(
+    value: wire::HeadsResponse,
+) -> Result<acyclic_stream_contract_core::Heads, StreamError> {
     let projection = projection_from_wire(value.projection)?;
     let heads = acyclic_stream_contract_core::Heads {
         applied: issued_from_wire(value.applied)?,
@@ -130,7 +138,9 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<acyclic_stream_
 }
 
 /// Validates an atomic head without reconstructing it through other operations.
-pub fn head_from_wire(value: wire::PathHead) -> Result<acyclic_stream_contract_core::PathHead, StreamError> {
+pub fn head_from_wire(
+    value: wire::PathHead,
+) -> Result<acyclic_stream_contract_core::PathHead, StreamError> {
     head_observation_from_wire(value, acyclic_stream_contract_core::HeadProjection::History)
 }
 
@@ -162,10 +172,16 @@ fn head_observation_from_wire(
     Ok(head)
 }
 
-fn projection_from_wire(value: i32) -> Result<acyclic_stream_contract_core::HeadProjection, StreamError> {
+fn projection_from_wire(
+    value: i32,
+) -> Result<acyclic_stream_contract_core::HeadProjection, StreamError> {
     match wire::HeadProjection::try_from(value) {
-        Ok(wire::HeadProjection::History) => Ok(acyclic_stream_contract_core::HeadProjection::History),
-        Ok(wire::HeadProjection::Watermarks) => Ok(acyclic_stream_contract_core::HeadProjection::Watermarks),
+        Ok(wire::HeadProjection::History) => {
+            Ok(acyclic_stream_contract_core::HeadProjection::History)
+        }
+        Ok(wire::HeadProjection::Watermarks) => {
+            Ok(acyclic_stream_contract_core::HeadProjection::Watermarks)
+        }
         Ok(wire::HeadProjection::Tail) => Ok(acyclic_stream_contract_core::HeadProjection::Tail),
         Err(_) => Err(StreamError::InvalidResponse),
     }
@@ -173,8 +189,12 @@ fn projection_from_wire(value: i32) -> Result<acyclic_stream_contract_core::Head
 
 fn projection_to_wire(value: acyclic_stream_contract_core::HeadProjection) -> i32 {
     match value {
-        acyclic_stream_contract_core::HeadProjection::History => wire::HeadProjection::History as i32,
-        acyclic_stream_contract_core::HeadProjection::Watermarks => wire::HeadProjection::Watermarks as i32,
+        acyclic_stream_contract_core::HeadProjection::History => {
+            wire::HeadProjection::History as i32
+        }
+        acyclic_stream_contract_core::HeadProjection::Watermarks => {
+            wire::HeadProjection::Watermarks as i32
+        }
         acyclic_stream_contract_core::HeadProjection::Tail => wire::HeadProjection::Tail as i32,
     }
 }
@@ -194,7 +214,13 @@ pub fn head_to_wire(value: acyclic_stream_contract_core::PathHead) -> wire::Path
 /// Decodes the shared inherited-cut descriptor used by heads and child pages.
 pub fn fork_origin_from_wire(
     origin: wire::ForkOrigin,
-) -> Result<acyclic_stream_contract_core::Provenance<acyclic_stream_contract_core::StreamPath, acyclic_stream_contract_core::ForkCut>, StreamError> {
+) -> Result<
+    acyclic_stream_contract_core::Provenance<
+        acyclic_stream_contract_core::StreamPath,
+        acyclic_stream_contract_core::ForkCut,
+    >,
+    StreamError,
+> {
     Ok(acyclic_stream_contract_core::Provenance {
         source: StreamPath::new(origin.source)?,
         inherited: acyclic_stream_contract_core::ForkCut {
@@ -206,7 +232,10 @@ pub fn fork_origin_from_wire(
 
 /// Projects the shared inherited-cut descriptor without reconstructing history.
 pub fn fork_origin_to_wire(
-    origin: &acyclic_stream_contract_core::Provenance<acyclic_stream_contract_core::StreamPath, acyclic_stream_contract_core::ForkCut>,
+    origin: &acyclic_stream_contract_core::Provenance<
+        acyclic_stream_contract_core::StreamPath,
+        acyclic_stream_contract_core::ForkCut,
+    >,
 ) -> wire::ForkOrigin {
     wire::ForkOrigin {
         source: origin.source.to_string(),

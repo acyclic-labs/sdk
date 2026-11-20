@@ -219,7 +219,9 @@ pub fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceipt, Stre
 }
 
 /// Decodes an append request from its generated wire representation.
-pub fn append_from_wire(value: wire::AppendRequest) -> Result<acyclic_stream_contract_core::AppendRequest, StreamError> {
+pub fn append_from_wire(
+    value: wire::AppendRequest,
+) -> Result<acyclic_stream_contract_core::AppendRequest, StreamError> {
     Ok(acyclic_stream_contract_core::AppendRequest {
         path: path(value.path)?,
         records: value
@@ -233,7 +235,9 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<acyclic_stream_con
 }
 
 /// Decodes a fork request from its generated wire representation.
-pub fn fork_from_wire(value: wire::ForkRequest) -> Result<acyclic_stream_contract_core::ForkRequest, StreamError> {
+pub fn fork_from_wire(
+    value: wire::ForkRequest,
+) -> Result<acyclic_stream_contract_core::ForkRequest, StreamError> {
     Ok(acyclic_stream_contract_core::ForkRequest {
         exclude: value
             .exclude
@@ -275,7 +279,9 @@ pub fn fork_to_wire(request: &acyclic_stream_contract_core::ForkRequest) -> wire
 /// Decodes a read request from its generated wire representation. Like
 /// [`follow_from_wire`], it is transport-free: every host of the shared
 /// provider cursor compiles it on every target.
-pub fn read_from_wire(value: wire::ReadRequest) -> Result<acyclic_stream_contract_core::ReadRequest, StreamError> {
+pub fn read_from_wire(
+    value: wire::ReadRequest,
+) -> Result<acyclic_stream_contract_core::ReadRequest, StreamError> {
     Ok(acyclic_stream_contract_core::ReadRequest {
         key: read_key_from_wire(value.key)?,
         path: path(value.path)?,
@@ -337,7 +343,9 @@ pub fn read_key_to_wire(
 
 /// Decodes every follow field through the shared provider contract. A checked
 /// session supplies its separate immutable-history anchor after this conversion.
-pub fn follow_from_wire(value: wire::FollowRequest) -> Result<acyclic_stream_contract_core::FollowRequest, StreamError> {
+pub fn follow_from_wire(
+    value: wire::FollowRequest,
+) -> Result<acyclic_stream_contract_core::FollowRequest, StreamError> {
     Ok(acyclic_stream_contract_core::FollowRequest {
         bootstrap_head: value.bootstrap_head,
         until: value.until,
@@ -411,7 +419,9 @@ pub fn children_page_from_response(
             .collect::<Result<_, StreamError>>()?,
         next_after: value.next_after.map(path).transpose()?,
     };
-    if page.scanned > u32::try_from(acyclic_stream_contract_core::MAX_ITEMS).map_err(|_| StreamError::Capacity)?
+    if page.scanned
+        > u32::try_from(acyclic_stream_contract_core::MAX_ITEMS)
+            .map_err(|_| StreamError::Capacity)?
         || page.children.len() > page.scanned as usize
         || (page.next_after.is_some() && page.scanned == 0)
     {
@@ -421,7 +431,9 @@ pub fn children_page_from_response(
 }
 
 /// Converts a domain children page into its generated wire representation.
-pub fn children_page_to_wire(value: acyclic_stream_contract_core::ChildrenPage) -> wire::ChildrenPageResponse {
+pub fn children_page_to_wire(
+    value: acyclic_stream_contract_core::ChildrenPage,
+) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
         scanned: value.scanned,
         hierarchy_version: bytes::Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
@@ -440,7 +452,9 @@ pub fn children_page_to_wire(value: acyclic_stream_contract_core::ChildrenPage) 
 }
 
 /// Decodes a commit request from its generated wire representation.
-pub fn commit_from_wire(value: wire::CommitRequest) -> Result<acyclic_stream_contract_core::CommitRequest, StreamError> {
+pub fn commit_from_wire(
+    value: wire::CommitRequest,
+) -> Result<acyclic_stream_contract_core::CommitRequest, StreamError> {
     Ok(acyclic_stream_contract_core::CommitRequest {
         deadline_unix_millis: value.deadline_unix_millis,
         effects: value
@@ -495,7 +509,9 @@ pub fn commit_to_wire(value: &acyclic_stream_contract_core::CommitRequest) -> wi
 }
 
 /// Converts an append outcome into its generated wire representation.
-pub fn append_outcome_to_wire(value: acyclic_stream_contract_core::AppendOutcome) -> wire::AppendResponse {
+pub fn append_outcome_to_wire(
+    value: acyclic_stream_contract_core::AppendOutcome,
+) -> wire::AppendResponse {
     let outcome = match value {
         acyclic_stream_contract_core::AppendOutcome::Committed(receipt) => {
             wire::append_response::Outcome::Committed(wire::AppendReceipt {
@@ -516,7 +532,9 @@ pub fn append_outcome_to_wire(value: acyclic_stream_contract_core::AppendOutcome
 }
 
 /// Converts a fork receipt into its generated wire representation.
-pub fn fork_receipt_to_wire(value: &acyclic_stream_contract_core::ForkReceipt) -> wire::ForkReceipt {
+pub fn fork_receipt_to_wire(
+    value: &acyclic_stream_contract_core::ForkReceipt,
+) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -543,7 +561,9 @@ pub fn envelope_from_wire(
 }
 
 /// Converts a commit outcome into its generated wire representation.
-pub fn commit_outcome_to_wire(value: acyclic_stream_contract_core::CommitOutcome) -> wire::CommitResponse {
+pub fn commit_outcome_to_wire(
+    value: acyclic_stream_contract_core::CommitOutcome,
+) -> wire::CommitResponse {
     let outcome = match value {
         acyclic_stream_contract_core::CommitOutcome::Committed(receipt) => {
             wire::commit_response::Outcome::Committed(receipt_to_wire(receipt))
@@ -567,7 +587,8 @@ pub fn commit_write_outcome_from_wire(
     accepted: bool,
 ) -> Result<acyclic_stream_contract_core::WriteOutcome, StreamError> {
     if !accepted {
-        return commit_outcome_from_wire(value).map(acyclic_stream_contract_core::WriteOutcome::Commit);
+        return commit_outcome_from_wire(value)
+            .map(acyclic_stream_contract_core::WriteOutcome::Commit);
     }
     let envelope = value.envelope.take();
     let outcome = match commit_outcome_from_wire(value)? {
@@ -587,7 +608,9 @@ pub fn commit_write_outcome_from_wire(
             Err(conflicts)
         }
     };
-    Ok(acyclic_stream_contract_core::WriteOutcome::CommitAccepted(outcome))
+    Ok(acyclic_stream_contract_core::WriteOutcome::CommitAccepted(
+        outcome,
+    ))
 }
 
 /// Encodes both projections from the same original provider result.
@@ -595,8 +618,12 @@ pub fn commit_write_outcome_to_wire(
     outcome: acyclic_stream_contract_core::WriteOutcome,
 ) -> Result<wire::CommitResponse, StreamError> {
     match outcome {
-        acyclic_stream_contract_core::WriteOutcome::Commit(outcome) => Ok(commit_outcome_to_wire(outcome)),
-        acyclic_stream_contract_core::WriteOutcome::CommitAccepted(Ok(acyclic_stream_contract_core::AcceptedCommit { receipt, envelope })) => {
+        acyclic_stream_contract_core::WriteOutcome::Commit(outcome) => {
+            Ok(commit_outcome_to_wire(outcome))
+        }
+        acyclic_stream_contract_core::WriteOutcome::CommitAccepted(Ok(
+            acyclic_stream_contract_core::AcceptedCommit { receipt, envelope },
+        )) => {
             if !receipt.matches_envelope(&envelope) {
                 return Err(StreamError::InvalidResponse);
             }
@@ -612,7 +639,9 @@ pub fn commit_write_outcome_to_wire(
 }
 
 /// Converts a committed envelope into its generated wire representation.
-pub fn envelope_to_wire(value: acyclic_stream_contract_core::CommittedEnvelope) -> wire::CommittedEnvelope {
+pub fn envelope_to_wire(
+    value: acyclic_stream_contract_core::CommittedEnvelope,
+) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: bytes::Bytes::copy_from_slice(value.commit_id.as_bytes()),
         committed_at_micros: value.committed_at_micros,

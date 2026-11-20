@@ -212,7 +212,10 @@ fn failed_probe_refuses(path: &Path) -> io::Result<()> {
     assert!(contended(StoreClaim::acquire_probing(path, failing_probe)));
     // A check requires the caller to hold the claim file's lock. A held-file
     // owner excludes that lock directly; only recorded owners can be checked.
-    match acyclic_native_runtime::FileLock::try_acquire(std::fs::File::open(path)?, acyclic_native_runtime::FileLockMode::Shared) {
+    match acyclic_native_runtime::FileLock::try_acquire(
+        std::fs::File::open(path)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    ) {
         Ok(file) => {
             let check = StoreClaim::check_probing(&file, failing_probe)?;
             assert!(check.claimed, "an unanswered probe admitted: {check:?}");
@@ -281,7 +284,10 @@ fn an_exited_owner_whose_process_lock_is_still_held_owns_nothing() -> io::Result
     owner.0.wait()?;
     // Stand in for the OS's not yet released lock of the exited owner. The
     // blocking acquire waits on the OS release itself, never on its timing.
-    let held = acyclic_native_runtime::FileLock::acquire(lock, acyclic_native_runtime::FileLockMode::Exclusive)?;
+    let held = acyclic_native_runtime::FileLock::acquire(
+        lock,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    )?;
     drop(StoreClaim::acquire(&path)?);
     drop(held);
     Ok(())
@@ -457,8 +463,10 @@ fn trailing_bytes_after_a_complete_claim_record_refuse() -> io::Result<()> {
     bytes.push(0);
     std::fs::write(&path, &bytes)?;
     assert!(contended(StoreClaim::acquire(&path)));
-    let file =
-        acyclic_native_runtime::FileLock::try_acquire(std::fs::File::open(&path)?, acyclic_native_runtime::FileLockMode::Shared)?;
+    let file = acyclic_native_runtime::FileLock::try_acquire(
+        std::fs::File::open(&path)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )?;
     assert!(StoreClaim::is_claimed(&file)?);
     Ok(())
 }
@@ -509,8 +517,10 @@ fn a_metered_claim_check_reads_each_record_once() -> io::Result<()> {
     let checked = |path: &Path| -> io::Result<(crate::ClaimCheck, u64)> {
         let meter = Arc::new(ReadBudgetMeter::new(1000, 1024 * 1024));
         let original: Arc<dyn NativeReadMeter> = meter.clone();
-        let file =
-            acyclic_native_runtime::FileLock::try_acquire(std::fs::File::open(path)?, acyclic_native_runtime::FileLockMode::Shared)?;
+        let file = acyclic_native_runtime::FileLock::try_acquire(
+            std::fs::File::open(path)?,
+            acyclic_native_runtime::FileLockMode::Shared,
+        )?;
         let check = StoreClaim::check_metered(&file, &original)?;
         Ok((check, meter.read_attempts.load(Ordering::Acquire)))
     };
@@ -555,8 +565,10 @@ fn claim_checks_fund_actual_records_and_preserve_explicit_refusals() -> io::Resu
         &directory.path().join("gone"),
     );
     std::fs::write(&path, &record)?;
-    let file =
-        acyclic_native_runtime::FileLock::try_acquire(std::fs::File::open(&path)?, acyclic_native_runtime::FileLockMode::Shared)?;
+    let file = acyclic_native_runtime::FileLock::try_acquire(
+        std::fs::File::open(&path)?,
+        acyclic_native_runtime::FileLockMode::Shared,
+    )?;
     let meter = Arc::new(ReadBudgetMeter::new(1000, 1024 * 1024));
     let original: Arc<dyn NativeReadMeter> = meter.clone();
     assert!(!StoreClaim::check_metered(&file, &original)?.claimed);

@@ -43,8 +43,8 @@ pub(crate) fn temporary_directory() -> Result<tempfile::TempDir> {
 
 fn with_temporary_checkout_state(config: LocalHarnessConfig) -> Result<LocalHarnessConfig> {
     let directory = temporary_directory()?;
-    let signing =
-        acyclic_native_runtime::signing_key::MemorySigningStore::new().map_err(acyclic_harness_local::local::storage)?;
+    let signing = acyclic_native_runtime::signing_key::MemorySigningStore::new()
+        .map_err(acyclic_harness_local::local::storage)?;
     let mut config = config
         .state_directory(directory.path())
         .signing_store(Arc::new(signing));
@@ -393,7 +393,10 @@ async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> 
         assert!(refusals.is_empty(), "{refusals:?}");
         let refusals = LocalHarness::doctor(configured()?).await.refusals;
         assert!(refusals.is_empty(), "{refusals:?}");
-        assert_eq!(acyclic_harness_local::local::TEMPORARY_STATES.get(), allocations);
+        assert_eq!(
+            acyclic_harness_local::local::TEMPORARY_STATES.get(),
+            allocations
+        );
         assert!(
             !directory.path().join("new").exists(),
             "doctor created state"

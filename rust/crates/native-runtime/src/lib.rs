@@ -167,11 +167,11 @@ mod blocking_future;
 pub mod cost;
 mod task;
 pub use blocking_future::blocking_future;
-#[cfg(feature = "test-support")]
-pub mod testing;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_fixtures;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub use blocking::{InlineBlocking, run_blocking_io, wait_native_future};
 pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,

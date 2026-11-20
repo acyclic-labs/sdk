@@ -61,7 +61,10 @@ impl AsyncAuthorityStore for ForeignOwner {
         maximum: u64,
         work: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> Result<
-        ((Head, Option<bytes::Bytes>), acyclic_fs::AuthorityAllocation),
+        (
+            (Head, Option<bytes::Bytes>),
+            acyclic_fs::AuthorityAllocation,
+        ),
         acyclic_fs::AuthorityStoreError,
     > {
         if let Some(gate) = &self.dispatch_gate {
@@ -75,8 +78,13 @@ impl AsyncAuthorityStore for ForeignOwner {
         after: Sequence,
         limit: acyclic_fs::ReplayLimit,
         work: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<(Vec<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError>
-    {
+    ) -> Result<
+        (
+            Vec<acyclic_fs::DurableCommit>,
+            acyclic_fs::AuthorityAllocation,
+        ),
+        acyclic_fs::AuthorityStoreError,
+    > {
         if self.forbid_replay.load(Ordering::SeqCst) {
             return Err(acyclic_fs::AuthorityStoreError::RejectedStatic(
                 "recent actor witness required",

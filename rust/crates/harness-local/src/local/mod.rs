@@ -59,9 +59,10 @@ mod settings;
 pub mod study;
 mod tool_output;
 mod verifier;
-pub use verifier::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
 #[cfg(any(test, feature = "test-support"))]
 pub use agent_settings::{Tree, Volumes, admit, plugins};
+pub use agents::{LocalAgents, LocalTurns};
+use config::LocalProject;
 #[cfg(any(test, feature = "test-support"))]
 pub use config::TEMPORARY_STATES;
 #[cfg(any(test, feature = "test-support"))]
@@ -70,8 +71,7 @@ pub use context::{copy_name, host_hooks_publication, publication_operation};
 pub use open::open as open_harness;
 #[cfg(any(test, feature = "test-support"))]
 pub use owner::RECORD;
-pub use agents::{LocalAgents, LocalTurns};
-use config::LocalProject;
+pub use verifier::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
 
 /// The session volume shared by a local root and its descendants.
 const SHARED_VOLUME: &str = "shared";

@@ -1,8 +1,8 @@
 mod tests {
     use super::super::*;
-    use acyclic_harness_core::*;
     use crate::sync::owned::lock_owned;
     use acyclic_fs::facade::FsWork as _;
+    use acyclic_harness_core::*;
     use acyclic_harness_workspace::checkout_tools::git::*;
     use acyclic_harness_workspace::workspace::owner;
     use acyclic_harness_workspace::workspace::*;

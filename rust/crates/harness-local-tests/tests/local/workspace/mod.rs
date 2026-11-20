@@ -2,9 +2,9 @@
 //! workspace primitives.
 #![cfg(not(target_arch = "wasm32"))]
 
-pub use crate::*;
 pub use crate::local::{LocalFilesystem, LocalHarness, LocalHarnessConfig};
 pub use crate::runtime::RuntimeScope;
+pub use crate::*;
 pub use acyclic_fs::access::VolumeOperation;
 pub use acyclic_fs::{CancellationToken, NativeMaterializationWork, PublicationPermit, WatchBatch};
 pub use acyclic_fs_work::performance::{WorkBudget, WorkCounters};

@@ -406,7 +406,10 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     follow: &wire::SessionFollow,
     cursor: &wire::SessionCursor,
 ) -> Result<
-    impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + acyclic_stream_contract_core::ProviderTask + use<P>,
+    impl futures::Stream<Item = Result<Record, StreamError>>
+    + Unpin
+    + acyclic_stream_contract_core::ProviderTask
+    + use<P>,
     StreamError,
 > {
     if follow.delivery != wire::SessionDelivery::All as i32 {
@@ -419,7 +422,9 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
             .follow(acyclic_stream_contract_core::FollowRequest {
                 bootstrap_head: false,
                 until: None,
-                when_absent: acyclic_stream_contract_core::WhenAbsent::from_wire(follow.when_absent)?,
+                when_absent: acyclic_stream_contract_core::WhenAbsent::from_wire(
+                    follow.when_absent,
+                )?,
                 path,
                 from: if preceding.is_some() { cursor.next } else { 0 },
                 preceding,

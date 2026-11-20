@@ -89,7 +89,9 @@ fn headers(
     )
 }
 
-fn headers_wire(headers: &acyclic_stream_contract_core::RecordHeaders) -> (Vec<Bytes>, Vec<wire::Attribute>) {
+fn headers_wire(
+    headers: &acyclic_stream_contract_core::RecordHeaders,
+) -> (Vec<Bytes>, Vec<wire::Attribute>) {
     (
         acyclic_stream_contract_core::changes::wire_keys(headers)
             .iter()
@@ -108,7 +110,9 @@ fn headers_wire(headers: &acyclic_stream_contract_core::RecordHeaders) -> (Vec<B
 }
 
 /// Validates the value and indexed headers from every append or transaction path.
-pub fn append_record(value: wire::AppendRecord) -> Result<acyclic_stream_contract_core::AppendRecord, StreamError> {
+pub fn append_record(
+    value: wire::AppendRecord,
+) -> Result<acyclic_stream_contract_core::AppendRecord, StreamError> {
     let headers = headers(&value.value, value.keys, value.attributes)?;
     let record = acyclic_stream_contract_core::AppendRecord {
         value: value.value.into(),

@@ -114,10 +114,7 @@ pub fn release_request(root: &crate::RootId) -> wire::ReleaseRequest {
 }
 
 /// Lowers a terminal release through the same root mapping.
-pub fn release_terminal_request(
-    root: &crate::RootId,
-    fence: u64,
-) -> wire::ReleaseTerminalRequest {
+pub fn release_terminal_request(root: &crate::RootId, fence: u64) -> wire::ReleaseTerminalRequest {
     let wire::ReleaseRequest { root } = release_request(root);
     wire::ReleaseTerminalRequest { root, fence }
 }
@@ -149,9 +146,7 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
 }
 
 /// Lowers a manifest and records the digest and length its receipt must prove.
-pub fn put_manifest(
-    value: &Manifest,
-) -> Result<(wire::PutManifestRequest, (Digest, u64)), Error> {
+pub fn put_manifest(value: &Manifest) -> Result<(wire::PutManifestRequest, (Digest, u64)), Error> {
     let expected = (Digest::of(&value.encode()?), value.length()?);
     Ok((
         wire::PutManifestRequest {
@@ -295,10 +290,7 @@ pub fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
 }
 
 /// The page a canonical wire reply lists.
-pub fn page(
-    value: &wire::ListBlobsResponse,
-    revision: Option<Revision>,
-) -> Result<Page, Error> {
+pub fn page(value: &wire::ListBlobsResponse, revision: Option<Revision>) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
         next: optional_digest(value.next.as_ref())?,

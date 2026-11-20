@@ -61,7 +61,8 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
         2,
         "fixture must contain a real prepared merge"
     );
-    let original = acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
     let other_original =
         acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
     if native {

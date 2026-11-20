@@ -1,10 +1,10 @@
 //! Real process and filesystem events control every ordering in this test.
 use super::*;
-use acyclic_harness_core::*;
 use crate::{
     conversation::ContentGrant,
     runtime::{ContentBindings, ToolContext},
 };
+use acyclic_harness_core::*;
 use acyclic_harness_workspace::checkout_tools::shell::executable;
 use acyclic_harness_workspace::checkout_tools::shell::job::*;
 use acyclic_harness_workspace::workspace::*;

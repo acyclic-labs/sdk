@@ -1,6 +1,6 @@
 use super::*;
-use acyclic_harness_core::*;
 use crate::test_support::native_write;
+use acyclic_harness_core::*;
 use acyclic_harness_workspace::host_workspace::*;
 use acyclic_harness_workspace::workspace::*;
 use acyclic_harness_workspace::*;

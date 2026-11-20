@@ -66,9 +66,7 @@ pub fn deadline(
 }
 
 /// Resolves and validates one credential lease, refusing on any failure.
-pub async fn checked_lease(
-    provider: &CredentialProvider,
-) -> Result<ResolvedCredential, Error> {
+pub async fn checked_lease(provider: &CredentialProvider) -> Result<ResolvedCredential, Error> {
     let denied = || Error::from(crate::wire::ErrorCode::AccessDenied);
     let lease = provider.resolve().await.map_err(|_| denied())?;
     validate_lease(Some(&lease)).await?;

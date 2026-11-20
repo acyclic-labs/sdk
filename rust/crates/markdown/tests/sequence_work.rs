@@ -454,7 +454,6 @@ fn repeated_inline_spans_have_linear_work() {
     }
 }
 
-
 #[test]
 fn retained_span_content_is_processed_once() {
     for span in [
@@ -488,8 +487,6 @@ fn retained_span_content_is_processed_once() {
     }
 }
 
-
-
 #[test]
 fn intraword_underscore_sequences_have_linear_work() {
     for count in [4, 16, 64, 128] {
@@ -497,7 +494,6 @@ fn intraword_underscore_sequences_have_linear_work() {
             .unwrap_or_else(|error| panic!("count {count}: {error}"));
     }
 }
-
 
 #[test]
 fn fence_reference_visibility_has_linear_storage() {
@@ -507,4 +503,3 @@ fn fence_reference_visibility_has_linear_storage() {
             .unwrap_or_else(|error| panic!("count {count}: {error}"));
     }
 }
-

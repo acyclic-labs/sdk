@@ -193,8 +193,9 @@ async fn home_model_selection_case(explicit: bool, credentials_available: bool) 
     let fixture = fixture()?;
     let model = model(fixture._directory.path()).await?;
     let mut catalog: Value = serde_json::from_slice(&std::fs::read(&model.catalog)?)?;
-    catalog["fixture"]["authentication"] = json!("api_key");
-    catalog["default_model"] = json!("fixture/tiny");
+    *catalog
+        .pointer_mut("/fixture/authentication")
+        .ok_or("the fixture catalog names its authentication")? = json!("api_key");
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog)?)?;
     let credentials = fixture._directory.path().join("credentials.json");
     std::fs::write(
@@ -358,7 +359,7 @@ where
             .await
     });
     let catalog = directory.join("catalog.json");
-    let mut document = json!({"fixture":{
+    let document = json!({"default_model":"fixture/tiny","fixture":{
         "adapter":adapter,"authentication":"optional","base_url":format!("http://{address}"),
         "models":{
             "tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}},
@@ -366,7 +367,6 @@ where
         },"max_event_bytes":4096,
         "token_counter": (adapter != "chat").then(|| json!({"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}))
     }});
-    document["default_model"] = json!("fixture/tiny");
     std::fs::write(&catalog, serde_json::to_vec(&document)?)?;
     Ok(Model {
         catalog,

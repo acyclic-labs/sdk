@@ -510,8 +510,7 @@ impl Markdown {
                     && last_item_end.is_some_and(|item_end| range.end > item_end);
                 let sealed = closed
                     || (sealed(source, range.end, *end, next_block)
-                        && (!trailing
-                            || blank_line(source.get(range.end..).unwrap_or_default())))
+                        && (!trailing || blank_line(source.get(range.end..).unwrap_or_default())))
                     || (*end == TagEnd::HtmlBlock && context::html_closed(source, range, &stack));
                 if range.end >= prefix && (leaf_end || (stack.is_empty() && next_block)) && sealed {
                     candidate = Some((

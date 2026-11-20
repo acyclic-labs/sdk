@@ -270,7 +270,9 @@ impl Platform {
             let _ = stop.send(());
         }
         if let Some(serving) = self.serving.take() {
-            serving.await.map_err(acyclic_harness_local::local::storage)??;
+            serving
+                .await
+                .map_err(acyclic_harness_local::local::storage)??;
         }
         Ok(())
     }

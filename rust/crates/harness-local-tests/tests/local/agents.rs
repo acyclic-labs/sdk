@@ -879,10 +879,7 @@ async fn conversation_records_include_the_complete_committed_prefix() -> Result<
 
 /// The root's conversation once it has settled every input sent before
 /// this call, using the original actor checkpoint and runtime terminal event.
-pub(crate) async fn settled(
-    harness: &Arc<LocalHarness>,
-    root: &AgentPath,
-) -> Result<Vec<Vec<u8>>> {
+pub(crate) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
     let (agents, _) = harness.agents().await?;
     let completion = harness
         .agents
@@ -2073,7 +2070,10 @@ async fn follow_tool_output(
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(Some(1)).await?;
     loop {
-        if matches!(observer.next().await?, acyclic_harness_local::local::Event::Delta) {
+        if matches!(
+            observer.next().await?,
+            acyclic_harness_local::local::Event::Delta
+        ) {
             observer.absorb().await?;
             if observer.live().1.contains("staged") {
                 break;
@@ -2722,8 +2722,10 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         "{base}/{}",
         acyclic_harness_local::local::copy_name("vanished.txt")
     );
-    let operation =
-        acyclic_harness_local::local::publication_operation(b"acyclic.local.mention-copies/v1\0", key);
+    let operation = acyclic_harness_local::local::publication_operation(
+        b"acyclic.local.mention-copies/v1\0",
+        key,
+    );
     let content = harness
         .agents
         .get()

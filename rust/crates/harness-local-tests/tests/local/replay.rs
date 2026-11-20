@@ -79,8 +79,8 @@ impl ReplayFixture {
             volume_config(directory.path(), project, super::text())?.signing_store(signing.clone());
         let state = config.resolved_state_directory()?;
         let harness = super::open_scripted(config).await?;
-        let owner =
-            private_file::read(&state.join(acyclic_harness_local::local::RECORD), 65_536).map_err(agent)?;
+        let owner = private_file::read(&state.join(acyclic_harness_local::local::RECORD), 65_536)
+            .map_err(agent)?;
         harness.disconnect().await?;
         Ok(Self {
             _directory: directory,
@@ -109,8 +109,8 @@ impl ReplayFixture {
             .tool(tool);
         let state = config.resolved_state_directory()?;
         private_file::create_directory_all(&state).map_err(agent)?;
-        let mut owner =
-            private_file::create(&state.join(acyclic_harness_local::local::RECORD)).map_err(agent)?;
+        let mut owner = private_file::create(&state.join(acyclic_harness_local::local::RECORD))
+            .map_err(agent)?;
         acyclic_native_runtime::write_file_all(&mut owner, &self.owner.0).map_err(agent)?;
         drop(owner);
         let harness = Arc::new(super::open_scripted(config).await?);

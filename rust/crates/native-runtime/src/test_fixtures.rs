@@ -4,9 +4,9 @@
 //! a crate that moved a module out can still drive the same meter and exclusive
 //! process helpers its tests used before the move.
 
+use crate::OwnershipAnchor;
 use crate::meter::{NativeCodecWork, NativeOperationKind, NativeReadMeter};
 use crate::sync::Mutex;
-use crate::OwnershipAnchor;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
@@ -420,4 +420,3 @@ impl NativeReadMeter for ReadBudgetMeter {
         self.record_reserved_operation(NativeOperationKind::Write)
     }
 }
-

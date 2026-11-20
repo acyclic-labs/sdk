@@ -1,8 +1,8 @@
 //! Inject lost continuity at the actual native capture boundaries.
 use super::*;
-use acyclic_harness_core::*;
 use acyclic_fs::CancellationToken;
 use acyclic_fs::{ByteRange, WatchInvalidationReason};
+use acyclic_harness_core::*;
 use acyclic_harness_workspace::checkout_tools::CheckoutTools;
 use acyclic_harness_workspace::checkout_tools::capture::record_changes;
 pub use acyclic_harness_workspace::checkout_tools::capture::*;

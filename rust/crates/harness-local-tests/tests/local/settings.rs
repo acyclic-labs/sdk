@@ -57,11 +57,7 @@ async fn enabling_feedback_preserves_authored_settlement_settings() -> Result<()
 }
 
 /// Writes a home settings module, returning its version.
-pub(crate) async fn write(
-    harness: &LocalHarness,
-    path: &str,
-    source: &str,
-) -> Result<String> {
+pub(crate) async fn write(harness: &LocalHarness, path: &str, source: &str) -> Result<String> {
     let grant = ContentGrant::verify(
         &harness.verifier,
         &harness.signed,

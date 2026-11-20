@@ -75,8 +75,8 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
     let id = volume_authority_id(workspace.id().volume_id());
     for native in [false, true] {
         let cancel = CancellationToken::new();
-        let original =
-            acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
+        let original = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancel)
+            .map_err(|(error, _)| error)?;
         let mut work = if native {
             AuthorityWork::native(&original, &cancel)
         } else {
@@ -111,8 +111,8 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
         )
         .await?;
         assert_eq!(page.facts().len(), 2);
-        let fact_bytes =
-            (page.facts.value.capacity() * size_of::<acyclic_fs::accounting::AccountingFact>()) as u64;
+        let fact_bytes = (page.facts.value.capacity()
+            * size_of::<acyclic_fs::accounting::AccountingFact>()) as u64;
         assert_eq!(live(&work), baseline + fact_bytes);
         drop(page);
         assert_eq!(live(&work), baseline);
@@ -571,7 +571,10 @@ impl<O: AsyncObjectStore> AsyncObjectStore for RefusingProof<'_, O> {
         &self,
         requests: &[acyclic_fs::ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation), acyclic_fs::ObjectStoreError> {
+    ) -> Result<
+        (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
+        acyclic_fs::ObjectStoreError,
+    > {
         if !self.archive
             && requests
                 .iter()
@@ -597,7 +600,10 @@ impl<O: AsyncObjectStore> AsyncObjectStore for RefusingProof<'_, O> {
         maximum: u64,
         maximum_objects: u64,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<Option<acyclic_fs::kernel::HistoricalGenerationEvidence>, acyclic_fs::ObjectStoreError> {
+    ) -> Result<
+        Option<acyclic_fs::kernel::HistoricalGenerationEvidence>,
+        acyclic_fs::ObjectStoreError,
+    > {
         if record.sequence == Sequence::new(2) {
             self.later_hash.store(
                 work.spent()?.bytes_hashed,

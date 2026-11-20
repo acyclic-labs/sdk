@@ -200,8 +200,10 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
         // A new observation after the epoch changed cannot inherit the stale summary.
         // It forks into the forgotten probe's destination, so both charge the same keys.
         let late = workspace.head(B, &cancel).await?.value;
-        let mut accounting =
-            acyclic_fs::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+        let mut accounting = acyclic_fs::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        );
         let held =
             retained_source_fork_work(&fs, &source, "held", &mut accounting, &cancel).await?;
         let walked =

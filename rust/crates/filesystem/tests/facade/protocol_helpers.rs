@@ -12,7 +12,8 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
     .await?;
     commit(&mut seed, &cancel).await?;
     #[cfg(not(target_arch = "wasm32"))]
-    let original = acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
     for (local_offset, remote_offset, local_bytes, remote_bytes, safe) in [
         (0, 64, b"LOCAL".as_slice(), b"REMOTE".as_slice(), true),
         (10, 12, b"local".as_slice(), b"remote".as_slice(), false),
@@ -108,8 +109,10 @@ pub(super) fn original_authored_creates(
 ) -> Result<(Vec<AuthoredMutation>, acyclic_fs::NativeAllocation), FsError> {
     use acyclic_fs::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
     let mut accounting = KernelAccounting::native(original, cancellation);
-    let mut input =
-        acyclic_fs::kernel::Owned::<Vec<AuthoredMutation>>::allocate(requests.len(), &mut accounting)?;
+    let mut input = acyclic_fs::kernel::Owned::<Vec<AuthoredMutation>>::allocate(
+        requests.len(),
+        &mut accounting,
+    )?;
     for (requested, content) in requests {
         let mut path = clone_authored_path(requested, &mut accounting)?;
         accounting.charge(WorkCounters {

@@ -108,6 +108,7 @@ node_test(
         "//:scripts/workspace-model.mjs",
         "//:windows_paths.bzl",
         "//:xwin_repo.bzl",
+        "//rust/crates/test-runner:privileges.txt",
     ],
     entry = "scripts/bazel-build-files.test.mjs",
     name_pattern = "a patched crate uses crate-universe spokes",

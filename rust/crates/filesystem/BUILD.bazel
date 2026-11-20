@@ -1142,7 +1142,7 @@ rust_test(
         "--skip",
         "::full_cloud::",
     ],
-    tags = ["manual","resources:memory:768"],
+    tags = ["manual","resources:memory:896"],
 )
 
 isolated_test(

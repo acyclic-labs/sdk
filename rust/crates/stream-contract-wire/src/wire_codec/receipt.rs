@@ -1,7 +1,9 @@
 use super::*;
 
 /// Decode a compact publication receipt without constructing record values.
-pub fn receipt_from_wire(value: wire::CommitReceipt) -> Result<acyclic_stream_contract_core::CommitReceipt, StreamError> {
+pub fn receipt_from_wire(
+    value: wire::CommitReceipt,
+) -> Result<acyclic_stream_contract_core::CommitReceipt, StreamError> {
     let id = commit_id(&value.commit_id)?;
     let revision = issued_from_wire(value.revision)?;
     let appends = value

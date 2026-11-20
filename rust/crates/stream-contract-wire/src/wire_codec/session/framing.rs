@@ -35,7 +35,10 @@ pub struct FrameDecoder<T = wire::SessionFrame> {
 
 impl Default for FrameDecoder {
     fn default() -> Self {
-        Self::with_decoder(acyclic_stream_contract_core::MAX_COMMAND_BYTES, decode_frame)
+        Self::with_decoder(
+            acyclic_stream_contract_core::MAX_COMMAND_BYTES,
+            decode_frame,
+        )
     }
 }
 

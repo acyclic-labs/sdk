@@ -342,7 +342,10 @@ async fn first_publication_work(
     let child = workspace
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "first-publish-child",
-            acyclic_fs::workspace::ForkOptions::from_generation(source, acyclic_fs::IdempotencyKey::new()),
+            acyclic_fs::workspace::ForkOptions::from_generation(
+                source,
+                acyclic_fs::IdempotencyKey::new(),
+            ),
             acyclic_fs::PublicationPermit::Unrestricted,
             B,
             &cancel,
@@ -373,10 +376,12 @@ async fn first_publication_work(
             B,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                })
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                )
             },
         )
         .await?;

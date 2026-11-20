@@ -104,8 +104,8 @@ pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accountin
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use content_eq::{records_match_content, records_match_prefix};
 pub use file_read::OriginalReadAccounting;
-pub(crate) use file_read::{read_object_with_accounting, release_standalone_read_bytes};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
+pub(crate) use file_read::{read_object_with_accounting, release_standalone_read_bytes};
 pub(crate) use generation_mutation::apply_generation_mutations_retaining_with_accounting;
 pub(crate) use list::list_tree_entries_async_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]

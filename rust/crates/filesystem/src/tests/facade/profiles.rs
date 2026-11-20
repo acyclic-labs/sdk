@@ -5,15 +5,22 @@ use acyclic_stream::OwnedBytes;
 
 const B: WorkBudget = WorkBudget::UNBOUNDED;
 
-fn path(name: &str, checkout: &MemoryCheckout) -> Result<NamespacePath, Box<dyn std::error::Error>> {
+fn path(
+    name: &str,
+    checkout: &MemoryCheckout,
+) -> Result<NamespacePath, Box<dyn std::error::Error>> {
     Ok(NamespacePath::new(
-        vec![LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())?],
+        vec![LogicalName::new(
+            NameEncoding::Utf8,
+            name.as_bytes().to_vec(),
+        )?],
         checkout.volume_config().limits,
     )?)
 }
 
 #[tokio::test]
-async fn full_case_fold_legacy_alias_collisions_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+async fn full_case_fold_legacy_alias_collisions_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
     for prefix in [String::new(), "Q".repeat(120)] {
         let first_name = format!("{prefix}Straße");

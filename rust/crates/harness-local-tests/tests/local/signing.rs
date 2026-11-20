@@ -54,7 +54,10 @@ async fn temporary_state_retires_signing_custody_after_its_resources() -> Result
     assert!(refusals.is_empty(), "{refusals:?}");
     let refusals = LocalHarness::doctor(configured()?).await.refusals;
     assert!(refusals.is_empty(), "{refusals:?}");
-    assert_eq!(acyclic_harness_local::local::TEMPORARY_STATES.get(), allocations);
+    assert_eq!(
+        acyclic_harness_local::local::TEMPORARY_STATES.get(),
+        allocations
+    );
     let config = configured()?.prepare_state()?;
     let store = config
         .signing_store

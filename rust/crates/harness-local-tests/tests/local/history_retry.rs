@@ -130,12 +130,14 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
     let entry = entries
         .last()
         .ok_or_else(|| Error::Invalid("settled transition has no conversation".into()))?;
-    let cuts = Arc::new(acyclic_harness_workspace::workspace::LocalVolumeResources(Arc::clone(
-        harness
-            .workspace
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("native transition has no workspace".into()))?,
-    )));
+    let cuts = Arc::new(acyclic_harness_workspace::workspace::LocalVolumeResources(
+        Arc::clone(
+            harness
+                .workspace
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("native transition has no workspace".into()))?,
+        ),
+    ));
     let composer = crate::filesystem::FilesystemSpawnVolumes::new(Arc::clone(harness.files()))
         .with_volume_resources(cuts.clone());
     let participant = composer

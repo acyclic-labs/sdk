@@ -22,7 +22,10 @@ pub async fn provider_cursor<P: StreamProvider + ?Sized>(
     operation: &str,
     input: &[u8],
     preceding: &[u8],
-) -> Result<acyclic_stream_contract_core::BoxProviderStream<'static, Result<Vec<u8>, StreamError>>, StreamError> {
+) -> Result<
+    acyclic_stream_contract_core::BoxProviderStream<'static, Result<Vec<u8>, StreamError>>,
+    StreamError,
+> {
     if input.len() > acyclic_stream_contract_core::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }

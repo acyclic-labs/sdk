@@ -225,7 +225,8 @@ async fn disjoint_native_rebase_retains_original_custody_and_rejects_unfunded_wo
         .await?;
     }
     commit(&mut seed, &cancel).await?;
-    let original = acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let mut local = volume
         .checkout(
             GenerationSelector::Head,

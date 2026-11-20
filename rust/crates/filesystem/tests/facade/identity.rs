@@ -76,7 +76,8 @@ async fn named_retention_preserves_the_exact_reference_without_a_cached_proof() 
                 .head_payload(id, maximum_payload_bytes, &mut work)
                 .await?;
             let payload = payload.ok_or("missing retention record")?;
-            let retained = acyclic_fs::kernel::decode_retention_created(&payload, payload.len() as u64)?;
+            let retained =
+                acyclic_fs::kernel::decode_retention_created(&payload, payload.len() as u64)?;
             assert_eq!(retained.generation_root, reference);
         }
     }
@@ -96,7 +97,8 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
     )
     .await?;
     commit(&mut source, &cancel).await?;
-    let original = acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let mut candidate = source.private_candidate(
         &mut acyclic_fs::kernel::allocation::KernelAccounting::native(&original, &cancel),
         &cancel,

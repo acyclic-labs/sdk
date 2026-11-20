@@ -118,10 +118,12 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             B,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::default(),
-                })
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::default(),
+                    },
+                )
             },
         )
         .await
@@ -410,8 +412,8 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             ..B
         };
         let cancel = CancellationToken::new();
-        let original =
-            acyclic_fs::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+            .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut records = FixedIndex::default();

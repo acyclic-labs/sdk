@@ -137,8 +137,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
             ..acyclic_fs_work::performance::BOUNDARY_BUDGET
         };
         let cancel = CancellationToken::new();
-        let original =
-            acyclic_fs::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+            .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let prior = RetainedAllocation::claim(29, 1, &mut accounting)?;
@@ -184,7 +184,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
     let mut expected = input.clone();
     expected.retain(|(_, region)| !matches!(region, DependencyRegion::FileLength(id) if input.iter().any(|(_, candidate)| matches!(candidate, DependencyRegion::FileRecord(record) if record == id))));
     let cancel = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel);
+    let mut accounting =
+        KernelAccounting::standalone(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel);
     MemoryCheckout::subsume_mutation_record_dependencies(&mut input, &mut accounting)?;
     assert_eq!(input, expected);
 
@@ -202,7 +203,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         (None, DependencyRegion::FileLength(ids[1])),
     ];
     let mut successful = input.clone();
-    let mut accounting = KernelAccounting::standalone(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel);
+    let mut accounting =
+        KernelAccounting::standalone(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel);
     MemoryCheckout::subsume_mutation_record_dependencies(&mut successful, &mut accounting)?;
     let spent = accounting.spent().unwrap();
     // Every examined-item refusal and the first denied swap keep all original
@@ -212,8 +214,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
             items_examined: allowance,
             ..acyclic_fs_work::performance::BOUNDARY_BUDGET
         };
-        let original =
-            acyclic_fs::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+            .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut regions = input.clone();
@@ -245,7 +247,8 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         assert!(input.iter().all(|entry| regions.contains(entry)));
     }
     cancel.cancel();
-    let mut accounting = KernelAccounting::standalone(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel);
+    let mut accounting =
+        KernelAccounting::standalone(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel);
     assert!(matches!(
         MemoryCheckout::subsume_mutation_record_dependencies(&mut Vec::new(), &mut accounting),
         Err(FsError::Cancelled(_))

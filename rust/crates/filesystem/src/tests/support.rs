@@ -2,10 +2,10 @@ use acyclic_fs::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use acyclic_fs::memory::MemoryObjectStore;
-use acyclic_fs_work::performance::WorkCounters;
 use acyclic_fs::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
 };
+use acyclic_fs_work::performance::WorkCounters;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -916,4 +916,3 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
     );
     Ok(())
 }
-
