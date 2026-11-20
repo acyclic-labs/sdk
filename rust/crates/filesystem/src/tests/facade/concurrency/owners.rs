@@ -1126,3 +1126,97 @@ fn ready_memory_batches_need_no_detached_executor() -> TestResult {
         verify_owned_operations(&volume, operations, &cancel).await
     })
 }
+
+// Combiner layer: a retry and a fresh proposal coalesce behind a held group.
+// Another owner commits the retried operation before the group appends, so
+// the store recovers the retry; the fresh member chained after it commits.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn successor_chained_after_a_recovered_retry_commits() -> TestResult {
+    use futures::future::{Either, select};
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
+    for name in ["a", "b", "c"] {
+        create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
+    }
+    commit(&mut seed, &cancel).await?;
+    let gate = Arc::new(DispatchGate::default());
+    let observer = Fs::new(
+        ForeignOwner {
+            inner: Arc::new(crate::StreamAuthorityStore::new(
+                volume.fs.inner.authority.provider(),
+            )),
+            claims: Default::default(),
+            forbid_probe: Default::default(),
+            racing_operation: None,
+            forbid_replay: Default::default(),
+            dispatch_gate: Some(Arc::clone(&gate)),
+            _retirement: None,
+        },
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
+    let retried = OperationId::new();
+    let mut first = edit(&observed, "a", &cancel).await?;
+    let mut retry = edit(&observed, "b", &cancel).await?;
+    let mut fresh = edit(&observed, "c", &cancel).await?;
+    // The same change from the same base, through an owner that shares only
+    // durable state: its commit is the retry's exact original.
+    let mut original = edit(&volume, "b", &cancel).await?;
+    let mut held = Box::pin(submit_proposal(
+        &mut first,
+        OperationId::new(),
+        false,
+        &cancel,
+    ));
+    assert!(
+        matches!(
+            select(Box::pin(gate.started.notified()), held.as_mut()).await,
+            Either::Left(_)
+        ),
+        "first publication did not reach its durability owner"
+    );
+    let mut next = Box::pin(futures::future::join(
+        submit_proposal(&mut retry, retried, false, &cancel),
+        submit_proposal(&mut fresh, OperationId::new(), false, &cancel),
+    ));
+    assert!(futures::poll!(next.as_mut()).is_pending());
+    gate.release.notify_one();
+    assert!(
+        matches!(
+            select(Box::pin(gate.started.notified()), next.as_mut()).await,
+            Either::Left(_)
+        ),
+        "successor group did not reach its durability owner"
+    );
+    assert!(matches!(
+        held.await?,
+        LivePublicationObservation::Committed { .. }
+    ));
+    assert!(matches!(
+        original
+            .commit(
+                retried,
+                None,
+                None,
+                None,
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<FsError>
+            )
+            .await?
+            .value,
+        LivePublicationObservation::Committed { .. }
+    ));
+    gate.release.notify_one();
+    let (retry, fresh) = next.await;
+    let (retry, fresh) = (retry?, fresh?);
+    assert!(
+        matches!(retry, LivePublicationObservation::AlreadyCommitted { .. })
+            && matches!(fresh, LivePublicationObservation::Committed { .. }),
+        "a recovered retry refused the successor chained after it: {retry:?} {fresh:?}"
+    );
+    Ok(())
+}

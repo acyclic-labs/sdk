@@ -367,3 +367,52 @@ async fn recovered_member_does_not_refuse_its_fresh_prefix() -> TestResult {
     assert_eq!(store.head(authority, &mut work).await?.sequence.get(), 3);
     Ok(())
 }
+
+// Preparation recovers a retried member whose durable commit moved the head
+// past its expected head. The member chained after it expects exactly that
+// durable head, so it commits instead of sharing the refusal.
+#[tokio::test]
+async fn member_chained_after_a_recovered_sibling_commits() -> TestResult {
+    let (store, authority) = fixture().await?;
+    let requests = requests(authority, 3)?;
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    for request in &requests[..2] {
+        assert!(matches!(
+            store
+                .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+                .await?,
+            FsAppendOutcome::Committed(_)
+        ));
+    }
+    let [_, durable, fresh] = requests.as_slice() else {
+        return Err("missing group requests".into());
+    };
+    let AppendGroupOutcome::Published {
+        receipts,
+        allocation,
+    } = store
+        .compare_and_append_group(
+            &[durable.clone(), fresh.clone()],
+            &[],
+            &mut work,
+            None::<&mut ()>,
+        )
+        .await?
+    else {
+        return Err("group was rejected".into());
+    };
+    assert!(
+        matches!(
+            receipts.as_slice(),
+            [FsAppendOutcome::AlreadyCommitted(existing), FsAppendOutcome::Committed(committed)]
+                if existing.operation_id == durable.commit.operation_id
+                    && committed.operation_id == fresh.commit.operation_id
+        ),
+        "a recovered sibling refused the member chained after it"
+    );
+    drop(receipts);
+    drop(allocation);
+    assert_eq!(store.head(authority, &mut work).await?.sequence.get(), 3);
+    Ok(())
+}
