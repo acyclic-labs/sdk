@@ -458,6 +458,26 @@ function hasUnitTests(crateDir, rootFile) {
 // The argument of source_path or crate_path! names its read whatever its shape.
 const LITERAL = /"([^"\\\n]*\/[^"\\\n]*)"/g;
 const NAMED = /\b(source_path|crate_path!|crate_path_str!)\(\s*"([^"\\\n]+)"/g;
+// A script a test runs loads its relative static, side-effect and dynamic imports and re-exports
+// (`with { type: "json" }` ones too) at run time, so each script read brings every module it reaches.
+// A generated module is no tracked file: [workspace.metadata.bazel] generated-files maps its path to the
+// label that places it there in runfiles.
+const SCRIPT = /\.(?:[cm]?js|[cm]?ts)$/;
+const IMPORT = /(?:\bfrom|\bimport|\bimport\s*\()\s*(['"])(\.{1,2}\/[^'"\n]+)\1/g;
+const generatedFiles = bazelWorkspace?.["generated-files"] ?? {};
+function scriptClosure(files) {
+  const found = new Set(), queue = files.filter(file => SCRIPT.test(file));
+  while (queue.length) {
+    const file = queue.pop();
+    for (const [, , specifier] of fs.readFileSync(path.join(root, file), "utf8").matchAll(IMPORT)) {
+      const named = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
+      if (found.has(named) || files.includes(named) || !(trackedSet.has(named) || generatedFiles[named])) continue;
+      found.add(named);
+      if (trackedSet.has(named) && SCRIPT.test(named)) queue.push(named);
+    }
+  }
+  return found;
+}
 // In another workspace, test-support's source_path resolves in the --source-repository's runfiles (the
 // isolated test runner points it there), so a file it names there is declared by that repository's label:
 // the file in its innermost Bazel package, which exports every file it holds.
@@ -508,6 +528,10 @@ function readsOf(crateDir, rootFile, view = source) {
       if (label) labels.add(label);
       else add(reader === "source_path" ? literal : path.posix.join(crateDir, literal), () => true);
     }
+  }
+  for (const module of scriptClosure([...files])) {
+    if (generatedFiles[module]) labels.add(generatedFiles[module]);
+    else files.add(module);
   }
   const reads = { files, dirs, labels };
   literalReads.set(key, reads);

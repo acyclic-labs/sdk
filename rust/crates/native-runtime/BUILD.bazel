@@ -518,11 +518,11 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:scripts/mold-linker.sh",
+        "//:typescript/packages/sdk/native/process-completion.mjs",
+        "//:typescript/packages/sdk/test/process-completion.fuzz.mjs",
         "//:typescript/packages/sdk/test/process.test.mjs",
         "//:typescript/packages/sdk/package.json",
         "//:typescript/packages/sdk/native/process.mjs",
-        "//:typescript/packages/sdk/native/process-completion.mjs",
-        "//:typescript/packages/sdk/test/process-completion.fuzz.mjs",
     ] + [
         ":acyclic-process-host",
         "@nodejs//:node",

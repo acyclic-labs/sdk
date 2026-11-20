@@ -84,9 +84,11 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
+        "//:scripts/fixture-server.mjs",
         "//:scripts/mold-linker.sh",
         "//:typescript/packages/actors/test/grpc-conformance.mjs",
         "//:typescript/packages/stream/test/http-provider-conformance.mjs",
+        "//:typescript/packages/stream/test/session-service-fixture.mjs",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",
@@ -309,9 +311,11 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
+        "//:scripts/fixture-server.mjs",
         "//:scripts/mold-linker.sh",
         "//:typescript/packages/actors/test/grpc-conformance.mjs",
         "//:typescript/packages/stream/test/http-provider-conformance.mjs",
+        "//:typescript/packages/stream/test/session-service-fixture.mjs",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",

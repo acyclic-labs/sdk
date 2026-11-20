@@ -78,8 +78,10 @@ rust_test(
         "@sdk_crates//sha2-0.11.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:scripts/fixture-server.mjs",
         "//:typescript/packages/actors/test/grpc-conformance.mjs",
         "//:typescript/packages/stream/test/http-provider-conformance.mjs",
+        "//:typescript/packages/stream/test/session-service-fixture.mjs",
         "//:workspace-metadata.json",
         "//plugin:src/main.rs",
         "//rust/crates/actors:examples/actors-typescript-consumer.rs",

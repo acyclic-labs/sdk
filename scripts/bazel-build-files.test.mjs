@@ -437,6 +437,33 @@ test("repository-sources gives a build script every file of each package it link
   }
 });
 
+test("a script a test reads brings its relative import closure, a generated module by its label", () => {
+  const { root, run } = fixture();
+  try {
+    const workspace = join(root, "Cargo.toml");
+    writeFileSync(workspace, readFileSync(workspace, "utf8").replace('resolver = "3"\n', 'resolver = "3"\n\n[workspace.metadata.bazel]\ngenerated-files = { "tools/dist/manifest.mjs" = "//bazel:manifest-parser" }\n'));
+    mkdirSync(join(root, "tools/lib"), { recursive: true });
+    writeFileSync(join(root, "tools/run.mjs"), 'import { steps } from "./lib/steps.mjs";\nawait import("./lib/late.mjs");\nconsole.log(steps);\n');
+    writeFileSync(join(root, "tools/lib/steps.mjs"), 'import data from "./data.json" with { type: "json" };\nexport * from "../dist/manifest.mjs";\nexport const steps = data;\n');
+    writeFileSync(join(root, "tools/lib/data.json"), "[]\n");
+    writeFileSync(join(root, "tools/lib/late.mjs"), "export {};\n");
+    writeFileSync(join(root, "tools/unused.mjs"), "export {};\n");
+    const lib = join(root, "member/src/lib.rs");
+    writeFileSync(lib, readFileSync(lib, "utf8") + '\n#[test]\nfn runs_script() {\n    assert!(std::path::Path::new("tools/run.mjs").is_file());\n}\n');
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const result = run("write");
+    assert.equal(result.status, 0, result.stderr);
+    const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    const data = build.slice(build.indexOf("rust_test("));
+    for (const label of ["//:tools/run.mjs", "//:tools/lib/steps.mjs", "//:tools/lib/data.json", "//:tools/lib/late.mjs", "//bazel:manifest-parser"]) {
+      assert.ok(data.includes(`"${label}"`), `${label} in ${data}`);
+    }
+    assert.doesNotMatch(data, /unused\.mjs|tools\/dist/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a #[path] or mod inside an inline module resolves under that module's directory", () => {
   const { root, run } = fixture();
   try {
