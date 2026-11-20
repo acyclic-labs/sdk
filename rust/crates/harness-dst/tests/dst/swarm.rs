@@ -589,25 +589,36 @@ fn minimal_trace(seed: u64) -> String {
     )
 }
 
-#[test]
-fn seeded_swarms_settle_and_complete_every_turn() {
-    let seeds = sweep::seeds(SEEDS).unwrap_or_else(|malformed| panic!("{malformed}"));
+/// Cases the sweep is split across, so each stays well inside the per-case
+/// limit. Case `k` runs the selected seeds congruent to `k`, so a `DST_SEEDS`
+/// sweep is partitioned the same way and never repeated.
+const CASES: u64 = 16;
+
+acyclic_test_support::cases! {
+    module = seeded_swarms_settle_and_complete_every_turn,
+    values: u64,
+    runner = super::swarms,
+    cases = [part_0 => 0, part_1 => 1, part_2 => 2, part_3 => 3, part_4 => 4, part_5 => 5, part_6 => 6, part_7 => 7, part_8 => 8, part_9 => 9, part_10 => 10, part_11 => 11, part_12 => 12, part_13 => 13, part_14 => 14, part_15 => 15],
+}
+
+fn swarms(part: u64) -> std::result::Result<(), String> {
+    let seeds = sweep::seeds(SEEDS).map_err(|malformed| malformed.to_string())?;
     let single = seeds.end - seeds.start == 1;
-    let swept = sweep::sweep("swarm", seeds, world).unwrap_or_else(|failure| {
+    let swept = sweep::sweep("swarm", seeds, |seed| {
+        if seed % CASES == part {
+            world(seed)
+        } else {
+            Ok(())
+        }
+    })
+    .map_err(|failure| {
         let trace = if single {
             minimal_trace(failure.seed)
         } else {
             format!("minimal trace: rerun with DST_SEED={}", failure.seed)
         };
-        panic!(
-            "{failure}
-{trace}"
-        )
-    });
-    eprintln!(
-        "swarm: {} seeds in {:?} ({:?} per 1000 seeds)",
-        swept.seeds,
-        swept.elapsed,
-        swept.per_thousand()
-    );
+        format!("{failure}\n{trace}")
+    })?;
+    eprintln!("swarm part {part}: {:?}", swept.elapsed);
+    Ok(())
 }

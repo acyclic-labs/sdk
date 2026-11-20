@@ -137,7 +137,8 @@ fn script(seed: u64) -> Vec<Step> {
 }
 
 /// Whether replaying `step` must return the original reply without a new
-/// record. Mutations that commit a new intent are excluded.
+/// record. A replayed query reads again; a replayed intent finds its original
+/// outcome. Mutations that commit a new intent are excluded.
 const fn idempotent(step: Step) -> bool {
     matches!(
         step,
@@ -160,6 +161,21 @@ const fn idempotent(step: Step) -> bool {
             | Step::PublishAgentFiles
             | Step::Archive
     )
+}
+
+/// The refusal of a command that must not answer, from whichever layer
+/// refused it: the command's own reply, or the session call that carries it.
+/// A revocation found after dispatch fails the call itself, before any reply
+/// byte, so both layers are the same refusal.
+fn refusal(
+    result: Result<std::result::Result<AgentReply, AgentControlFailure>>,
+    answered: impl FnOnce(&AgentReply) -> String,
+) -> Result<Box<dyn std::error::Error>> {
+    match result {
+        Ok(Ok(reply)) => Err(answered(&reply).into()),
+        Ok(Err(refused)) => Ok(Box::new(refused)),
+        Err(refused) => Ok(refused),
+    }
 }
 
 /// One served world: the counted stream, the object store, the platform, the
@@ -405,6 +421,27 @@ impl World {
         })
     }
 
+    /// The stream's authority revision. It advances on every commit, so an
+    /// unchanged revision proves that a command wrote nothing. It is read
+    /// from the uncounted provider, so it costs no counted request.
+    async fn revision(&self) -> Result<acyclic_stream::Revision> {
+        let heads = acyclic_stream::StreamProvider::heads(
+            self.stream.inner(),
+            acyclic_stream::HeadsRequest {
+                at: None,
+                retained: Default::default(),
+                durable_through: None,
+                projection: acyclic_stream::HeadProjection::Tail,
+                paths: Default::default(),
+                children: None,
+                limit: 1,
+                at_least: Default::default(),
+            },
+        )
+        .await?;
+        Ok(heads.snapshot)
+    }
+
     /// Drives one step, optionally denying it, and checks the storage fence.
     async fn step(&mut self, step: Step, deny: bool) -> Result<()> {
         let command = self.command(step)?;
@@ -429,18 +466,17 @@ impl World {
         let reply = result?;
         self.trace.push(format!("{step:?}:{reply:?}"));
         if idempotent(step) {
-            let before = self.stream.requests();
+            let before = self.revision().await?;
             let replay = call(&self.client, "agents", &command).await?;
-            let requests = self.stream.requests().since(before);
             assert_eq!(
                 format!("{reply:?}"),
                 format!("{replay:?}"),
                 "replaying {step:?} changed its reply"
             );
             assert_eq!(
-                (requests.data(), requests.control()),
-                (0, 0),
-                "replaying {step:?} touched storage after {reply:?}"
+                before,
+                self.revision().await?,
+                "replaying {step:?} committed a new record"
             );
         }
         Ok(())
@@ -519,26 +555,18 @@ impl World {
         // A denied read is refused after admission and touches no storage.
         world.owner.revoke_read.store(true, Ordering::SeqCst);
         let before = world.stream.requests();
-        let refused = match call(
-            &world.client,
-            "agents",
-            &AgentCommand::Read {
-                agent: world.root.clone(),
-                target: ReadTarget::ToolOutput {
-                    path: path.into(),
-                    at: None,
-                },
-                offset: 0,
+        let denied = AgentCommand::Read {
+            agent: world.root.clone(),
+            target: ReadTarget::ToolOutput {
+                path: path.into(),
+                at: None,
             },
-        )
-        .await?
-        {
-            Ok(reply) => {
-                return Err(format!("content disclosed after owner revocation: {reply:?}").into());
-            }
-            Err(refused) => refused,
+            offset: 0,
         };
-        assert!(access_denied(&refused), "{refused:?}");
+        let refused = refusal(call(&world.client, "agents", &denied).await, |reply| {
+            format!("content disclosed after owner revocation: {reply:?}")
+        })?;
+        assert!(access_denied(&*refused), "{refused:?}");
         let requests = world.stream.requests().since(before);
         assert_eq!(
             (requests.data(), requests.control()),
@@ -594,21 +622,11 @@ impl World {
             );
         }
         // An agent outside the served admission is refused by the command admission.
-        let refused = match call(
-            &world.client,
-            "agents",
-            &read(AgentPath::root(&AgentId::from_bytes([9; 16])), path),
-        )
-        .await?
-        {
-            Ok(reply) => {
-                return Err(
-                    format!("an agent outside the admission answered a read: {reply:?}").into(),
-                );
-            }
-            Err(refused) => refused,
-        };
-        assert!(access_denied(&refused), "{refused:?}");
+        let outside = read(AgentPath::root(&AgentId::from_bytes([9; 16])), path);
+        let refused = refusal(call(&world.client, "agents", &outside).await, |reply| {
+            format!("an agent outside the admission answered a read: {reply:?}")
+        })?;
+        assert!(access_denied(&*refused), "{refused:?}");
         // A file from another agent's volume is refused by the agent.
         let foreign = VolumeRef::new(
             provider()?,
@@ -786,13 +804,10 @@ impl World {
             agent: stranger,
             id: IntentId::try_from("foreign-cancel")?,
         };
-        match call(&world.client, "agents", &cancel).await {
-            Ok(Ok(reply)) => {
-                return Err(format!("a foreign tree needs its own credential: {reply:?}").into());
-            }
-            Ok(Err(refused)) => assert!(access_denied(&refused), "{refused:?}"),
-            Err(refused) => assert!(access_denied(&*refused), "{refused:?}"),
-        }
+        let refused = refusal(call(&world.client, "agents", &cancel).await, |reply| {
+            format!("a foreign tree needs its own credential: {reply:?}")
+        })?;
+        assert!(access_denied(&*refused), "{refused:?}");
         let requests = world.stream.requests().since(before);
         assert_eq!(
             (requests.data(), requests.control()),
@@ -807,20 +822,14 @@ impl World {
         let world = self;
         // A revoked query is refused after admission.
         world.owner.revoke_query.store(true, Ordering::SeqCst);
-        let refused = match call(
-            &world.client,
-            "agents",
-            &AgentCommand::Children {
-                agent: world.root.clone(),
-                page: world.page(1)?,
-            },
-        )
-        .await?
-        {
-            Ok(reply) => return Err(format!("a revoked query answered: {reply:?}").into()),
-            Err(refused) => refused,
+        let children = AgentCommand::Children {
+            agent: world.root.clone(),
+            page: world.page(1)?,
         };
-        assert!(access_denied(&refused), "{refused:?}");
+        let refused = refusal(call(&world.client, "agents", &children).await, |reply| {
+            format!("a revoked query answered: {reply:?}")
+        })?;
+        assert!(access_denied(&*refused), "{refused:?}");
         world.owner.denied.store(false, Ordering::SeqCst);
         // A suspended admission that is revoked refuses the original query.
         let (entered, waiting) = tokio::sync::oneshot::channel();
@@ -848,16 +857,10 @@ impl World {
         release
             .send(())
             .map_err(|()| "child admission closed before release")?;
-        let refused = match query.await? {
-            Ok(reply) => {
-                return Err(format!(
-                    "a suspended child query disclosed after revocation: {reply:?}"
-                )
-                .into());
-            }
-            Err(refused) => refused,
-        };
-        assert!(access_denied(&refused), "{refused:?}");
+        let refused = refusal(query.await, |reply| {
+            format!("a suspended child query disclosed after revocation: {reply:?}")
+        })?;
+        assert!(access_denied(&*refused), "{refused:?}");
         world.owner.denied.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -888,16 +891,10 @@ impl World {
         }
         world.owner.denied.store(true, Ordering::SeqCst);
         drop(release);
-        let refused = match query.await? {
-            Ok(reply) => {
-                return Err(format!(
-                    "a suspended diff query disclosed after revocation: {reply:?}"
-                )
-                .into());
-            }
-            Err(refused) => refused,
-        };
-        assert!(access_denied(&refused), "{refused:?}");
+        let refused = refusal(query.await, |reply| {
+            format!("a suspended diff query disclosed after revocation: {reply:?}")
+        })?;
+        assert!(access_denied(&*refused), "{refused:?}");
         world.owner.denied.store(false, Ordering::SeqCst);
         Ok(())
     }
