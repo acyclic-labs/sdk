@@ -160,13 +160,10 @@ pub(super) fn with_lazy_mount<T>(
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 acyclic_fs_format::identity::OperationId::new(),
-                &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                    allocations: Default::default(),
-                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
-                    budget: acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                    cancellation: &acyclic_fs::CancellationToken::new(),
-                    construction: Default::default(),
-                },
+                &mut acyclic_fs::kernel::KernelAccounting::standalone(
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                ),
             )
             .await
             .map(|(lazy, _)| lazy)

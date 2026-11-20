@@ -148,7 +148,7 @@ pub enum FileMutation {
     /// current identity, reverse bindings and link count remain authoritative.
     ReplaceRecord {
         /// Complete replacement record for the same file identity and kind.
-        record: FileRecord,
+        record: Box<FileRecord>,
     },
     /// Replaces the complete canonical metadata object.
     SetMetadata {

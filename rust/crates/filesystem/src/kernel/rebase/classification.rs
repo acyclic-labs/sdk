@@ -246,7 +246,7 @@ fn retain_standalone_probe_work(
 ) -> Result<(), crate::FsError> {
     match accounting {
         super::allocation::KernelAccounting::Standalone { work, budget, .. } => {
-            *work = work.checked_add(delta)?;
+            **work = work.checked_add(delta)?;
             work.verify(*budget)?;
         }
         super::allocation::KernelAccounting::BorrowedStandalone { work, budget, .. } => {

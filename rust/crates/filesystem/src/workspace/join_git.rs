@@ -238,7 +238,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         if self.git_metadata {
             record.metadata = self.git_merged_metadata(&records).await?;
         }
-        Ok(MergeConflictResolution::File(Some(record)))
+        Ok(MergeConflictResolution::File(Some(Box::new(record))))
     }
 
     async fn binding_conflict(
@@ -339,7 +339,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         };
         let records = [base, ours, theirs];
         let mut record: FileRecord = match resolution {
-            MergeConflictResolution::File(Some(record)) => record,
+            MergeConflictResolution::File(Some(record)) => *record,
             MergeConflictResolution::Select(side) => {
                 records[match side {
                     MergeConflictSide::Base => 0,
@@ -350,16 +350,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             other => return Ok(other),
         };
         if record.kind != FileKind::Regular {
-            return Ok(MergeConflictResolution::File(Some(record)));
+            return Ok(MergeConflictResolution::File(Some(Box::new(record))));
         }
         if records
             .iter()
             .all(|original| original.metadata == record.metadata)
         {
-            return Ok(MergeConflictResolution::File(Some(record)));
+            return Ok(MergeConflictResolution::File(Some(Box::new(record))));
         }
         record.metadata = self.git_merged_metadata(&records).await?;
-        Ok(MergeConflictResolution::File(Some(record)))
+        Ok(MergeConflictResolution::File(Some(Box::new(record))))
     }
 
     /// Target metadata with the executable bit merged as Git merges it.

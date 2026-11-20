@@ -14,7 +14,8 @@ pub(super) struct Descendants {
     parent: Option<FileId>,
     records: Option<[FileRecord; 2]>,
     path: Option<PathState>,
-    side: usize,
+    /// The endpoint whose path to the current entry comes next; `None` once both are done.
+    side: Option<Endpoint>,
 }
 
 impl Descendants {
@@ -30,7 +31,7 @@ impl Descendants {
             parent: None,
             records: None,
             path: None,
-            side: 0,
+            side: Some(Endpoint::Before),
         };
         if let Err(error) = result.push(record, config, accounting) {
             result.retire(accounting)?;
@@ -96,12 +97,11 @@ impl Descendants {
             accounting.check()?;
             cancellation.check()?;
             if let Some(records) = self.records {
-                if self.side < 2 {
-                    let side = self.side;
-                    let record = records[side];
+                if let Some(side) = self.side {
+                    let record = *side.of(&records);
                     if self.path.is_none() {
                         let parent = self.parent.ok_or(FsError::InvalidDiff)?;
-                        let edge = if side == 0 {
+                        let edge = if side == Endpoint::Before {
                             let name = &self.entry.as_ref().ok_or(FsError::InvalidDiff)?.value.name;
                             let (name, allocation) =
                                 name.clone_with_accounting(accounting, cancellation)?;
@@ -125,8 +125,8 @@ impl Descendants {
                         .ok_or(FsError::InvalidDiff)?
                         .advance(
                             store,
-                            roots[side].root_file_id,
-                            roots[side].file_table,
+                            side.of(&roots).root_file_id,
+                            side.of(&roots).file_table,
                             config,
                             accounting,
                             cancellation,
@@ -137,12 +137,12 @@ impl Descendants {
                         .take()
                         .ok_or(FsError::InvalidDiff)?
                         .finish(config, accounting)?;
-                    self.side += 1;
+                    self.side = side.next();
                     return Ok(Some(Candidate { path, record, side }));
                 }
                 self.records = None;
                 self.parent = None;
-                self.side = 0;
+                self.side = Some(Endpoint::Before);
                 continue;
             }
             let Some(frame) = self.frames.value.last_mut() else {
@@ -230,16 +230,18 @@ async fn unchanged_edge<S: AsyncObjectStore>(
 ) -> Result<bool, FsError> {
     let present =
         super::super::persistent_point::lookup_projected_with_accounting::<BindingFormat, _, _, _>(
-            store,
+            super::super::persistent_point::PageReads {
+                store,
+                limits: DecodeLimits::for_volume(config),
+                cancellation,
+                data_custody: None,
+            },
             record.bindings.ok_or(FsError::InvalidDiff)?,
             super::super::persistent_point::PointQuery::Key(|edge: &Binding| {
                 edge.parent.cmp(&parent).then_with(|| edge.name.cmp(name))
             }),
             |_, accounting| Ok(Owned::new((), accounting.claim_owned(0, 0)?, 0)),
-            DecodeLimits::for_volume(config),
             accounting,
-            cancellation,
-            None,
         )
         .await?;
     let found = present.is_some();

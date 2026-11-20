@@ -97,14 +97,18 @@ fn identity_record_replacement_rejects_mismatched_or_invalid_records()
     };
     let valid = Mutation::File {
         file_id,
-        mutation: FileMutation::ReplaceRecord { record },
+        mutation: FileMutation::ReplaceRecord {
+            record: Box::new(record),
+        },
     };
     let plan = MutationPlan::compile(vec![valid], WorkBudget::UNBOUNDED)?;
     assert_eq!(plan.ordered_paths().count(), 0);
     assert_rejected(
         Mutation::File {
             file_id: FileId::from_bytes([8; 16]),
-            mutation: FileMutation::ReplaceRecord { record },
+            mutation: FileMutation::ReplaceRecord {
+                record: Box::new(record),
+            },
         },
         MutationPlanError::InvalidInitialRecord,
     )?;
@@ -112,10 +116,10 @@ fn identity_record_replacement_rejects_mismatched_or_invalid_records()
         Mutation::File {
             file_id,
             mutation: FileMutation::ReplaceRecord {
-                record: FileRecord {
+                record: Box::new(FileRecord {
                     link_count: 0,
                     ..record
-                },
+                }),
             },
         },
         MutationPlanError::InvalidInitialRecord,

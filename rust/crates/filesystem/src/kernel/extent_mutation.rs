@@ -466,7 +466,11 @@ impl persistent_btree::Mutation<ExtentFormat> for ExtentEdit {
         carried: &[Extent],
         entries: &[Extent],
         edits: &[(usize, &Self)],
-        (lower, upper, expected_end): (Option<&u64>, Option<&u64>, Option<&u64>),
+        persistent_btree::LeafBounds {
+            lower,
+            upper,
+            end: expected_end,
+        }: persistent_btree::LeafBounds<'_, u64>,
         output: &mut Vec<Extent>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {

@@ -417,10 +417,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         if map_insert(&mut records, record.file_id, *record)?.is_some() {
                             return Err(ClosureError::DuplicateFileRecord(record.file_id).into());
                         }
-                        if let Some(directories) = &mut directories {
-                            if let Some(entries) = self.prove_record(record).await? {
-                                map_insert(directories, record.file_id, entries)?;
-                            }
+                        if let Some(directories) = &mut directories
+                            && let Some(entries) = self.prove_record(record).await?
+                        {
+                            map_insert(directories, record.file_id, entries)?;
                         }
                     }
                 }

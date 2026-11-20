@@ -39,7 +39,7 @@ async fn settle_record<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<Option<FileRecord>>, FsError> {
-    if matches!(resolved, OptionalResolution::Conflict)
+    if resolved.is_err()
         && is_extent_regular(base)
         && is_extent_regular(ours)
         && is_extent_regular(theirs)
@@ -56,9 +56,9 @@ async fn settle_record<S: AsyncObjectStore>(
         .await?
     {
         state.changes.consume(examined)?;
-        resolved = OptionalResolution::Resolved(Some(record));
+        resolved = Ok(Some(record));
     }
-    if matches!(resolved, OptionalResolution::Conflict)
+    if resolved.is_err()
         && state.content == ContentMerge::Bytes
         && let (Some(base), Some(ours), Some(theirs)) = (base, ours, theirs)
         && let Some(record) = merge_inline_record_async(
@@ -70,9 +70,9 @@ async fn settle_record<S: AsyncObjectStore>(
         )
         .await?
     {
-        resolved = OptionalResolution::Resolved(Some(record));
+        resolved = Ok(Some(record));
     }
-    if matches!(resolved, OptionalResolution::Conflict) {
+    if resolved.is_err() {
         resolved = merge_records_async(
             store,
             [base, ours, theirs],
@@ -81,21 +81,20 @@ async fn settle_record<S: AsyncObjectStore>(
             cancellation,
         )
         .await?
-        .map_or(OptionalResolution::Conflict, |record| {
-            OptionalResolution::Resolved(Some(record))
-        });
+        .map(Some)
+        .ok_or(RecordConflict);
     }
     Ok(match resolved {
-        OptionalResolution::Resolved(record) => Some(record),
-        OptionalResolution::Conflict => match resolutions.file(file, accounting)? {
+        Ok(record) => Some(record),
+        Err(RecordConflict) => match resolutions.file(file, accounting)? {
             Some(MergeConflictResolution::Select(side)) => {
                 Some(select_optional(*side, base, ours, theirs))
             }
             Some(MergeConflictResolution::File(record)) => {
-                if record.is_some_and(|record| record.file_id != file) {
+                if record.as_ref().is_some_and(|record| record.file_id != file) {
                     return Err(FsError::InvalidDiff);
                 }
-                Some(*record)
+                Some(record.as_deref().copied())
             }
             Some(MergeConflictResolution::Binding(_)) => return Err(FsError::InvalidDiff),
             None => None,

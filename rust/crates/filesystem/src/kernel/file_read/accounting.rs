@@ -1,6 +1,7 @@
 use super::*;
 
 impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
+    /// Opens empty custody charged to `accounting`.
     pub fn new(accounting: &'a mut KernelAccounting<'operation>) -> Result<Self, FsError> {
         let allocation = accounting.claim_owned(0, 0)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -14,6 +15,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         })
     }
 
+    /// Charges one decoder allocation step to the custody.
     pub fn observe(
         &mut self,
         step: super::super::codec::ReadAllocationStep,
@@ -106,6 +108,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         std::mem::replace(&mut self.allocation, KernelOwnedAllocation::Standalone)
     }
 
+    /// Hands out the custody with the owned bytes it funds.
     pub fn into_parts(mut self) -> (KernelOwnedAllocation, u64) {
         (
             std::mem::replace(&mut self.allocation, KernelOwnedAllocation::Standalone),
@@ -129,6 +132,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         self.accounting.record_completed(delta)
     }
 
+    /// Releases the custody and every owned byte it funds.
     pub fn retire(mut self) -> Result<(), FsError> {
         self.accounting
             .release_owned(&mut self.allocation, self.owned_bytes)

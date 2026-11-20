@@ -57,7 +57,7 @@ pub enum MergeConflictResolution {
     /// Select one of the three immutable input sides.
     Select(MergeConflictSide),
     /// Install or remove a complete path-independent file record.
-    File(Option<FileRecord>),
+    File(Option<Box<FileRecord>>),
     /// Install or remove one exact directory binding.
     Binding(Option<FileId>),
 }
@@ -236,9 +236,7 @@ pub enum MergeGenerationOutcome {
         /// Candidate generation-root object.
         generation_root: ObjectId,
         /// Decoded candidate root without a redundant object-store reread.
-        root: GenerationRoot,
-        /// Candidate generation identity.
-        generation_id: GenerationId,
+        root: Box<GenerationRoot>,
     },
     /// No candidate was produced.
     Conflicted {

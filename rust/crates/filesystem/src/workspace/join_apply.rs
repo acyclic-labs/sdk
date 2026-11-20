@@ -132,15 +132,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             }
             let resolution = match resolution {
                 MergeResolution::Select(side) => side_resolution(*side),
-                MergeResolution::Text(text) => crate::kernel::MergeConflictResolution::File(Some(
-                    self.stage_regular_resolution(&conflict.key, text.clone())
-                        .await?,
-                )),
+                MergeResolution::Text(text) => {
+                    crate::kernel::MergeConflictResolution::File(Some(Box::new(
+                        self.stage_regular_resolution(&conflict.key, text.clone())
+                            .await?,
+                    )))
+                }
                 MergeResolution::Binary(bytes) => {
-                    crate::kernel::MergeConflictResolution::File(Some(
+                    crate::kernel::MergeConflictResolution::File(Some(Box::new(
                         self.stage_regular_resolution(&conflict.key, Bytes::copy_from_slice(bytes))
                             .await?,
-                    ))
+                    )))
                 }
                 MergeResolution::Metadata(bytes) => {
                     let file_id = conflict_file_id(&conflict.key).ok_or_else(|| {
@@ -165,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                         .fs
                         .stage_merge_metadata(&self.target_head.workspace.volume, bytes)
                         .await?;
-                    crate::kernel::MergeConflictResolution::File(Some(record))
+                    crate::kernel::MergeConflictResolution::File(Some(Box::new(record)))
                 }
                 MergeResolution::Binding(file_id) => {
                     crate::kernel::MergeConflictResolution::Binding(*file_id)

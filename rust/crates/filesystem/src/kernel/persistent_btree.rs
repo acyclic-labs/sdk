@@ -24,8 +24,11 @@ use support::PageChunks;
 #[cfg(test)]
 pub(crate) use support::TARGET_PAGE_BYTES;
 pub(crate) use support::{
-    Error, Format, Mutation, Page, PageRef, children_within, leaf_within, stable_hash,
+    Error, Format, LeafBounds, Mutation, Page, PageRef, children_within, leaf_within, stable_hash,
 };
+/// One depth's summaries carried into the next page of that depth.
+type CarriedSummaries<K> = Owned<Vec<Child<K>>>;
+
 use support::{
     PAGE_HEADER_BYTES, PAGE_WRITE, append_owned, push_summary, push_value, reaches, sort_indexed,
     storage_error, validate,
@@ -299,7 +302,7 @@ where
     // Unfinished items, or the predecessor tail of a changed first key,
     // carried into the next page: leaf values and summaries by depth.
     carry_values: Owned<Vec<F::Value>>,
-    carries: Owned<Vec<Option<Owned<Vec<Child<F::Key>>>>>>,
+    carries: Owned<Vec<Option<CarriedSummaries<F::Key>>>>,
     leaf_depth: Option<u16>,
     // Same-width point replacements cannot change cuts and keep their exact
     // original sparse/no-op paths.
@@ -430,19 +433,18 @@ where
         cancellation,
         marker: PhantomData,
     };
-    let summaries = match root {
-        Some(root) => context.rewrite(root, &ordered.value).await?,
-        None => {
-            context.leaf_depth = Some(0);
-            let values = context.apply_structural_mutations(&[], &ordered.value)?;
-            let result = context.write_leaf_chunks(&values.value, true, false).await;
-            values.retire(context.accounting)?;
-            let (summaries, pending) = result?;
-            if pending.is_some() {
-                return Err(M::map_error(Error::MutationContract));
-            }
-            summaries
+    let summaries = if let Some(root) = root {
+        context.rewrite(root, &ordered.value).await?
+    } else {
+        context.leaf_depth = Some(0);
+        let values = context.apply_structural_mutations(&[], &ordered.value)?;
+        let result = context.write_leaf_chunks(&values.value, true, false).await;
+        values.retire(context.accounting)?;
+        let (summaries, pending) = result?;
+        if pending.is_some() {
+            return Err(M::map_error(Error::MutationContract));
         }
+        summaries
     };
     let root = context.finish_root(root, summaries).await?;
     // The rightmost page of every level closes, so nothing stays carried.
@@ -709,7 +711,7 @@ where
     fn take_carry(
         &mut self,
         depth: u16,
-    ) -> Result<Option<Owned<Vec<Child<F::Key>>>>, crate::FsError> {
+    ) -> Result<Option<CarriedSummaries<F::Key>>, crate::FsError> {
         Ok(self
             .carries
             .value
@@ -893,7 +895,11 @@ where
             carried,
             entries,
             mutations,
-            (lower, upper, self.expected_end),
+            LeafBounds {
+                lower,
+                upper,
+                end: self.expected_end,
+            },
             &mut output.value,
             self.accounting,
         )?;

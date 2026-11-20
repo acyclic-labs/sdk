@@ -17,12 +17,20 @@ pub(crate) fn heap_sort<T, C, E>(
         compare: &mut impl FnMut(&T, &T, &mut C) -> Result<Ordering, E>,
         swap: &mut impl FnMut(&mut [T], usize, usize, &mut C) -> Result<(), E>,
     ) -> Result<(), E> {
+        // The heap is `values[..end]`; a child the slice does not hold is no child.
         while root < end / 2 {
             let mut child = root * 2 + 1;
-            if child + 1 < end && compare(&values[child], &values[child + 1], context)?.is_lt() {
+            let (Some(parent), Some(mut larger)) = (values.get(root), values.get(child)) else {
+                break;
+            };
+            if child + 1 < end
+                && let Some(right) = values.get(child + 1)
+                && compare(larger, right, context)?.is_lt()
+            {
                 child += 1;
+                larger = right;
             }
-            if !compare(&values[root], &values[child], context)?.is_lt() {
+            if !compare(parent, larger, context)?.is_lt() {
                 break;
             }
             swap(values, root, child, context)?;

@@ -124,6 +124,7 @@ impl<T> Owned<Vec<T>> {
         accounting.perform(copied, || self.value.push(value))
     }
 
+    /// An empty vector with admitted capacity for `count` values.
     pub fn allocate(
         count: usize,
         accounting: &mut KernelAccounting<'_>,
@@ -385,30 +386,43 @@ pub(crate) fn retire_allocation(
     bytes: u64,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
-    // An empty unallocated value has no ledger custody to release. Native
-    // growth can replace such a value before it acquires its first guard.
-    if bytes == 0 {
-        drop(allocation);
-        return Ok(());
-    }
-    match allocation {
-        KernelOwnedAllocation::Standalone => match accounting {
-            KernelAccounting::Standalone { allocations, .. } => allocations.release(bytes),
-            KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.release(bytes),
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => {
-                unreachable!("standalone allocation has standalone custody")
-            }
+    allocation.retire(bytes, accounting)
+}
+
+impl KernelOwnedAllocation {
+    /// Releases the `bytes` this custody funds, consuming it.
+    fn retire(
+        self,
+        bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        // An empty unallocated value has no ledger custody to release. Native
+        // growth can replace such a value before it acquires its first guard.
+        // The custody drops on return.
+        if bytes == 0 {
+            return Ok(());
         }
-        .map_err(|error| {
-            error.into_work_or(crate::FsError::Decode(
-                super::CanonicalDecodeError::AllocationFailed,
-            ))
-        }),
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(guard) => {
-            drop(guard);
-            Ok(())
+        match self {
+            KernelOwnedAllocation::Standalone => match accounting {
+                KernelAccounting::Standalone { allocations, .. } => allocations.release(bytes),
+                KernelAccounting::BorrowedStandalone { allocations, .. } => {
+                    allocations.release(bytes)
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelAccounting::NativeOriginal { .. } => {
+                    unreachable!("standalone allocation has standalone custody")
+                }
+            }
+            .map_err(|error| {
+                error.into_work_or(crate::FsError::Decode(
+                    super::CanonicalDecodeError::AllocationFailed,
+                ))
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelOwnedAllocation::NativeOriginal(guard) => {
+                drop(guard);
+                Ok(())
+            }
         }
     }
 }
@@ -456,7 +470,12 @@ where
     F: Format,
 {
     let value = lookup_projected_with_accounting::<F, _, _, _>(
-        store,
+        PageReads {
+            store,
+            limits,
+            cancellation,
+            data_custody,
+        },
         root,
         PointQuery::Key(|candidate: &F::Key| candidate.cmp(key)),
         |value, accounting| {
@@ -465,16 +484,22 @@ where
             let bytes = F::value_owned_bytes(&value);
             Ok(Owned::new(value, allocation, bytes))
         },
-        limits,
         accounting,
-        cancellation,
-        data_custody,
     )
     .await?;
     Ok(match value {
         Some(value) => (Some(value.value), value.allocation),
         None => (None, accounting.claim_owned(0, 0)?),
     })
+}
+
+/// How one point walk reads authenticated pages: from `store` within `limits`,
+/// until `cancellation`, holding each page's data under `data_custody`.
+pub(super) struct PageReads<'a> {
+    pub(super) store: &'a dyn Source,
+    pub(super) limits: DecodeLimits,
+    pub(super) cancellation: &'a CancellationToken,
+    pub(super) data_custody: Option<&'a super::ProofDataCustody>,
 }
 
 pub(super) enum PointQuery<'a, C> {
@@ -494,7 +519,12 @@ pub(crate) async fn key_at_position_with_accounting<F: Format>(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Owned<F::Key>, crate::FsError> {
     lookup_projected_with_accounting::<F, _, fn(&F::Key) -> std::cmp::Ordering, _>(
-        store,
+        PageReads {
+            store,
+            limits,
+            cancellation,
+            data_custody,
+        },
         root,
         PointQuery::Position(position),
         |value, accounting| {
@@ -503,10 +533,7 @@ pub(crate) async fn key_at_position_with_accounting<F: Format>(
             let bytes = F::key_owned_bytes(&key);
             Ok(Owned::new(key, allocation, bytes))
         },
-        limits,
         accounting,
-        cancellation,
-        data_custody,
     )
     .await?
     .ok_or_else(|| query_error(Error::InvalidRouting))
@@ -515,27 +542,29 @@ pub(crate) async fn key_at_position_with_accounting<F: Format>(
 /// Searches the same authenticated point path and projects only the selected
 /// value. Both query forms enter this walker directly, without a forwarding future.
 pub(super) async fn lookup_projected_with_accounting<F, T, C, P>(
-    store: &dyn Source,
+    reads: PageReads<'_>,
     root: ObjectId,
     query: PointQuery<'_, C>,
     mut project: P,
-    limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Option<Owned<T>>, crate::FsError>
 where
     F: Format,
     C: Fn(&F::Key) -> std::cmp::Ordering,
     P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
 {
-    if let PointQuery::Position(position) = &query {
-        if position.root != root
+    let PageReads {
+        store,
+        limits,
+        cancellation,
+        data_custody,
+    } = reads;
+    if let PointQuery::Position(position) = &query
+        && (position.root != root
             || position.path.len() % 4 != 0
-            || position.path.len() / 4 >= usize::from(limits.maximum_page_height)
-        {
-            return Err(query_error(Error::InvalidRouting));
-        }
+            || position.path.len() / 4 >= usize::from(limits.maximum_page_height))
+    {
+        return Err(query_error(Error::InvalidRouting));
     }
     let mut scope = accounting.allocation_scope()?;
     let accounting = &mut *scope;

@@ -28,6 +28,42 @@ pub(crate) struct Diff<K, V> {
     pub(crate) retained_allocation_bytes: u64,
 }
 
+/// One endpoint of a paired diff: it selects its member of a `[before, after]` pair, so a
+/// side is never an index that could fall outside the pair.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Endpoint {
+    /// The earlier generation.
+    Before,
+    /// The later generation.
+    After,
+}
+
+impl Endpoint {
+    /// This endpoint's member of a pair.
+    pub(crate) const fn of<T>(self, [before, after]: &[T; 2]) -> &T {
+        match self {
+            Self::Before => before,
+            Self::After => after,
+        }
+    }
+
+    /// The opposite endpoint.
+    pub(crate) const fn other(self) -> Self {
+        match self {
+            Self::Before => Self::After,
+            Self::After => Self::Before,
+        }
+    }
+
+    /// The endpoint that follows this one in pair order, if any.
+    pub(crate) const fn next(self) -> Option<Self> {
+        match self {
+            Self::Before => Some(Self::After),
+            Self::After => None,
+        }
+    }
+}
+
 mod frontier;
 pub(crate) use frontier::{Cursor, Values};
 

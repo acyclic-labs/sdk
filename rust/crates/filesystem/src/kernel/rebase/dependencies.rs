@@ -446,12 +446,11 @@ impl CheckoutDependencies {
                     })?;
                     let allocation = accounting.claim_owned(bytes, operations)?;
                     let previous = pending.replace(Some(allocation));
-                    #[cfg(not(target_arch = "wasm32"))]
-                    debug_assert!(previous.as_ref().is_none_or(|guard| match guard {
-                        KernelOwnedAllocation::Standalone => true,
-                        KernelOwnedAllocation::NativeOriginal(guard) => guard.bytes() == 0,
-                    }));
-                    drop(previous);
+                    debug_assert!(
+                        previous
+                            .as_ref()
+                            .is_none_or(KernelOwnedAllocation::funds_nothing)
+                    );
                 }
                 Ok(())
             },

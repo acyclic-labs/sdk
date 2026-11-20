@@ -45,7 +45,7 @@ fn namespace_parse(bencher: Bencher, (depth, context): (usize, u8)) {
         let receipt = match &original {
             Some(work) => work.receipt(),
             None => match &accounting {
-                KernelAccounting::Standalone { work, .. } => *work,
+                KernelAccounting::Standalone { work, .. } => **work,
                 _ => fail("expected standalone accounting"),
             },
         };

@@ -622,7 +622,14 @@ async fn attribute_ranges_stop_at_both_bounds_in_either_direction()
                     let (page, _) =
                         persistent_pagination::paginate_range_with_accounting::<AttributeFormat>(
                             store,
-                            (root, start, end, maximum, direction, false),
+                            persistent_pagination::RangeQuery {
+                                root,
+                                start,
+                                end,
+                                maximum_values: maximum,
+                                direction,
+                                position: false,
+                            },
                             DecodeLimits::default(),
                             &mut accounting,
                             &cancellation,

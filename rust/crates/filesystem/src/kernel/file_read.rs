@@ -508,6 +508,9 @@ pub(crate) fn retained_object_reads_bytes(
     })
 }
 
+/// Custody of one read's owned allocations: every allocation step its decoder
+/// observes is charged to the operation's accounting, and the custody is either
+/// retired or handed out with the bytes it funds.
 pub struct OriginalReadAccounting<'a, 'operation> {
     // Declared first so unused copy credit is refunded before `allocation`
     // drops; the refund releases the leaf before an owner can re-enter it.

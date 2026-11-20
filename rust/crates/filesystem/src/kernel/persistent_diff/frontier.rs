@@ -3,6 +3,14 @@ use super::super::persistent_btree::{Child, children_within, leaf_within};
 use super::*;
 use std::sync::Arc;
 
+/// One owned key change of the paired traversal.
+type Change<F> = Owned<
+    ValueChange<
+        <F as acyclic_collections::page::Format>::Key,
+        <F as acyclic_collections::page::Format>::Value,
+    >,
+>;
+
 enum Node<F: Format> {
     Leaf(std::vec::IntoIter<F::Value>),
     Internal(Vec<Child<F::Key>>),
@@ -393,19 +401,25 @@ impl<F: Format> Cursor<F> {
         }) else {
             return Err(FsError::InvalidDiff);
         };
-        let mut ids = [first; 2];
-        let mut count = 0;
-        for (index, side) in [&mut self.before, &mut self.after].into_iter().enumerate() {
-            if (index == 0 && before) || (index == 1 && after) {
+        let mut found = [None; 2];
+        for (slot, (selected, side)) in found
+            .iter_mut()
+            .zip([(before, &mut self.before), (after, &mut self.after)])
+        {
+            if selected {
                 let Head::Page { id, .. } = side.head()? else {
                     return Err(FsError::InvalidDiff);
                 };
                 side.check_ancestor(id, accounting)?;
                 side.admit_page(self.limits, accounting)?;
-                ids[count] = id;
-                count += 1;
+                *slot = Some(id);
             }
         }
+        let (ids, count) = match found {
+            [Some(earlier), Some(later)] => ([earlier, later], 2),
+            [Some(only), None] | [None, Some(only)] => ([only; 2], 1),
+            [None, None] => ([first; 2], 0),
+        };
         let mut batch = persistent_io::read_pages_with_accounting::<F, _>(
             store,
             ids.into_iter().take(count),
@@ -488,23 +502,17 @@ impl<F: Format> Cursor<F> {
         store: &dyn Source,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(usize, Owned<F::Value>)>, FsError>
+    ) -> Result<Option<(Endpoint, Owned<F::Value>)>, FsError>
     where
         F: Format<Key = <F as acyclic_collections::page::Format>::Value>,
     {
-        let side = match self.advance(store, accounting, cancellation).await? {
-            Some((true, false)) => 0,
-            Some((false, true)) => 1,
+        let (endpoint, side) = match self.advance(store, accounting, cancellation).await? {
+            Some((true, false)) => (Endpoint::Before, &mut self.before),
+            Some((false, true)) => (Endpoint::After, &mut self.after),
             None => return Ok(None),
             _ => return Err(FsError::InvalidDiff),
         };
-        let value = if side == 0 {
-            &mut self.before
-        } else {
-            &mut self.after
-        }
-        .take_value(accounting)?;
-        Ok(Some((side, value)))
+        Ok(Some((endpoint, side.take_value(accounting)?)))
     }
 
     fn emit(
@@ -512,7 +520,7 @@ impl<F: Format> Cursor<F> {
         before: bool,
         after: bool,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<Owned<ValueChange<F::Key, F::Value>>, FsError> {
+    ) -> Result<Change<F>, FsError> {
         let head = if before {
             self.before.head()?
         } else {

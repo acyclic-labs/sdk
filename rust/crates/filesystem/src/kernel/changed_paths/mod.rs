@@ -3,7 +3,7 @@
 use super::bindings::{Binding, BindingFormat};
 use super::direct_paths::{DirectPaths, PathState};
 use super::file_table_mutation::FileTableFormat;
-use super::persistent_diff::{Cursor as FileCursor, Values};
+use super::persistent_diff::{Cursor as FileCursor, Endpoint, Values};
 use super::tree_mutation::TreeFormat;
 use super::{
     DecodeLimits, FileKind, FilePayload, FileRecord, GenerationRoot, KernelAccounting,
@@ -35,10 +35,11 @@ pub(crate) fn record_changed(before: &FileRecord, after: &FileRecord) -> bool {
 
 struct Active {
     records: [Option<FileRecord>; 2],
-    side: usize,
+    /// The endpoint whose direct paths come next; `None` once both are done.
+    side: Option<Endpoint>,
     paths: Option<DirectPaths>,
     edges: Option<FileCursor<BindingFormat>>,
-    edge_path: Option<(usize, PathState)>,
+    edge_path: Option<(Endpoint, PathState)>,
 }
 
 impl Active {
@@ -55,7 +56,7 @@ impl Active {
 struct Candidate {
     path: Owned<NamespacePath>,
     record: FileRecord,
-    side: usize,
+    side: Endpoint,
 }
 
 /// Retains the pair frontier, current aliases, and any moved-directory walk.
@@ -72,9 +73,11 @@ pub(crate) struct Cursor<'a> {
     complete: bool,
 }
 
-enum Source<'a> {
-    Frontier(FileCursor<FileTableFormat>),
-    Recorded(std::slice::Iter<'a, super::FileRecordChange>),
+/// The file-table pair frontier, or a previously collected delta when there is no frontier.
+/// Both stay inline: the producer adds no allocation its accounting has not admitted.
+struct Source<'a> {
+    frontier: Option<FileCursor<FileTableFormat>>,
+    recorded: std::slice::Iter<'a, super::FileRecordChange>,
 }
 
 impl Source<'_> {
@@ -84,36 +87,30 @@ impl Source<'_> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<[Option<FileRecord>; 2]>, FsError> {
-        match self {
-            Self::Frontier(cursor) => {
-                let Some(change) = cursor.next(store, accounting, cancellation).await? else {
-                    return Ok(None);
-                };
-                let records = [change.value.before, change.value.after];
-                change.retire(accounting)?;
-                Ok(Some(records))
-            }
-            Self::Recorded(records) => {
-                let Some(change) = records.as_slice().first() else {
-                    return Ok(None);
-                };
-                accounting.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    bytes_copied: std::mem::size_of::<super::FileRecordChange>() as u64,
-                    ..crate::WorkCounters::UNCHARGED
-                })?;
-                let result = [change.before, change.after];
-                records.next();
-                Ok(Some(result))
-            }
+        if let Some(cursor) = &mut self.frontier {
+            let Some(change) = cursor.next(store, accounting, cancellation).await? else {
+                return Ok(None);
+            };
+            let records = [change.value.before, change.value.after];
+            change.retire(accounting)?;
+            return Ok(Some(records));
         }
+        let Some(change) = self.recorded.as_slice().first() else {
+            return Ok(None);
+        };
+        accounting.charge(crate::WorkCounters {
+            items_examined: 1,
+            bytes_copied: std::mem::size_of::<super::FileRecordChange>() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let result = [change.before, change.after];
+        self.recorded.next();
+        Ok(Some(result))
     }
 
     fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
-        match self {
-            Self::Frontier(cursor) => cursor.retire(accounting),
-            Self::Recorded(_) => Ok(()),
-        }
+        self.frontier
+            .map_or(Ok(()), |cursor| cursor.retire(accounting))
     }
 }
 
@@ -138,12 +135,15 @@ impl<'a> Cursor<'a> {
     ) -> Result<Self, FsError> {
         let endpoints = validate_endpoints(roots, config)?;
         Ok(Self {
-            files: Source::Frontier(FileCursor::new(
-                roots[0].map(|root| root.file_table),
-                roots[1].map(|root| root.file_table),
-                DecodeLimits::for_volume(config),
-                accounting,
-            )?),
+            files: Source {
+                frontier: Some(FileCursor::new(
+                    roots[0].map(|root| root.file_table),
+                    roots[1].map(|root| root.file_table),
+                    DecodeLimits::for_volume(config),
+                    accounting,
+                )?),
+                recorded: [].iter(),
+            },
             endpoints,
             config,
             active: None,
@@ -163,7 +163,10 @@ impl<'a> Cursor<'a> {
     ) -> Result<Self, FsError> {
         Ok(Self {
             endpoints: validate_endpoints(roots, config)?,
-            files: Source::Recorded(records.iter()),
+            files: Source {
+                frontier: None,
+                recorded: records.iter(),
+            },
             config,
             active: None,
             descendants: None,
@@ -248,7 +251,7 @@ impl<'a> Cursor<'a> {
                             .next_set_change(store, accounting, cancellation)
                             .await?
                         {
-                            let record = active.records[side].ok_or(FsError::InvalidDiff)?;
+                            let record = side.of(&active.records).ok_or(FsError::InvalidDiff)?;
                             active.edge_path =
                                 Some((side, PathState::new(record.file_id, edge, accounting)?));
                         } else {
@@ -257,11 +260,11 @@ impl<'a> Cursor<'a> {
                                 .take()
                                 .ok_or(FsError::InvalidDiff)?
                                 .retire(accounting)?;
-                            active.side = 2;
+                            active.side = None;
                         }
                     }
                     if let Some((side, path)) = &mut active.edge_path {
-                        let root = roots[*side].ok_or(FsError::InvalidDiff)?;
+                        let root = side.of(&roots).ok_or(FsError::InvalidDiff)?;
                         path.advance(
                             store,
                             root.root_file_id,
@@ -273,17 +276,16 @@ impl<'a> Cursor<'a> {
                         .await?;
                         let (side, path) = active.edge_path.take().ok_or(FsError::InvalidDiff)?;
                         let path = path.finish(self.config, accounting)?;
-                        let record = active.records[side].ok_or(FsError::InvalidDiff)?;
+                        let record = side.of(&active.records).ok_or(FsError::InvalidDiff)?;
                         self.candidate = Some(Candidate { path, record, side });
                         continue;
                     }
                 }
-                if active.side < 2 {
-                    let side = active.side;
-                    if let Some(record) = active.records[side] {
+                if let Some(side) = active.side {
+                    if let Some(record) = *side.of(&active.records) {
                         if active.paths.is_none() {
                             active.paths = Some(DirectPaths::new(
-                                roots[side].ok_or(FsError::InvalidDiff)?,
+                                side.of(&roots).ok_or(FsError::InvalidDiff)?,
                                 record,
                                 self.config,
                                 accounting,
@@ -305,7 +307,7 @@ impl<'a> Cursor<'a> {
                             .ok_or(FsError::InvalidDiff)?
                             .retire(accounting)?;
                     }
-                    active.side += 1;
+                    active.side = side.next();
                     continue;
                 }
                 let active = self.active.take().ok_or(FsError::InvalidDiff)?;
@@ -322,10 +324,10 @@ impl<'a> Cursor<'a> {
                 self.complete = true;
                 return Ok(None);
             };
-            for (side, record) in records.iter().enumerate() {
+            for (root, record) in roots.iter().zip(&records) {
                 if let Some(record) = record {
                     super::direct_paths::validate_record(
-                        roots[side].ok_or(FsError::InvalidDiff)?.root_file_id,
+                        root.ok_or(FsError::InvalidDiff)?.root_file_id,
                         record,
                     )?;
                 }
@@ -352,7 +354,7 @@ impl<'a> Cursor<'a> {
             };
             self.active = Some(Active {
                 records,
-                side: 0,
+                side: Some(Endpoint::Before),
                 paths: None,
                 edges,
                 edge_path: None,
@@ -368,7 +370,7 @@ impl<'a> Cursor<'a> {
         cancellation: &CancellationToken,
     ) -> Result<Option<Owned<ChangedPath>>, FsError> {
         let candidate = self.candidate.as_ref().ok_or(FsError::InvalidDiff)?;
-        let other = if let Some(root) = roots[1 - candidate.side] {
+        let other = if let Some(root) = *candidate.side.other().of(&roots) {
             match super::lookup_path_async_with_accounting(
                 store,
                 root,
@@ -389,7 +391,7 @@ impl<'a> Cursor<'a> {
             None
         };
         let candidate = self.candidate.take().ok_or(FsError::InvalidDiff)?;
-        let records = if candidate.side == 0 {
+        let records = if candidate.side == Endpoint::Before {
             [Some(candidate.record), other]
         } else {
             [other, Some(candidate.record)]
@@ -398,7 +400,7 @@ impl<'a> Cursor<'a> {
         // A retained before alias owns same-identity facts on both endpoints.
         let owns = other.is_none_or(|other| {
             candidate.record.file_id < other.file_id
-                || candidate.side == 0 && candidate.record.file_id == other.file_id
+                || candidate.side == Endpoint::Before && candidate.record.file_id == other.file_id
         });
         let changed = match records {
             [Some(before), Some(after)] => record_changed(&before, &after),

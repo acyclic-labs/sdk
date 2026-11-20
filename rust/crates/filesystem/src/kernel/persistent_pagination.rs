@@ -105,14 +105,14 @@ where
     let (root, bound, maximum_values, direction, position) = query;
     paginate_range_with_accounting::<F>(
         store,
-        (
+        RangeQuery {
             root,
-            bound,
-            Bound::Unbounded,
+            start: bound,
+            end: Bound::Unbounded,
             maximum_values,
             direction,
             position,
-        ),
+        },
         limits,
         accounting,
         cancellation,
@@ -121,17 +121,35 @@ where
     .await
 }
 
+/// One bounded page request over a persistent B+tree.
+pub(crate) struct RangeQuery<'k, K> {
+    /// The tree's root page.
+    pub(crate) root: ObjectId,
+    /// The cursor bound the page starts from.
+    pub(crate) start: Bound<&'k K>,
+    /// The opposite bound, where traversal stops before loading excluded subtrees.
+    pub(crate) end: Bound<&'k K>,
+    /// The most values the page returns.
+    pub(crate) maximum_values: u32,
+    /// The traversal order.
+    pub(crate) direction: Direction,
+    /// Whether the receipt carries the resumable position of its last value.
+    pub(crate) position: bool,
+}
+
+// Every field is `Copy` whatever `K` is, which a derive would not see.
+impl<K> Clone for RangeQuery<'_, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K> Copy for RangeQuery<'_, K> {}
+
 /// Stops traversal at the opposite range bound, before loading excluded subtrees.
 pub(crate) async fn paginate_range_with_accounting<F: Format>(
     store: &dyn Source,
-    query: (
-        ObjectId,
-        Bound<&F::Key>,
-        Bound<&F::Key>,
-        u32,
-        Direction,
-        bool,
-    ),
+    query: RangeQuery<'_, F::Key>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -212,19 +230,19 @@ struct Machine<'a, 'accounting, F: Format> {
 
 impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     fn new_with_accounting(
-        query: (
-            ObjectId,
-            Bound<&'a F::Key>,
-            Bound<&'a F::Key>,
-            u32,
-            Direction,
-            bool,
-        ),
+        query: RangeQuery<'a, F::Key>,
         limits: DecodeLimits,
         accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
     ) -> Result<Self, Failure> {
-        let (root, bound, end, maximum_values, direction, position) = query;
+        let RangeQuery {
+            root,
+            start: bound,
+            end,
+            maximum_values,
+            direction,
+            position,
+        } = query;
         let fail = |error| failed(error, accounting.spent());
         if root.kind != F::kind() {
             return Err(fail(Error::WrongRootKind));
@@ -591,11 +609,10 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                     children,
                     self.accounting,
                     |child| match bound {
-                        Bound::Included(cursor) => child.first <= *cursor,
                         Bound::Excluded(cursor) if direction == Direction::Descending => {
                             child.first < *cursor
                         }
-                        Bound::Excluded(cursor) => child.first <= *cursor,
+                        Bound::Included(cursor) | Bound::Excluded(cursor) => child.first <= *cursor,
                         Bound::Unbounded => false,
                     },
                 )
@@ -699,7 +716,11 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         }
         let range = self.value_range(values)?;
         let start = range.start;
-        let mut selected = values[range].iter().enumerate();
+        let mut selected = values
+            .get(range)
+            .ok_or_else(|| failed(Error::ChildBoundsMismatch, self.accounting.spent()))?
+            .iter()
+            .enumerate();
         while self.values.len() < self.target {
             let Some((offset, value)) = self.direction.next(&mut selected) else {
                 break;
@@ -736,7 +757,9 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let height = self.next_height(pending.height)?;
         let mut offsets = range;
         while let Some(offset) = self.direction.reversed().next(&mut offsets) {
-            let child = &children[offset];
+            let child = children
+                .get(offset)
+                .ok_or_else(|| failed(Error::ChildBoundsMismatch, self.accounting.spent()))?;
             let lower = self.clone_key(&child.first)?;
             let upper = match children.get(offset + 1) {
                 Some(next) => match self.clone_key(&next.first) {

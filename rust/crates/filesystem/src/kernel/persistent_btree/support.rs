@@ -87,6 +87,17 @@ pub type Child<K> = acyclic_collections::page::Child<K, ObjectId>;
 
 pub(crate) use acyclic_collections::page::{Page, PageRef};
 
+/// The keys a ranged leaf rewrite is bounded by.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LeafBounds<'k, K> {
+    /// The leaf's routing lower key; `None` for the leftmost leaf.
+    pub(crate) lower: Option<&'k K>,
+    /// The leaf's routing upper key; `None` for the rightmost leaf.
+    pub(crate) upper: Option<&'k K>,
+    /// The original root's optional exclusive end, which validates input without clipping growth.
+    pub(crate) end: Option<&'k K>,
+}
+
 pub(crate) trait Mutation<F: Format>: acyclic_stream::ProviderPlatform + 'static {
     type Error: std::error::Error + acyclic_stream::ProviderTask;
 
@@ -129,7 +140,7 @@ pub(crate) trait Mutation<F: Format>: acyclic_stream::ProviderPlatform + 'static
         _carried: &[F::Value],
         _entries: &[F::Value],
         _mutations: &[(usize, &Self)],
-        _bounds: (Option<&F::Key>, Option<&F::Key>, Option<&F::Key>),
+        _bounds: LeafBounds<'_, F::Key>,
         _output: &mut Vec<F::Value>,
         _accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError>

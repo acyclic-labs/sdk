@@ -321,7 +321,7 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         .await?;
         let bad = GenerationRoot {
             file_table: table,
-            ..merged.clone()
+            ..(*merged).clone()
         };
         let failure = prove_candidate(
             &store,

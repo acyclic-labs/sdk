@@ -143,30 +143,26 @@ fn encode_metadata_fields<E>(
 }
 
 /// Reads one canonical metadata object, retiring its original scratch on every exit.
-pub(crate) fn read_file_metadata_with_accounting<'task, 'accounting, S: AsyncObjectStore>(
-    store: &'task S,
+pub(crate) async fn read_file_metadata_with_accounting<S: AsyncObjectStore>(
+    store: &S,
     object: ObjectId,
     limits: DecodeLimits,
-    accounting: &'task mut KernelAccounting<'accounting>,
-    cancellation: &'task CancellationToken,
-) -> impl std::future::Future<Output = Result<FileMetadata, FsError>>
-+ acyclic_stream::ProviderTask
-+ 'task {
-    async move {
-        let mut accounting = accounting.allocation_scope()?;
-        let (read, _) = super::read_object_with_accounting(
-            store,
-            object,
-            limits.maximum_object_bytes,
-            &mut accounting,
-            cancellation,
-        )
-        .await?;
-        super::decode_owned(&mut accounting, |observe| {
-            decode_file_metadata(&read.bytes, limits, &mut |step| observe(step))
-        })
-        .map(|(metadata, _)| metadata)
-    }
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<FileMetadata, FsError> {
+    let mut accounting = accounting.allocation_scope()?;
+    let (read, _) = super::read_object_with_accounting(
+        store,
+        object,
+        limits.maximum_object_bytes,
+        &mut accounting,
+        cancellation,
+    )
+    .await?;
+    super::decode_owned(&mut accounting, |observe| {
+        decode_file_metadata(&read.bytes, limits, &mut |step| observe(step))
+    })
+    .map(|(metadata, _)| metadata)
 }
 
 /// Decodes the same record with admission and actual primitive/item completions.

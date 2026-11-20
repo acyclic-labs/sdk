@@ -87,7 +87,12 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
             let mut operation =
                 Box::pin(
                     lookup_projected_with_accounting::<FileTableFormat, _, _, _>(
-                        &store,
+                        crate::kernel::persistent_point::PageReads {
+                            store: &store,
+                            limits: DecodeLimits::default(),
+                            cancellation: &cancellation,
+                            data_custody: None,
+                        },
                         root,
                         crate::kernel::persistent_point::PointQuery::Key(|candidate: &FileId| {
                             candidate.cmp(&selected)
@@ -98,10 +103,7 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
                             output.value.push(2);
                             Ok(output)
                         },
-                        DecodeLimits::default(),
                         &mut accounting,
-                        &cancellation,
-                        None,
                     ),
                 );
             assert!(futures::poll!(operation.as_mut()).is_pending());

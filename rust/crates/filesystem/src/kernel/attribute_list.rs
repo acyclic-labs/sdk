@@ -96,14 +96,14 @@ pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
         .map(AttributeName::class_start);
     persistent_pagination::paginate_range_with_accounting::<AttributeFormat>(
         store,
-        (
+        persistent_pagination::RangeQuery {
             root,
-            after.map_or(Bound::Unbounded, Bound::Excluded),
-            end.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
-            maximum_entries,
-            acyclic_collections::page::Direction::Ascending,
-            false,
-        ),
+            start: after.map_or(Bound::Unbounded, Bound::Excluded),
+            end: end.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
+            maximum_values: maximum_entries,
+            direction: acyclic_collections::page::Direction::Ascending,
+            position: false,
+        },
         limits,
         accounting,
         cancellation,

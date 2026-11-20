@@ -51,7 +51,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
             PreparationIo::Native { work, .. } => KernelAccounting::native(work, cancellation),
             PreparationIo::Owned { .. } => KernelAccounting::Standalone {
                 allocations: Default::default(),
-                work: WorkCounters::default(),
+                work: Box::default(),
                 budget: self
                     .remaining()
                     .unwrap_or_else(|_| acyclic_fs_work::performance::work_budget(0, 0)),
@@ -68,7 +68,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
     ) -> Self::Output<T, E> {
         use acyclic_fs::kernel::KernelAccounting;
         let work = match accounting {
-            KernelAccounting::Standalone { work, .. } => *work,
+            KernelAccounting::Standalone { work, .. } => **work,
             KernelAccounting::BorrowedStandalone { work, .. } => **work,
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => return (result, Ok(())),

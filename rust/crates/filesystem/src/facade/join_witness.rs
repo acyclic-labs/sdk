@@ -448,7 +448,7 @@ mod tests {
             for reference in references {
                 let resolutions = BTreeMap::from([(
                     MergeConflict::File(FileId::from_bytes([8; 16])),
-                    MergeConflictResolution::File(Some(record(reference))),
+                    MergeConflictResolution::File(Some(Box::new(record(reference)))),
                 )]);
                 let resolutions = WorkspaceJoinResolutions::Map(&resolutions);
                 let mut accounting =
@@ -504,15 +504,15 @@ mod tests {
                 let mut rebuilt = blake3::Hasher::new();
                 hash_merge_resolution(
                     &mut rebuilt,
-                    &MergeConflictResolution::File(Some(record(ObjectId {
+                    &MergeConflictResolution::File(Some(Box::new(record(ObjectId {
                         storage: None,
                         ..reference
-                    }))),
+                    })))),
                 );
                 let mut original = blake3::Hasher::new();
                 hash_merge_resolution(
                     &mut original,
-                    &MergeConflictResolution::File(Some(record(plain))),
+                    &MergeConflictResolution::File(Some(Box::new(record(plain)))),
                 );
                 assert_eq!(rebuilt.finalize(), original.finalize());
             }

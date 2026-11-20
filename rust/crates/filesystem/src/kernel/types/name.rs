@@ -235,7 +235,7 @@ impl LogicalName {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(String, crate::kernel::KernelOwnedAllocation), crate::FsError> {
-        let result = (|| {
+        (|| {
             let mut owned = OriginalReadAccounting::new(accounting)?;
             let result = (|| {
                 let check = || {
@@ -297,8 +297,7 @@ impl LogicalName {
                 Ok(text)
             })();
             finish_owned(owned, result)
-        })();
-        result
+        })()
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {

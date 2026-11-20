@@ -746,7 +746,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         retire_allocation(theirs.1, input_bytes[2], accounting)?;
         let (outcome, allocation) = merged?;
         match outcome {
-            MergeGenerationOutcome::Prepared { root, .. } => Ok(Some((root, allocation))),
+            MergeGenerationOutcome::Prepared { root, .. } => Ok(Some((*root, allocation))),
             MergeGenerationOutcome::Conflicted { conflicts, .. } => {
                 let bytes = conflicts.iter().try_fold(
                     crate::foundation::usize_to_u64(

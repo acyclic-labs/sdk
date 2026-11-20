@@ -450,7 +450,7 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
     let chosen = put_metadata(&store, timed(30, 0o770)).await?;
     let resolutions = BTreeMap::from([(
         MergeConflict::File(directory_id),
-        MergeConflictResolution::File(Some(dir(chosen, only_b))),
+        MergeConflictResolution::File(Some(Box::new(dir(chosen, only_b)))),
     )]);
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut state = MergeState::new(8, &mut accounting)?;
@@ -684,12 +684,10 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     let MergeGenerationOutcome::Prepared {
         generation_root,
         root,
-        generation_id,
     } = outcome
     else {
         return Err("independent native additions conflicted".into());
     };
-    assert_eq!(generation_id, GenerationId::from_root(generation_root));
     assert_eq!(root.parents.len(), 2);
     assert_eq!(root.parents.get(1), Some(&second_parent));
     let KernelOwnedAllocation::NativeOriginal(guard) = allocation else {
@@ -767,7 +765,7 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
         >(
             ()
         ))?,
-        root
+        *root
     );
     assert!(original.receipt().unwrap().page_reads > 0);
     assert!(original.receipt().unwrap().page_writes > 0);

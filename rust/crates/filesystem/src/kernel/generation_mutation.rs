@@ -1421,7 +1421,7 @@ impl TransactionState {
                     self.record_mut(leaf, *file_id)?.working = FileRecord {
                         bindings: current.bindings,
                         link_count: current.link_count,
-                        ..*record
+                        ..**record
                     };
                 }
                 FileMutation::SetMetadata { metadata } => {

@@ -137,7 +137,7 @@ impl ReadAccounting {
             } => Ok(Self {
                 state: ReadAccountingState::Standalone(StandaloneReadAccounting {
                     allocations,
-                    work,
+                    work: *work,
                     budget,
                 }),
                 cancellation: cancellation.clone(),
@@ -500,6 +500,7 @@ impl RetainedAllocation {
 /// The value is destroyed before the lease that funds its backing. Access is
 /// borrowed so moving the value cannot silently discard its credit.
 pub struct Retained<T> {
+    /// The retained value, destroyed before the allocation credit that funds it.
     pub value: T,
     pub(crate) allocation: RetainedAllocation,
 }

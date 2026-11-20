@@ -26,7 +26,11 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         &[],
         &[hole(0, 8)],
         &[(0, &edit)],
-        (Some(&0), None, Some(&8)),
+        persistent_btree::LeafBounds {
+            lower: Some(&0),
+            upper: None,
+            end: Some(&8),
+        },
         &mut output,
         &mut denied,
     );

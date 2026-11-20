@@ -494,7 +494,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         root,
                         ..
                     } => {
-                        let mut root = Owned::new(root, allocation, 0);
+                        let mut root = Owned::new(*root, allocation, 0);
                         root.bytes = root_parent_bytes(&root.value)?;
                         (generation_root, root)
                     }
@@ -674,8 +674,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             MergeGenerationOutcome::Prepared {
                 generation_root,
                 root,
-                generation_id,
             } => {
+                let root = *root;
                 let held = self
                     .root
                     .hold
@@ -688,7 +688,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 self.prepared_merge_parent = Some(theirs_id);
                 self.authority_head = Some(current_head);
                 Ok(OperationReceipt {
-                    value: MergePreparation::Prepared { generation_id },
+                    value: MergePreparation::Prepared {
+                        generation_id: GenerationId::from_root(generation_root),
+                    },
                     work,
                 })
             }

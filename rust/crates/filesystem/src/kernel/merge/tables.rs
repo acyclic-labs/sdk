@@ -143,7 +143,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                         let ours_value = left.map_or(base, |change| change.after);
                         let theirs_value = right.map_or(base, |change| change.after);
                         let mut resolved = resolve_optional(base, ours_value, theirs_value);
-                        if matches!(resolved, OptionalResolution::Conflict)
+                        if resolved.is_err()
                             && base.is_none()
                             && let (Some(a), Some(b)) = (ours_value, theirs_value)
                             && a.kind == b.kind
@@ -160,11 +160,10 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             )
                             .await?
                         {
-                            resolved =
-                                OptionalResolution::Resolved(Some(FileRecord { metadata, ..a }));
+                            resolved = Ok(Some(FileRecord { metadata, ..a }));
                         }
                         let base = if base.is_none()
-                            && matches!(resolved, OptionalResolution::Conflict)
+                            && resolved.is_err()
                             && is_directory(ours_value)
                             && is_directory(theirs_value)
                         {
@@ -186,8 +185,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                         if is_directory(base)
                             && is_directory(ours_value)
                             && is_directory(theirs_value)
-                            && (matches!(resolved, OptionalResolution::Conflict)
-                                || resolutions.has_bindings(file, accounting)?)
+                            && (resolved.is_err() || resolutions.has_bindings(file, accounting)?)
                         {
                             if state.changes.remaining == Some(0) {
                                 return Err(FsError::MergeChangeLimit);
@@ -207,14 +205,14 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             )
                             .await?;
                             if let Some(record) = record {
-                                resolved = OptionalResolution::Resolved(Some(record));
+                                resolved = Ok(Some(record));
                             } else {
                                 state.records.ensure_for_push(usize::MAX, accounting)?;
                                 state.records.value.push((file, (ours_value, ours_value)));
                                 continue;
                             }
                         }
-                        if matches!(resolved, OptionalResolution::Conflict)
+                        if resolved.is_err()
                             && resolutions.converges_additions()
                             && replaceable([base, ours_value, theirs_value])
                         {

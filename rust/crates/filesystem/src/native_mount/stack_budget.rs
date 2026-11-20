@@ -198,7 +198,7 @@ async fn lazy_workspace(
             crate::OperationId::new(),
             &mut crate::kernel::KernelAccounting::Standalone {
                 allocations: Default::default(),
-                work: crate::WorkCounters::UNCHARGED,
+                work: Box::new(crate::WorkCounters::UNCHARGED),
                 budget: crate::WorkBudget::UNBOUNDED,
                 cancellation: &crate::CancellationToken::new(),
                 construction: Default::default(),

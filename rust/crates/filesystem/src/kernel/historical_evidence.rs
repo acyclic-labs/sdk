@@ -213,6 +213,8 @@ pub fn decode_historical_generation_evidence(
     )
 }
 
+/// Decodes protected original metadata and binds it to this exact authoritative record,
+/// reporting each of its allocation and hashing steps to `observe`.
 pub fn decode_historical_generation_evidence_observed<E>(
     evidence: &HistoricalGenerationEvidence,
     authority_id: AuthorityId,

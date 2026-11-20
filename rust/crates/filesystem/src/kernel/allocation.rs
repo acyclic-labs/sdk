@@ -623,6 +623,15 @@ pub enum KernelOwnedAllocation {
 }
 
 impl KernelOwnedAllocation {
+    /// Whether this custody funds no bytes.
+    pub(crate) fn funds_nothing(&self) -> bool {
+        match self {
+            Self::Standalone => true,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal(guard) => guard.bytes() == 0,
+        }
+    }
+
     pub(crate) fn absorb(&mut self, other: &mut Self) -> Result<(), crate::FsError> {
         match (self, other) {
             (Self::Standalone, Self::Standalone) => Ok(()),
@@ -642,7 +651,8 @@ pub enum KernelAccounting<'a> {
     Standalone {
         construction: crate::collection::ConstructionScope<'a>,
         allocations: AllocationLedger,
-        work: WorkCounters,
+        // Boxed so the owning variant stays near its borrowing sibling's size.
+        work: Box<WorkCounters>,
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
     },

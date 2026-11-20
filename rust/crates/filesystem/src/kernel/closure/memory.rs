@@ -517,9 +517,17 @@ pub(super) fn map_get<'v, K: ProofKey<N>, V, const N: usize>(
     entries: &'v ProofMap<'_, K, V, N>,
     key: &K,
 ) -> Result<Option<&'v V>, crate::FsError> {
-    Ok(entries
+    // The index publishes only ordinals of appended values.
+    entries
         .position(*key)?
-        .map(|position| &entries.values[position].1))
+        .map(|position| {
+            entries
+                .values
+                .get(position)
+                .map(|(_, value)| value)
+                .ok_or_else(|| crate::ObjectStoreError::Corrupt.into())
+        })
+        .transpose()
 }
 
 pub(super) fn map_insert<K: ProofKey<N>, V, const N: usize>(
@@ -532,8 +540,13 @@ pub(super) fn map_insert<K: ProofKey<N>, V, const N: usize>(
             bytes_copied: usize_to_u64(size_of::<V>()),
             ..WorkCounters::UNCHARGED
         };
+        let (_, slot) = entries
+            .entries
+            .values
+            .get_mut(position)
+            .ok_or(crate::ObjectStoreError::Corrupt)?;
         entries.entries.meter.admit(copied)?;
-        let previous = std::mem::replace(&mut entries.entries.values[position].1, value);
+        let previous = std::mem::replace(slot, value);
         entries.entries.meter.record_completed(copied)?;
         return Ok(Some(previous));
     }

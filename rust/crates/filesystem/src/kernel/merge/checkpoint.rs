@@ -62,14 +62,13 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     Ok((
         MergeGenerationOutcome::Prepared {
             generation_root: merged,
-            generation_id: GenerationId::from_root(merged),
-            root: GenerationRoot {
+            root: Box::new(GenerationRoot {
                 volume_id: request.ours.volume_id,
                 root_file_id: request.ours.root_file_id,
                 file_table: merged_table,
                 parents,
                 required_features: request.ours.continuation_features(),
-            },
+            }),
         },
         allocation,
     ))

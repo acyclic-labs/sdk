@@ -282,7 +282,9 @@ where
                 }
                 replacements.push(Mutation::File {
                     file_id: record.file_id,
-                    mutation: FileMutation::ReplaceRecord { record: *record },
+                    mutation: FileMutation::ReplaceRecord {
+                        record: Box::new(*record),
+                    },
                 });
             }
         }

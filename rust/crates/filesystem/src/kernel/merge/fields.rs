@@ -1,7 +1,10 @@
-enum OptionalResolution {
-    Resolved(Option<FileRecord>),
-    Conflict,
-}
+/// A path-independent record merge: the resolved record, or a conflict the
+/// supplied resolutions must settle.
+type OptionalResolution = Result<Option<FileRecord>, RecordConflict>;
+
+/// The three sides of a record disagree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RecordConflict;
 
 async fn matching_payloads<S: AsyncObjectStore>(
     store: &S,
@@ -24,11 +27,11 @@ fn resolve_optional(
     theirs: Option<FileRecord>,
 ) -> OptionalResolution {
     if ours == theirs || theirs == base {
-        OptionalResolution::Resolved(ours)
+        Ok(ours)
     } else if ours == base {
-        OptionalResolution::Resolved(theirs)
+        Ok(theirs)
     } else {
-        OptionalResolution::Conflict
+        Err(RecordConflict)
     }
 }
 
