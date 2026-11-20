@@ -60,13 +60,13 @@ pub enum Error {
         /// Numeric gRPC status code.
         grpc_code: i32,
         /// Original product response metadata in the shared refusal envelope.
-        refusal: Option<acyclic_auth::refusal::Refusal>,
+        refusal: Option<Box<acyclic_auth::refusal::Refusal>>,
         /// Original gRPC status message.
         message: String,
         /// Exact gRPC status detail bytes, including malformed payloads.
         raw_details: Vec<u8>,
         /// Rust-owned semantic error detail, when present.
-        detail: Option<wire::Error>,
+        detail: Option<Box<wire::Error>>,
     },
     /// The wire payload could not be admitted as the typed Actors model.
     #[error("Actors semantic contract rejected the payload: {0}")]
@@ -140,7 +140,7 @@ impl Error {
                 metadata.grpc_code = Some(grpc_code);
                 metadata.grpc_name = Some(code);
                 metadata.credential_rejected = grpc_code == 16;
-                if let Some(detail) = detail {
+                if let Some(detail) = detail.map(|detail| *detail) {
                     metadata.service_code = Some(detail.code);
                     metadata.service_message = Some(detail.message);
                     metadata.cause = acyclic_auth::refusal::Cause::reported(
@@ -243,13 +243,14 @@ impl From<tonic::Status> for Error {
                     cause_is_embedded: true,
                 },
                 None,
-            ),
+            )
+            .map(Box::new),
             message: status.message().to_owned(),
             raw_details: status.details().to_vec(),
             detail: if status.details().is_empty() {
                 None
             } else {
-                wire::Error::decode(status.details()).ok()
+                wire::Error::decode(status.details()).ok().map(Box::new)
             },
         }
     }
@@ -733,7 +734,7 @@ mod tests {
             assert_eq!(message, "original grpc diagnostic");
             assert_eq!(raw_details, &bytes);
             assert_eq!(*grpc_code, status_code as i32);
-            assert_eq!(actual, &detail);
+            assert_eq!(actual.as_deref(), detail.as_ref());
             let metadata = error.metadata();
             let refusal = metadata
                 .refusal
@@ -832,8 +833,8 @@ mod tests {
             };
             assert_eq!(metadata.cause.as_ref(), Some(expected));
             assert_eq!(
-                serde_json::to_value(metadata).unwrap()["cause"],
-                serde_json::to_value(expected).unwrap()
+                serde_json::to_value(metadata)?["cause"],
+                serde_json::to_value(expected)?
             );
         }
         Ok(())

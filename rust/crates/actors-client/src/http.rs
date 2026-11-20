@@ -35,7 +35,7 @@ pub enum Error {
         /// HTTP response status.
         status: u16,
         /// Decoded wire error, including service codes unknown to this SDK.
-        detail: Option<wire::Error>,
+        detail: Option<Box<wire::Error>>,
         /// Exact response body, including empty or malformed error payloads.
         raw_details: Vec<u8>,
     },
@@ -273,10 +273,10 @@ impl Client {
                 })
                 .await?;
             let status = response.status();
-            if status.as_u16() == 401 {
-                if let Some(lease) = &lease {
-                    lease.reject().await?;
-                }
+            if status.as_u16() == 401
+                && let Some(lease) = &lease
+            {
+                lease.reject().await?;
             }
             span.record("http.status", status.as_u16());
             let bytes = self
@@ -296,7 +296,7 @@ impl Client {
                         });
                 return Err(Error::Service {
                     status: status.as_u16(),
-                    detail,
+                    detail: detail.map(Box::new),
                     raw_details: bytes,
                 });
             }

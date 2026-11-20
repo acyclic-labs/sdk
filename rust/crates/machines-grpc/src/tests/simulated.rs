@@ -49,19 +49,19 @@ impl SimulatedService {
                 .machines
                 .inspect_machine(machine)
                 .await
-                .map_err(status)?
+                .map_err(|error| status(&error))?
                 .contract),
             ForkSource::Checkpoint(checkpoint) => Ok(self
                 .machines
                 .inspect_checkpoint(checkpoint)
                 .await
-                .map_err(status)?
+                .map_err(|error| status(&error))?
                 .contract),
         }
     }
 }
 
-fn status(error: ProviderError) -> Status {
+fn status(error: &ProviderError) -> Status {
     let message = error.to_string();
     match error.classification() {
         ProviderError::NotFound(_) => Status::not_found(message),
@@ -199,19 +199,19 @@ fn encode_outcome(outcome: &MutationOutcome) -> Result<wire::MutationOutcome, St
             observation
                 .clone()
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ),
         MutationOutcome::VolumeAttached(observation) => Outcome::VolumeAttached(
             observation
                 .clone()
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ),
         MutationOutcome::Checkpointed(observation) => Outcome::Checkpointed(
             observation
                 .clone()
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ),
         MutationOutcome::Forked {
             provenance,
@@ -225,7 +225,7 @@ fn encode_outcome(outcome: &MutationOutcome) -> Result<wire::MutationOutcome, St
         MutationOutcome::SuspensionPolicySet(machine, policy) => {
             Outcome::SuspensionPolicySet(wire::PolicySet {
                 machine: Some(encode_machine(*machine)),
-                policy: Some(encode_suspension(*policy).map_err(status)?),
+                policy: Some(encode_suspension(*policy).map_err(|error| status(&error))?),
             })
         }
         MutationOutcome::MachineDestroyed(machine) => {
@@ -252,7 +252,7 @@ fn machine_admission(
                 .contract
                 .clone()
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ),
         provenance: None,
     })
@@ -271,7 +271,7 @@ fn checkpoint_admission(
                 .contract
                 .clone()
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ),
     })
 }
@@ -308,7 +308,7 @@ fn fork_admissions(
         contract: Some(
             contract
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ),
     })
 }
@@ -352,7 +352,7 @@ impl MachinesService for SimulatedService {
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         match self.machines.exec(machine, command).await {
             Ok(_) => Err(Status::unimplemented("exec")),
-            Err(error) => Err(status(error)),
+            Err(error) => Err(status(&error)),
         }
     }
 
@@ -368,9 +368,13 @@ impl MachinesService for SimulatedService {
         request: Request<wire::QualifyImageRequest>,
     ) -> Result<Response<wire::ImageQualification>, Status> {
         let image = decode_image(request.into_inner().image.as_ref())?;
-        let qualification = self.machines.qualify_image(image).await.map_err(status)?;
+        let qualification = self
+            .machines
+            .qualify_image(image)
+            .await
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ImageQualification {
-            image: Some(encode_image(&qualification.image).map_err(status)?),
+            image: Some(encode_image(&qualification.image).map_err(|error| status(&error))?),
             capabilities: qualification
                 .capabilities
                 .into_iter()
@@ -407,11 +411,19 @@ impl MachinesService for SimulatedService {
                     concurrency: value.concurrency,
                 }),
         };
-        let outcome = self.machines.create(create).await.map_err(status)?;
+        let outcome = self
+            .machines
+            .create(create)
+            .await
+            .map_err(|error| status(&error))?;
         let MutationOutcome::Created(observation) = outcome else {
             return Err(Status::internal("create returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(machine_admission(&observation, operation)?))
     }
@@ -432,11 +444,15 @@ impl MachinesService for SimulatedService {
                 key,
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::VolumeAttached(observation) = outcome else {
             return Err(Status::internal("attach_volume returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(machine_admission(&observation, operation)?))
     }
@@ -453,11 +469,15 @@ impl MachinesService for SimulatedService {
             .machines
             .checkpoint(machine, key)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::Checkpointed(observation) = outcome else {
             return Err(Status::internal("checkpoint returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(checkpoint_admission(
             &observation,
@@ -479,7 +499,7 @@ impl MachinesService for SimulatedService {
             .machines
             .fork(checkpoint, count, key)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::Forked {
             provenance,
             results,
@@ -487,13 +507,17 @@ impl MachinesService for SimulatedService {
         else {
             return Err(Status::internal("fork returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         let contract = self
             .machines
             .inspect_checkpoint(checkpoint)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
             .contract;
         Ok(Response::new(fork_admissions(
             provenance, results, contract, operation,
@@ -514,7 +538,7 @@ impl MachinesService for SimulatedService {
             .machines
             .fork_machine(machine, count, key)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::Forked {
             provenance,
             results,
@@ -522,13 +546,17 @@ impl MachinesService for SimulatedService {
         else {
             return Err(Status::internal("fork_machine returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         let contract = self
             .machines
             .inspect_machine(machine)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
             .contract;
         Ok(Response::new(fork_admissions(
             provenance, results, contract, operation,
@@ -543,11 +571,19 @@ impl MachinesService for SimulatedService {
         let key = decode_key(request.idempotency_key.as_ref())?;
         let machine = decode_machine(request.machine.as_ref())
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let outcome = self.machines.suspend(machine, key).await.map_err(status)?;
+        let outcome = self
+            .machines
+            .suspend(machine, key)
+            .await
+            .map_err(|error| status(&error))?;
         let MutationOutcome::Suspended(machine) = outcome else {
             return Err(Status::internal("suspend returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(mutation_admission(machine, operation)))
     }
@@ -560,11 +596,19 @@ impl MachinesService for SimulatedService {
         let key = decode_key(request.idempotency_key.as_ref())?;
         let machine = decode_machine(request.machine.as_ref())
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let outcome = self.machines.wake(machine, key).await.map_err(status)?;
+        let outcome = self
+            .machines
+            .wake(machine, key)
+            .await
+            .map_err(|error| status(&error))?;
         let MutationOutcome::Woken(machine) = outcome else {
             return Err(Status::internal("wake returned the wrong outcome"));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(mutation_admission(machine, operation)))
     }
@@ -583,18 +627,22 @@ impl MachinesService for SimulatedService {
             .machines
             .set_suspension_policy(machine, policy, key)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::SuspensionPolicySet(machine, policy) = outcome else {
             return Err(Status::internal(
                 "set_suspension_policy returned the wrong outcome",
             ));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(wire::PolicyAdmission {
             machine: Some(encode_machine(machine)),
             operation: Some(encode_operation(operation)),
-            policy: Some(encode_suspension(policy).map_err(status)?),
+            policy: Some(encode_suspension(policy).map_err(|error| status(&error))?),
         }))
     }
 
@@ -610,13 +658,17 @@ impl MachinesService for SimulatedService {
             .machines
             .destroy_machine(machine, key)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::MachineDestroyed(machine) = outcome else {
             return Err(Status::internal(
                 "destroy_machine returned the wrong outcome",
             ));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(mutation_admission(machine, operation)))
     }
@@ -633,13 +685,17 @@ impl MachinesService for SimulatedService {
             .machines
             .destroy_checkpoint(checkpoint, key)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let MutationOutcome::CheckpointDestroyed(checkpoint) = outcome else {
             return Err(Status::internal(
                 "destroy_checkpoint returned the wrong outcome",
             ));
         };
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         Ok(Response::new(checkpoint_mutation_admission(
             checkpoint, operation,
@@ -659,7 +715,7 @@ impl MachinesService for SimulatedService {
             .machines
             .read_results(cursor, credit)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ResultPage {
             cursor: Some(page.cursor.into()),
             machines: page
@@ -667,7 +723,7 @@ impl MachinesService for SimulatedService {
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<Vec<_>, ProviderError>>()
-                .map_err(status)?,
+                .map_err(|error| status(&error))?,
             next: page.next.map(Into::into),
         }))
     }
@@ -678,8 +734,16 @@ impl MachinesService for SimulatedService {
     ) -> Result<Response<wire::RecoveredAdmission>, Status> {
         let request = request.into_inner();
         let key = decode_key(request.idempotency_key.as_ref())?;
-        let outcome = self.machines.recover(key).await.map_err(status)?;
-        let operation = self.machines.recover_operation(key).await.map_err(status)?;
+        let outcome = self
+            .machines
+            .recover(key)
+            .await
+            .map_err(|error| status(&error))?;
+        let operation = self
+            .machines
+            .recover_operation(key)
+            .await
+            .map_err(|error| status(&error))?;
         self.record(operation, key);
         let result = match outcome {
             MutationOutcome::Created(observation) => wire::recovered_admission::Result::Create(
@@ -716,7 +780,7 @@ impl MachinesService for SimulatedService {
                 wire::recovered_admission::Result::SetSuspensionPolicy(wire::PolicyAdmission {
                     machine: Some(encode_machine(machine)),
                     operation: Some(encode_operation(operation)),
-                    policy: Some(encode_suspension(policy).map_err(status)?),
+                    policy: Some(encode_suspension(policy).map_err(|error| status(&error))?),
                 })
             }
             MutationOutcome::MachineDestroyed(machine) => {
@@ -746,11 +810,11 @@ impl MachinesService for SimulatedService {
             .machines
             .inspect_machine(machine)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(
             observation
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ))
     }
 
@@ -764,11 +828,11 @@ impl MachinesService for SimulatedService {
             .machines
             .inspect_checkpoint(checkpoint)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(
             observation
                 .try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ))
     }
 
@@ -787,10 +851,10 @@ impl MachinesService for SimulatedService {
             .machines
             .list_machines(after, request.limit)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(
             page.try_into()
-                .map_err(|error: ProviderError| status(error))?,
+                .map_err(|error: ProviderError| status(&error))?,
         ))
     }
 
@@ -805,7 +869,7 @@ impl MachinesService for SimulatedService {
             .machines
             .events(machine, Some(request.after_sequence), request.limit)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::EventPage {
             events: page.events.into_iter().map(Into::into).collect(),
             next_sequence: page.next_sequence.unwrap_or(0),
@@ -836,7 +900,11 @@ impl MachinesService for SimulatedService {
     ) -> Result<Response<wire::OperationState>, Status> {
         let operation = decode_operation(request.into_inner().operation.as_ref())
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let observation = self.machines.cancel(operation).await.map_err(status)?;
+        let observation = self
+            .machines
+            .cancel(operation)
+            .await
+            .map_err(|error| status(&error))?;
         Ok(Response::new(observation.into()))
     }
 
@@ -850,7 +918,7 @@ impl MachinesService for SimulatedService {
             .machines
             .inspect_operation(operation)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(observation.into()))
     }
 
@@ -866,7 +934,7 @@ impl MachinesService for SimulatedService {
             .machines
             .inspect_operation(operation)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let outcome = match self.key_for(operation) {
             Some(key) => self.machines.recover(key).await.ok(),
             None => None,

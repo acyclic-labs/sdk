@@ -100,10 +100,6 @@ pub trait AttachedBackend: Backend {
 /// only, destroy detaches it, and an Offline device is Unavailable.
 pub async fn verify_attached(backend: &dyn AttachedBackend) -> Result<(), String> {
     let provider = backend.provider();
-    let key = |suffix: u8| {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
-            .map_err(|error| error.to_string())
-    };
     let device = backend.attach().await?;
     if device.contract.lifecycle != LifecycleClass::Attached
         || device.state != MachineState::Running
@@ -239,10 +235,6 @@ async fn exec_wakes(
     network_policy: [u8; 32],
 ) -> Result<(), String> {
     let provider = backend.provider();
-    let key = |suffix: u8| {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
-            .map_err(|error| error.to_string())
-    };
     if !machine.contract.wakes_on_demand() {
         return Err("the default create policy does not suspend after idle".into());
     }
@@ -307,7 +299,10 @@ fn create_request(
 fn require_unsupported<T>(result: Result<T, ProviderError>) -> Result<(), String> {
     match result {
         Err(error) if matches!(error.classification(), ProviderError::Unsupported(_)) => Ok(()),
-        _ => Err("undeclared native mechanism did not return Unsupported".into()),
+        Err(error) => Err(format!(
+            "undeclared native mechanism did not return Unsupported: {error}"
+        )),
+        Ok(_) => Err("undeclared native mechanism succeeded instead of Unsupported".into()),
     }
 }
 
@@ -424,16 +419,17 @@ macro_rules! suite {
     };
 }
 
+/// The suite machine's idempotency key for one lifecycle step.
+fn key(suffix: u8) -> Result<IdempotencyKey, String> {
+    IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
+        .map_err(|error| error.to_string())
+}
+
 /// Exercises the public shape-free lifecycle, replay, fork, and observation semantics.
 async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
     let provider = backend.provider();
     let image = backend.image().clone();
     let network_policy = backend.network_policy();
-    let key = |suffix: u8| {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
-            .map_err(|error| error.to_string())
-    };
-    let assurance = provider.assurance();
     let qualification = provider
         .qualify_image(image.clone())
         .await
@@ -441,6 +437,29 @@ async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
     if qualification.image != image {
         return Err("image qualification substituted its immutable image".into());
     }
+    capabilities(backend, &qualification.capabilities).await?;
+    let machine = create(backend).await?;
+    operations(backend).await?;
+    checkpoint_fork(backend, &machine).await?;
+    suspend_resume(backend, &machine).await?;
+    events(backend, &machine).await?;
+    if backend.capability(ProviderCapability::SuspendResume) == Support::Supported {
+        exec_wakes(backend, &machine, image, network_policy).await?;
+    } else {
+        exec_admitted(backend, &machine).await?;
+    }
+    usage(backend, &machine).await?;
+    live_fork(backend, &machine).await?;
+    destroy(backend, &machine).await
+}
+
+/// Each declared capability is retained in the machine contract when qualified,
+/// and refused explicitly as Unsupported otherwise.
+async fn capabilities(
+    backend: &dyn Backend,
+    qualified: &std::collections::BTreeSet<Capability>,
+) -> Result<(), String> {
+    let provider = backend.provider();
     let capability_cases = [
         (Capability::ElasticCpu, 0x10, 0x20),
         (Capability::ElasticMemory, 0x11, 0x21),
@@ -452,11 +471,15 @@ async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
     ];
     for (capability, create_suffix, destroy_suffix) in capability_cases {
         let required = std::collections::BTreeSet::from([capability]);
-        let mut capability_request =
-            create_request(backend, key(create_suffix)?, image.clone(), network_policy);
+        let mut capability_request = create_request(
+            backend,
+            key(create_suffix)?,
+            backend.image().clone(),
+            backend.network_policy(),
+        );
         capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
         let admission = provider.create(capability_request).await;
-        if qualification.capabilities.contains(&capability) {
+        if qualified.contains(&capability) {
             let MutationOutcome::Created(observation) =
                 admission.map_err(|error| error.to_string())?
             else {
@@ -481,8 +504,19 @@ async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
             return Err("unsupported capability intent did not fail explicitly".into());
         }
     }
-    let create_key = key(1)?;
-    let request = create_request(backend, create_key, image.clone(), network_policy);
+    Ok(())
+}
+
+/// Creates the suite machine: exact replay, an undeclared volume attach refused,
+/// and the machine ready on return.
+async fn create(backend: &dyn Backend) -> Result<MachineObservation, String> {
+    let provider = backend.provider();
+    let request = create_request(
+        backend,
+        key(1)?,
+        backend.image().clone(),
+        backend.network_policy(),
+    );
     let created = provider
         .create(request.clone())
         .await
@@ -508,223 +542,254 @@ async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
     if machine.state != MachineState::Running {
         return Err("created machine is not ready".into());
     }
-    if backend.capability(ProviderCapability::Operations) == Support::Supported {
-        let operation = provider
-            .recover_operation(create_key)
-            .await
-            .map_err(|error| error.to_string())?;
-        let expected_operation = provider
-            .inspect_operation(operation)
-            .await
-            .map_err(|error| error.to_string())?;
-        if expected_operation.id != operation
-            || expected_operation.phase != OperationPhase::Succeeded
-        {
-            return Err("create operation inspection is not correlated and terminal".into());
-        }
-        if provider
-            .cancel(operation)
-            .await
-            .map_err(|error| error.to_string())?
-            != expected_operation
-        {
-            return Err("terminal operation cancellation changed its observation".into());
-        }
-        let mut operation_stream = provider
-            .watch_operation(operation)
-            .await
-            .map_err(|error| error.to_string())?;
-        let watched = operation_stream
-            .next()
-            .await
-            .ok_or_else(|| "operation watch ended before its current state".to_owned())?
-            .map_err(|error| error.to_string())?;
-        if watched != expected_operation {
-            return Err("operation watch substituted its requested identity or state".into());
-        }
-    } else {
+    Ok(machine)
+}
+
+/// The create operation is recoverable by its key, terminal, cancel-stable and
+/// watchable, or every operation call is Unsupported.
+async fn operations(backend: &dyn Backend) -> Result<(), String> {
+    let provider = backend.provider();
+    let create_key = key(1)?;
+    if backend.capability(ProviderCapability::Operations) != Support::Supported {
         require_unsupported(provider.recover_operation(create_key).await)?;
         let operation =
             acyclic_machines::OperationId::parse("00000000-0000-0000-0000-000000000001")
                 .map_err(|e| e.to_string())?;
         require_unsupported(provider.inspect_operation(operation).await)?;
         require_unsupported(provider.cancel(operation).await)?;
-        require_unsupported(provider.watch_operation(operation).await)?;
+        return require_unsupported(provider.watch_operation(operation).await);
     }
-    if backend.capability(ProviderCapability::Checkpoint) == Support::Supported {
-        let checkpointed = provider
-            .checkpoint(machine.id, key(2)?)
-            .await
-            .map_err(|error| error.to_string())?;
-        let MutationOutcome::Checkpointed(checkpoint) = checkpointed else {
-            return Err("checkpoint returned the wrong outcome".into());
-        };
-        let forked = provider
-            .fork(
-                checkpoint.id,
-                NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-                key(3)?,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        let MutationOutcome::Forked {
-            provenance,
-            results,
-        } = forked
-        else {
-            return Err("fork returned the wrong outcome".into());
-        };
-        let children = provider
-            .read_results(
-                results::ResultCursor {
-                    cut: results,
-                    from: 0,
-                },
-                NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-            )
-            .await
-            .map_err(|error| error.to_string())?
-            .machines;
-        if provenance
-            != (acyclic_machines::Provenance {
-                source: acyclic_machines::ForkSource::Checkpoint(checkpoint.id),
-                inherited: acyclic_machines::ForkFidelity::MemoryAndDisk,
-            })
-        {
-            return Err("fork substituted its checkpoint provenance".into());
-        }
-        let [first_child, second_child] = children.as_slice() else {
-            return Err("fork identities are not an exact fresh set".into());
-        };
-        if first_child.id == second_child.id || children.contains(&machine) {
-            return Err("fork identities are not an exact fresh set".into());
-        }
-        // A fork child is an ordinary machine: every read shows the same contract,
-        // whose image is the checkpoint it resumed.
-        for child in &children {
-            let read = provider
-                .inspect_machine(child.id)
-                .await
-                .map_err(|error| error.to_string())?;
-            if child.contract.image != Image::Checkpoint(checkpoint.id)
-                || read.contract != child.contract
-            {
-                return Err("fork child contract does not name its checkpoint image".into());
-            }
-        }
-        provider
-            .destroy_checkpoint(checkpoint.id, key(6)?)
-            .await
-            .map_err(|error| error.to_string())?;
-        if provider
-            .inspect_checkpoint(checkpoint.id)
-            .await
-            .map_err(|error| error.to_string())?
-            .forkable
-        {
-            return Err("destroyed checkpoint still accepts forks".into());
-        }
-    } else {
+    let operation = provider
+        .recover_operation(create_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let expected_operation = provider
+        .inspect_operation(operation)
+        .await
+        .map_err(|error| error.to_string())?;
+    if expected_operation.id != operation || expected_operation.phase != OperationPhase::Succeeded {
+        return Err("create operation inspection is not correlated and terminal".into());
+    }
+    if provider
+        .cancel(operation)
+        .await
+        .map_err(|error| error.to_string())?
+        != expected_operation
+    {
+        return Err("terminal operation cancellation changed its observation".into());
+    }
+    let mut operation_stream = provider
+        .watch_operation(operation)
+        .await
+        .map_err(|error| error.to_string())?;
+    let watched = operation_stream
+        .next()
+        .await
+        .ok_or_else(|| "operation watch ended before its current state".to_owned())?
+        .map_err(|error| error.to_string())?;
+    if watched != expected_operation {
+        return Err("operation watch substituted its requested identity or state".into());
+    }
+    Ok(())
+}
+
+/// A checkpoint forks an exact fresh child set whose contracts name it, and a
+/// destroyed checkpoint no longer forks; or every checkpoint call is Unsupported.
+async fn checkpoint_fork(
+    backend: &dyn Backend,
+    machine: &MachineObservation,
+) -> Result<(), String> {
+    let provider = backend.provider();
+    if backend.capability(ProviderCapability::Checkpoint) != Support::Supported {
         require_unsupported(provider.checkpoint(machine.id, key(2)?).await)?;
         let checkpoint =
             acyclic_machines::CheckpointId::parse("00000000-0000-0000-0000-000000000001")
                 .map_err(|e| e.to_string())?;
         require_unsupported(provider.inspect_checkpoint(checkpoint).await)?;
         require_unsupported(provider.fork(checkpoint, NonZeroU32::MIN, key(3)?).await)?;
-        require_unsupported(provider.destroy_checkpoint(checkpoint, key(6)?).await)?;
+        return require_unsupported(provider.destroy_checkpoint(checkpoint, key(6)?).await);
     }
-    if backend.capability(ProviderCapability::SuspendResume) == Support::Supported {
-        provider
-            .suspend(machine.id, key(4)?)
+    let checkpointed = provider
+        .checkpoint(machine.id, key(2)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    let MutationOutcome::Checkpointed(checkpoint) = checkpointed else {
+        return Err("checkpoint returned the wrong outcome".into());
+    };
+    let forked = provider
+        .fork(
+            checkpoint.id,
+            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+            key(3)?,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let MutationOutcome::Forked {
+        provenance,
+        results,
+    } = forked
+    else {
+        return Err("fork returned the wrong outcome".into());
+    };
+    let children = provider
+        .read_results(
+            results::ResultCursor {
+                cut: results,
+                from: 0,
+            },
+            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .machines;
+    if provenance
+        != (acyclic_machines::Provenance {
+            source: acyclic_machines::ForkSource::Checkpoint(checkpoint.id),
+            inherited: acyclic_machines::ForkFidelity::MemoryAndDisk,
+        })
+    {
+        return Err("fork substituted its checkpoint provenance".into());
+    }
+    let [first_child, second_child] = children.as_slice() else {
+        return Err("fork identities are not an exact fresh set".into());
+    };
+    if first_child.id == second_child.id || children.contains(machine) {
+        return Err("fork identities are not an exact fresh set".into());
+    }
+    // A fork child is an ordinary machine: every read shows the same contract,
+    // whose image is the checkpoint it resumed.
+    for child in &children {
+        let read = provider
+            .inspect_machine(child.id)
             .await
             .map_err(|error| error.to_string())?;
-        if provider
-            .inspect_machine(machine.id)
-            .await
-            .map_err(|error| error.to_string())?
-            .state
-            != MachineState::Suspended
+        if child.contract.image != Image::Checkpoint(checkpoint.id)
+            || read.contract != child.contract
         {
-            return Err("suspend did not change observable state".into());
+            return Err("fork child contract does not name its checkpoint image".into());
         }
-        provider
-            .wake(machine.id, key(5)?)
-            .await
-            .map_err(|error| error.to_string())?;
-    } else {
+    }
+    provider
+        .destroy_checkpoint(checkpoint.id, key(6)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    if provider
+        .inspect_checkpoint(checkpoint.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .forkable
+    {
+        return Err("destroyed checkpoint still accepts forks".into());
+    }
+    Ok(())
+}
+
+/// Suspend is observable and wake returns, or both and the suspension policy
+/// are Unsupported.
+async fn suspend_resume(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
+    let provider = backend.provider();
+    if backend.capability(ProviderCapability::SuspendResume) != Support::Supported {
         require_unsupported(provider.suspend(machine.id, key(4)?).await)?;
         require_unsupported(provider.wake(machine.id, key(5)?).await)?;
-        require_unsupported(
+        return require_unsupported(
             provider
                 .set_suspension_policy(machine.id, SuspensionPolicy::Manual, key(9)?)
                 .await,
-        )?;
+        );
     }
-    if backend.capability(ProviderCapability::Events) == Support::Supported {
-        let events = provider
-            .events(machine.id, None, 16)
-            .await
-            .map_err(|error| error.to_string())?;
-        let states = events
-            .events
-            .iter()
-            .filter_map(|event| match event.fact {
-                acyclic_machines::EventFact::State(state) => Some(state),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if backend.capability(ProviderCapability::SuspendResume) == Support::Supported
-            && !states.windows(3).any(|states| {
-                states
-                    == [
-                        MachineState::Running,
-                        MachineState::Suspended,
-                        MachineState::Running,
-                    ]
-            })
-        {
-            return Err("lifecycle state event history is incomplete".into());
-        }
-    } else {
+    provider
+        .suspend(machine.id, key(4)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    if provider
+        .inspect_machine(machine.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .state
+        != MachineState::Suspended
+    {
+        return Err("suspend did not change observable state".into());
+    }
+    provider
+        .wake(machine.id, key(5)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// The event history holds the suspend and wake transitions, or event reads
+/// are Unsupported.
+async fn events(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
+    let provider = backend.provider();
+    if backend.capability(ProviderCapability::Events) != Support::Supported {
         require_unsupported(provider.events(machine.id, None, 16).await)?;
-        require_unsupported(provider.follow_events(machine.id, None).await)?;
+        return require_unsupported(provider.follow_events(machine.id, None).await);
     }
-    if backend.capability(ProviderCapability::SuspendResume) == Support::Supported {
-        exec_wakes(backend, &machine, image, network_policy).await?;
-    } else {
-        exec_admitted(backend, &machine).await?;
+    let events = provider
+        .events(machine.id, None, 16)
+        .await
+        .map_err(|error| error.to_string())?;
+    let states = events
+        .events
+        .iter()
+        .filter_map(|event| match event.fact {
+            acyclic_machines::EventFact::State(state) => Some(state),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if backend.capability(ProviderCapability::SuspendResume) == Support::Supported
+        && !states.windows(3).any(|states| {
+            states
+                == [
+                    MachineState::Running,
+                    MachineState::Suspended,
+                    MachineState::Running,
+                ]
+        })
+    {
+        return Err("lifecycle state event history is incomplete".into());
     }
-    if backend.capability(ProviderCapability::Usage) == Support::Supported {
-        let usage = provider
-            .usage(machine.id, 1, 2)
-            .await
-            .map_err(|error| error.to_string())?;
-        if usage.machine != machine.id
-            || (assurance == acyclic_machines::ProviderAssurance::ProcessLocalSimulation)
-                != usage.receipt.is_empty()
-        {
-            return Err("simulation usage receipt is malformed".into());
-        }
-    } else {
-        require_unsupported(provider.usage(machine.id, 1, 2).await)?;
+    Ok(())
+}
+
+/// A usage receipt names its machine and is empty exactly under process-local
+/// simulation, or usage is Unsupported.
+async fn usage(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
+    let provider = backend.provider();
+    if backend.capability(ProviderCapability::Usage) != Support::Supported {
+        return require_unsupported(provider.usage(machine.id, 1, 2).await);
     }
-    live_fork(backend, &machine).await?;
-    if backend.capability(ProviderCapability::Destroy) == Support::Supported {
-        provider
-            .destroy_machine(machine.id, key(7)?)
-            .await
-            .map_err(|error| error.to_string())?;
-        if provider
-            .inspect_machine(machine.id)
-            .await
-            .map_err(|error| error.to_string())?
-            .state
-            != MachineState::Destroyed
-        {
-            return Err("destroy did not retain its terminal state".into());
-        }
-    } else {
-        require_unsupported(provider.destroy_machine(machine.id, key(7)?).await)?;
+    let usage = provider
+        .usage(machine.id, 1, 2)
+        .await
+        .map_err(|error| error.to_string())?;
+    if usage.machine != machine.id
+        || (provider.assurance() == acyclic_machines::ProviderAssurance::ProcessLocalSimulation)
+            != usage.receipt.is_empty()
+    {
+        return Err("simulation usage receipt is malformed".into());
+    }
+    Ok(())
+}
+
+/// Destroy retains the terminal state, or it is Unsupported.
+async fn destroy(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
+    let provider = backend.provider();
+    if backend.capability(ProviderCapability::Destroy) != Support::Supported {
+        return require_unsupported(provider.destroy_machine(machine.id, key(7)?).await);
+    }
+    provider
+        .destroy_machine(machine.id, key(7)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    if provider
+        .inspect_machine(machine.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .state
+        != MachineState::Destroyed
+    {
+        return Err("destroy did not retain its terminal state".into());
     }
     Ok(())
 }
@@ -735,10 +800,6 @@ async fn verify_provider(backend: &dyn Backend) -> Result<(), String> {
 /// forks as its own checkpoint and stays suspended.
 async fn live_fork(backend: &dyn Backend, machine: &MachineObservation) -> Result<(), String> {
     let provider = backend.provider();
-    let key = |suffix: u8| {
-        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
-            .map_err(|error| error.to_string())
-    };
     let count = NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN);
     let admission = provider.fork_machine(machine.id, count, key(0x30)?).await;
     let Some(expected) = machine.contract.fork_fidelity() else {

@@ -65,10 +65,20 @@ pub fn read_error(value: tonic::Status) -> ProviderError {
         code if code != tonic::Code::Internal && uncertain_effect(&value) => {
             ProviderError::Unavailable
         }
-        tonic::Code::NotFound => ProviderError::NotFound(value.message().into()),
-        _ => ProviderError::Rejected(value.message().into()),
+        _ => refusal(&value),
     };
     classification.with_cause(value)
+}
+
+/// The one classification of a status the server definitely answered: every
+/// read, guest and admission path shares it, so an absent target or mechanism
+/// means the same thing whichever call met it.
+fn refusal(value: &tonic::Status) -> ProviderError {
+    match value.code() {
+        tonic::Code::NotFound => ProviderError::NotFound(value.message().into()),
+        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
+        _ => ProviderError::Rejected(value.message().into()),
+    }
 }
 
 /// Guest command and file admission share transport semantics while retaining
@@ -77,10 +87,10 @@ pub fn guest_error(uncertain: ProviderError, value: tonic::Status) -> ProviderEr
     if credential_before_dispatch(&value) {
         return read_error(value);
     }
-    let classification = match value.code() {
-        _ if uncertain_effect(&value) => uncertain,
-        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
-        _ => ProviderError::Rejected(value.message().into()),
+    let classification = if uncertain_effect(&value) {
+        uncertain
+    } else {
+        refusal(&value)
     };
     classification.with_cause(value)
 }

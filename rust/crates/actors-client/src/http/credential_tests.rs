@@ -5,7 +5,7 @@ use acyclic_auth::credential::{
 use proptest::prelude::*;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -14,7 +14,7 @@ async fn credential_custody_survives_held_successful_http_bodies()
 -> Result<(), Box<dyn std::error::Error>> {
     for change in 0..6 {
         let clock = Arc::new(AtomicU64::new(1));
-        let revision = Arc::new(AtomicU64::new(1));
+        let revision = Arc::new(AtomicU8::new(1));
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_clock = clock.clone();
         let observed_revision = revision.clone();
@@ -31,7 +31,7 @@ async fn credential_custody_survives_held_successful_http_bodies()
             move || CredentialValidity {
                 now_unix_seconds: observed_clock.load(Ordering::SeqCst),
                 revision: (observed_revision.load(Ordering::SeqCst) != 0).then(|| {
-                    CredentialRevision::from([observed_revision.load(Ordering::SeqCst) as u8; 32])
+                    CredentialRevision::from([observed_revision.load(Ordering::SeqCst); 32])
                 }),
             },
         );

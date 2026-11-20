@@ -3,6 +3,9 @@
 //! The client surface is independent of the local runtime: it depends only on
 //! the canonical contract, auth addressing and the platform transport.
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();
+
 pub use acyclic_actors_contract::{FILE_DESCRIPTOR_SET, contract, domain, wire};
 pub use acyclic_actors_inventory::HTTP_ROUTES;
 pub use acyclic_auth::addressing;

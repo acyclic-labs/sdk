@@ -269,11 +269,11 @@ mod tests {
             None,
         );
         let metadata = client_error(client::Error::Service {
-            refusal,
+            refusal: refusal.map(Box::new),
             grpc_code: 7,
             message: String::from("original grpc diagnostic"),
             raw_details: vec![255, 0],
-            detail: Some(detail),
+            detail: Some(Box::new(detail)),
         });
         assert_eq!(metadata.message, "original grpc diagnostic");
         assert_eq!(metadata.service_code, Some(99));

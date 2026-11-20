@@ -109,7 +109,7 @@ impl Server {
                         if state.sandbox.is_some() {
                             status = 409;
                         } else {
-                            let sandbox = json!({"id": MACHINE, "state": "started", "labels": create["labels"], "toolboxProxyUrl": state.proxy, "createdAt": "2026-11-09T00:00:00Z", "updatedAt": "2026-11-09T00:00:00Z"});
+                            let sandbox = json!({"id": MACHINE, "state": "started", "labels": create.get("labels"), "toolboxProxyUrl": state.proxy, "createdAt": "2026-11-09T00:00:00Z", "updatedAt": "2026-11-09T00:00:00Z"});
                             body = serde_json::to_vec(&sandbox)?;
                             state.sandbox = Some(sandbox);
                         }
@@ -135,8 +135,9 @@ impl Server {
                             assert_eq!(method, "POST");
                             let command: Value = serde_json::from_slice(&request)?;
                             assert!(
-                                command["command"]
-                                    .as_str()
+                                command
+                                    .get("command")
+                                    .and_then(Value::as_str)
                                     .is_some_and(|command| command.contains("bash"))
                             );
                             if std::mem::take(&mut state.lose_exec) {

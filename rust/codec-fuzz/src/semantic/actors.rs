@@ -33,7 +33,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 assert_eq!(*grpc_code, code as i32);
                 assert_eq!(message, "original status");
                 assert_eq!(raw_details, bytes);
-                assert_eq!(actual, &detail);
+                assert_eq!(actual.as_deref(), detail.as_ref());
                 actual.as_ref().map(|value| {
                     [
                         value.component.as_ptr(),
