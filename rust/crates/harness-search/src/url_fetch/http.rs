@@ -81,10 +81,12 @@ impl HttpFetch {
                     require_public_address: redirects > 0
                         && (!explicitly_local || endpoint.origin() != original_origin),
                 },
-                http::Method::GET,
-                &endpoint,
-                &headers,
-                bytes::Bytes::new(),
+                transport::Request {
+                    method: http::Method::GET,
+                    endpoint: &endpoint,
+                    headers: &headers,
+                    body: bytes::Bytes::new(),
+                },
                 Some(&self.tls),
                 work,
                 &mut failure,

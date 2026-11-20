@@ -28,7 +28,7 @@ pub struct Bounded {
 
 impl Bounded {
     /// Applies the caller-selected deadline to each request, or returns INNER when it has none.
-    pub fn new(inner: Arc<dyn HttpTransport>, timeouts: TimeoutSpec) -> Arc<dyn HttpTransport> {
+    pub fn wrap(inner: Arc<dyn HttpTransport>, timeouts: TimeoutSpec) -> Arc<dyn HttpTransport> {
         match timeouts.total_ms {
             Some(total_ms) => Arc::new(Self { inner, total_ms }),
             None => inner,

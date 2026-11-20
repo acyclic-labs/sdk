@@ -230,13 +230,14 @@ async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> 
             acyclic_harness_core::Error::Unauthorized(_)
         ));
         assert!(error.to_string().contains(&status.to_string()));
-        let requests = transport
-            .sent
-            .lock()
-            .map_err(|_| invalid("fixture poisoned"))?;
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
-        drop(requests);
+        {
+            let requests = transport
+                .sent
+                .lock()
+                .map_err(|_| invalid("fixture poisoned"))?;
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
+        }
         assert_eq!(
             before,
             std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?

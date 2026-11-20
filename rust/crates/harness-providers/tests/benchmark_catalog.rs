@@ -7,6 +7,14 @@ use std::{collections::BTreeMap, process::Command};
 /// Python importing the benchmark generator's `contracts` module from the source tree.
 fn generator() -> Command {
     let module = acyclic_test_support::source_path("scripts/benchmarks/contracts.py");
+    // The generator reads the stock token counters from the same tree.
+    let counters = acyclic_test_support::source_path(
+        "rust/crates/harness-provider-core/src/token_counters.json",
+    );
+    assert!(
+        counters.is_file(),
+        "the benchmark generator reads {counters:?}"
+    );
     let mut command = Command::new(if cfg!(windows) { "python" } else { "python3" });
     command
         .env("PYTHONPATH", module.parent().expect("module directory"))

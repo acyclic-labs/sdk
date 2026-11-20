@@ -175,7 +175,7 @@ impl ResolvedModel {
         let (key, scope, transport) = binding.into_parts();
         current.key = key;
         current.credential_scope = scope;
-        current.transport = crate::deadline::Bounded::new(transport, current.config.timeouts);
+        current.transport = crate::deadline::Bounded::wrap(transport, current.config.timeouts);
         current.credential_config = (!Arc::ptr_eq(&current.config, config)).then(|| config.clone());
         let original = self.unbound_transport.as_ref().unwrap_or(&self.transport);
         current.unbound_transport =

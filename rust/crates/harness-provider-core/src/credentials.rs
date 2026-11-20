@@ -24,10 +24,15 @@ pub struct Credentials {
     #[serde(skip)]
     watch:
         Option<std::sync::Arc<dyn Fn() -> acyclic_auth::credential::CredentialWatch + Send + Sync>>,
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    /// The test double that answers every source read in place of the platform.
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     #[serde(skip)]
-    pub source: Option<std::sync::Arc<dyn Fn(&str, Source) -> KeyResult + Send + Sync>>,
+    pub source: Option<SourceRead>,
 }
+
+/// A test double's answer to one read of PROVIDER's key from one source.
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+pub type SourceRead = std::sync::Arc<dyn Fn(&str, Source) -> KeyResult + Send + Sync>;
 
 /// The key a source observed, or the decode failure that ended the observation.
 pub type KeyResult = std::result::Result<Option<String>, KeychainDecode>;
@@ -61,7 +66,7 @@ pub enum Source {
     /// The provider catalog's configuration.
     Configuration,
     /// The test double's CODEX_HOME, so tests never discover the user's login.
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     CodexHome,
 }
 
@@ -81,7 +86,7 @@ impl Default for Credentials {
             path: None,
             #[cfg(not(target_arch = "wasm32"))]
             watch: None,
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             source: None,
         }
     }
@@ -148,7 +153,7 @@ impl Credentials {
         if !self.native_sources {
             return None;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(read) = &self.source {
             let root = read("", Source::CodexHome).ok().flatten()?;
             return crate::CodexLogin::in_home(std::path::Path::new(&root));
@@ -167,7 +172,7 @@ impl Credentials {
             path: None,
             #[cfg(not(target_arch = "wasm32"))]
             watch: None,
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             source: None,
         }
     }
@@ -213,7 +218,7 @@ impl Credentials {
     }
 
     fn read(&self, provider: &str, source: Source) -> KeyResult {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         if let Some(read) = &self.source {
             return read(provider, source);
         }
@@ -253,7 +258,7 @@ impl Credentials {
                 Ok(None)
             }
             Source::Configuration => Ok(self.api_keys.get(provider).cloned()),
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             Source::CodexHome => Ok(None),
         }
     }

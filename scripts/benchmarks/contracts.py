@@ -105,7 +105,7 @@ def _provider(model_name: str, base_url: str, context_tokens: int, output_tokens
                         if part in families), families.get(provider, "responses"))
     # The Rust stock catalog consumes these same definitions; no Python copy.
     counters = json.loads((Path(__file__).resolve().parents[2] /
-                          "rust/crates/harness-providers/src/token_counters.json").read_text())
+                          "rust/crates/harness-provider-core/src/token_counters.json").read_text())
     if adapter not in counters:
         raise ValueError(f"unknown adapter: {adapter}")
     return provider, {

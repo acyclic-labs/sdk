@@ -98,7 +98,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         (400, acyclic_harness_core::wire::ErrorCode::Invalid),
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        provider.transport = crate::deadline::Bounded::new(
+        provider.transport = crate::deadline::Bounded::wrap(
             Arc::new(CountResponse {
                 status,
                 body: b"fixture-secret",
@@ -120,7 +120,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         b"{\"input_tokens\":9007199254740992}",
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        provider.transport = crate::deadline::Bounded::new(
+        provider.transport = crate::deadline::Bounded::wrap(
             Arc::new(CountResponse {
                 status: 200,
                 body,
@@ -133,7 +133,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     }
     let (mut provider, _) = provider(Adapter::Responses, 200);
     Arc::make_mut(&mut provider.config).max_event_bytes = Some(8);
-    provider.transport = crate::deadline::Bounded::new(
+    provider.transport = crate::deadline::Bounded::wrap(
         Arc::new(CountResponse {
             status: 200,
             body: b"{\"input_tokens\":1}",
@@ -145,7 +145,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     assert!(provider.counted(&request, 0).await.is_err());
     let counted = b"{\"input_tokens\":1}";
     Arc::make_mut(&mut provider.config).max_event_bytes = Some(counted.len());
-    provider.transport = crate::deadline::Bounded::new(
+    provider.transport = crate::deadline::Bounded::wrap(
         Arc::new(CountResponse {
             status: 200,
             body: counted,
@@ -199,7 +199,7 @@ proptest::proptest! {
         let transport = Arc::new(CountBody {
             sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive, status,
         });
-        provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
+        provider.transport = crate::deadline::Bounded::wrap(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.counted(&request, 0));
         let final_failure = matches!(status, 400 | 413) || (definitive && !matches!(status,408 | 429 | 500..=599));
@@ -288,7 +288,7 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
             .framing_tokens = framing;
         let sends = Arc::new(Sends(std::sync::atomic::AtomicUsize::new(0)));
         provider.transport =
-            crate::deadline::Bounded::new(sends.clone(), crate::TimeoutSpec::DEFAULT);
+            crate::deadline::Bounded::wrap(sends.clone(), crate::TimeoutSpec::DEFAULT);
         let sent = || sends.0.load(std::sync::atomic::Ordering::SeqCst);
         let (prepared, _) = request(&provider)?;
         let names = crate::tool_names::Names::new(prepared.request());

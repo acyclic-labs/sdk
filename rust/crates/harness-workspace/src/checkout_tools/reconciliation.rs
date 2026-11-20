@@ -392,7 +392,7 @@ mod tests {
             }
             let result = update(&mut state, Some(expected), None);
             prop_assert_eq!(result.is_ok(), matched && !overflow);
-            if result.is_err() { prop_assert_eq!(state, original.clone()); }
+            if result.is_err() { prop_assert_eq!(&state, &original); }
             else {
                 prop_assert_eq!(result.unwrap(), original.revision);
                 let mut wanted = original.clone(); wanted.revision += 1;

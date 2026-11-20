@@ -6,7 +6,7 @@ use {
 };
 
 #[cfg(test)]
-pub const HOME_PATH: &str = "home";
+pub(crate) const HOME_PATH: &str = "home";
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(loom)))]
 mod recovery_tests;
@@ -719,7 +719,7 @@ pub fn recover_volume_after_crash(
 }
 
 #[cfg(any(windows, test))]
-pub fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+pub(crate) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let root =
         acyclic_fs::hold_root(root).map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
     root.create_directories(relative, acyclic_fs::NativeDurability::Durable)

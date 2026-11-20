@@ -187,11 +187,14 @@ impl MountedVolume {
         self.prepared_native().await
     }
 
-    pub async fn native(&self) -> OwnedMutexGuard<Option<Native>> {
+    pub(crate) async fn native(&self) -> OwnedMutexGuard<Option<Native>> {
         lock_owned(StateArc::clone(&self.native)).await
     }
 
-    pub async fn enter_with_options(&self, options: acyclic_fs::MountOptions) -> Result<Entered> {
+    pub(crate) async fn enter_with_options(
+        &self,
+        options: acyclic_fs::MountOptions,
+    ) -> Result<Entered> {
         enter(&self.native, &self.users, async || {
             if self.destination.parent() != Some(self.binding_root.path()) {
                 return Err(Error::Invalid(

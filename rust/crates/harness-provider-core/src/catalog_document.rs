@@ -66,7 +66,7 @@ fn diagnostic(error: impl fmt::Display) -> acyclic_harness_core::Error {
 }
 
 #[cfg(test)]
-pub fn assert_diagnostic(bytes: &[u8], field: &str, line: usize) {
+pub(crate) fn assert_diagnostic(bytes: &[u8], field: &str, line: usize) {
     let error = parse(bytes).err().expect("invalid field").to_string();
     assert!(
         error.contains(field) && error.contains(&format!("line {line}")),
@@ -92,10 +92,7 @@ mod tests {
         ERASE_DIAGNOSTIC.with(|flag| flag.set(false));
         let panic =
             detected.expect_err("erased diagnostic must fail the same path and line oracle");
-        let text = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .unwrap_or("");
+        let text = panic.downcast_ref::<String>().map_or("", String::as_str);
         assert!(
             text.contains("catalog diagnostics preserve the field and line"),
             "{text}"

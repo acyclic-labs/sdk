@@ -699,7 +699,7 @@ proptest! {
 async fn signed_answer_native_stream_keeps_exact_custody() -> Result<()> {
     let (mut provider, _) = provider(Adapter::Gemini, 200);
     let seed = include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse");
-    provider.transport = crate::deadline::Bounded::new(
+    provider.transport = crate::deadline::Bounded::wrap(
         Arc::new(super::native_tests::Fixture::new(
             std::str::from_utf8(&seed[1..]).unwrap(),
         )),

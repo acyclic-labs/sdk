@@ -76,10 +76,12 @@ impl HttpSearch {
         let mut failure = None;
         let exchange = transport::send(
             transport::Kind::Search,
-            method,
-            endpoint,
-            &headers,
-            body,
+            transport::Request {
+                method,
+                endpoint,
+                headers: &headers,
+                body,
+            },
             self.tls.as_ref(),
             work,
             &mut failure,

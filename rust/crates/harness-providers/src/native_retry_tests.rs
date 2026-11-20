@@ -142,7 +142,7 @@ proptest! {
                 timer_allocations: AtomicU64::new(0),
                 failures, backpressure, hinted, body: Mutex::new(None), reject_timer, count,
             });
-            provider.transport = crate::deadline::Bounded::new(transport.clone(), TimeoutSpec::DEFAULT);
+            provider.transport = crate::deadline::Bounded::wrap(transport.clone(), TimeoutSpec::DEFAULT);
             let (request, dispatch) = request(&provider).unwrap();
             let cancel = CancellationToken::new();
             let work = super::native_tests::work(&cancel).unwrap();

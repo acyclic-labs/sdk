@@ -27,6 +27,7 @@ mod tests;
 /// The checkout's tools bound to one selected workspace.
 #[derive(Clone)]
 pub struct CheckoutTools {
+    /// The selected workspace these tools act on.
     pub workspace: Arc<LocalWorkspace>,
     signed: Scope,
     verifier: AuthorityVerifier,
@@ -46,6 +47,7 @@ pub struct CheckoutTools {
     // only forking a child from a selected branch takes the branch owner's
     // guard. No path holds two checkout guards. Binding preparation and its
     // original producer event are owned separately from checkout selection.
+    /// The checkout selection every executor binding of this owner shares.
     pub state: StateArc<AsyncMutex<State>>,
 }
 

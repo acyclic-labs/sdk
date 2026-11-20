@@ -285,7 +285,7 @@ impl Registry {
             name.into(),
             format!("provider-v1:{}", revision.finalize().to_hex()),
         )?;
-        let transport = crate::deadline::Bounded::new(transport, config.timeouts);
+        let transport = crate::deadline::Bounded::wrap(transport, config.timeouts);
         Ok(ResolvedModel {
             conversation: acyclic_harness_core::OperationId::new(),
             resolver: self.resolver.as_ref().map(Arc::downgrade),

@@ -16,6 +16,7 @@ mod progress;
 /// baseline it still owes.
 pub struct Cursor {
     watcher: NativeWatch,
+    /// The first batch the watch read, before any published cut consumed it.
     pub initial: Option<WatchBatch>,
     baseline_pending: bool,
     before_images_complete: bool,
@@ -122,6 +123,7 @@ impl Cursor {
         })
     }
 
+    /// Opens the cursor and reads the whole tree once as its initial batch.
     pub fn initial(workspace: &LocalWorkspace) -> Result<Self> {
         let mut cursor = Self::open(workspace)?;
         let rescan = cursor.watcher.begin_rescan().map_err(storage)?;

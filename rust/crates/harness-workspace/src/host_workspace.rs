@@ -32,6 +32,7 @@ pub fn child_reference(reference: &str) -> Result<()> {
 
 /// A native-host agent's workspace, with no execution authority of its own.
 pub struct HostWorkspace {
+    /// The checkout this agent's files live in.
     pub workspace: Arc<LocalWorkspace>,
     cwd: PathBuf,
     agent: AgentPath,

@@ -18,7 +18,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             .replace("\"input_tokens\":5", "\"input_tokens\":512")
             .replace("\"prompt_tokens\":5", "\"prompt_tokens\":512")
             .replace("\"promptTokenCount\":5", "\"promptTokenCount\":512");
-        provider.transport = crate::deadline::Bounded::new(
+        provider.transport = crate::deadline::Bounded::wrap(
             Arc::new(ToolLoop {
                 replies: Mutex::new(VecDeque::from([dense, fixture.into()])),
                 sent: Mutex::new(Vec::new()),
@@ -626,7 +626,8 @@ async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() 
     });
     let (mut provider, _) = provider(Adapter::Responses, 200);
     provider.model.name = "gpt-6-luna".into();
-    provider.transport = crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
+    provider.transport =
+        crate::deadline::Bounded::wrap(script.clone(), crate::TimeoutSpec::DEFAULT);
     let (initial, dispatch) = request(&provider)?;
     let events = provider
         .generate(&initial, dispatch)
@@ -742,7 +743,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
         });
         let (mut provider, _) = provider(adapter, 200);
         provider.transport =
-            crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
+            crate::deadline::Bounded::wrap(script.clone(), crate::TimeoutSpec::DEFAULT);
         let (initial, dispatch) = request(&provider)?;
         let events = provider
             .generate(&initial, dispatch)

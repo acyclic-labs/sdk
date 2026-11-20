@@ -148,16 +148,27 @@ pub(crate) fn public_address(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// One outgoing HTTP request: what is sent, before the transport adds its own headers.
+pub(crate) struct Request<'a> {
+    pub(crate) method: http::Method,
+    pub(crate) endpoint: &'a Url,
+    pub(crate) headers: &'a [(http::header::HeaderName, HeaderValue)],
+    pub(crate) body: bytes::Bytes,
+}
+
 pub(crate) async fn send(
     kind: Kind,
-    method: http::Method,
-    endpoint: &Url,
-    headers: &[(http::header::HeaderName, HeaderValue)],
-    body: bytes::Bytes,
+    request: Request<'_>,
     tls: Option<&Arc<rustls::ClientConfig>>,
     work: acyclic_fs::NativeWork<'_>,
     failure: &mut Option<crate::Error>,
 ) -> Result<Response> {
+    let Request {
+        method,
+        endpoint,
+        headers,
+        body,
+    } = request;
     let host = endpoint.host_str().ok_or_else(|| {
         kind.invalid(
             work,

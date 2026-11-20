@@ -9,7 +9,10 @@
 use acyclic_harness_providers::Adapter;
 use futures::{StreamExt as _, stream};
 mod benchmark_catalog;
-use acyclic_harness_provider_core::sync;
+// The models explore every interleaving, so their primitives are always Loom's.
+mod sync {
+    pub use loom::sync::*;
+}
 mod verification_models;
 
 mod integration_helpers;

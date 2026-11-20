@@ -70,7 +70,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_native_agent_host() -> Result<()
         } else {
             let (mut provider, _) = provider(adapter, 200);
             provider.transport =
-                crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
+                crate::deadline::Bounded::wrap(transport.clone(), crate::TimeoutSpec::DEFAULT);
             provider
         };
         let turn = run_stock_turn(

@@ -12,6 +12,7 @@ description = "Provider foundation: endpoint specs, credentials, transports and 
 browser = ["dep:tsify", "dep:wasm-bindgen"]
 fuzzing = ["acyclic-harness-core/test-support"]
 model-checking = ["dep:loom"]
+test-support = []
 
 [dependencies]
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }

@@ -274,6 +274,7 @@ rust_test(
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-local:acyclic_harness_local",
         "//rust/crates/harness-mock-model:harness_mock_model",
+        "//rust/crates/harness-provider-core:acyclic_harness_provider_core",
         "//rust/crates/harness-provider-response:acyclic_harness_provider_response",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",
@@ -415,6 +416,7 @@ rust_test(
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:scripts/benchmarks/contracts.py",
+        "//rust/crates/harness-provider-core:src/token_counters.json",
         "//rust/crates/harness-providers:tree/tests/scenarios",
     ],
     args = [

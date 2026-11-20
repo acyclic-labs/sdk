@@ -12,7 +12,7 @@ fn cli_write_after_staging_before_final_comparison_is_adopted() -> Result<()> {
         if account_switch {
             cli["tokens"]["account_id"] = json!("other-account");
         }
-        let cli_bytes = serde_json::to_vec(&cli).expect("fixture encoding");
+        let cli_bytes = serde_json::to_vec(&cli).map_err(|_| invalid("fixture encoding"))?;
         login.check_account(&auth("original"))?;
         let mut updated = auth("provider-access");
         let adopted = persist_with(
@@ -39,11 +39,14 @@ fn cli_write_after_staging_before_final_comparison_is_adopted() -> Result<()> {
             panic!("a concurrent credential owner cannot witness our publication")
         };
         assert_eq!(adopted, cli);
-        assert_eq!(std::fs::read(&path).expect("fixture read"), cli_bytes);
+        assert_eq!(
+            std::fs::read(&path).map_err(|_| invalid("fixture read"))?,
+            cli_bytes
+        );
         assert_eq!(login.check_account(&adopted).is_err(), account_switch);
         assert_eq!(
             std::fs::read_dir(root.path())
-                .expect("fixture directory")
+                .map_err(|_| invalid("fixture directory"))?
                 .count(),
             1
         );
@@ -104,7 +107,7 @@ impl HttpTransport for RacingCli {
     }
 }
 
-fn race(path: &Path, cli: Value, replies: Vec<(u16, Value)>) -> RacingCli {
+fn race(path: &Path, cli: &Value, replies: Vec<(u16, Value)>) -> RacingCli {
     RacingCli {
         path: path.to_owned(),
         cli_bytes: format!("{cli}\n").into_bytes(),
@@ -123,7 +126,7 @@ async fn cli_write_during_successful_refresh_wins_without_extra_auth_directory_f
     cli["unrelated_cli_field"] = json!([1, 2, 3]);
     let transport = race(
         &root.path().join("auth.json"),
-        cli,
+        &cli,
         vec![(
             200,
             json!({"access_token":"discard-provider-access", "refresh_token":"discard-provider-refresh"}),
@@ -150,7 +153,7 @@ async fn rejected_refresh_reloads_a_fresh_cli_bearer_once() -> Result<()> {
         let cli_access = jwt(crate::codex::fixed_now().unix_timestamp() + 7200);
         let transport = race(
             &root.path().join("auth.json"),
-            auth(&cli_access),
+            &auth(&cli_access),
             vec![(status, json!({"error":"invalid_grant"}))],
         );
         assert_eq!(login.bearer(&transport, None, None).await?.0, cli_access);
@@ -178,7 +181,7 @@ async fn rejected_refresh_retries_the_changed_on_disk_refresh_token() -> Result<
         cli["tokens"]["refresh_token"] = json!("rotated-by-cli");
         let transport = race(
             &root.path().join("auth.json"),
-            cli,
+            &cli,
             vec![
                 (status, json!({"error":"invalid_grant"})),
                 (
@@ -210,7 +213,7 @@ async fn cli_account_changes_during_refresh_are_rejected_without_overwriting_the
         cli["tokens"]["account_id"] = json!("another-account");
         let transport = race(
             &root.path().join("auth.json"),
-            cli,
+            &cli,
             vec![(status, json!({"access_token":"provider-token"}))],
         );
         assert!(matches!(
@@ -234,7 +237,7 @@ async fn independent_login_instances_adopt_cli_credentials_published_during_refr
     let cli_access = jwt(crate::codex::fixed_now().unix_timestamp() + 7200);
     let transport = race(
         &root.path().join("auth.json"),
-        auth(&cli_access),
+        &auth(&cli_access),
         vec![
             (200, json!({"access_token":"discard-first"})),
             (200, json!({"access_token":"discard-second"})),
@@ -278,7 +281,7 @@ async fn metadata_only_cli_edit_keeps_rotated_tokens_and_unrelated_fields() -> R
     cli["tokens"]["cli_metadata"] = json!(["keep", "Î»"]);
     let transport = race(
         &root.path().join("auth.json"),
-        cli,
+        &cli,
         vec![(
             200,
             json!({"access_token":"new-access", "refresh_token":"single-use-rotated", "id_token":"new-id"}),
@@ -335,13 +338,19 @@ fn publication_distinguishes_merged_metadata_from_concurrent_credentials() -> Re
             RefreshPublication::Observed(document) => {
                 assert!(credentials_changed);
                 assert_eq!(document, cli);
-                assert_eq!(decode_auth(&std::fs::read(&path).unwrap())?, document);
+                assert_eq!(
+                    decode_auth(&std::fs::read(&path).map_err(|_| invalid("fixture read"))?)?,
+                    document
+                );
                 continue;
             }
             RefreshPublication::Published { document, file } => {
                 assert!(!credentials_changed);
                 // The completion owner is the actual original file, not a path/hash.
-                assert!(acyclic_native_runtime::private_file::is_private(file.as_file()).unwrap());
+                assert!(
+                    acyclic_native_runtime::private_file::is_private(file.as_file())
+                        .map_err(|_| invalid("fixture permissions"))?
+                );
                 drop(file);
                 document
             }
@@ -361,7 +370,10 @@ fn publication_distinguishes_merged_metadata_from_concurrent_credentials() -> Re
             original["tokens"]["account_id"]
         );
         assert_eq!(merged["agent_identity"], cli["agent_identity"]);
-        assert_eq!(decode_auth(&std::fs::read(path).unwrap())?, merged);
+        assert_eq!(
+            decode_auth(&std::fs::read(path).map_err(|_| invalid("fixture read"))?)?,
+            merged
+        );
     }
     Ok(())
 }
@@ -404,7 +416,10 @@ proptest! {
 #[test]
 fn explicit_chatgpt_mode_is_metadata_when_the_original_mode_was_implicit() -> Result<()> {
     let mut original = auth("original");
-    original.as_object_mut().unwrap().remove("auth_mode");
+    original
+        .as_object_mut()
+        .ok_or_else(|| invalid("fixture object"))?
+        .remove("auth_mode");
     let current = auth("original");
     let mut refreshed = original.clone();
     refreshed["tokens"]["refresh_token"] = json!("rotated-single-use");
@@ -414,7 +429,7 @@ fn explicit_chatgpt_mode_is_metadata_when_the_original_mode_was_implicit() -> Re
     };
     let merged = merge_refresh(
         &original,
-        &serde_json::to_vec(&current).unwrap(),
+        &serde_json::to_vec(&current).map_err(|_| invalid("fixture encoding"))?,
         &current,
         &refreshed,
         &mut CredentialIo::new(None)?,
@@ -447,53 +462,59 @@ fn owner_only_permissions(path: &Path) -> bool {
     private
 }
 
+fn fail(error: impl std::fmt::Display) -> TestCaseError {
+    TestCaseError::fail(error.to_string())
+}
+
 fn oversized_merge_preserves_original(
     metadata: usize,
     access: usize,
     remove_size_bound: bool,
 ) -> proptest::test_runner::TestCaseResult {
-    let (root, login, mut transport) = fixture(&jwt(0), 200).unwrap();
+    let (root, login, mut transport) = fixture(&jwt(0), 200).map_err(fail)?;
     let path = root.path().join("auth.json");
     let mut original = auth(&jwt(0));
     original["agent_identity"] = json!("m".repeat(metadata));
-    let original = serde_json::to_vec_pretty(&original).unwrap();
+    let original = serde_json::to_vec_pretty(&original).map_err(fail)?;
     transport.response = json!({"access_token":"r".repeat(access)});
     prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
-    prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
-    let mut private = crate::credential_file::create(root.path()).unwrap();
-    private.as_file_mut().write_all(&original).unwrap();
+    prop_assert!(
+        serde_json::to_vec(&transport.response).map_err(fail)?.len() as u64 <= MAX_AUTH_BYTES
+    );
+    let mut private = crate::credential_file::create(root.path()).map_err(fail)?;
+    private.as_file_mut().write_all(&original).map_err(fail)?;
     private
         .publish(&path, acyclic_native_runtime::RenameMode::Replace)
-        .unwrap();
+        .map_err(fail)?;
     let permissions = owner_only_permissions(&path);
     let outcome = if remove_size_bound {
         // Mutation of stage: use its real writer and atomic publication but
         // omit only the encoded-size guard. The same oracle must reject it.
-        let mut merged = acyclic_harness_provider_response::json(&original).unwrap();
+        let mut merged = acyclic_harness_provider_response::json(&original).map_err(fail)?;
         merged["tokens"]["access_token"] = transport.response["access_token"].clone();
         let encoded =
-            acyclic_harness_provider_response::encoded_json_len(&merged).unwrap() as u64 + 1;
-        let mut staged = crate::credential_file::create(root.path()).unwrap();
+            acyclic_harness_provider_response::encoded_json_len(&merged).map_err(fail)? as u64 + 1;
+        let mut staged = crate::credential_file::create(root.path()).map_err(fail)?;
         write_staged(
             &mut staged,
             &merged,
             encoded,
-            &mut CredentialIo::new(None).unwrap(),
+            &mut CredentialIo::new(None).map_err(fail)?,
         )
-        .unwrap();
+        .map_err(fail)?;
         staged
             .publish(&path, acyclic_native_runtime::RenameMode::Replace)
-            .unwrap();
+            .map_err(fail)?;
         Ok(())
     } else {
         futures::executor::block_on(login.bearer(&transport, None, None)).map(|_| ())
     };
     prop_assert!(
-        std::fs::read(&path).unwrap() == original,
+        std::fs::read(&path).map_err(fail)? == original,
         "original credential bytes changed"
     );
     prop_assert_eq!(owner_only_permissions(&path), permissions);
-    prop_assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    prop_assert_eq!(std::fs::read_dir(root.path()).map_err(fail)?.count(), 1);
     prop_assert!(
         outcome.is_err_and(|error| {
             error

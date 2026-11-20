@@ -7,6 +7,7 @@ FEATURES = [
         "browser",
         "fuzzing",
         "model-checking",
+        "test-support",
     ]
 
 WASM_FEATURES = [
@@ -31,7 +32,7 @@ cargo_build_script(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\"))",
+        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -61,7 +62,7 @@ rust_library(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\"))",
+        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -115,7 +116,7 @@ rust_test(
     crate_features = FEATURES,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\"))",
+        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -179,7 +180,7 @@ cargo_build_script(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\"))",
+        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -210,7 +211,7 @@ rust_library(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\"))",
+        "--check-cfg=cfg(feature, values(\"browser\", \"fuzzing\", \"model-checking\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",

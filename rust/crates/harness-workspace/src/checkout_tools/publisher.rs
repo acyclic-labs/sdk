@@ -12,6 +12,8 @@ pub mod test_support;
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
 
+/// The operation that publishes `path` under `operation`, derived so a replay
+/// names the same publication.
 pub fn publication_operation(
     operation: OperationId,
     path: &str,
@@ -33,6 +35,7 @@ pub fn write_capture(operation: OperationId, path: &str) -> OperationId {
 
 /// Publishes files into the selected checkout under its command lock.
 pub struct CheckoutPublisher {
+    /// The checkout tools whose selected workspace is published into.
     pub tools: Arc<CheckoutTools>,
     files: Arc<LocalFilesystem>,
     volume: VolumeRef,

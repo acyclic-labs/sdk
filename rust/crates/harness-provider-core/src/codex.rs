@@ -251,7 +251,7 @@ impl CodexLogin {
     }
 
     /// `root/auth.json` when it exists; the file is read only on first use.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_home(root: &Path) -> Option<Self> {
         let path = root.join("auth.json");
         path.is_file().then(|| Self::from_path(path))
@@ -551,7 +551,7 @@ fn validate_auth(auth: &Value) -> Result<()> {
     {
         return Err(invalid("Codex auth.json is not a ChatGPT CLI login"));
     }
-    token(&auth, "access_token")?;
+    token(auth, "access_token")?;
     Ok(())
 }
 
@@ -622,7 +622,7 @@ fn persist_with(
     // Stage on the same filesystem. A metadata edit does not take credential
     // ownership: preserve it while publishing the rotated token fields.
     let (mut observed, current) = load(path, io)?;
-    let Some(mut auth) = merge_refresh(original, &observed, &current, &updated, io)? else {
+    let Some(mut auth) = merge_refresh(original, &observed, &current, updated, io)? else {
         return Ok(RefreshPublication::Observed(current));
     };
     let mut file = crate::credential_file::create(parent)
@@ -632,7 +632,7 @@ fn persist_with(
     let bytes = read(path, io)?;
     if bytes != observed {
         let current = document(&bytes, io)?;
-        let Some(merged) = merge_refresh(original, &bytes, &current, &updated, io)? else {
+        let Some(merged) = merge_refresh(original, &bytes, &current, updated, io)? else {
             return Ok(RefreshPublication::Observed(current));
         };
         auth = merged;
@@ -769,6 +769,6 @@ fn merge_refresh(
 mod tests;
 
 #[cfg(test)]
-pub fn fixed_now() -> OffsetDateTime {
+pub(crate) fn fixed_now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_792_150_400).expect("fixed fixture timestamp")
 }

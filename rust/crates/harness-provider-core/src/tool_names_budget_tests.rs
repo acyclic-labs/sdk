@@ -110,3 +110,56 @@ fn negative_control_detects_redundant_production_sort() {
             .contains("one wire sort for unchanged bindings")
     );
 }
+
+#[test]
+fn aliases_are_exactly_sized_and_the_build_matches_its_claim() {
+    let long = format!("mcp.server.{}", "t".repeat(80));
+    let request = crate::fixtures::request_with(&[&long]);
+    let (names, built) = Names::built(&request);
+    let aliases: Vec<_> = names.aliases().collect();
+    assert_eq!(aliases, [(64, 64)], "digest alias capacity is exact");
+    // One 40-byte binding, the 64-byte digest buffer, the 64-byte alias,
+    // and one wire index entry: no growth and no uncounted temporary.
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(
+        built,
+        crate::tool_names::Built {
+            allocations: 4,
+            bytes: 40 + 64 + 64 + 8,
+            probes: 0,
+            hashed: 116,
+            wire_sorts: 1,
+            wire_comparisons: 0,
+        }
+    );
+    assert!(built.within(&Names::claim(1).unwrap()));
+    // A readable alias needs neither the digest buffer nor any slack.
+    let request = crate::fixtures::request_with(&["mcp.docs.search", "read"]);
+    let (names, built) = Names::built(&request);
+    assert_eq!(names.aliases().collect::<Vec<_>>(), [(17, 17)]);
+    assert_eq!(built.allocations, 3);
+    assert!(built.within(&Names::claim(2).unwrap()));
+    for size in 0..64 {
+        let names: Vec<String> = (0..size)
+            .map(|index| format!("mcp.s{index}.{}", "x".repeat(index * 3)))
+            .collect();
+        let request =
+            crate::fixtures::request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let (table, built) = Names::built(&request);
+        assert!(table.aliases().all(|(length, capacity)| length == capacity));
+        assert!(built.within(&Names::claim(size as u64).unwrap()));
+    }
+}
+
+#[test]
+fn negative_control_a_grown_alias_retains_slack_beyond_its_claim() {
+    // The former builder reserved the readable prefix, then appended the digest.
+    let mut grown = String::with_capacity(47);
+    grown.push_str(&"t".repeat(47));
+    grown.push_str(&"0".repeat(17));
+    assert!(grown.capacity() > grown.len(), "growth left no slack");
+    assert!(
+        grown.capacity() > 64,
+        "the per-alias claim would hold slack"
+    );
+}

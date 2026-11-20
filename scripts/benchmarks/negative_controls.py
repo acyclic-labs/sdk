@@ -114,7 +114,7 @@ def _apply(label: str, filename: str, old: str, new: str, test: str, source: Pat
     package.mkdir(parents=True)
     for file in [*source.glob("*.py"), *source.glob("*.json")]:
         shutil.copyfile(file, package / file.name)
-    counters = Path("rust/crates/harness-providers/src/token_counters.json")
+    counters = Path("rust/crates/harness-provider-core/src/token_counters.json")
     destination = Path(temporary) / counters
     destination.parent.mkdir(parents=True)
     shutil.copyfile(source.parents[1] / counters, destination)

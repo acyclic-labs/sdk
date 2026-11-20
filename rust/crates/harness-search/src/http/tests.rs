@@ -142,10 +142,8 @@ async fn response_matrix_rejects_status_errors_malformed_payloads_and_oversized_
 fn invalid_credentials_and_unparseable_endpoints_are_rejected() {
     // The four unsafe endpoint classes are covered by
     // config::tests::configured_gateway_preserves_adapter_endpoint_and_rejects_unsafe_urls.
-    for endpoint in ["invalid-secret"] {
-        assert!(Exa::with_endpoint("test-only-placeholder", endpoint).is_err());
-        assert!(TinyFish::with_endpoint("test-only-placeholder", endpoint).is_err());
-    }
+    assert!(Exa::with_endpoint("test-only-placeholder", "invalid-secret").is_err());
+    assert!(TinyFish::with_endpoint("test-only-placeholder", "invalid-secret").is_err());
     for key in ["", "   ", "secret\r\nheader: value"] {
         assert!(Exa::new(key).is_err());
         assert!(TinyFish::new(key).is_err());

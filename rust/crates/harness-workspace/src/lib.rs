@@ -19,12 +19,8 @@ use crate::{
     tool::ToolRegistry,
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
-#[cfg(test)]
-use acyclic_harness_client as client;
 use acyclic_harness_core::filesystem::FilesystemHost;
 use acyclic_harness_core::*;
-#[cfg(test)]
-use acyclic_harness_hosting as hosting;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

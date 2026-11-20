@@ -132,10 +132,7 @@ async fn manifest(
 }
 
 // Execute the real encoder and decoder; only the HTTP transport is scripted.
-async fn complete(
-    provider: &acyclic_harness_providers::ResolvedModel,
-    request: ModelRequest,
-) -> TestResult {
+async fn complete(provider: &dyn ModelProvider, request: ModelRequest) -> TestResult {
     let request = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let _: Vec<_> = provider
         .generate(
@@ -161,9 +158,14 @@ async fn guarded_run(
     let transport = transport(path);
     let storage = MemoryHarnessStorage::new(StorageAgentId::from_bytes([91; 16]), 1 << 20).await?;
     let bindings = storage.content_bindings();
-    let provider = registry(adapter, PromptCache::Native, transport.clone())?
+    let resolved = registry(adapter, PromptCache::Native, transport.clone())?
         .with_content(bindings.reader.clone(), None)
         .resolve("recorded/model")?;
+    // Both arms run in one conversation: the Chat cache key follows it, so the
+    // arms differ only in what the feature puts on the wire.
+    let provider = resolved
+        .bind_conversation(OperationId::from_bytes([93; 16]))
+        .ok_or("the provider binds its conversation")?;
     let writer = bindings.writer.as_deref().unwrap();
     let limits = Limits::default();
     let op = ContextEpoch::operation("feature-guard", None)?;
@@ -226,12 +228,12 @@ async fn guarded_run(
         let request = ModelRequest {
             summary: false,
             compose_tools: false,
-            model: provider.model().clone(),
+            model: resolved.model().clone(),
             messages: context.messages,
             tools: tools.definitions(None)?,
             sampling: Default::default(),
         };
-        complete(&provider, request.clone()).await?;
+        complete(provider.as_ref(), request.clone()).await?;
         {
             let sent = transport.state.lock().unwrap();
             let body = &sent.2[turn].body;
@@ -258,7 +260,7 @@ async fn guarded_run(
         if turn == 1 {
             let mut changed = request;
             changed.messages[0] = message(ModelRole::System, "rewritten optional policy");
-            complete(&provider, changed).await?;
+            complete(provider.as_ref(), changed).await?;
             let mut sent = transport.state.lock().unwrap();
             let changed = sent.2.pop().unwrap();
             assert!(

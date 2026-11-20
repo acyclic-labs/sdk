@@ -134,7 +134,7 @@ proptest! {
     ) {
         runtime().block_on(async {
             let (script, headers) = script(Timer::Clock);
-            let transport = Bounded::new(script.clone(), TimeoutSpec { total_ms: Some(total) });
+            let transport = Bounded::wrap(script.clone(), TimeoutSpec { total_ms: Some(total) });
             let (chunks, body) = mpsc::unbounded();
             let mut send = pin!(transport.send(request()));
             if total == 0 {
@@ -184,7 +184,7 @@ proptest! {
     fn expiry_precedes_ready_bytes_and_eof(eof in any::<bool>(), partial in any::<bool>(), late in 0..1_000u64) {
         runtime().block_on(async {
             let (script, headers) = script(Timer::Starved);
-            let transport = Bounded::new(script, TimeoutSpec { total_ms: Some(100) });
+            let transport = Bounded::wrap(script, TimeoutSpec { total_ms: Some(100) });
             let (chunks, body) = mpsc::unbounded();
             assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
             let mut body = transport.send(request()).await.unwrap().body;
@@ -207,7 +207,7 @@ proptest! {
 fn unbounded_request_waits_only_on_its_producers() {
     runtime().block_on(async {
         let (script, headers) = script(Timer::Early);
-        let transport = Bounded::new(script.clone(), TimeoutSpec::DEFAULT);
+        let transport = Bounded::wrap(script.clone(), TimeoutSpec::DEFAULT);
         let (chunks, body) = mpsc::unbounded();
         let mut send = pin!(transport.send(request()));
         assert!(send.as_mut().now_or_never().is_none());
@@ -231,7 +231,7 @@ fn unbounded_request_waits_only_on_its_producers() {
 
         // Losing a producer terminates the unbounded wait with its typed error.
         let (script, headers) = self::script(Timer::Early);
-        let transport = Bounded::new(script, TimeoutSpec::DEFAULT);
+        let transport = Bounded::wrap(script, TimeoutSpec::DEFAULT);
         drop(headers);
         assert!(matches!(
             transport.send(request()).await,
@@ -248,7 +248,7 @@ fn a_failed_or_early_timer_is_terminal_instead_of_rearmed() {
     runtime().block_on(async {
         for timer in [Timer::Early, Timer::ProducerDropped] {
             let (script, headers) = script(timer);
-            let transport = Bounded::new(
+            let transport = Bounded::wrap(
                 script.clone(),
                 TimeoutSpec {
                     total_ms: Some(100),

@@ -68,18 +68,23 @@ pub use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
 /// One volume bound into a checkout, with the projection it is served from.
 pub struct MountedVolume {
+    /// The volume's owned view, the source its projection serves.
     pub workspace: crate::tools::git::OwnedView,
+    /// The held directory the volume's mount point is created in.
     pub binding_root: Arc<acyclic_fs::HeldRoot>,
+    /// Where the volume is mounted, under `binding_root`.
     pub destination: PathBuf,
+    /// The native mount options, when the volume is mounted natively.
     pub options: Option<acyclic_fs::MountOptions>,
+    /// The held root task views of this volume are admitted under, once prepared.
     pub task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
-    pub native: StateArc<AsyncMutex<Option<projection::Native>>>,
+    pub(crate) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Host sessions currently using `native`.
     pub users: StateArc<projection::Users>,
     /// Keeps the shared native instance serving command views running, so a
     /// command's view is a namespace entry, never an OS mount and unmount.
     pub shared_views: tokio::sync::OnceCell<acyclic_fs::SharedViewInstance>,
-    // Retires the exact index entry after this physical source's fields.
+    /// Retires the exact index entry after this physical source's fields.
     pub _binding: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
 }
 /// The mount table of one checkout: every bound volume by its relative path.
@@ -130,6 +135,7 @@ pub struct LocalWorkspace {
     pub store: LocalCoreStateStore,
     /// The authority native mounts are bound under, when they are bound.
     pub mount_authority: Option<crate::filesystem::NativeMountAuthority>,
+    /// The identity of the native root this checkout's views are bound to.
     pub identity: acyclic_fs_native_contract::NativeRootIdentity,
     // Lock order: view state -> volume projection -> coordinator -> command-local
     // cache or native completion, then task-file index -> provider visibility -> provider state.
@@ -145,8 +151,10 @@ pub struct LocalWorkspace {
     /// Original auxiliary binding, retained while this view or its selections
     /// can still execute against its shared physical projections.
     pub binding: Option<Arc<Mounts>>,
-    // Keyed custody outlives preparation, including views with no auxiliary mounts.
+    /// Keyed custody of the binding; it outlives preparation, including views
+    /// with no auxiliary mounts.
     pub binding_owner: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
+    /// The executor bindings of this owner's views.
     pub bindings: acyclic_fs::kernel::allocation::RetainedArc<bindings::Bindings>,
     pub(crate) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
@@ -157,7 +165,7 @@ pub struct LocalWorkspace {
     #[cfg(all(test, not(loom)))]
     pub selection_reads: std::sync::atomic::AtomicUsize,
     #[cfg(all(test, not(loom)))]
-    pub mount_advances: std::sync::atomic::AtomicUsize,
+    pub(crate) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
 /// The durable operation identity of one task's attach.
@@ -196,6 +204,7 @@ impl LocalWorkspace {
         Some(path.to_path_buf())
     }
 
+    /// The native mount options for WORKSPACE, bound under this checkout's mount authority.
     pub async fn mount_options(
         &self,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,

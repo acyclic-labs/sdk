@@ -130,7 +130,7 @@ fn start_owner(root: &Path) -> TestResult<Owner> {
                 acyclic_test_support::unit_test_name!(scratch_mount_owner).as_str(),
                 "--nocapture",
             ])
-            .env(OWNER_ROOT, &root)
+            .env(OWNER_ROOT, root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
