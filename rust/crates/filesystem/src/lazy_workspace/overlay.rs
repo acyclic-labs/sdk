@@ -69,7 +69,7 @@ impl<
         &self,
         state: LazyWorkspaceState,
         path: &str,
-        change: LazyOverlayChange,
+        change: Owned<LazyOverlayChange>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         let overlay = self
@@ -104,17 +104,31 @@ impl<
         &self,
         root: LazyOverlayId,
         path: &str,
-        change: LazyOverlayChange,
+        change: Owned<LazyOverlayChange>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyOverlayId, LazyWorkspaceError> {
-        let path = self.canonical_path(path, ctx)?;
+        let mut path = match self.canonical_path(path, ctx) {
+            Ok(path) => path,
+            Err(error) => {
+                change.retire(ctx)?;
+                return Err(error);
+            }
+        };
         if let Err(error) = ctx.charge(WorkCounters {
             bytes_hashed: path.value.len() as u64,
             ..WorkCounters::UNCHARGED
         }) {
+            change.retire(ctx)?;
             path.retire(ctx)?;
             return Err(error.into());
         }
+        let change = match change.transfer_to(&mut path.allocation, &mut path.bytes, ctx) {
+            Ok(change) => change,
+            Err(error) => {
+                path.retire(ctx)?;
+                return Err(error.into());
+            }
+        };
         let priority = path_priority(&path.value);
         treap::insert_overlay(
             &self.store,
@@ -139,32 +153,64 @@ impl<
         mut root: LazyOverlayId,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
-    ) -> Result<Option<LazyOverlayChange>, LazyWorkspaceError> {
+    ) -> Result<Option<Owned<LazyOverlayChange>>, LazyWorkspaceError> {
         loop {
-            let Some(node) = self.store.load_lazy_overlay(root, ctx).await? else {
+            let Some((node, mut allocation)) = self.store.load_lazy_overlay(root, ctx).await?
+            else {
                 return Ok(None);
             };
-            let result = match &node.0 {
-                LazyOverlay::Empty => Some(None),
-                LazyOverlay::Node {
-                    path: key,
-                    change,
-                    left,
-                    right,
-                    ..
-                } => match path.cmp(key) {
-                    std::cmp::Ordering::Equal => Some(Some(change.clone())),
-                    order => {
-                        root = if order.is_lt() { *left } else { *right };
-                        None
-                    }
-                },
+            let LazyOverlay::Node {
+                path: key,
+                change,
+                left,
+                right,
+                priority,
+            } = node
+            else {
+                return Ok(None);
             };
-            retire_node(node, ctx)?;
-            if let Some(value) = result {
-                return Ok(value);
+            let order = path.cmp(&key);
+            if order.is_eq() {
+                let path_bytes = key.capacity() as u64;
+                drop(key);
+                if let Err(error) = ctx.release_owned(&mut allocation, path_bytes) {
+                    let bytes = change.owned_bytes();
+                    Owned::new(change, allocation, bytes).retire(ctx)?;
+                    return Err(error.into());
+                }
+                let bytes = change.owned_bytes();
+                return Ok(Some(Owned::new(change, allocation, bytes)));
             }
+            root = if order.is_lt() { left } else { right };
+            retire_node(
+                (
+                    LazyOverlay::Node {
+                        path: key,
+                        change,
+                        left,
+                        right,
+                        priority,
+                    },
+                    allocation,
+                ),
+                ctx,
+            )?;
         }
+    }
+
+    pub(super) async fn read_overlay_fact<T>(
+        &self,
+        root: LazyOverlayId,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+        read: impl FnOnce(Option<&LazyOverlayChange>) -> T,
+    ) -> Result<T, LazyWorkspaceError> {
+        let fact = self.overlay_fact(root, path, ctx).await?;
+        let result = read(fact.as_ref().map(|fact| &fact.value));
+        if let Some(fact) = fact {
+            fact.retire(ctx)?;
+        }
+        Ok(result)
     }
 
     pub(super) async fn shadow_records(
@@ -290,7 +336,7 @@ impl<
                 return Err(error);
             }
         };
-        let (authored, observed, guard) = match (authored, observed) {
+        let (authored, observed, mut guard) = match (authored, observed) {
             (Some(mut authored), Some((source, version, mut observed))) => {
                 if let Err(error) = authored.allocation.absorb(&mut observed.allocation) {
                     observed.retire(ctx)?;
@@ -318,6 +364,28 @@ impl<
                 observed.allocation,
             ),
             (None, None) => return Err(LazyWorkspaceError::OriginalSnapshotUnavailable),
+        };
+        let mut record_bytes = authored
+            .as_ref()
+            .map_or(0, |record| record.record.capacity() as u64)
+            + observed
+                .as_ref()
+                .map_or(0, |record| record.content.record.capacity() as u64);
+        let funded = (|| {
+            let authored = authored
+                .map(|record| LazyBox::fund(record, &mut guard, &mut record_bytes, ctx))
+                .transpose()?;
+            let observed = observed
+                .map(|record| LazyBox::fund(record, &mut guard, &mut record_bytes, ctx))
+                .transpose()?;
+            Ok::<_, crate::FsError>((authored, observed))
+        })();
+        let (authored, observed) = match funded {
+            Ok(records) => records,
+            Err(error) => {
+                crate::kernel::retire_allocation(guard, record_bytes, ctx)?;
+                return Err(LazyWorkspaceError::from(error).retain_publication_hold(hold));
+            }
         };
         let node = LazyShadow::Node {
             file_id: id,
@@ -391,10 +459,12 @@ impl<
             .map_err(crate::kernel::NamespacePathError::Path)?;
         let mut ancestor = path;
         loop {
-            if matches!(
-                self.overlay_fact(root, ancestor, ctx).await?,
-                Some(LazyOverlayChange::Tombstone { .. })
-            ) {
+            if self
+                .read_overlay_fact(root, ancestor, ctx, |fact| {
+                    matches!(fact, Some(LazyOverlayChange::Tombstone { .. }))
+                })
+                .await?
+            {
                 return Ok(true);
             }
             if ancestor == "/" {

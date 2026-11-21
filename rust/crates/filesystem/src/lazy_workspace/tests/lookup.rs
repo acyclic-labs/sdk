@@ -46,13 +46,11 @@ async fn frozen_directory_identity_survives_source_rebinding_and_pending_removal
             // A real durable in-progress removal at another path must not
             // affect a previously retained directory cut.
             let prior = child.state(accounting!()).await.unwrap();
+            let cancellation = CancellationToken::new();
+            let ctx = &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let change = LazyOverlayChange::tombstone(None, ctx).unwrap();
             let overlay = child
-                .insert_overlay(
-                    prior.overlay,
-                    "/unrelated",
-                    LazyOverlayChange::Tombstone { removed: None },
-                    accounting!(),
-                )
+                .insert_overlay(prior.overlay, "/unrelated", change, ctx)
                 .await
                 .unwrap();
             let pending = LazyWorkspaceState {

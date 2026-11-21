@@ -296,7 +296,7 @@ pub use kernel::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use lazy_workspace::SelectedImportPlan;
 pub use lazy_workspace::{
-    LazyDirectoryBound, LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing,
+    LazyBox, LazyDirectoryBound, LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing,
     LazyDirectoryNode, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay,
     LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef, LazySourceRecord,
     LazyStat, LazyStoredRecord, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState,

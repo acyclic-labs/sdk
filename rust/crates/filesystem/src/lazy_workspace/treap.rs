@@ -8,8 +8,14 @@ macro_rules! insert {
             input: ($node, KernelOwnedAllocation),
             ctx: &mut KernelAccounting<'_>,
         ) -> Result<$id, LazyWorkspaceError> {
+            let mut parents = match Owned::allocate(0, ctx) {
+                Ok(parents) => parents,
+                Err(error) => {
+                    retire_node(input, ctx)?;
+                    return Err(error.into());
+                }
+            };
             let mut input = Some(input);
-            let mut parents = Owned::allocate(0, ctx)?;
             let result = async {
                 loop {
                     let current = store

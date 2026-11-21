@@ -224,7 +224,7 @@ impl<
                 .insert_overlay(
                     state.overlay,
                     path,
-                    LazyOverlayChange::Tombstone { removed },
+                    LazyOverlayChange::tombstone(removed, ctx)?,
                     ctx,
                 )
                 .await?;
@@ -342,7 +342,12 @@ impl<
             }
             let removed = self.removed_source_version(&state, path, ctx).await?;
             overlay = self
-                .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
+                .insert_overlay(
+                    overlay,
+                    path,
+                    LazyOverlayChange::tombstone(removed, ctx)?,
+                    ctx,
+                )
                 .await?;
         }
         let mut shadows = state.shadows;

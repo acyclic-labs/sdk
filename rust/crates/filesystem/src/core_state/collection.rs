@@ -18,8 +18,9 @@ impl LocalCoreStateStore {
                 }) = load_content_addressed::<crate::LazyShadow>(namespace, family, address)?
                 {
                     for content in authored
+                        .as_deref()
                         .into_iter()
-                        .chain(observed.map(|record| record.content))
+                        .chain(observed.as_deref().map(|record| &record.content))
                     {
                         records.push(
                             crate::kernel::decode_file_record(&content.record)

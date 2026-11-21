@@ -103,18 +103,24 @@ impl<
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
-        match self.overlay_fact(state.overlay, path, ctx).await? {
-            Some(LazyOverlayChange::Observe { source, node, .. }) if source == state.source => {
-                Ok(Some(node.version))
+        let removed = self
+            .read_overlay_fact(state.overlay, path, ctx, |fact| match fact {
+                Some(LazyOverlayChange::Observe(observed)) if observed.source == state.source => {
+                    Some(Some(observed.node.version))
+                }
+                Some(LazyOverlayChange::Tombstone { removed }) => Some(*removed),
+                _ => None,
+            })
+            .await?;
+        if let Some(removed) = removed {
+            return Ok(removed);
+        }
+        match self.source_lookup(&state.source, path, ctx).await {
+            Ok(node) => Ok(node.map(|n| n.version)),
+            Err(LazyWorkspaceError::Demand(DemandError::Absent | DemandError::NotDirectory)) => {
+                Ok(None)
             }
-            Some(LazyOverlayChange::Tombstone { removed }) => Ok(removed),
-            _ => match self.source_lookup(&state.source, path, ctx).await {
-                Ok(node) => Ok(node.map(|n| n.version)),
-                Err(LazyWorkspaceError::Demand(
-                    DemandError::Absent | DemandError::NotDirectory,
-                )) => Ok(None),
-                Err(error) => Err(error),
-            },
+            Err(error) => Err(error),
         }
     }
 }

@@ -168,8 +168,46 @@ pub struct LazySourceRecord {
     pub content: LazyStoredRecord,
 }
 
+/// A boxed lazy-node field. New fields acquire their backing on the
+/// destination ledger. Persistent reads reconcile decoded backing on load.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct LazyBox<T>(Box<T>);
+
+impl<T> LazyBox<T> {
+    /// Admits the box and joins its custody to the destination allocation.
+    pub fn fund(
+        value: T,
+        allocation: &mut KernelOwnedAllocation,
+        bytes: &mut u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        Owned::boxed(value, ctx)?
+            .transfer_to(allocation, bytes, ctx)
+            .map(Self)
+    }
+
+    pub(super) const fn bytes(&self) -> u64 {
+        std::mem::size_of::<T>() as u64
+    }
+}
+
+impl<T> std::ops::Deref for LazyBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for LazyBox<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Persistent treap retaining authored identities and exact source before-images.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum LazyShadow {
     /// Shared empty index root.
@@ -182,9 +220,9 @@ pub enum LazyShadow {
         /// Deterministic treap priority.
         priority: u64,
         /// Latest authored record, absent for a source-only before-image.
-        authored: Option<LazyStoredRecord>,
+        authored: Option<LazyBox<LazyStoredRecord>>,
         /// Original source content retained independently of authored overrides.
-        observed: Option<LazySourceRecord>,
+        observed: Option<LazyBox<LazySourceRecord>>,
         /// Identities ordered before this one.
         left: LazyShadowId,
         /// Identities ordered after this one.
@@ -230,7 +268,7 @@ pub enum PendingLazyRemoveKind {
 }
 
 /// One immutable node in the persistent source-knowledge index.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlay {
     /// Shared empty index root.
     #[default]
@@ -252,20 +290,24 @@ pub enum LazyOverlay {
     },
 }
 
+/// First exact observation of one demanded path.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LazyObservation {
+    /// Source generation against which this fact was authenticated.
+    pub source: SourceReference,
+    /// Immutable source fact.
+    pub node: SourceNode,
+    /// A complete materialization saved the visible subtree in authored
+    /// state for this source cut, preserving authored masks. Unresolved
+    /// names remain absent until the source invalidation epoch advances.
+    pub complete: bool,
+}
+
 /// One fact introduced by a lazy overlay delta.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlayChange {
     /// First exact observation of one demanded path.
-    Observe {
-        /// Source generation against which this fact was authenticated.
-        source: SourceReference,
-        /// Immutable source fact.
-        node: SourceNode,
-        /// A complete materialization saved the visible subtree in authored
-        /// state for this source cut, preserving authored masks. Unresolved
-        /// names remain absent until the source invalidation epoch advances.
-        complete: bool,
-    },
+    Observe(LazyBox<LazyObservation>),
     /// Authored removal of a source path or subtree. `removed` is the source
     Tombstone {
         /// Source version deleted, or `None` for a hidden path.

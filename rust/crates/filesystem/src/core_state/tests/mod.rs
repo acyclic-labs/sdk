@@ -416,19 +416,23 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
         .unwrap();
     let empty_shadows =
         crate::LazyShadowId::from_bytes(content_address(&crate::LazyShadow::Empty).unwrap());
+    let record = crate::LazyStoredRecord {
+        record: vec![1, 2, 3],
+        metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
+    };
+    let mut bytes = record.record.capacity() as u64;
+    let mut allocation = accounting.claim_owned(bytes, 0).unwrap();
+    let authored =
+        crate::LazyBox::fund(record, &mut allocation, &mut bytes, &mut accounting).unwrap();
     let shadow = crate::LazyShadow::Node {
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
-        authored: Some(crate::lazy_workspace::LazyStoredRecord {
-            record: vec![1, 2, 3],
-            metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
-        }),
+        authored: Some(authored),
         observed: None,
         left: empty_shadows,
         right: empty_shadows,
     };
     let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).unwrap());
-    let allocation = accounting.claim_owned(shadow.owned_bytes(), 0).unwrap();
     store
         .put_lazy_shadow(shadows, (shadow, allocation), &mut accounting)
         .await

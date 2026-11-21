@@ -2,14 +2,14 @@ use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation};
 use acyclic_fs::lazy_workspace::{
     LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazyWorkspaceStore,
-    MemoryLazyWorkspaceStore,
+    MemoryLazyNode, MemoryLazyWorkspaceStore,
 };
 use divan::Bencher;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 use {
     acyclic_fs::{CancellationToken, NativeMaterializationWork},
-    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
@@ -90,32 +90,12 @@ fn accounting<'a>(
     }
 }
 
-fn input<'a, T: Clone>(
-    value: &T,
-    bytes: u64,
-    actual: impl FnOnce(&T) -> u64,
-    mut accounting: KernelAccounting<'a>,
-) -> (T, KernelOwnedAllocation, KernelAccounting<'a>) {
-    let mut allocation = accounting
-        .claim_owned(bytes, u64::from(bytes != 0))
-        .unwrap_or_else(fail);
-    let copied = WorkCounters {
-        bytes_copied: bytes,
-        ..WorkCounters::UNCHARGED
-    };
-    accounting.charge(copied).unwrap_or_else(fail);
-    let value = value.clone();
-    let actual = actual(&value);
-    let excess = bytes
-        .checked_sub(actual)
-        .unwrap_or_else(|| fail("clone grew its buffer"));
-    accounting
-        .release_owned(&mut allocation, excess)
-        .unwrap_or_else(fail);
-    (value, allocation, accounting)
-}
-
-fn overlay(size: usize) -> LazyOverlay {
+fn overlay(
+    size: usize,
+    _: &mut KernelAccounting<'_>,
+    _: &mut KernelOwnedAllocation,
+    _: &mut u64,
+) -> LazyOverlay {
     let empty = LazyOverlayId::from_bytes(*blake3::hash(br#""v2.Empty""#).as_bytes());
     LazyOverlay::Node {
         path: format!("/{}", "a".repeat(size)),
@@ -125,14 +105,12 @@ fn overlay(size: usize) -> LazyOverlay {
         right: empty,
     }
 }
-fn overlay_bytes(node: &LazyOverlay) -> u64 {
-    match node {
-        LazyOverlay::Empty => 0,
-        LazyOverlay::Node { path, .. } => path.capacity() as u64,
-    }
-}
-
-fn shadow(size: usize) -> LazyShadow {
+fn shadow(
+    size: usize,
+    ctx: &mut KernelAccounting<'_>,
+    allocation: &mut KernelOwnedAllocation,
+    bytes: &mut u64,
+) -> LazyShadow {
     let empty: LazyShadowId = serde_json::from_slice(
         &serde_json::to_vec(blake3::hash(br#""Empty""#).as_bytes()).unwrap_or_else(fail),
     )
@@ -140,56 +118,55 @@ fn shadow(size: usize) -> LazyShadow {
     LazyShadow::Node {
         file_id: acyclic_fs_format::identity::FileId::from_bytes([7; 16]),
         priority: 1,
-        authored: Some(acyclic_fs::LazyStoredRecord {
-            record: vec![7; size],
-            metadata: acyclic_fs::WorkspaceMetadata {
-                posix_mode: None,
-                posix_uid: None,
-                posix_gid: None,
-                posix_flags: None,
-                windows_attributes: None,
-                created_ns: None,
-                modified_ns: None,
-                accessed_ns: None,
-                changed_ns: None,
-                has_named_attributes: false,
-                has_acl: false,
-                has_security_descriptor: false,
-            },
-        }),
+        authored: Some(
+            acyclic_fs::LazyBox::fund(
+                acyclic_fs::LazyStoredRecord {
+                    record: vec![7; size],
+                    metadata: acyclic_fs::WorkspaceMetadata {
+                        posix_mode: None,
+                        posix_uid: None,
+                        posix_gid: None,
+                        posix_flags: None,
+                        windows_attributes: None,
+                        created_ns: None,
+                        modified_ns: None,
+                        accessed_ns: None,
+                        changed_ns: None,
+                        has_named_attributes: false,
+                        has_acl: false,
+                        has_security_descriptor: false,
+                    },
+                },
+                allocation,
+                bytes,
+                ctx,
+            )
+            .unwrap_or_else(fail),
+        ),
         observed: None,
         left: empty,
         right: empty,
     }
 }
-fn shadow_bytes(node: &LazyShadow) -> u64 {
-    match node {
-        LazyShadow::Empty => 0,
-        LazyShadow::Node {
-            authored, observed, ..
-        } => {
-            authored
-                .as_ref()
-                .map_or(0, |record| record.record.capacity() as u64)
-                + observed
-                    .as_ref()
-                    .map_or(0, |record| record.content.record.capacity() as u64)
-        }
-    }
-}
-
 macro_rules! bench_node {
-    ($name:ident, $node:ident, $bytes:ident, $id:ty, $put:ident) => {
+    ($name:ident, $node:ident, $id:ty, $put:ident) => {
         #[divan::bench(args = [(0, 0), (0, 1), (0, 2), (0, 3), (64, 0), (64, 1), (64, 2), (64, 3), (4096, 0), (4096, 1), (4096, 2), (4096, 3)], threads = [1, 4], sample_count = 64, sample_size = 8)]
         fn $name(bencher: Bencher, (size, context): (usize, u8)) {
             let cancellation = CancellationToken::new();
             let work = work(context, &cancellation);
             let store = MemoryLazyWorkspaceStore::default();
-            let node = $node(size);
+            let mut setup = WorkBudget::UNBOUNDED.accounting(&cancellation);
+            let mut setup_allocation = setup.claim_owned(0, 0).unwrap_or_else(fail);
+            let mut setup_bytes = 0;
+            let node = $node(size, &mut setup, &mut setup_allocation, &mut setup_bytes);
             let encoded = serde_json::to_vec(&node).unwrap_or_else(fail);
             let digest = *blake3::hash(&encoded).as_bytes();
             let id: $id = serde_json::from_slice(&serde_json::to_vec(&digest).unwrap_or_else(fail)).unwrap_or_else(fail);
-            let make_input = || input(&node, $bytes(&node), $bytes, accounting(&work, &cancellation));
+            let make_input = || {
+                let mut ctx = accounting(&work, &cancellation);
+                let (value, allocation) = node.copy(&mut ctx).unwrap_or_else(fail);
+                (value, allocation, ctx)
+            };
             // Measure the repeated immutable-node admission, including validation
             // and retirement of the incoming argument. Fund setup copies first.
             let (value, allocation, mut ctx) = make_input();
@@ -209,20 +186,10 @@ macro_rules! bench_node {
                 eprintln!("{} size={size} context={context} after={:?}", stringify!($name),
                     work.as_ref().map(NativeMaterializationWork::receipt));
             }
+            drop(node);
+            setup.release_owned(&mut setup_allocation, setup_bytes).unwrap_or_else(fail);
         }
     };
 }
-bench_node!(
-    lazy_overlay_store,
-    overlay,
-    overlay_bytes,
-    LazyOverlayId,
-    put_lazy_overlay
-);
-bench_node!(
-    lazy_shadow_store,
-    shadow,
-    shadow_bytes,
-    LazyShadowId,
-    put_lazy_shadow
-);
+bench_node!(lazy_overlay_store, overlay, LazyOverlayId, put_lazy_overlay);
+bench_node!(lazy_shadow_store, shadow, LazyShadowId, put_lazy_shadow);

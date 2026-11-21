@@ -105,7 +105,18 @@ proptest! {
                 has_security_descriptor: false,
             },
         };
-        let node = LazyShadow::Node {
+        #[derive(Serialize)]
+        enum V1Shadow {
+            Node {
+                file_id: FileId,
+                priority: u64,
+                authored: Option<LazyStoredRecord>,
+                observed: Option<LazySourceRecord>,
+                left: LazyShadowId,
+                right: LazyShadowId,
+            },
+        }
+        let wire = serde_json::to_vec(&V1Shadow::Node {
             file_id: FileId::from_bytes(file_id),
             priority,
             authored: (shadow_kind != 0).then(|| content.clone()),
@@ -116,7 +127,9 @@ proptest! {
             }),
             left: LazyShadowId::from_bytes(left),
             right: LazyShadowId::from_bytes(right),
-        };
+        }).unwrap();
+        let node: LazyShadow = serde_json::from_slice(&wire).unwrap();
+        prop_assert_eq!(serde_json::to_vec(&node).unwrap(), wire);
         let actual = measured(&node, context, limit, recheck, cancel, false);
         prop_assert_eq!(&actual, &measured(&node, context, limit, recheck, cancel, true));
         if let Ok(digest) = &actual.0 {
@@ -124,4 +137,49 @@ proptest! {
             prop_assert_eq!(*digest, expected);
         }
     }
+}
+
+#[test]
+fn overlay_observation_keeps_v1_node_bytes() {
+    #[derive(Serialize)]
+    enum V1Change {
+        Observe {
+            source: SourceReference,
+            node: SourceNode,
+            complete: bool,
+        },
+    }
+    #[derive(Serialize)]
+    enum V1Overlay {
+        #[serde(rename = "v2.Node")]
+        Node {
+            path: String,
+            priority: u64,
+            change: V1Change,
+            left: LazyOverlayId,
+            right: LazyOverlayId,
+        },
+    }
+    let wire = serde_json::to_vec(&V1Overlay::Node {
+        path: "/file".to_owned(),
+        priority: 3,
+        change: V1Change::Observe {
+            source: SourceReference::new([4; 16], 5),
+            node: SourceNode {
+                kind: SourceNodeKind::RegularFile,
+                file_identity: [6; 32],
+                link_count: Some(1),
+                device: None,
+                logical_bytes: Some(7),
+                version: SourceVersion([8; 32]),
+                metadata: Default::default(),
+            },
+            complete: true,
+        },
+        left: LazyOverlayId::from_bytes([9; 32]),
+        right: LazyOverlayId::from_bytes([10; 32]),
+    })
+    .unwrap();
+    let decoded: LazyOverlay = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
 }

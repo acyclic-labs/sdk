@@ -23,12 +23,9 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
         let store = LocalCoreStateStore::new(directory.path());
         let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).unwrap());
         let (_, mut node) = linked_overlay("/observed", empty, empty);
-        let LazyOverlay::Node { change, .. } = &mut node else {
-            unreachable!()
-        };
-        *change = crate::lazy_workspace::LazyOverlayChange::Observe {
-            source: source.clone(),
-            node: crate::demand::SourceNode {
+        let observation = crate::lazy_workspace::LazyOverlayChange::observe(
+            source.clone(),
+            crate::demand::SourceNode {
                 kind: crate::demand::SourceNodeKind::RegularFile,
                 file_identity: [0x65; 32],
                 link_count: Some(1),
@@ -37,10 +34,19 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
                 version: crate::demand::SourceVersion([0x66; 32]),
                 metadata: Default::default(),
             },
-            complete: false,
+            false,
+            &mut writer,
+        )
+        .unwrap();
+        let mut bytes = node.owned_bytes();
+        let mut allocation = writer.claim_owned(bytes, 1).unwrap();
+        let LazyOverlay::Node { change, .. } = &mut node else {
+            unreachable!()
         };
+        *change = observation
+            .transfer_to(&mut allocation, &mut bytes, &mut writer)
+            .unwrap();
         let id = LazyOverlayId::from_bytes(content_address(&node).unwrap());
-        let allocation = writer.claim_owned(node.owned_bytes(), 1).unwrap();
         store
             .put_lazy_overlay(id, (node, allocation), &mut writer)
             .await
@@ -59,17 +65,14 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
             .unwrap()
             .unwrap();
         let LazyOverlay::Node {
-            change:
-                crate::lazy_workspace::LazyOverlayChange::Observe {
-                    source: decoded, ..
-                },
+            change: crate::lazy_workspace::LazyOverlayChange::Observe(observed),
             ..
         } = &loaded.0
         else {
             panic!("observation missing")
         };
-        assert_eq!(decoded, &source);
-        let alias = decoded.clone();
+        assert_eq!(observed.source, source);
+        let alias = observed.source.clone();
         let bytes = loaded.0.owned_bytes();
         drop(loaded.0);
         crate::kernel::retire_allocation(loaded.1, bytes, &mut ctx).unwrap();
@@ -97,23 +100,26 @@ async fn reopened_shadow_source_alias_keeps_decoded_credit_until_last_drop() {
     let store = LocalCoreStateStore::new(directory.path());
     let empty =
         crate::LazyShadowId::from_bytes(content_address(&crate::LazyShadow::Empty).unwrap());
+    let record = crate::LazySourceRecord {
+        source: source.clone(),
+        version: crate::demand::SourceVersion([0x76; 32]),
+        content: crate::LazyStoredRecord {
+            record: vec![1, 2, 3],
+            metadata: crate::WorkspaceMetadata::from_engine(Default::default()),
+        },
+    };
+    let mut bytes = record.content.record.capacity() as u64;
+    let mut allocation = writer.claim_owned(bytes, 1).unwrap();
+    let observed = crate::LazyBox::fund(record, &mut allocation, &mut bytes, &mut writer).unwrap();
     let node = crate::LazyShadow::Node {
         file_id: crate::FileId::from_bytes([0x75; 16]),
         priority: 0,
         authored: None,
-        observed: Some(crate::LazySourceRecord {
-            source: source.clone(),
-            version: crate::demand::SourceVersion([0x76; 32]),
-            content: crate::LazyStoredRecord {
-                record: vec![1, 2, 3],
-                metadata: crate::WorkspaceMetadata::from_engine(Default::default()),
-            },
-        }),
+        observed: Some(observed),
         left: empty,
         right: empty,
     };
     let id = crate::LazyShadowId::from_bytes(content_address(&node).unwrap());
-    let allocation = writer.claim_owned(node.owned_bytes(), 1).unwrap();
     store
         .put_lazy_shadow(id, (node, allocation), &mut writer)
         .await
@@ -159,9 +165,9 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
     let store = LocalCoreStateStore::new(directory.path());
     let empty = LazyOverlayId::from_bytes([0; 32]);
     let (overlay, node) = linked_overlay("/original", empty, empty);
-    let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
+    let copy = node.copy(&mut accounting).unwrap();
     store
-        .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
+        .put_lazy_overlay(overlay, copy, &mut accounting)
         .await
         .unwrap();
     let (_, tampered) = linked_overlay("/tampered", empty, empty);
@@ -204,9 +210,9 @@ async fn concurrent_immutable_nodes_retain_payload_and_publication_custody() {
         async move {
             let mut accounting = unbounded_accounting(&cancellation);
             let (overlay, node) = linked_overlay(path, empty, empty);
-            let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
+            let copy = node.copy(&mut accounting).unwrap();
             store
-                .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
+                .put_lazy_overlay(overlay, copy, &mut accounting)
                 .await
                 .unwrap();
             (overlay, node)
@@ -681,14 +687,8 @@ async fn a_held_immutable_publication_does_not_exclude_another_address() {
     let mut held =
         crate::core_state::nodes::publication_pause::hold(&namespace.root, first_id.into_bytes());
     let mut first_accounting = unbounded_accounting(&cancellation);
-    let allocation = first_accounting
-        .claim_owned(first_node.owned_bytes(), 0)
-        .unwrap();
-    let mut first = Box::pin(store.put_lazy_overlay(
-        first_id,
-        (first_node.clone(), allocation),
-        &mut first_accounting,
-    ));
+    let copy = first_node.copy(&mut first_accounting).unwrap();
+    let mut first = Box::pin(store.put_lazy_overlay(first_id, copy, &mut first_accounting));
     assert!(futures::poll!(first.as_mut()).is_pending());
     // Wait for the actual post-rename publication cut, not just worker admission.
     tokio::time::timeout(std::time::Duration::from_secs(2), held.entered())
@@ -697,7 +697,7 @@ async fn a_held_immutable_publication_does_not_exclude_another_address() {
     // A dedicated inline producer supplies execution capacity even when the
     // shared blocking pool has only one worker, occupied by the held producer.
     let independent_store = store.clone();
-    let independent_node = second_node.clone();
+    let (_, independent_node) = linked_overlay("/independent", empty, empty);
     let (completed, mut completion) = tokio::sync::oneshot::channel();
     let second = std::thread::spawn(move || {
         let _inline = acyclic_native_runtime::InlineBlocking::enter();

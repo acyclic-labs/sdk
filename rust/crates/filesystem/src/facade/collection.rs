@@ -467,8 +467,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 } = node
                 {
                     for content in authored
+                        .as_deref()
                         .into_iter()
-                        .chain(observed.map(|record| record.content))
+                        .chain(observed.as_deref().map(|record| &record.content))
                     {
                         let record = crate::kernel::decode_file_record(&content.record)
                             .map_err(|_| FsError::InvalidAuthorityHistory)?;

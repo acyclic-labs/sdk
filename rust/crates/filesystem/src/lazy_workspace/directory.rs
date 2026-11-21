@@ -559,9 +559,16 @@ impl<
                 let mut slot = (false, true, None);
                 if let Some(child) = self.child_path(directory, &entry.name, ctx)? {
                     let result = async {
-                        let fact = self.overlay_fact(state.overlay, &child.value, ctx).await?;
-                        slot.1 = fact.is_none();
-                        slot.0 = matches!(fact, Some(LazyOverlayChange::Tombstone { .. }))
+                        let (absent, tombstone) = self
+                            .read_overlay_fact(state.overlay, &child.value, ctx, |fact| {
+                                (
+                                    fact.is_none(),
+                                    matches!(fact, Some(LazyOverlayChange::Tombstone { .. })),
+                                )
+                            })
+                            .await?;
+                        slot.1 = absent;
+                        slot.0 = tombstone
                             || mask.is_some_and(|(paths, _)| {
                                 paths.binary_search(&child.value).is_ok()
                             });

@@ -78,7 +78,9 @@ pub use model::LAZY_SNAPSHOT_DOMAIN;
 pub(crate) use model::LAZY_STATE_SCHEMA;
 pub use model::{LazyForkOrigin, LazyForkPhase};
 mod store_node;
-pub(crate) use store_node::MemoryLazyNode;
+#[doc(hidden)]
+pub use store_node::MemoryLazyNode;
+use store_node::observation;
 mod hash;
 pub(crate) use hash::hash_lazy_value;
 mod lookup;
@@ -132,9 +134,9 @@ pub use directory::{
 pub use error::LazyWorkspaceError;
 pub use lookup::{LazyLookup, LazyStat};
 pub use model::{
-    LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
-    LazySnapshotRef, LazySourceRecord, LazyStoredRecord, LazyWorkspaceState, PendingLazyRemove,
-    PendingLazyRemoveKind,
+    LazyBox, LazyObservation, LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow,
+    LazyShadowId, LazySnapshotId, LazySnapshotRef, LazySourceRecord, LazyStoredRecord,
+    LazyWorkspaceState, PendingLazyRemove, PendingLazyRemoveKind,
 };
 pub use store::{LazyWorkspaceStore, MemoryLazyWorkspaceStore};
 pub(crate) use work::retained_directory_page_bytes;

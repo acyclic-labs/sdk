@@ -144,13 +144,11 @@ async fn open_recovers_remove_intent_from_authored_state() {
         )
         .await
         .unwrap();
+    let cancellation = CancellationToken::new();
+    let ctx = &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let change = LazyOverlayChange::tombstone(None, ctx).unwrap();
     let overlay = root
-        .insert_overlay(
-            original.overlay,
-            "/file.txt",
-            LazyOverlayChange::Tombstone { removed: None },
-            accounting!(),
-        )
+        .insert_overlay(original.overlay, "/file.txt", change, ctx)
         .await
         .unwrap();
     for committed in [false, true] {
@@ -252,13 +250,11 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         .unwrap();
     root.stat("/file.txt", accounting!()).await.unwrap();
     let prior = root.state(accounting!()).await.unwrap();
+    let cancellation = CancellationToken::new();
+    let ctx = &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let change = LazyOverlayChange::tombstone(None, ctx).unwrap();
     let overlay = root
-        .insert_overlay(
-            prior.overlay,
-            "/file.txt",
-            LazyOverlayChange::Tombstone { removed: None },
-            accounting!(),
-        )
+        .insert_overlay(prior.overlay, "/file.txt", change, ctx)
         .await
         .unwrap();
     let pending = LazyWorkspaceState {
@@ -475,13 +471,14 @@ async fn exactification_recovery_seals_the_original_operation_before_rollback() 
             .await;
         assert_eq!(file.is_ok(), published);
         if published {
-            assert!(matches!(
+            assert!(
                 reopened
-                    .overlay_fact(state.overlay, "/file.txt", accounting!())
+                    .read_overlay_fact(state.overlay, "/file.txt", accounting!(), |fact| {
+                        matches!(fact, Some(LazyOverlayChange::Observe(_)))
+                    })
                     .await
-                    .unwrap(),
-                Some(LazyOverlayChange::Observe { .. })
-            ));
+                    .unwrap()
+            );
         }
         // The fenced old attempt must remain terminal, while a new call on
         // the recovered binding can materialize the same logical content cut.

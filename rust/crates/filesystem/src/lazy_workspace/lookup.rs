@@ -155,16 +155,14 @@ impl<
             LazyLookup::Authored { .. } => None,
         };
         if let Some((source, node)) = observed {
-            let previous = self.overlay_fact(overlay, path, ctx).await?;
-            let complete = matches!(&previous, Some(LazyOverlayChange::Observe {
-                source: saved_source, node: saved_node, complete: true,
-            }) if saved_source == source && saved_node == node);
-            let change = LazyOverlayChange::Observe {
-                source: source.clone(),
-                node: *node,
-                complete,
-            };
-            if previous != Some(change.clone()) {
+            let matches = self
+                .read_overlay_fact(overlay, path, ctx, |fact| {
+                    matches!(fact, Some(LazyOverlayChange::Observe(saved))
+                    if &saved.source == source && &saved.node == node)
+                })
+                .await?;
+            if !matches {
+                let change = LazyOverlayChange::observe(source.clone(), *node, false, ctx)?;
                 return self.insert_overlay(overlay, path, change, ctx).await;
             }
         }
@@ -357,14 +355,15 @@ impl<
         let fact = if basis.unobserved {
             None
         } else {
-            self.overlay_fact(state.overlay, path, ctx).await?
+            self.read_overlay_fact(state.overlay, path, ctx, observation)
+                .await?
         };
         let (source, node, used) = match fact {
             // An observation is valid only for the source identity that made it.
             // A fork binding can advance this workspace to a different identity
             // while inheriting the parent's overlay; that older observation must
             // not be handed back to the newly bound source.
-            Some(LazyOverlayChange::Observe { source, node, .. })
+            Some((source, node, _))
                 if source.identity == state.source.identity
                     && (basis.retain_pinned_observation || source == state.source) =>
             {
@@ -499,8 +498,9 @@ impl<
             LazyLookup::Authored { record, .. } => {
                 if record.kind == FileKind::Directory
                     && let Some(overlay) = overlay
-                    && let Some(LazyOverlayChange::Observe { source, node, .. }) =
-                        self.overlay_fact(overlay, path, ctx).await?
+                    && let Some((source, node, _)) = self
+                        .read_overlay_fact(overlay, path, ctx, observation)
+                        .await?
                     && node.kind == SourceNodeKind::Directory
                 {
                     return Ok(crate::demand::source_file_id(

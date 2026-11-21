@@ -52,12 +52,11 @@ impl<
             return Err(LazyWorkspaceError::NotDirectory);
         }
         let cut = self.snapshot(ctx).await?;
-        let observation = match self.overlay_fact(cut.overlay, root, ctx).await? {
-            Some(LazyOverlayChange::Observe {
-                source,
-                complete: true,
-                ..
-            }) if source == cut.source => {
+        let observation = match self
+            .read_overlay_fact(cut.overlay, root, ctx, observation)
+            .await?
+        {
+            Some((source, _, true)) if source == cut.source => {
                 // This cut already owns every source binding under the root.
                 // Revalidate the binding against the head sampled by snapshot.
                 let state = self.state(ctx).await?;
@@ -73,9 +72,7 @@ impl<
                     cancel,
                 ));
             }
-            Some(LazyOverlayChange::Observe { source, node, .. }) if source == cut.source => {
-                Some((source, node))
-            }
+            Some((source, node, _)) if source == cut.source => Some((source, node)),
             // Completion is evidence about saved source contents, never a
             // replacement for an authored deletion that still masks them.
             _ if self.tombstoned(cut.overlay, root, ctx).await? => None,
@@ -107,17 +104,8 @@ impl<
             {
                 return Err(LazyWorkspaceError::Concurrent);
             }
-            self.append_overlay_at(
-                state,
-                root,
-                LazyOverlayChange::Observe {
-                    source,
-                    node,
-                    complete: true,
-                },
-                ctx,
-            )
-            .await?;
+            let change = LazyOverlayChange::observe(source, node, true, ctx)?;
+            self.append_overlay_at(state, root, change, ctx).await?;
         }
         Ok(generation)
     }
@@ -159,8 +147,9 @@ impl<
         let live = self.source_reference(ctx).await?;
         let mut overlay = cut.overlay;
         for path in paths {
-            let Some(LazyOverlayChange::Observe { source, node, .. }) =
-                witness.overlay_fact(witnessed.overlay, path, ctx).await?
+            let Some((source, node, _)) = witness
+                .read_overlay_fact(witnessed.overlay, path, ctx, observation)
+                .await?
             else {
                 return Ok(None);
             };
@@ -175,18 +164,8 @@ impl<
             {
                 return Ok(None);
             }
-            overlay = self
-                .insert_overlay(
-                    overlay,
-                    path,
-                    LazyOverlayChange::Observe {
-                        source,
-                        node,
-                        complete: false,
-                    },
-                    ctx,
-                )
-                .await?;
+            let change = LazyOverlayChange::observe(source, node, false, ctx)?;
+            overlay = self.insert_overlay(overlay, path, change, ctx).await?;
         }
         self.exactify_cut_overlay(&cut, paths, overlay, ctx)
             .await
@@ -244,8 +223,17 @@ impl<
                     Err(error) => return Err(error),
                 }
                 let live = self.source_reference(ctx).await?;
-                let observation = match witness.overlay_fact(witnessed.overlay, path, ctx).await? {
-                    Some(LazyOverlayChange::Observe { source, node, .. }) => {
+                let fact = witness
+                    .read_overlay_fact(witnessed.overlay, path, ctx, |fact| {
+                        let removed = match fact {
+                            Some(LazyOverlayChange::Tombstone { removed }) => *removed,
+                            _ => None,
+                        };
+                        (observation(fact), removed)
+                    })
+                    .await?;
+                let observation = match fact {
+                    (Some((source, node, _)), _) => {
                         if self
                             .source_lookup(&live, path, ctx)
                             .await?
@@ -256,25 +244,15 @@ impl<
                         {
                             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
                         }
-                        Some(LazyOverlayChange::Observe {
-                            source,
-                            node,
-                            complete: false,
-                        })
+                        Some((source, node))
                     }
-                    Some(LazyOverlayChange::Tombstone {
-                        removed: Some(version),
-                    }) => {
+                    (_, Some(version)) => {
                         let node = self
                             .source_lookup(&live, path, ctx)
                             .await?
                             .filter(|node| node.version == version)
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-                        Some(LazyOverlayChange::Observe {
-                            source: live,
-                            node,
-                            complete: false,
-                        })
+                        Some((live, node))
                     }
                     // Enumeration of the original cut certifies inherited
                     // descendants hidden by a directory's single tombstone.
@@ -287,17 +265,14 @@ impl<
                             .source_lookup(&live, path, ctx)
                             .await?
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-                        Some(LazyOverlayChange::Observe {
-                            source: live,
-                            node,
-                            complete: false,
-                        })
+                        Some((live, node))
                     }
                     // No source observation certifies a new authored path.
                     _ => None,
                 };
-                if let Some(observation) = observation {
-                    overlay = self.insert_overlay(overlay, path, observation, ctx).await?;
+                if let Some((source, node)) = observation {
+                    let change = LazyOverlayChange::observe(source, node, false, ctx)?;
+                    overlay = self.insert_overlay(overlay, path, change, ctx).await?;
                     let path = self.canonical_path(path, ctx)?;
                     crate::Transaction::<A, O>::push_mutation(&mut selected, path, ctx)?;
                 }
@@ -392,11 +367,13 @@ impl<
     ) -> Result<bool, LazyWorkspaceError> {
         let mut path = path;
         loop {
-            if matches!(
-                self.overlay_fact(overlay, path, ctx).await?,
-                Some(LazyOverlayChange::Observe { source: saved, complete: true, .. })
-                    if &saved == source
-            ) {
+            if self
+                .read_overlay_fact(overlay, path, ctx, |fact| {
+                    matches!(fact, Some(LazyOverlayChange::Observe(saved))
+                    if saved.complete && &saved.source == source)
+                })
+                .await?
+            {
                 return Ok(true);
             }
             if path == "/" {
