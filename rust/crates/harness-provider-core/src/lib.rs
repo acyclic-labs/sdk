@@ -27,6 +27,7 @@ pub mod usage_snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
+/// Cancellation and wake registration for browser requests.
 pub mod cancellation;
 /// Credential sources, their live refresh and their watched files.
 pub mod credentials;

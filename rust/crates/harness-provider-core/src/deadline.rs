@@ -9,7 +9,6 @@ use futures::{FutureExt as _, Stream, StreamExt as _};
 use std::{
     future::Future,
     pin::{Pin, pin},
-    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -22,15 +21,18 @@ type Work = ();
 
 /// Applies the caller-selected deadline to each request.
 pub struct Bounded {
-    inner: Arc<dyn HttpTransport>,
+    inner: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     total_ms: u64,
 }
 
 impl Bounded {
     /// Applies the caller-selected deadline to each request, or returns INNER when it has none.
-    pub fn wrap(inner: Arc<dyn HttpTransport>, timeouts: TimeoutSpec) -> Arc<dyn HttpTransport> {
+    pub fn wrap(
+        inner: acyclic_stream::ProviderOwner<dyn HttpTransport>,
+        timeouts: TimeoutSpec,
+    ) -> acyclic_stream::ProviderOwner<dyn HttpTransport> {
         match timeouts.total_ms {
-            Some(total_ms) => Arc::new(Self { inner, total_ms }),
+            Some(total_ms) => acyclic_stream::ProviderOwner::new(Self { inner, total_ms }),
             None => inner,
         }
     }
@@ -175,7 +177,7 @@ pub fn timer(transport: &dyn HttpTransport, wait: Duration, work: Option<&Work>)
 
 /// One request's fixed deadline on the transport's monotonic clock.
 struct Deadline {
-    transport: Arc<dyn HttpTransport>,
+    transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     total_ms: u64,
     native: bool,
     due: Duration,
@@ -183,7 +185,11 @@ struct Deadline {
 }
 
 impl Deadline {
-    fn start(transport: Arc<dyn HttpTransport>, total_ms: u64, native: bool) -> Self {
+    fn start(
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
+        total_ms: u64,
+        native: bool,
+    ) -> Self {
         Self {
             due: transport
                 .now()

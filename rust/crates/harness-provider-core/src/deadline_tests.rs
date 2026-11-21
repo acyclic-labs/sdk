@@ -5,7 +5,7 @@ use crate::fixtures::ScriptedHttp;
 use futures::channel::{mpsc, oneshot};
 use proptest::prelude::*;
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 

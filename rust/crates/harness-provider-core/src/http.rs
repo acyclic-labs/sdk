@@ -1,4 +1,5 @@
 use acyclic_harness_core::Result;
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::BoxProviderFuture;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt as _;
@@ -40,12 +41,12 @@ pub fn send<'a>(
 pub use acyclic_harness_core::http::BrowserTransport;
 
 /// The platform's pooled HTTP transport.
-pub fn platform() -> Result<std::sync::Arc<dyn HttpTransport>> {
+pub fn platform() -> Result<acyclic_stream::ProviderOwner<dyn HttpTransport>> {
     #[cfg(not(target_arch = "wasm32"))]
     let transport = ReqwestTransport::new()?;
     #[cfg(target_arch = "wasm32")]
     let transport = BrowserTransport::global()?;
-    Ok(std::sync::Arc::new(transport))
+    Ok(acyclic_stream::ProviderOwner::new(transport))
 }
 
 /// Tokio's monotonic clock (which a paused test runtime drives) from a process-wide origin.

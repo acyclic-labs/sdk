@@ -22,6 +22,7 @@ impl Cancellation {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Marks this operation cancelled and wakes its registered waiter.
     pub fn cancel(&self) {
         let waiter = {
             let mut state = self.state();
@@ -33,6 +34,7 @@ impl Cancellation {
         }
     }
 
+    /// Reports cancellation or registers the current task to be woken.
     pub fn poll(&self, cx: &Context<'_>) -> Poll<()> {
         // RawWaker clone/drop callbacks may reenter the caller, just like wake.
         let mut next = Some(cx.waker().clone());
