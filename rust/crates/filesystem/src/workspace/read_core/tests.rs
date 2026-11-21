@@ -239,9 +239,9 @@ async fn cold_original_checkout_transfers_its_existing_memory_charge()
     assert!(
         matches!(&denied, Err(failure) if matches!(&failure.error,
             WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes", ..
+                counter: crate::WorkCounter::PeakAllocationBytes, ..
             }) | WorkspaceError::Filesystem(FsError::Work(crate::WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes", ..
+                counter: crate::WorkCounter::PeakAllocationBytes, ..
             }))
         )),
         "original checkout escaped its required live allocation ceiling ({owned}): {denied:?}"

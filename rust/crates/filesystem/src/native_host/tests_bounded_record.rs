@@ -221,7 +221,7 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
     assert!(matches!(
         reader.next(&mut first),
         Err(DemandError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_read_operations",
+            counter: crate::WorkCounter::BackendReadOperations,
             ..
         }))
     ));

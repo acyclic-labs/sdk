@@ -322,7 +322,7 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
         denied,
         Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
             acyclic_fs::WorkspaceError::Work(acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                counter: "bytes_hashed", maximum: 65536, ..
+                counter: acyclic_fs_work::performance::WorkCounter::BytesHashed, maximum: 65536, ..
             })
         )
     ));

@@ -26,7 +26,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     .await
     .expect_err("the original path frame must be admitted before allocation");
     let PathLookupError::Work(WorkError::BudgetExceeded {
-        counter: "peak_allocation_bytes",
+        counter: crate::WorkCounter::PeakAllocationBytes,
         observed: frame_bytes,
         maximum: 0,
     }) = zero_peak.error
@@ -55,7 +55,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     assert!(matches!(
         failure.error,
         PathLookupError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             observed,
             maximum,
         }) if observed == required_peak && maximum == required_peak - 1
@@ -100,7 +100,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     assert!(matches!(
         failure,
         crate::FsError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes", observed, maximum,
+            counter: crate::WorkCounter::PeakAllocationBytes, observed, maximum,
         }) if observed == required_name_peak && maximum == required_name_peak - 1
     ));
     assert_eq!(accounting.spent().unwrap().bytes_copied, 0);
@@ -160,7 +160,7 @@ async fn copied_byte_budget_rejects_before_directory_frontier_read()
     assert!(matches!(
         failure.error,
         PathLookupError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_copied",
+            counter: crate::WorkCounter::BytesCopied,
             ..
         })
     ));

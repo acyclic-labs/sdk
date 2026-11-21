@@ -108,7 +108,7 @@ fn file_mutation_admission_denies_unfunded_registry_growth()
         source.checkout.file_mutation(FileId::new(), &work),
         Err(MountSourceError::NativeWork(
             crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 observed: 2,
                 maximum: 1,
             })

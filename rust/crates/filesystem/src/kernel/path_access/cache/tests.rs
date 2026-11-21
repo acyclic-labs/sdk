@@ -231,7 +231,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 .ok_or("foreign cache residency was not admitted")?;
                 assert!(
                     matches!(failure, crate::FsError::Work(WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes", observed, maximum,
+                    counter: crate::WorkCounter::PeakAllocationBytes, observed, maximum,
                 }) if observed == resident && maximum == resident - 1)
                 );
             }

@@ -203,7 +203,7 @@ mod tests {
         assert!(matches!(
             caller.charge_items(1),
             Err(crate::FsError::Work(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 ..
             }))
         ));

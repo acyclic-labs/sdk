@@ -101,7 +101,7 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     assert!(matches!(
         error,
         WorkError::BudgetExceeded {
-            counter: "page_writes",
+            counter: crate::WorkCounter::PageWrites,
             observed: 2,
             maximum: 1,
         }

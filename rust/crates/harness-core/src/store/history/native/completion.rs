@@ -134,7 +134,7 @@ impl HistoryIo for AcceptedCompletionIo {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::Work(
                     acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                        counter: "peak_allocation_bytes",
+                        counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                         observed: bytes,
                         maximum,
                     },

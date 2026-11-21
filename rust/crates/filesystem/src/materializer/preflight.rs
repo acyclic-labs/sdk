@@ -383,7 +383,7 @@ mod tests {
                 result,
                 Err(NativeWorkspacePublicationError::Workspace(
                     crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "bytes_encoded",
+                        counter: crate::WorkCounter::BytesEncoded,
                         maximum: 0,
                         ..
                     })

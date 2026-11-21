@@ -574,86 +574,118 @@ impl WorkCounters {
     fn exceeded(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         let fields = [
             (
-                "authority_records_read",
+                WorkCounter::AuthorityRecordsRead,
                 self.authority_records_read,
                 budget.authority_records_read,
             ),
             (
-                "authority_records_appended",
+                WorkCounter::AuthorityRecordsAppended,
                 self.authority_records_appended,
                 budget.authority_records_appended,
             ),
             (
-                "authority_bytes_read",
+                WorkCounter::AuthorityBytesRead,
                 self.authority_bytes_read,
                 budget.authority_bytes_read,
             ),
             (
-                "authority_bytes_written",
+                WorkCounter::AuthorityBytesWritten,
                 self.authority_bytes_written,
                 budget.authority_bytes_written,
             ),
-            ("object_probes", self.object_probes, budget.object_probes),
             (
-                "backend_read_operations",
+                WorkCounter::ObjectProbes,
+                self.object_probes,
+                budget.object_probes,
+            ),
+            (
+                WorkCounter::BackendReadOperations,
                 self.backend_read_operations,
                 budget.backend_read_operations,
             ),
             (
-                "backend_write_operations",
+                WorkCounter::BackendWriteOperations,
                 self.backend_write_operations,
                 budget.backend_write_operations,
             ),
             (
-                "durability_operations",
+                WorkCounter::DurabilityOperations,
                 self.durability_operations,
                 budget.durability_operations,
             ),
-            ("page_reads", self.page_reads, budget.page_reads),
-            ("page_writes", self.page_writes, budget.page_writes),
+            (WorkCounter::PageReads, self.page_reads, budget.page_reads),
             (
-                "object_bytes_read",
+                WorkCounter::PageWrites,
+                self.page_writes,
+                budget.page_writes,
+            ),
+            (
+                WorkCounter::ObjectBytesRead,
                 self.object_bytes_read,
                 budget.object_bytes_read,
             ),
             (
-                "object_bytes_written",
+                WorkCounter::ObjectBytesWritten,
                 self.object_bytes_written,
                 budget.object_bytes_written,
             ),
-            ("bytes_hashed", self.bytes_hashed, budget.bytes_hashed),
-            ("bytes_copied", self.bytes_copied, budget.bytes_copied),
-            ("bytes_encoded", self.bytes_encoded, budget.bytes_encoded),
             (
-                "source_bytes_read",
+                WorkCounter::BytesHashed,
+                self.bytes_hashed,
+                budget.bytes_hashed,
+            ),
+            (
+                WorkCounter::BytesCopied,
+                self.bytes_copied,
+                budget.bytes_copied,
+            ),
+            (
+                WorkCounter::BytesEncoded,
+                self.bytes_encoded,
+                budget.bytes_encoded,
+            ),
+            (
+                WorkCounter::SourceBytesRead,
                 self.source_bytes_read,
                 budget.source_bytes_read,
             ),
             (
-                "source_path_components",
+                WorkCounter::SourcePathComponents,
                 self.source_path_components,
                 budget.source_path_components,
             ),
             (
-                "source_entries_visited",
+                WorkCounter::SourceEntriesVisited,
                 self.source_entries_visited,
                 budget.source_entries_visited,
             ),
-            ("output_bytes", self.output_bytes, budget.output_bytes),
-            ("items_examined", self.items_examined, budget.items_examined),
-            ("items_returned", self.items_returned, budget.items_returned),
             (
-                "allocation_operations",
+                WorkCounter::OutputBytes,
+                self.output_bytes,
+                budget.output_bytes,
+            ),
+            (
+                WorkCounter::ItemsExamined,
+                self.items_examined,
+                budget.items_examined,
+            ),
+            (
+                WorkCounter::ItemsReturned,
+                self.items_returned,
+                budget.items_returned,
+            ),
+            (
+                WorkCounter::AllocationOperations,
                 self.allocation_operations,
                 budget.allocation_operations,
             ),
             (
-                "peak_allocation_bytes",
+                WorkCounter::PeakAllocationBytes,
                 self.peak_allocation_bytes,
                 budget.peak_allocation_bytes,
             ),
             (
-                "materializations",
+                WorkCounter::Materializations,
                 self.materializations,
                 budget.materializations,
             ),
@@ -723,6 +755,68 @@ fn add(left: u64, right: u64) -> Result<u64, WorkError> {
     left.checked_add(right).ok_or(WorkError::Overflow)
 }
 
+macro_rules! work_counter_names {
+    ($($variant:ident => $name:ident),* $(,)?) => {
+        /// Stable identifiers for the counters reported by filesystem work accounting.
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        pub enum WorkCounter {
+            $(
+                #[doc = concat!("The `", stringify!($name), "` counter.")]
+                $variant,
+            )*
+        }
+
+        impl WorkCounter {
+            /// Returns the stable diagnostic name of this counter.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => stringify!($name),)*
+                }
+            }
+        }
+
+        impl std::fmt::Debug for WorkCounter {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Debug::fmt(self.as_str(), formatter)
+            }
+        }
+
+        impl std::fmt::Display for WorkCounter {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+work_counter_names! {
+    AuthorityRecordsRead => authority_records_read,
+    AuthorityRecordsAppended => authority_records_appended,
+    AuthorityBytesRead => authority_bytes_read,
+    AuthorityBytesWritten => authority_bytes_written,
+    ObjectProbes => object_probes,
+    BackendReadOperations => backend_read_operations,
+    BackendWriteOperations => backend_write_operations,
+    DurabilityOperations => durability_operations,
+    PageReads => page_reads,
+    PageWrites => page_writes,
+    ObjectBytesRead => object_bytes_read,
+    ObjectBytesWritten => object_bytes_written,
+    BytesHashed => bytes_hashed,
+    BytesCopied => bytes_copied,
+    BytesEncoded => bytes_encoded,
+    SourceBytesRead => source_bytes_read,
+    SourcePathComponents => source_path_components,
+    SourceEntriesVisited => source_entries_visited,
+    OutputBytes => output_bytes,
+    ItemsExamined => items_examined,
+    ItemsReturned => items_returned,
+    AllocationOperations => allocation_operations,
+    PeakAllocationBytes => peak_allocation_bytes,
+    Materializations => materializations,
+    Bytes => bytes,
+}
+
 /// Exact work-accounting failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum WorkError {
@@ -733,7 +827,7 @@ pub enum WorkError {
     #[error("work counter {counter} observed {observed}, exceeding {maximum}")]
     BudgetExceeded {
         /// Stable counter identifier.
-        counter: &'static str,
+        counter: WorkCounter,
         /// Exact observed work.
         observed: u64,
         /// Admitted maximum work.

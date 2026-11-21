@@ -64,7 +64,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                     ..
                 }
             ),

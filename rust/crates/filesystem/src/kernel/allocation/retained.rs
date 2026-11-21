@@ -708,7 +708,7 @@ mod tests {
         assert!(matches!(
             reader.borrow().1.charge_items(1),
             Err(crate::FsError::Work(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 ..
             }))
         ));
@@ -1194,7 +1194,7 @@ mod tests {
                 assert!(matches!(
                     crate::DemandError::from(result.unwrap_err()),
                     crate::DemandError::Work(WorkError::BudgetExceeded {
-                        counter: "bytes_copied",
+                        counter: crate::WorkCounter::BytesCopied,
                         ..
                     })
                 ));

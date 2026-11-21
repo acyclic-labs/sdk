@@ -76,7 +76,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             .await,
         Err(ObjectStoreError::Native(
             NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-                counter: "backend_read_operations",
+                counter: crate::WorkCounter::BackendReadOperations,
                 ..
             })
         ))
@@ -845,11 +845,11 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 assert!(matches!(
                     result,
                     Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "items_returned",
+                        counter: crate::WorkCounter::ItemsReturned,
                         ..
                     })) | Err(ObjectStoreError::Native(
                         NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-                            counter: "items_returned",
+                            counter: crate::WorkCounter::ItemsReturned,
                             ..
                         })
                     ))

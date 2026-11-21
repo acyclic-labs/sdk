@@ -323,7 +323,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     assert!(matches!(
         watch.admit_with_work(Path::new("a/b/c"), &mut caller),
         Err(DemandError::Work(WorkError::BudgetExceeded {
-            counter: "allocation_operations",
+            counter: crate::WorkCounter::AllocationOperations,
             ..
         }))
     ));

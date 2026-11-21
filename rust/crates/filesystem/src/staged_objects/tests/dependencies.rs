@@ -136,7 +136,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
             .await;
         assert!(matches!(result, Err(ObjectStoreError::Work(
             crate::WorkError::BudgetExceeded { counter, .. }
-        )) if counter == if budget.allocation_operations == 0 {
+        )) if counter.as_str() == if budget.allocation_operations == 0 {
             "allocation_operations"
         } else {
             "bytes_copied"

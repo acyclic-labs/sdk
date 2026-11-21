@@ -154,7 +154,7 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
             matches!(
                 view.records(&[file], 2, &mut refused, &cancel).await,
                 Err(FsError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "allocation_operations",
+                    counter: crate::WorkCounter::AllocationOperations,
                     ..
                 }))
             ),
@@ -236,7 +236,7 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
     assert!(matches!(
         cursor.next(&DirectOnly(&store), &mut work, &cancel).await,
         Err(FsError::Work(WorkError::BudgetExceeded {
-            counter: "page_reads",
+            counter: crate::WorkCounter::PageReads,
             ..
         }))
     ));

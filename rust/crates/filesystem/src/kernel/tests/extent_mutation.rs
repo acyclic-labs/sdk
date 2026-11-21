@@ -226,7 +226,7 @@ async fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
     assert!(matches!(
         failure.error,
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             observed,
             maximum: observed_maximum,
         }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
@@ -480,7 +480,7 @@ async fn admission_work_budget_stops_before_allocation_or_backend_access()
     assert!(matches!(
         failure.error,
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "items_examined",
+            counter: crate::WorkCounter::ItemsExamined,
             observed: 2,
             maximum: 1,
         })
@@ -527,7 +527,7 @@ async fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
     assert!(matches!(
         failure.error,
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_copied",
+            counter: crate::WorkCounter::BytesCopied,
             observed: 32,
             maximum: 0,
         })
@@ -565,7 +565,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
     .ok_or("zero encoding budget unexpectedly succeeded")?;
     assert!(matches!(project_extent_error(encode_error),
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_encoded", observed, maximum: 0,
+            counter: crate::WorkCounter::BytesEncoded, observed, maximum: 0,
         }) if observed == encoded_length
     ));
     assert_eq!(encode_limited.spent().unwrap(), encode_initial_work);
@@ -589,7 +589,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
     .ok_or("zero hash budget unexpectedly succeeded")?;
     assert!(matches!(project_extent_error(hash_error),
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_hashed", observed, maximum: 0,
+            counter: crate::WorkCounter::BytesHashed, observed, maximum: 0,
         }) if observed == encoded_length
     ));
     assert_eq!(hash_limited.spent().unwrap().bytes_encoded, encoded_length);
@@ -837,7 +837,7 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
     assert!(matches!(
         failure.error,
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "page_reads",
+            counter: crate::WorkCounter::PageReads,
             observed: 1,
             maximum: 0,
         })

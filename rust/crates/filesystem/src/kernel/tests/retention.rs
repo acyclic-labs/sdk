@@ -49,7 +49,7 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
         error,
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
             WorkError::BudgetExceeded {
-                counter: "bytes_copied",
+                counter: crate::WorkCounter::BytesCopied,
                 observed: 1..,
                 maximum: 0,
             }

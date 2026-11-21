@@ -500,7 +500,7 @@ mod tests {
             assert!(matches!(
                 error,
                 super::ProviderFailure::Work(crate::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: crate::WorkCounter::PeakAllocationBytes,
                     ..
                 })
             ));
@@ -574,7 +574,7 @@ mod tests {
             assert!(matches!(
                 error,
                 super::ProviderFailure::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_write_operations",
+                    counter: crate::WorkCounter::BackendWriteOperations,
                     ..
                 })
             ));
@@ -674,7 +674,7 @@ mod resource_scope_tests {
             assert!(matches!(
                 failure,
                 super::ProviderFailure::Work(crate::WorkError::BudgetExceeded {
-                    counter: "allocation_operations",
+                    counter: crate::WorkCounter::AllocationOperations,
                     ..
                 })
             ));

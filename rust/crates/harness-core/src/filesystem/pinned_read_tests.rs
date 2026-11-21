@@ -174,7 +174,7 @@ fn refusal(error: &Error) -> Refusal {
     };
     match budget {
         Some(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
             observed,
             maximum,
         }) => Refusal::PeakAllocation { observed, maximum },

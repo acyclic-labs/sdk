@@ -145,7 +145,7 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
     assert!(matches!(
         failure.error,
         RegularMutationError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_copied",
+            counter: crate::WorkCounter::BytesCopied,
             observed: 4,
             maximum: 3,
         })
@@ -344,7 +344,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
             "bytes_copied" => assert!(matches!(
                 failure.error,
                 RegularMutationError::Work(WorkError::BudgetExceeded {
-                    counter: "bytes_copied",
+                    counter: crate::WorkCounter::BytesCopied,
                     maximum: actual_maximum,
                     ..
                 }) if actual_maximum == maximum
@@ -355,7 +355,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
                     observed,
                     maximum: actual_maximum,
                 }) => {
-                    assert_eq!(counter, "object_bytes_read");
+                    assert_eq!(counter.as_str(), "object_bytes_read");
                     assert!(observed > actual_maximum);
                     assert!(actual_maximum < baseline.work.object_bytes_read);
                 }

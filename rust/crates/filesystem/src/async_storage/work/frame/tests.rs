@@ -37,7 +37,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
                 ..WorkCounters::UNCHARGED
             }),
             Err(AuthorityStoreError::Work(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 ..
             }))
         ));

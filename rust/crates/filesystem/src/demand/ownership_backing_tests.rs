@@ -152,7 +152,7 @@ fn header_limit() {
     assert!(matches!(
         result.unwrap(),
         Err(DemandError::Work(crate::WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             ..
         }))
     ));

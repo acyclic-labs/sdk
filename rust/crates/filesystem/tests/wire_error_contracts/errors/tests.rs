@@ -92,7 +92,7 @@ cases! {
     authority_io: authority(AuthorityStoreError::Io(io(std::io::ErrorKind::ConnectionRefused))) => Unavailable;
     authority_indeterminate: converted(AuthorityStoreError::Indeterminate {operation: "commit", source: io(std::io::ErrorKind::NotFound)}) => Unavailable;
     authority_rejected: authority(AuthorityStoreError::Rejected("rejected".into())) => FailedPrecondition;
-    authority_work: authority(AuthorityStoreError::Work(WorkError::BudgetExceeded { counter: "bytes", observed: 2, maximum: 1 })) => ResourceExhausted;
+    authority_work: authority(AuthorityStoreError::Work(WorkError::BudgetExceeded { counter: acyclic_fs::WorkCounter::Bytes, observed: 2, maximum: 1 })) => ResourceExhausted;
 
     object_cancelled: object(ObjectStoreError::Cancelled) => Cancelled;
     object_simulation: object(ObjectStoreError::Simulation("injected outage")) => Unavailable;

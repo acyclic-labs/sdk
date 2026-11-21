@@ -140,7 +140,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                     ..
                 }
             ),
@@ -207,7 +207,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                    counter: "bytes_hashed",
+                    counter: acyclic_fs_work::performance::WorkCounter::BytesHashed,
                     ..
                 }
             ),
@@ -467,7 +467,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                     ..
                 }
             ),

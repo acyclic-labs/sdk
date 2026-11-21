@@ -222,7 +222,7 @@ proptest::proptest! {
         maximum in proptest::prelude::any::<u32>(), cancelled in proptest::prelude::any::<bool>(), depth in 1usize..4,
     ) {
         let work = crate::WorkError::BudgetExceeded {
-            counter: "object_bytes_read", maximum: u64::from(maximum), observed: u64::from(maximum) + 1,
+            counter: crate::WorkCounter::ObjectBytesRead, maximum: u64::from(maximum), observed: u64::from(maximum) + 1,
         };
         let mut cause = if cancelled { FsError::Cancelled(crate::CancellationError) } else { FsError::Work(work) };
         for _ in 0..depth {

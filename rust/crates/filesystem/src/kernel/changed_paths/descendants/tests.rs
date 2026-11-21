@@ -172,7 +172,7 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
         assert!(matches!(
             walk.push(directory(4, metadata, entries), config, &mut work),
             Err(FsError::Work(crate::WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 ..
             }))
         ));

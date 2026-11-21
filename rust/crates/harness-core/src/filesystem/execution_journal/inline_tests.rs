@@ -934,7 +934,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
             matches!(
                 cause,
                 Some(acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                     ..
                 })
             ),

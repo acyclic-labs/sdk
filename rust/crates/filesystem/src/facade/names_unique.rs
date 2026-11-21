@@ -173,7 +173,7 @@ mod tests {
                 assert!(matches!(
                     refused,
                     Err(FsError::Work(WorkError::BudgetExceeded {
-                        counter: "bytes_copied",
+                        counter: crate::WorkCounter::BytesCopied,
                         ..
                     }))
                 ));

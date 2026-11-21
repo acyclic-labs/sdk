@@ -531,7 +531,7 @@ impl<O> RefusingProof<'_, O> {
             },
         }))?;
         Err(acyclic_fs::WorkError::BudgetExceeded {
-            counter: "items_examined",
+            counter: acyclic_fs::WorkCounter::ItemsExamined,
             observed: work.budget.items_examined + 1,
             maximum: work.budget.items_examined,
         }

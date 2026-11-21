@@ -164,7 +164,7 @@ async fn fence_before_append_preserves_nested_budget_failure_work()
         matches!(
             failure.error,
             AuthorityStoreError::Work(WorkError::BudgetExceeded {
-                counter: "backend_read_operations",
+                counter: crate::WorkCounter::BackendReadOperations,
                 maximum: 1,
                 ..
             })

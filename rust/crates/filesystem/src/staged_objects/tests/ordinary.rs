@@ -235,12 +235,12 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
                 assert!(matches!(
                     store.read_many(&requests, &mut work).await,
                     Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "items_returned",
+                        counter: crate::WorkCounter::ItemsReturned,
                         ..
                     })) | Err(ObjectStoreError::Native(
                         crate::NativeTreeMaterializationError::Work(
                             crate::WorkError::BudgetExceeded {
-                                counter: "items_returned",
+                                counter: crate::WorkCounter::ItemsReturned,
                                 ..
                             }
                         )

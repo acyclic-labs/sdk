@@ -321,7 +321,7 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
             matches!(
                 result,
                 Err(FsError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "allocation_operations",
+                    counter: crate::WorkCounter::AllocationOperations,
                     ..
                 }))
             ),

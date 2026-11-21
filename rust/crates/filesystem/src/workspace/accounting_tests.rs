@@ -163,7 +163,7 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
             assert!(matches!(
                 result,
                 Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }))
             ));
@@ -289,7 +289,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
                 assert!(matches!(
                     result,
                     Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
+                        counter: crate::WorkCounter::BackendReadOperations,
                         ..
                     }))
                 ));
@@ -362,7 +362,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
             assert!(matches!(
                 result,
                 Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }))
             ));
@@ -400,7 +400,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
     assert!(matches!(
         result,
         Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-            counter: "bytes_hashed",
+            counter: crate::WorkCounter::BytesHashed,
             ..
         }))
     ));
@@ -924,7 +924,7 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
                         matches!(
                             result,
                             Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                                counter: "backend_read_operations",
+                                counter: crate::WorkCounter::BackendReadOperations,
                                 ..
                             }))
                         ),
@@ -1040,7 +1040,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 assert!(matches!(
                     result,
                     Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
+                        counter: crate::WorkCounter::BackendReadOperations,
                         ..
                     }))
                 ));
@@ -1063,7 +1063,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 assert!(matches!(
                     result,
                     Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
+                        counter: crate::WorkCounter::BackendReadOperations,
                         ..
                     }))
                 ));
@@ -1121,7 +1121,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 assert!(matches!(
                     result,
                     Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
+                        counter: crate::WorkCounter::BackendReadOperations,
                         ..
                     }))
                 ));
@@ -1372,7 +1372,7 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
                     assert!(matches!(
                         result,
                         Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                            counter: "backend_read_operations",
+                            counter: crate::WorkCounter::BackendReadOperations,
                             ..
                         }))
                     ));
@@ -1478,7 +1478,7 @@ async fn policy_revision_retires_original_scratch_on_confirmation_close_and_with
                     &result,
                     Err(FsError::Authority(crate::AuthorityStoreError::Work(
                         crate::WorkError::BudgetExceeded {
-                            counter: "backend_read_operations",
+                            counter: crate::WorkCounter::BackendReadOperations,
                             ..
                         }
                     )))
@@ -1718,7 +1718,7 @@ async fn scalar_record_reads_retire_original_traversal_on_close_and_withdrawal()
             assert!(matches!(
                 result,
                 Err(FsError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }))
             ));

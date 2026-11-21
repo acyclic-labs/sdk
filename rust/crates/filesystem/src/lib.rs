@@ -388,8 +388,8 @@ pub use operation_window::{
 };
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
-    MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
-    WorkObservationError,
+    MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounter, WorkCounters,
+    WorkError, WorkObservationError,
 };
 pub use s3::{
     S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,

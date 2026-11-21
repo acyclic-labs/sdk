@@ -311,7 +311,7 @@ async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     assert!(matches!(
         failure.error,
         FsError::Work(WorkError::BudgetExceeded {
-            counter: "page_reads",
+            counter: crate::WorkCounter::PageReads,
             observed: 2,
             maximum: 0,
         })
@@ -908,7 +908,7 @@ async fn native_diff_denies_frontier_allocation_before_backend_work()
         result,
         Err(FsError::NativeKernel(
             crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 ..
             })
         ))

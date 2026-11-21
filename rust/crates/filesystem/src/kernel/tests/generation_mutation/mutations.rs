@@ -371,7 +371,7 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         matches!(
             denied.error,
             GenerationMutationError::Work(WorkError::BudgetExceeded {
-                counter: "backend_write_operations",
+                counter: crate::WorkCounter::BackendWriteOperations,
                 ..
             })
         ),

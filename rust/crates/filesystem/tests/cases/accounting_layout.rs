@@ -43,7 +43,10 @@ fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
     });
     assert_eq!(allocations.count_total, 1);
     assert_eq!(allocations.count_current, 1);
-    assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
+    assert_eq!(
+        u64::try_from(allocations.bytes_current),
+        Ok(allocations.bytes_total)
+    );
     assert_eq!(allocations.bytes_max, allocations.bytes_total);
     eprintln!("ledger allocator: {allocations:?}");
     assert_eq!(
@@ -109,7 +112,10 @@ fn resource_allowances_fund_each_actual_arc_and_release_the_chain() {
         });
         assert_eq!(allocations.count_total, 1);
         assert_eq!(allocations.count_current, 1);
-        assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
+        assert_eq!(
+            u64::try_from(allocations.bytes_current),
+            Ok(allocations.bytes_total)
+        );
         assert_eq!(allocations.bytes_max, allocations.bytes_total);
         assert_eq!(
             original.live_allocation_bytes().unwrap() - before,
@@ -205,7 +211,10 @@ fn assert_name_layout(name: &str, native: bool) -> Result<u64, Box<dyn std::erro
         u64::try_from(allocations.count_current)?,
         allocations.count_total
     );
-    assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
+    assert_eq!(
+        u64::try_from(allocations.bytes_current),
+        Ok(allocations.bytes_total)
+    );
     assert_eq!(allocations.bytes_max, allocations.bytes_total);
     assert_eq!(receipt.peak_allocation_bytes, allocations.bytes_total);
     assert_eq!(receipt.allocation_operations, allocations.count_total);

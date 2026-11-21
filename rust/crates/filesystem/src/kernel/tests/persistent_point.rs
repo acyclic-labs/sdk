@@ -425,7 +425,7 @@ fn owned_growth_admits_the_original_and_replacement_before_allocating()
                         FsError::Work(WorkError::BudgetExceeded { counter, .. })
                         | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
                             WorkError::BudgetExceeded { counter, .. },
-                        )) => assert_eq!(counter, cause),
+                        )) => assert_eq!(counter.as_str(), cause),
                         FsError::Cancelled(_)
                         | FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled) =>
                         {

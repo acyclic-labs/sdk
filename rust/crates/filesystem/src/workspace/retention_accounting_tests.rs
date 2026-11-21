@@ -41,7 +41,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
             assert!(matches!(
                 result,
                 Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }))
             ));

@@ -66,7 +66,7 @@ async fn cached_read_withdrawal_retains_original_admission_before_provider_compl
                     futures::poll!(read.as_mut()),
                     Poll::Ready(Err(ObjectStoreError::Work(
                         crate::WorkError::BudgetExceeded {
-                            counter: "items_examined",
+                            counter: crate::WorkCounter::ItemsExamined,
                             ..
                         }
                     )))

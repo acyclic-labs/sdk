@@ -26,7 +26,7 @@ impl QueryBudget {
         let observed = self.examined.checked_add(1).ok_or(WorkError::Overflow)?;
         if observed > self.maximum {
             return Err(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 observed,
                 maximum: self.maximum,
             });

@@ -126,7 +126,7 @@ fn an_exact_physical_metadata_budget_succeeds_and_one_byte_less_allocates_nothin
         if short {
             assert!(
                 matches!(result, Err(DemandError::Work(crate::WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes", observed, maximum: limit,
+                counter: crate::WorkCounter::PeakAllocationBytes, observed, maximum: limit,
             })) if observed == baseline + physical && limit == maximum)
             );
             assert_eq!(heap, acyclic_test_support::AllocationInfo::default());

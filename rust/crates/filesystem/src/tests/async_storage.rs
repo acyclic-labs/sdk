@@ -65,7 +65,7 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
             assert!(matches!(
                 result,
                 Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: crate::WorkCounter::PeakAllocationBytes,
                     ..
                 }))
             ));
@@ -88,7 +88,7 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
     assert!(matches!(
         store.read(object_id, bytes.len() as u64, &mut work).await,
         Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-            counter: "bytes_copied",
+            counter: crate::WorkCounter::BytesCopied,
             ..
         }))
     ));

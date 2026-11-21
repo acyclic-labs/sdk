@@ -81,7 +81,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 failure.error,
                 crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
                     crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
+                        counter: crate::WorkCounter::BackendReadOperations,
                         ..
                     }
                 ))
@@ -313,7 +313,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                         failure.error,
                         crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
                             crate::WorkError::BudgetExceeded {
-                                counter: "backend_read_operations",
+                                counter: crate::WorkCounter::BackendReadOperations,
                                 ..
                             }
                         ))
@@ -375,7 +375,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 failure.error,
                 crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
                     crate::WorkError::BudgetExceeded {
-                        counter: "allocation_operations",
+                        counter: crate::WorkCounter::AllocationOperations,
                         ..
                     }
                 ))
@@ -537,7 +537,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
         failure.error,
         crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
             crate::WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 ..
             }
         ))
@@ -589,7 +589,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     failure.error,
                     crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
                         crate::WorkError::BudgetExceeded {
-                            counter: "items_examined",
+                            counter: crate::WorkCounter::ItemsExamined,
                             ..
                         }
                     ))

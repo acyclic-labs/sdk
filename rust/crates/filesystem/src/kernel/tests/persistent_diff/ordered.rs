@@ -184,7 +184,7 @@ async fn retained_pair_frontier_keeps_early_output_and_cancellation_custody()
     assert!(matches!(
         failure,
         Err(FsError::Work(WorkError::BudgetExceeded {
-            counter: "items_examined",
+            counter: crate::WorkCounter::ItemsExamined,
             ..
         }))
     ));

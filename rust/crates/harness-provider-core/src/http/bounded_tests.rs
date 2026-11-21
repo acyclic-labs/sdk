@@ -48,7 +48,8 @@ fn relocation_requires_credit_for_both_original_and_replacement_buffers() -> Res
                     Err(Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                                counter: "peak_allocation_bytes",
+                                counter:
+                                    acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                                 ..
                             }
                         ),
@@ -101,7 +102,7 @@ proptest::proptest! {
             } else {
                 proptest::prop_assert!(matches!(result, Err(Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs_work::performance::WorkError::BudgetExceeded { counter: "items_examined", .. }
+                        acyclic_fs_work::performance::WorkError::BudgetExceeded { counter: acyclic_fs_work::performance::WorkCounter::ItemsExamined, .. }
                     ), ..
                 })), "the caller's item allowance must end collection");
             }

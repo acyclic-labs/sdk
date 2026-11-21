@@ -648,7 +648,7 @@ mod tests {
                 canonical_directory_path_held(directory.try_clone()?, &mut &work),
                 Err(NativeTreeMaterializationError::Work(
                     crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
+                        counter: crate::WorkCounter::BackendReadOperations,
                         ..
                     }
                 ))

@@ -336,7 +336,7 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
         error,
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
             crate::WorkError::BudgetExceeded {
-                counter: "backend_write_operations",
+                counter: crate::WorkCounter::BackendWriteOperations,
                 ..
             }
         ))
@@ -579,7 +579,7 @@ fn shared_destination_fence_retains_original_owner_after_denial()
         error,
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
             crate::WorkError::BudgetExceeded {
-                counter: "backend_write_operations",
+                counter: crate::WorkCounter::BackendWriteOperations,
                 ..
             }
         ))

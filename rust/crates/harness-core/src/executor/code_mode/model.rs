@@ -203,7 +203,8 @@ async fn check_bridge(text: &str) -> Observation<()> {
                     Some(crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                                counter: "peak_allocation_bytes",
+                                counter:
+                                    acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                                 ..
                             }
                         ),

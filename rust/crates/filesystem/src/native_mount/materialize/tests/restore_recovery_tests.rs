@@ -398,7 +398,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         matches!(
             no_sync.error,
             MaterializeError::Work(WorkError::BudgetExceeded {
-                counter: "durability_operations",
+                counter: crate::WorkCounter::DurabilityOperations,
                 maximum: 0,
                 ..
             })

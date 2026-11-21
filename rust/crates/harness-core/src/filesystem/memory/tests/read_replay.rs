@@ -135,7 +135,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                    counter: "source_bytes_read",
+                    counter: acyclic_fs_work::performance::WorkCounter::SourceBytesRead,
                     ..
                 }
             ),

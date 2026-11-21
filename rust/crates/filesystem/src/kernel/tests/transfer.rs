@@ -93,7 +93,7 @@ async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
             failure.error,
             GenerationTransferError::Object(ObjectStoreError::Work(WorkError::BudgetExceeded {
                 counter: observed, ..
-            })) if observed == counter
+            })) if observed.as_str() == counter
         ));
         failure.work.as_deref().unwrap().verify(bound)?;
         assert!(matches!(

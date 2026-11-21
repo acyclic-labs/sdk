@@ -163,13 +163,13 @@ async fn mixed_read_plan_admits_request_copies_before_backend_submission()
                     matches!(
                         result,
                         Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                            counter: "bytes_copied",
+                            counter: crate::WorkCounter::BytesCopied,
                             observed,
                             maximum,
                         })) | Err(ObjectStoreError::Native(
                             NativeTreeMaterializationError::Work(
                                 crate::WorkError::BudgetExceeded {
-                                    counter: "bytes_copied",
+                                    counter: crate::WorkCounter::BytesCopied,
                                     observed,
                                     maximum,
                                 }

@@ -209,7 +209,7 @@ async fn preallocation_budget_rejections_report_only_completed_work()
     assert!(matches!(
         failure.error,
         RegularMutationError::Work(WorkError::BudgetExceeded {
-            counter: "allocation_operations",
+            counter: crate::WorkCounter::AllocationOperations,
             observed: 1,
             maximum: 0,
         })
@@ -245,7 +245,7 @@ async fn preallocation_budget_rejections_report_only_completed_work()
         matches!(
             failure.error,
             RegularMutationError::Work(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 observed,
                 maximum,
             }) if observed == failure.work().unwrap().items_examined + ObjectId::ENCODED_LEN as u64

@@ -56,7 +56,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                     Err(FsError::Object(crate::ObjectStoreError::Native(
                         crate::NativeTreeMaterializationError::Work(
                             crate::WorkError::BudgetExceeded {
-                                counter: "bytes_hashed",
+                                counter: crate::WorkCounter::BytesHashed,
                                 ..
                             }
                         )
@@ -196,7 +196,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                             crate::AuthorityStoreError::NativeOriginal(
                                 crate::NativeTreeMaterializationError::Work(
                                     crate::WorkError::BudgetExceeded {
-                                        counter: "backend_read_operations",
+                                        counter: crate::WorkCounter::BackendReadOperations,
                                         ..
                                     }
                                 )

@@ -674,7 +674,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
             assert!(matches!(failure.error,
                 GitCaptureAuthenticationError::Capture(GitCaptureError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded { counter, .. })))
                 | GitCaptureAuthenticationError::Lineage(crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded { counter, .. })))
-                if counter == expected));
+                if counter.as_str() == expected));
         }
         assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     }

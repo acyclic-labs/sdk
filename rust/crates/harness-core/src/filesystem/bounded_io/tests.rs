@@ -156,7 +156,8 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
                 Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
                         acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                            counter: "allocation_operations",
+                            counter:
+                                acyclic_fs_work::performance::WorkCounter::AllocationOperations,
                             ..
                         }
                     ),

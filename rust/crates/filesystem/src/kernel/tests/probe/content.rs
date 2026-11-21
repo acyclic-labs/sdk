@@ -59,7 +59,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
     assert!(matches!(
         failure.error,
         AuthenticatedProbeError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_hashed",
+            counter: crate::WorkCounter::BytesHashed,
             observed,
             maximum,
         }) if observed == hash_bytes && maximum == hash_bytes - 1
@@ -104,7 +104,7 @@ fn canonical_content_range_surface_matches_golden_vector_and_fails_before_work()
     assert!(matches!(
         cases[1].error,
         AuthenticatedProbeError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_hashed",
+            counter: crate::WorkCounter::BytesHashed,
             observed: 52,
             maximum: 51,
         })

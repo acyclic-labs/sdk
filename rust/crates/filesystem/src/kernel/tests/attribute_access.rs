@@ -249,7 +249,7 @@ async fn decoded_attribute_page_is_admitted_before_allocation()
     assert!(matches!(
         failure.error,
         AttributeLookupError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             ..
         })
     ));

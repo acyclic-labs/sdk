@@ -249,7 +249,7 @@ fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandErr
             &mut DemandWork::new(budget, &stop)
         ),
         Err(DemandError::Work(WorkError::BudgetExceeded {
-            counter: "durability_operations",
+            counter: crate::WorkCounter::DurabilityOperations,
             maximum: 0,
             ..
         }))

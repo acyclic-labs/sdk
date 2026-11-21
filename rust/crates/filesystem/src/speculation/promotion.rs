@@ -602,7 +602,7 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
             .ok_or_else(|| {
             ObjectFailure::new(
                 ObjectStoreError::Work(WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: crate::WorkCounter::PeakAllocationBytes,
                     observed: live_bytes,
                     maximum: budget.peak_allocation_bytes,
                 }),

@@ -308,7 +308,7 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         ),
         Err(crate::FsError::NativeKernel(
             crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-                counter: "bytes_copied",
+                counter: crate::WorkCounter::BytesCopied,
                 ..
             })
         ))
@@ -621,7 +621,7 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
                 refusal,
                 crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
                     crate::WorkError::BudgetExceeded {
-                        counter: "object_bytes_read",
+                        counter: crate::WorkCounter::ObjectBytesRead,
                         ..
                     }
                 ))
@@ -630,7 +630,7 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
             assert!(matches!(
                 refusal,
                 crate::FsError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "object_bytes_read",
+                    counter: crate::WorkCounter::ObjectBytesRead,
                     ..
                 })
             ));

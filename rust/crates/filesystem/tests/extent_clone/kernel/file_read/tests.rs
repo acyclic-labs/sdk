@@ -213,7 +213,7 @@ async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn
     assert!(matches!(
         rejected.error,
         FileRangeReadError::Work(WorkError::BudgetExceeded {
-            counter: "output_bytes",
+            counter: acyclic_fs::WorkCounter::OutputBytes,
             ..
         })
     ));

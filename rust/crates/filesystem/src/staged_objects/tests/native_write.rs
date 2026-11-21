@@ -550,7 +550,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
         assert!(matches!(
             store.spill_locked(&mut spill_file, &mut unfunded).await,
             Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 ..
             }))
         ));

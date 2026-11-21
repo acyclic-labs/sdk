@@ -446,7 +446,7 @@ fn new_group(
         .min(usize::try_from(accounting.remaining()?.items_examined).unwrap_or(usize::MAX));
     if maximum == 0 {
         return Err(WorkError::BudgetExceeded {
-            counter: "items_examined",
+            counter: crate::WorkCounter::ItemsExamined,
             observed: 1,
             maximum: 0,
         }

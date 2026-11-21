@@ -137,7 +137,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
     assert!(matches!(
         store.put(object_id, bytes.clone(), &mut work).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
             ..
         }))
     ));
@@ -177,7 +177,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
     assert!(matches!(
         store.read(object_id, 1_024, &mut work).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
             ..
         }))
     ));
@@ -321,7 +321,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     assert!(matches!(
         store.read_many(&requests, &mut work).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
             ..
         }))
     ));
@@ -385,7 +385,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         assert!(matches!(
             store.put_many(&originals, &mut work).await,
             Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
-                counter: "object_bytes_read",
+                counter: acyclic_fs::WorkCounter::ObjectBytesRead,
                 ..
             }))
         ));

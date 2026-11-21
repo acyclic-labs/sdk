@@ -53,7 +53,7 @@ proptest! {
             prop_assert!(matches!(actual, Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
                     acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                        counter: "items_examined", ..
+                        counter: acyclic_fs_work::performance::WorkCounter::ItemsExamined, ..
                     }), ..
             })), "unfunded query scan must refuse");
         } else {

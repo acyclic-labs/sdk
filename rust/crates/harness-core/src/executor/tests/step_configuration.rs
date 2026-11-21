@@ -410,7 +410,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
                     acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                        counter: "peak_allocation_bytes",
+                        counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                         ..
                     }
                 ),

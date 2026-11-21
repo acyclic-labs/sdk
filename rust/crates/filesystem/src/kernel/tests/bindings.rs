@@ -120,7 +120,7 @@ fn binding_pages_preserve_aliases_sealed_children_and_original_credit()
         let mut denied = KernelAccounting::standalone(budget, &cancellation);
         assert!(matches!(
             encode(&leaf, &mut denied),
-            Err(FsError::Work(crate::WorkError::BudgetExceeded { counter: actual, .. })) if actual == counter
+            Err(FsError::Work(crate::WorkError::BudgetExceeded { counter: actual, .. })) if actual.as_str() == counter
         ));
         assert_eq!(
             denied

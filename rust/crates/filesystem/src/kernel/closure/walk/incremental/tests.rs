@@ -137,7 +137,7 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
         refused,
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
             WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 ..
             }
         ))

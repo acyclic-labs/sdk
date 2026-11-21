@@ -108,7 +108,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
     assert!(matches!(
         failure.error,
         WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-            counter: "allocation_operations",
+            counter: crate::WorkCounter::AllocationOperations,
             ..
         })
     ));

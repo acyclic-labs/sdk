@@ -109,7 +109,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
             let Err(Error::NativeWork {
                 cause:
                     acyclic_fs::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                        counter: "items_examined",
+                        counter: acyclic_fs_work::performance::WorkCounter::ItemsExamined,
                         observed,
                         maximum,
                     }),

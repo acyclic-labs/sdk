@@ -433,7 +433,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
         assert!(matches!(
             failure,
             crate::FsError::Directory(DirectoryReadError::Work(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 ..
             }))
         ));

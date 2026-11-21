@@ -86,7 +86,8 @@ mod tests {
                     Some(crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                                counter: "allocation_operations",
+                                counter:
+                                    acyclic_fs_work::performance::WorkCounter::AllocationOperations,
                                 ..
                             }
                         ),
@@ -119,7 +120,7 @@ mod tests {
                     Some(crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                                counter: "peak_allocation_bytes",
+                                counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes,
                                 maximum,
                                 ..
                             }
@@ -174,7 +175,7 @@ mod tests {
                         Some(crate::Error::NativeWork {
                             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                                 acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                                    counter: "peak_allocation_bytes", observed, maximum,
+                                    counter: acyclic_fs_work::performance::WorkCounter::PeakAllocationBytes, observed, maximum,
                                 }
                             ), ..
                         }) if *maximum == baseline + bytes && *observed > *maximum

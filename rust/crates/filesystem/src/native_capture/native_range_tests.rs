@@ -112,7 +112,7 @@ async fn original_native_byte_and_copy_refusals_precede_io()
         assert!(matches!(error,
                 crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
                     crate::WorkError::BudgetExceeded { counter: refused, .. }
-                )) if refused == counter));
+                )) if refused.as_str() == counter));
         assert_eq!(destination, [0xa5; 8]);
         assert_eq!(source.remaining(), 3);
     }
@@ -370,7 +370,7 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
             };
             assert!(matches!(result, Err(crate::FsError::NativeKernel(
                 crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { counter: refused, .. })
-            )) if refused == expected));
+            )) if refused.as_str() == expected));
         }
         assert_eq!(source.remaining(), 3);
         assert_eq!(original.receipt().unwrap().source_bytes_read, 0);

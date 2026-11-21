@@ -220,7 +220,7 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
             assert!(matches!(
                 result,
                 Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: crate::WorkCounter::PeakAllocationBytes,
                     ..
                 }))
             ));

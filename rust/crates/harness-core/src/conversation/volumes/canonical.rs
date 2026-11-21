@@ -186,7 +186,7 @@ mod tests {
                     &restored_result,
                     Err(Error::NativeWork {
                         cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                            counter: "bytes_copied",
+                            counter: acyclic_fs_work::performance::WorkCounter::BytesCopied,
                             ..
                         }),
                         ..

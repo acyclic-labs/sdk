@@ -56,7 +56,7 @@ fn operation(
             assert!(matches!(error,
                 crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
                     counter, maximum, ..
-                }) if Some(maximum) == allowance && counter == "allocation_operations"
+                }) if Some(maximum) == allowance && counter.as_str() == "allocation_operations"
             ));
             assert!(
                 preserved(source.as_ref(), &path)?,
@@ -88,7 +88,7 @@ fn operation(
         assert!(
             matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
                 counter, maximum, observed,
-            })) if allowance.is_some_and(|allowance| maximum <= allowance) && observed > maximum && counter == "allocation_operations"),
+            })) if allowance.is_some_and(|allowance| maximum <= allowance) && observed > maximum && counter.as_str() == "allocation_operations"),
             "allowance {allowance:?}: {error:?}; source {:?}",
             std::error::Error::source(&error)
         );
@@ -288,7 +288,7 @@ fn completion_retains_credit_after_source_acceptance(
     assert!(matches!(original.reserve_work(credit.delta(1)),
         Err(crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
             counter, ..
-        })) if counter == expected
+        })) if counter.as_str() == expected
     ));
     drop(pressure.held.lock().take());
     let health = original.admit(crate::WorkCounters::UNCHARGED);

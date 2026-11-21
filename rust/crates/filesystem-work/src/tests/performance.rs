@@ -154,108 +154,128 @@ proptest::proptest! {
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     mod borrowed {
-        use super::super::{WorkBudget, WorkCounters, WorkError, counter_fields};
+        use super::super::{WorkBudget, WorkCounter, WorkCounters, WorkError, counter_fields};
         use proptest::prelude::*;
 
         fn baseline(observed: WorkCounters, budget: WorkBudget) -> Result<(), WorkError> {
             let fields = [
                 (
-                    "authority_records_read",
+                    WorkCounter::AuthorityRecordsRead,
                     observed.authority_records_read,
                     budget.authority_records_read,
                 ),
                 (
-                    "authority_records_appended",
+                    WorkCounter::AuthorityRecordsAppended,
                     observed.authority_records_appended,
                     budget.authority_records_appended,
                 ),
                 (
-                    "authority_bytes_read",
+                    WorkCounter::AuthorityBytesRead,
                     observed.authority_bytes_read,
                     budget.authority_bytes_read,
                 ),
                 (
-                    "authority_bytes_written",
+                    WorkCounter::AuthorityBytesWritten,
                     observed.authority_bytes_written,
                     budget.authority_bytes_written,
                 ),
                 (
-                    "object_probes",
+                    WorkCounter::ObjectProbes,
                     observed.object_probes,
                     budget.object_probes,
                 ),
                 (
-                    "backend_read_operations",
+                    WorkCounter::BackendReadOperations,
                     observed.backend_read_operations,
                     budget.backend_read_operations,
                 ),
                 (
-                    "backend_write_operations",
+                    WorkCounter::BackendWriteOperations,
                     observed.backend_write_operations,
                     budget.backend_write_operations,
                 ),
                 (
-                    "durability_operations",
+                    WorkCounter::DurabilityOperations,
                     observed.durability_operations,
                     budget.durability_operations,
                 ),
-                ("page_reads", observed.page_reads, budget.page_reads),
-                ("page_writes", observed.page_writes, budget.page_writes),
                 (
-                    "object_bytes_read",
+                    WorkCounter::PageReads,
+                    observed.page_reads,
+                    budget.page_reads,
+                ),
+                (
+                    WorkCounter::PageWrites,
+                    observed.page_writes,
+                    budget.page_writes,
+                ),
+                (
+                    WorkCounter::ObjectBytesRead,
                     observed.object_bytes_read,
                     budget.object_bytes_read,
                 ),
                 (
-                    "object_bytes_written",
+                    WorkCounter::ObjectBytesWritten,
                     observed.object_bytes_written,
                     budget.object_bytes_written,
                 ),
-                ("bytes_hashed", observed.bytes_hashed, budget.bytes_hashed),
-                ("bytes_copied", observed.bytes_copied, budget.bytes_copied),
                 (
-                    "bytes_encoded",
+                    WorkCounter::BytesHashed,
+                    observed.bytes_hashed,
+                    budget.bytes_hashed,
+                ),
+                (
+                    WorkCounter::BytesCopied,
+                    observed.bytes_copied,
+                    budget.bytes_copied,
+                ),
+                (
+                    WorkCounter::BytesEncoded,
                     observed.bytes_encoded,
                     budget.bytes_encoded,
                 ),
                 (
-                    "source_bytes_read",
+                    WorkCounter::SourceBytesRead,
                     observed.source_bytes_read,
                     budget.source_bytes_read,
                 ),
                 (
-                    "source_path_components",
+                    WorkCounter::SourcePathComponents,
                     observed.source_path_components,
                     budget.source_path_components,
                 ),
                 (
-                    "source_entries_visited",
+                    WorkCounter::SourceEntriesVisited,
                     observed.source_entries_visited,
                     budget.source_entries_visited,
                 ),
-                ("output_bytes", observed.output_bytes, budget.output_bytes),
                 (
-                    "items_examined",
+                    WorkCounter::OutputBytes,
+                    observed.output_bytes,
+                    budget.output_bytes,
+                ),
+                (
+                    WorkCounter::ItemsExamined,
                     observed.items_examined,
                     budget.items_examined,
                 ),
                 (
-                    "items_returned",
+                    WorkCounter::ItemsReturned,
                     observed.items_returned,
                     budget.items_returned,
                 ),
                 (
-                    "allocation_operations",
+                    WorkCounter::AllocationOperations,
                     observed.allocation_operations,
                     budget.allocation_operations,
                 ),
                 (
-                    "peak_allocation_bytes",
+                    WorkCounter::PeakAllocationBytes,
                     observed.peak_allocation_bytes,
                     budget.peak_allocation_bytes,
                 ),
                 (
-                    "materializations",
+                    WorkCounter::Materializations,
                     observed.materializations,
                     budget.materializations,
                 ),

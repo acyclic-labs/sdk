@@ -445,7 +445,7 @@ async fn post_read_budget_failure_releases_every_decoded_allocation()
     assert!(matches!(
         result,
         Err(crate::FsError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_copied",
+            counter: crate::WorkCounter::BytesCopied,
             ..
         }))
     ));

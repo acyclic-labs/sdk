@@ -141,7 +141,7 @@ async fn unordered_sort_work_is_admitted_before_tree_access()
     assert!(matches!(
         failure.error,
         TreeMutationError::Work(WorkError::BudgetExceeded {
-            counter: "items_examined",
+            counter: acyclic_fs::WorkCounter::ItemsExamined,
             observed: 1,
             maximum: 0,
         })
@@ -395,7 +395,7 @@ async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn
     assert!(matches!(
         failure.error,
         TreeMutationError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
             observed,
             maximum: observed_maximum,
         }) if observed > 0 && observed_maximum == 0
@@ -442,7 +442,7 @@ async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std:
         matches!(
             failure.error,
             TreeMutationError::Work(WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes",
+                counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
                 observed,
                 maximum: observed_maximum,
             }) if observed > observed_maximum && observed_maximum <= maximum

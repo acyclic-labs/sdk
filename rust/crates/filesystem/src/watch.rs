@@ -4968,7 +4968,7 @@ mod demand_admission_tests {
         assert!(matches!(
             failure.error,
             DemandError::Work(WorkError::BudgetExceeded {
-                counter: "backend_read_operations",
+                counter: crate::WorkCounter::BackendReadOperations,
                 ..
             })
         ));

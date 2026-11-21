@@ -937,7 +937,7 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         assert!(matches!(
             error,
             DemandError::Work(crate::WorkError::BudgetExceeded {
-                counter: "bytes_hashed",
+                counter: crate::WorkCounter::BytesHashed,
                 ..
             })
         ));

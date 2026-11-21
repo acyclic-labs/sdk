@@ -111,7 +111,7 @@ async fn original_path_frame_refusal_preserves_successful_prefix_without_backend
         failure,
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
             WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 observed: 2,
                 maximum: 1,
             }

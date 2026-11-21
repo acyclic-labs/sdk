@@ -486,7 +486,7 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
         matches!(
             failure.error,
             BlobReadError::Work(WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes",
+                counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
                 observed,
                 maximum: observed_maximum,
             }) if observed > observed_maximum && observed_maximum <= maximum
@@ -670,7 +670,7 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         matches!(
             failure.error,
             BlobBuildError::Work(WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes",
+                counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
                 observed,
                 maximum: observed_maximum,
             }) if observed > observed_maximum && observed_maximum <= maximum

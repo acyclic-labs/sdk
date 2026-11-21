@@ -269,7 +269,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     assert!(matches!(
         failure.error,
         WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-            counter: "items_examined",
+            counter: crate::WorkCounter::ItemsExamined,
             ..
         })
     ));

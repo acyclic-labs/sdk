@@ -146,7 +146,7 @@ fn one_byte_short_budget_rejects_before_claim() -> Result<(), crate::FsError> {
     assert!(matches!(
         error,
         AllocationError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             observed: 64,
             maximum: 63,
         })
@@ -239,7 +239,7 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
                         Err(crate::FsError::NativeKernel(
                             crate::NativeTreeMaterializationError::Work(
                                 WorkError::BudgetExceeded {
-                                    counter: "bytes_copied",
+                                    counter: crate::WorkCounter::BytesCopied,
                                     ..
                                 }
                             )

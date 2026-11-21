@@ -101,7 +101,7 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
                 matches!(
                     failure.error,
                     FsError::Work(WorkError::BudgetExceeded {
-                        counter: "bytes_copied",
+                        counter: crate::WorkCounter::BytesCopied,
                         ..
                     })
                 ),

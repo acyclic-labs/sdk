@@ -255,7 +255,7 @@ async fn pre_cancel_and_output_admission_do_no_backend_work()
     assert!(matches!(
         failure.error,
         DirectoryReadError::Work(crate::performance::WorkError::BudgetExceeded {
-            counter: "items_returned",
+            counter: crate::WorkCounter::ItemsReturned,
             ..
         })
     ));
@@ -338,7 +338,7 @@ async fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dy
     assert!(matches!(
         failure.error,
         DirectoryReadError::Work(crate::performance::WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             ..
         })
     ));

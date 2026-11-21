@@ -340,7 +340,7 @@ async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
                 result,
                 Err(LazyWorkspaceError::Filesystem(crate::FsError::Work(
                     crate::WorkError::BudgetExceeded {
-                        counter: "allocation_operations",
+                        counter: crate::WorkCounter::AllocationOperations,
                         ..
                     }
                 )))

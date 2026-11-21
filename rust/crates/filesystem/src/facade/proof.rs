@@ -207,7 +207,7 @@ impl DependencyLedger {
                         .ok_or(WorkError::Overflow)?;
                     if peak > budget.peak_allocation_bytes {
                         return Err(WorkError::BudgetExceeded {
-                            counter: "peak_allocation_bytes",
+                            counter: crate::WorkCounter::PeakAllocationBytes,
                             observed: peak,
                             maximum: budget.peak_allocation_bytes,
                         }

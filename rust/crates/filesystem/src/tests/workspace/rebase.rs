@@ -37,7 +37,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
             refused,
             Err(crate::OperationFailure {
                 error: WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }),
                 ..
@@ -84,7 +84,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         assert!(matches!(
             result,
             Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                counter: "backend_read_operations",
+                counter: crate::WorkCounter::BackendReadOperations,
                 ..
             }))
         ));

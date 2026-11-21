@@ -253,7 +253,7 @@ pub(super) fn claim_read_allocation(
             .peak_allocation_bytes
             .checked_sub(external)
             .ok_or(WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes",
+                counter: crate::WorkCounter::PeakAllocationBytes,
                 observed: external,
                 maximum: budget.peak_allocation_bytes,
             })?;

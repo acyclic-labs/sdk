@@ -153,7 +153,7 @@ async fn output_bound_is_admitted_before_backend_work() -> Result<(), Box<dyn st
     assert!(matches!(
         failure.error,
         DirectoryReadError::Work(WorkError::BudgetExceeded {
-            counter: "items_returned",
+            counter: acyclic_fs::WorkCounter::ItemsReturned,
             ..
         })
     ));

@@ -1397,7 +1397,7 @@ mod tests {
                 Err(Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
                         acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                            counter: "items_examined",
+                            counter: acyclic_fs_work::performance::WorkCounter::ItemsExamined,
                             ..
                         }
                     ),
@@ -1717,7 +1717,7 @@ mod tests {
                         cause,
                         Some(acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs_work::performance::WorkError::BudgetExceeded {
-                                counter: "bytes_copied",
+                                counter: acyclic_fs_work::performance::WorkCounter::BytesCopied,
                                 ..
                             }
                         ))

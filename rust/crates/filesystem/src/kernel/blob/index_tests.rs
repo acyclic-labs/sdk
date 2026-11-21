@@ -95,11 +95,11 @@ fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn s
             matches!(
                 result,
                 Err(FsError::Work(WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: crate::WorkCounter::PeakAllocationBytes,
                     ..
                 })) | Err(FsError::NativeKernel(
                     crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                        counter: "peak_allocation_bytes",
+                        counter: crate::WorkCounter::PeakAllocationBytes,
                         ..
                     })
                 ))

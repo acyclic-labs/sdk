@@ -211,7 +211,7 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
             failure.0,
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
                 crate::WorkError::BudgetExceeded { counter, .. }
-            )) if counter == if copying { "bytes_copied" } else { "allocation_operations" }
+            )) if counter.as_str() == if copying { "bytes_copied" } else { "allocation_operations" }
         ));
     }
     Ok(())

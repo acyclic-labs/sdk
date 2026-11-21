@@ -697,7 +697,7 @@ async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
     assert!(matches!(
         failure.error,
         ObjectStoreError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             observed: 65,
             maximum: 64,
         })

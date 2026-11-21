@@ -62,7 +62,7 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
             .verify(b"hello", &mut Some(&mut denied_io)),
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_hashed",
+                counter: acyclic_fs_work::performance::WorkCounter::BytesHashed,
                 ..
             }),
             custody: None,
@@ -93,7 +93,7 @@ fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result
         source.copy(&mut Some(&mut io)),
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_copied",
+                counter: acyclic_fs_work::performance::WorkCounter::BytesCopied,
                 ..
             }),
             ..
@@ -149,7 +149,7 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
         state.append(message(&content, 5), &mut Some(&mut io)),
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_hashed",
+                counter: acyclic_fs_work::performance::WorkCounter::BytesHashed,
                 ..
             }),
             custody: None,
@@ -179,7 +179,7 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
         state.append(message(&content, 5), &mut Some(&mut io)),
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: acyclic_fs_work::performance::WorkCounter::AllocationOperations,
                 ..
             }),
             custody: None,

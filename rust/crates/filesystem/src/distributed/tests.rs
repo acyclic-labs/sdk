@@ -211,7 +211,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
             store.policy_cut(authority, &mut work).await,
             Err(AuthorityStoreError::Work(
                 crate::WorkError::BudgetExceeded {
-                    counter: "authority_records_read",
+                    counter: crate::WorkCounter::AuthorityRecordsRead,
                     ..
                 }
             ))

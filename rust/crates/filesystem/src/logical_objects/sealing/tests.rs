@@ -161,7 +161,7 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
                     counter,
                     ..
                 }))),
-            ) => assert_eq!(counter, "items_examined"),
+            ) => assert_eq!(counter.as_str(), "items_examined"),
             _ => return Err("opening lost its original result".into()),
         }
         assert_eq!(work.spent().unwrap().items_examined, items);

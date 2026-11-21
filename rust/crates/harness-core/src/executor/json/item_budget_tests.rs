@@ -61,7 +61,7 @@ mod native {
                 Err(crate::Error::NativeWork {
                     cause:
                         acyclic_fs::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                            counter: "items_examined",
+                            counter: acyclic_fs_work::performance::WorkCounter::ItemsExamined,
                             observed,
                             maximum: LIMIT,
                         }),

@@ -822,7 +822,7 @@ async fn native_merge_original_allocation_denial_precedes_backend_work()
         result,
         Err(FsError::NativeKernel(
             crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "allocation_operations",
+                counter: crate::WorkCounter::AllocationOperations,
                 ..
             })
         ))

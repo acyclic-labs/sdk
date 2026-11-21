@@ -36,19 +36,19 @@ async fn identity_copy_refusal_preserves_prior_planning_work()
                 &failure.error,
                 GenerationMutationError::Regular(
                     RegularMutationError::Work(WorkError::BudgetExceeded {
-                        counter: "bytes_copied",
+                        counter: crate::WorkCounter::BytesCopied,
                         observed: 1..,
                         maximum: 0,
                     }) | RegularMutationError::Extent(ExtentMutationError::Work(
                         WorkError::BudgetExceeded {
-                            counter: "bytes_copied",
+                            counter: crate::WorkCounter::BytesCopied,
                             observed: 1..,
                             maximum: 0,
                         }
                     ))
                 ) | GenerationMutationError::FileRecord(super::super::FileRecordReadError::Work(
                     WorkError::BudgetExceeded {
-                        counter: "bytes_copied",
+                        counter: crate::WorkCounter::BytesCopied,
                         observed: 1..,
                         maximum: 0,
                     }

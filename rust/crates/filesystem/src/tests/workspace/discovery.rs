@@ -33,7 +33,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
             refused,
             Err(crate::OperationFailure {
                 error: WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }),
                 ..

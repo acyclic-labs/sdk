@@ -130,7 +130,7 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         // uncharged unzip would incorrectly succeed with no output copy credit.
         let error = order_host_checkout_union(observed, paths, Some(1), &scope.native).unwrap_err();
         let refused_copy = matches!(error, CaptureError::Kernel(error) if matches!(
-            *error, crate::FsError::Work(WorkError::BudgetExceeded { counter: "bytes_copied", .. }),
+            *error, crate::FsError::Work(WorkError::BudgetExceeded { counter: crate::WorkCounter::BytesCopied, .. }),
         ));
         prop_assert!(refused_copy, "the original output copy allowance must refuse");
         drop((scope, denied));

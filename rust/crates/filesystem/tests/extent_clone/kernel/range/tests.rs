@@ -733,7 +733,7 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
     assert!(matches!(
         failure.error,
         ExtentReadError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: acyclic_fs::WorkCounter::PeakAllocationBytes,
             observed,
             maximum: observed_maximum,
         }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum

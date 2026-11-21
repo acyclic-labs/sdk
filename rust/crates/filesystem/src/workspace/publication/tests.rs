@@ -300,7 +300,7 @@ async fn reservation_preserves_original_live_peak_and_refuses_before_publication
             assert!(matches!(
                 result,
                 Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_write_operations",
+                    counter: crate::WorkCounter::BackendWriteOperations,
                     ..
                 }))
             ));

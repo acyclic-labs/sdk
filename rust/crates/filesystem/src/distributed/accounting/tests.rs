@@ -173,7 +173,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         assert!(
             matches!(result, Err(AuthorityStoreError::Work(crate::WorkError::BudgetExceeded {
                 counter: denied, ..
-            })) if denied == counter),
+            })) if denied.as_str() == counter),
             "historical replay did not preserve the denied {counter} cause"
         );
         let spent = work.spent().unwrap();

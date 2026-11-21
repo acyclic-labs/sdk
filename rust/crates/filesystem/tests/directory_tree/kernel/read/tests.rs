@@ -74,7 +74,7 @@ async fn budget_stops_before_an_unadmitted_child_read() -> Result<(), Box<dyn st
         .await,
         Err(OperationFailure {
             error: TreeReadError::Work(WorkError::BudgetExceeded {
-                counter: "page_reads",
+                counter: acyclic_fs::WorkCounter::PageReads,
                 ..
             }),
             ..

@@ -739,7 +739,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
             matches!(
                 failure,
                 WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
+                    counter: crate::WorkCounter::PeakAllocationBytes,
                     observed,
                     maximum,
                 }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::CreatedGeneration>()) as u64

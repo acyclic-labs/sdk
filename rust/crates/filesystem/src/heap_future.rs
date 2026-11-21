@@ -347,7 +347,7 @@ where
         .checked_sub(standing)
         .ok_or_else(|| {
         crate::OperationFailure::before_work(map_work(crate::WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: crate::WorkCounter::PeakAllocationBytes,
             observed: standing,
             maximum: budget.peak_allocation_bytes,
         }))
@@ -573,7 +573,7 @@ mod tests {
         assert_eq!(
             failure.error,
             TestError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_copied",
+                counter: crate::WorkCounter::BytesCopied,
                 observed: 8,
                 maximum: 7,
             })

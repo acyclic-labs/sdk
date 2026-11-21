@@ -317,7 +317,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
             assert!(matches!(
                 result,
                 Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "backend_read_operations",
+                    counter: crate::WorkCounter::BackendReadOperations,
                     ..
                 }))
             ));

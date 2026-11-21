@@ -327,7 +327,7 @@ fn footprint_query_charges_the_exact_bounded_prefix() -> Proof {
             assert_eq!(
                 observed.independent,
                 Err(WorkError::BudgetExceeded {
-                    counter: "items_examined",
+                    counter: crate::WorkCounter::ItemsExamined,
                     observed: maximum + 1,
                     maximum,
                 })
@@ -383,7 +383,7 @@ fn footprint_query_charges_the_exact_bounded_prefix() -> Proof {
         assert_eq!(
             refused.independent,
             Err(WorkError::BudgetExceeded {
-                counter: "items_examined",
+                counter: crate::WorkCounter::ItemsExamined,
                 observed: observed.items_examined,
                 maximum: observed.items_examined - 1,
             })
@@ -422,7 +422,7 @@ fn footprint_query_charges_the_exact_bounded_prefix() -> Proof {
                     Ok(false)
                 } else {
                     Err(WorkError::BudgetExceeded {
-                        counter: "items_examined",
+                        counter: crate::WorkCounter::ItemsExamined,
                         observed: maximum + 1,
                         maximum,
                     })
