@@ -99,7 +99,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   const parser = await mutant('./source-policy/index.mjs', original, replacement);
   assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser.source), {name: 'AssertionError'});
  }
- const lexer = await mutant('./source-policy/index.mjs', "t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ?", 'false ?');
+ const lexer = await mutant('./source-policy/index.mjs', "t.kind === 'literal' && (embeddedTimer(t.value) || embeddedTimer(escapedSpelling(t.value))) ?", 'false ?');
  assert.throws(() => targets.fuzz(Buffer.from('original'), lexer.source.pollingSites), {name: 'AssertionError'});
  const graph = await mutant('./source-policy/project.mjs',
   'if (!unresolved && !component?.hazardous) continue;', 'if (!unresolved) continue;');

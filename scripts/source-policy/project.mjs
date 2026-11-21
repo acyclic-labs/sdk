@@ -3,7 +3,7 @@ import {posix} from 'node:path';
 import ts from 'typescript-parser';
 import {pollingUnit, sameRustImportLayout, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
 
-/** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean}} Dependency */
+/** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean, rechecks: Set<Dependency>, result: boolean}} Dependency */
 /** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
 /** @typedef {{node: import('typescript-parser').Node, target?: Dependency, unresolved?: string}} Reference */
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -85,7 +85,11 @@ function dependencyComponents(nodes) {
  }
  for (let at = 0; at < ready.length; at++) {
   const component = ready[at];
-  component.hazardous = component.members.some(node => node.hazardous || (node.callable && (component.members.length > 1 || node.edges.has(node))))
+  // Recursion is polling only where a call re-enters the cycle with the state it was entered with (no arguments,
+  // or its own parameters unchanged): that re-observes one condition. A walk over a finite structure (each call on a
+  // child) is iteration, like a loop over a listing (2026-11-21: Cloud's `own(join(entry, name))` tree walk made
+  // every copyOwnedFile caller a polling finding).
+  component.hazardous = component.members.some(node => node.hazardous || [...node.rechecks].some(target => owner.get(target) === component))
    || [...component.edges].some(child => child.hazardous);
   component.fingerprint = digest([
    component.members.map(node => [node.id, node.unit]).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
@@ -314,7 +318,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   const previous = dependencies.get(id);
   if (previous) return previous;
   /** @type {Dependency} */
-  const value = {id, unit, edges: new Set(), hazardous: false, callable: false};
+  const value = {id, unit, edges: new Set(), hazardous: false, callable: false, rechecks: new Set(), result: false};
   dependencies.set(id, value);
   return value;
  };
@@ -332,6 +336,18 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    if (specifier) return specifier.text;
   }
   return undefined;
+ };
+ /** A binding of a call's result (`const pods = apply(...)`, destructured or awaited): reading it runs nothing, so a
+  * reference to it is no polling reference; the call that made it is its own reference (2026-11-21: every line of a
+  * Cloud test reading such values was a finding). @param {import('typescript-parser').Node} node */
+ const resultBinding = node => {
+  while (ts.isBindingElement(node) || ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) node = node.parent;
+  if (!ts.isVariableDeclaration(node) || !node.initializer) return false;
+  let value = node.initializer;
+  while (ts.isParenthesizedExpression(value) || ts.isAwaitExpression(value) || ts.isAsExpression(value)
+   || ts.isNonNullExpression(value) || ts.isSatisfiesExpression(value) || ts.isTypeAssertionExpression(value)) value = value.expression;
+  return (ts.isCallExpression(value) && value.expression.kind !== ts.SyntaxKind.ImportKeyword) || ts.isNewExpression(value)
+   || ts.isTaggedTemplateExpression(value);
  };
  /** @param {import('typescript-parser').Symbol | undefined} symbol @returns {Dependency | undefined} */
  const symbolDependency = symbol => {
@@ -374,6 +390,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   const value = dependency(identities.map(item => item.position).sort().join('|'),
    digest(identities.map(item => item.unit).sort()));
   if (module && temporalModule(module)) value.hazardous = true;
+  value.result = symbol.declarations.every(resultBinding);
   symbols.set(symbol, value);
   symbolQueue.push(symbol);
   return value;
@@ -396,6 +413,15 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   }
   return [source.fileName, dependency(source.fileName + ':initialization', fingerprint)];
  }));
+ /** A call that passes on the state its function was entered with: no arguments, or its own parameters in order.
+  * @param {import('typescript-parser').CallExpression} call */
+ const sameState = call => {
+  let scope = call.parent;
+  while (scope && !(ts.isFunctionLike(scope) && 'body' in scope && scope.body)) scope = scope.parent;
+  const params = scope && ts.isFunctionLike(scope) ? scope.parameters : [];
+  return call.arguments.every((argument, k) => ts.isIdentifier(argument) && params[k] !== undefined
+   && ts.isIdentifier(params[k].name) && params[k].name.text === argument.text);
+ };
  /** @type {Reference[]} */
  const references = [];
  /** @type {{node: import('typescript-parser').Node, owner: Dependency, target: Dependency}[]} */
@@ -463,6 +489,11 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    }
    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isConstructorDeclaration(node)) owner.callable = true;
    if (hazardPositions.has(node.getStart(source))) owner.hazardous = true;
+   if (ts.isCallExpression(node)) {
+    const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name : node.expression;
+    const target = ts.isIdentifier(callee) ? symbolDependency(checker.getSymbolAtLocation(callee)) : undefined;
+    if (target && sameState(node)) owner.rechecks.add(target);
+   }
    if (ts.isIdentifier(node)) {
     const parent = node.parent;
     const declarationName = 'name' in parent && parent.name === node && !ts.isPropertyAccessExpression(parent) && !ts.isShorthandPropertyAssignment(parent);
@@ -473,8 +504,11 @@ export function projectPollingSites(sources, {historical = false} = {}) {
      const symbol = ts.isShorthandPropertyAssignment(parent)
       ? checker.getShorthandAssignmentValueSymbol(parent) : checker.getSymbolAtLocation(node);
      const target = symbolDependency(symbol);
-     if (target) { owner.edges.add(target); references.push({node, target}); }
-     else if (symbol && (symbol.flags & ts.SymbolFlags.Alias)) {
+     // Calling a result (`const poll = makePoller(); poll()`) runs it; only a read runs nothing.
+     const read = target?.result && !((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node);
+     if (target && !read) { owner.edges.add(target); references.push({node, target}); }
+     else if (!target && symbol && (symbol.flags & ts.SymbolFlags.Alias)) {
+
       const original = aliasModule(symbol);
       if (original && localModule(original)) references.push({node, unresolved: original});
      }

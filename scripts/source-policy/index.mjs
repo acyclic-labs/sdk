@@ -15,6 +15,12 @@ const temporal = /^(?:sleep(?:_(?:for|until)|Ex|ConditionVariable(?:CS|SRW))?|th
 const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
+// A timeout bounds one wait (a call's option, `--timeout=`, `timeout(d, f)`): a deadline on an event, not a timer
+// wait. Inside a loop it is the loop's timer, as a clock is; outside every loop it is no finding (2026-11-21: a
+// `kubectl wait --for=... --timeout=` watch and every `{timeout}` option made Cloud's local-cell helpers polling).
+const deadlineWord = /^timeout(?:_at)?$/i;
+const embeddedDeadlines = /\btimeout(?:_at)?\b/gi;
+const embeddedTimer = spelling => embeddedCandidate(spelling.replace(embeddedDeadlines, ''));
 const loop = new Set(['for', 'while', 'loop', 'do']);
 // A clock read makes a loop around it a deadline or recheck loop; alone it is a measurement.
 const clock = /^(?:now|elapsed|Instant|SystemTime|monotonic|perf_counter|hrtime|Stopwatch|GetTickCount(?:64)?|QueryPerformanceCounter|clock_gettime|deadline)$/;
@@ -623,7 +629,9 @@ export function pollingUnit(file, source, parser = undefined) {
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
  const aliases = new Map();
  const name = lexicalNames(stream, rust);
- const forbidden = new Set(stream.flatMap((t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value)) ? [name(i)] : []));
+ const candidate = (t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value));
+ const forbidden = new Set(stream.flatMap((t, i) => candidate(t, i) && !deadlineWord.test(t.value) ? [name(i)] : []));
+ const bounds = new Set(stream.flatMap((t, i) => candidate(t, i) && deadlineWord.test(t.value) ? [name(i)] : []));
  const edge = (from, to) => {
   if (!from || !to) return;
   if (!aliases.has(from)) aliases.set(from, new Set());
@@ -671,7 +679,9 @@ export function pollingUnit(file, source, parser = undefined) {
   const t = stream[i];
   return t.kind === 'indirection' || t.kind === 'module-load' ? 'indirect-timer-or-call'
    : t.kind === 'word' && !futurePoll(i) && forbidden.has(name(i)) ? 'timer-or-readiness'
-   : t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ? 'embedded-timer-or-retry'
+   : t.kind === 'word' && !futurePoll(i) && bounds.has(name(i)) ? 'deadline'
+   : t.kind === 'literal' && (embeddedTimer(t.value) || embeddedTimer(escapedSpelling(t.value))) ? 'embedded-timer-or-retry'
+   : t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ? 'deadline'
    : undefined;
  };
  // Each timer or clock belongs to its innermost loop, which it makes polling: that loop is the one finding, and names
@@ -685,13 +695,13 @@ export function pollingUnit(file, source, parser = undefined) {
  for (let i = 0; i < stream.length; i++) {
   while (active.length && extents.get(active[active.length - 1]).end < i) active.pop();
   const kind = kindAt(i), owner = active[active.length - 1];
-  const timer = kind === 'timer-or-readiness' || kind === 'embedded-timer-or-retry'
+  const timer = kind === 'timer-or-readiness' || kind === 'embedded-timer-or-retry' || kind === 'deadline'
    || (stream[i].kind === 'word' && clock.test(stream[i].value));
   if (timer && owner !== undefined) {
    const previous = reasons.get(owner);
    if (previous === undefined || previous < 0 || (!directTimer(previous) && directTimer(i))) reasons.set(owner, i);
   }
-  else if (kind) found.push([i, kind]);
+  else if (kind && kind !== 'deadline') found.push([i, kind]);
   if (extents.has(i)) { active.push(i); if (extents.get(i).empty) reasons.set(i, -1); }
  }
  for (const i of reasons.keys()) found.push([i, 'loop']);

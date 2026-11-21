@@ -78,12 +78,12 @@ test('a timer alias reaches only its own binding scope', () => {
  const named = source => pollingSites('scope.rs', source).filter(site => site.kind === 'timer-or-readiness')
   .map(site => `${source.slice(site.start).match(/^\w+/)[0]}@${site.start}`);
  const source = [
-  'fn first() { let x = client.timeout(d); let request = x; request.send(); }',
+  'fn first() { let x = client.sleep(d); let request = x; request.send(); }',
   'fn second() { let x = 1; let request = x; request.send(); }',
  ].join('\n');
  const second = source.indexOf('fn second');
  const sites = named(source);
- assert.ok(sites.some(site => site.startsWith('timeout@')));
+ assert.ok(sites.some(site => site.startsWith('sleep@')));
  assert.deepEqual(sites.filter(site => site.startsWith('request@')).length, 2, 'the tainted fn keeps its alias chain');
  assert.deepEqual(sites.filter(site => Number(site.split('@')[1]) > second), [], 'another fn binding of the same name is not a poll');
  // Shadowing in one block starts a new binding; a nested block still sees the outer one.

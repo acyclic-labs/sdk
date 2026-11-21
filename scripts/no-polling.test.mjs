@@ -85,9 +85,10 @@ test('PowerShell casing preserves wait, loop and alias review', () => {
 test('YAML plain scalar hashes preserve later flow settings', () => {
  const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-comments.json', import.meta.url), 'utf8'));
  for (const {source, keys} of captured.records) {
+  // The captured key is a deadline (no finding outside a loop); the same-length `polling` keeps every position.
   const expected = keys.filter(key => key.value === 'timeout').map(key => key.start);
   for (const extension of ['yaml', 'yml']) {
-   assert.deepEqual(pollingSites(`scripts/control.${extension}`, source).map(site => site.start), expected, source);
+   assert.deepEqual(pollingSites(`scripts/control.${extension}`, source.replaceAll('timeout', 'polling')).map(site => site.start), expected, source);
   }
  }
 });
@@ -233,6 +234,32 @@ test('helper dependencies follow bindings rather than spelling or every export i
   const before = new Map([[helper, producer], [event, 'export async function settle() { return originalEvent; }'], [script, 'export async function operation() {}']]);
   assert.deepEqual(newProjectPollingSites(before, new Map(before).set(script, consumer)), [], consumer);
  }
+});
+
+test('a walk over a finite structure and reads of a helper result are no polling references', () => {
+ // 2026-11-21: Cloud's owned-copy tree walk and every line reading a kubectl helper's result were findings.
+ const helper = 'typescript/packages/example/test/helper.ts';
+ const walk = "import {lstatSync, readdirSync, chmodSync} from 'node:fs'; import {join} from 'node:path';\n"
+  + 'export function own(entry) { const stat = lstatSync(entry); chmodSync(entry, stat.mode | 0o200);'
+  + ' if (stat.isDirectory()) for (const name of readdirSync(entry)) own(join(entry, name)); }';
+ const kube = "import {execFileSync} from 'node:child_process'; const deadline = Date.now() + 410_000;\n"
+  + "const run = (program, args, options = {}) => execFileSync(program, args, {encoding: 'utf8', timeout: Math.max(1, deadline - Date.now()), ...options});\n"
+  + "export const apply = args => run('kubectl', ['--request-timeout=15s', 'apply', '-f', '-', ...args]);\n"
+  + "export const prove = pod => run('kubectl', ['wait', pod, '--for=jsonpath={.status.containerStatuses[0].state.terminated}', `--timeout=${Math.floor((deadline - Date.now()) / 1000)}s`]);";
+ for (const [producer, consumer] of [
+  [walk, "import {own} from './helper.js'; export function copy(to) { own(to); own(to + '/b'); }"],
+  [kube, "import {apply, prove} from './helper.js';\nexport function start(probe) {\n const applied = JSON.parse(apply([probe]));\n"
+   + " const pods = applied.items.filter(item => item.kind === 'Pod');\n if (pods.length !== 1) throw new Error(pods[0].metadata.uid);\n prove(pods[0].metadata.name);\n}"],
+ ]) assert.deepEqual(projectPollingSites(new Map([[helper, producer], [script, consumer]])), [], consumer);
+ // A helper that polls is still a finding where it is called, not on every read of what it returned.
+ const settle = 'export async function settle() { while (!ready()) await Bun.sleep(10); return state; }';
+ const reads = "import {settle} from './helper.js';\nexport async function operation() {\n const state = await settle();\n return state.size + state.count;\n}";
+ assert.deepEqual(projectPollingSites(new Map([[helper, settle], [script, reads]])).filter(site => site.file === script)
+  .map(site => [site.line, site.kind]), [[3, 'polling-helper-reference']]);
+ // A result that is called runs: a poller a factory returned stays a finding where it is called.
+ const factory = 'export const makePoller = () => async () => { while (!ready()) await Bun.sleep(10); };';
+ const calls = "import {makePoller} from './helper.js';\nconst poll = makePoller();\nexport async function operation() {\n await poll();\n}";
+ assert.ok(projectPollingSites(new Map([[helper, factory], [script, calls]])).some(site => site.file === script && site.line === 4), calls);
 });
 
 test('a producer edit reopens unchanged callers through recursive dependencies', () => {
@@ -385,9 +412,22 @@ test('escaped host identifiers and embedded child programs cannot conceal readin
  class Control { void \u004Aoin() { completed.\u0043omplete(); } }`), []);
 });
 
+test('a timeout bounds one wait: no finding alone, the timer of a loop around it', () => {
+ // 2026-11-21: a `kubectl wait --for=... --timeout=` watch and `{timeout}` options were Cloud polling findings.
+ for (const source of [
+  'await context.timeout(deadline);',
+  "execFileSync('kubectl', ['wait', 'pod/p', '--for=jsonpath={.status.phase}', `--timeout=${seconds}s`], {timeout: Math.max(1, deadline - Date.now())});",
+  "const kube = args => run('kubectl', ['--request-timeout=15s', ...args]);",
+  'function wait({timeout}) { run({timeout: Number(timeout)}); for (const s of list) if (Number.isInteger(s)) use(s); }',
+ ]) assert.deepEqual(pollingSites(script, source), [], source);
+ for (const source of [
+  'while (!ready()) await context.timeout(deadline);',
+  "for (;;) { if (run('kubectl', ['get', 'pod/p', '--request-timeout=15s'])) break; }",
+ ]) assert.deepEqual(pollingSites(script, source).map(site => [site.kind, site.timer]), [['loop', source.includes('request') ? '--request-timeout=15s' : 'timeout']], source);
+});
+
 test('legitimate deadline and transport sites require exact typed dispositions', () => {
  for (const [source, classification, producer, terminal] of [
-  ['await context.timeout(deadline);', 'caller-deadline', 'original caller deadline', 'expiry or caller cancellation'],
   ['await transportBackoff(failure);', 'transient-transport-backoff', 'classified original transient transport failure', 'transport owner cancellation'],
  ]) {
   const sites = pollingSites(script, source);
