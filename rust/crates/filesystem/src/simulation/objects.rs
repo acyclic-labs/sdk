@@ -73,6 +73,27 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
         }
     }
 
+    async fn wait_for_object_read(
+        &self,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        if self.object_read_latency.is_zero() {
+            return Ok(());
+        }
+        let deadline = std::time::SystemTime::now()
+            .checked_add(self.object_read_latency)
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|time| u64::try_from(time.as_millis()).ok())
+            .ok_or(crate::WorkError::Overflow)?;
+        acyclic_native_runtime::WallAlarm::wait(deadline)
+            .map_err(|_| ObjectStoreError::Simulation("read latency registration failed"))?
+            .await
+            .map_err(|_| ObjectStoreError::Simulation("read latency alarm failed"))?;
+        work.accounting()
+            .check()
+            .map_err(crate::async_storage::object_error)
+    }
+
     fn object_fault(
         &self,
         site: &'static str,
@@ -227,6 +248,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
     ) -> Result<ObjectRead, ObjectStoreError> {
         let fault = self.object_fault(sites::OBJECT_READ, work)?;
         self.hold_if_selected(sites::OBJECT_READ, fault).await;
+        self.wait_for_object_read(work).await?;
         let mut read = self.inner.read(object_id, maximum_bytes, work).await?;
         altered_read(&mut read, fault, work)?;
         if let Some(original) = work.original
@@ -244,6 +266,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         let fault = self.object_fault(sites::OBJECT_READ_MANY, work)?;
         self.hold_if_selected(sites::OBJECT_READ_MANY, fault).await;
+        self.wait_for_object_read(work).await?;
         let mut reads = self.inner.read_many(requests, work).await?;
         if let Some(first) = reads.0.first_mut() {
             altered_read(first, fault, work)?;

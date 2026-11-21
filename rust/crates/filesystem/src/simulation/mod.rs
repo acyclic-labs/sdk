@@ -20,6 +20,7 @@ use acyclic_native_runtime::testing::Schedule;
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 type ReferenceAuthority = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
 type ReferenceObjects = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>;
@@ -135,6 +136,7 @@ pub struct Simulation<
     state: Arc<Mutex<Delayed>>,
     authority: Arc<A>,
     objects: Arc<O>,
+    object_read_latency: Duration,
 }
 
 impl Simulation<ReferenceAuthority, ReferenceObjects> {
@@ -158,7 +160,16 @@ impl<A, O> Simulation<A, O> {
             })),
             authority: Arc::new(authority),
             objects: Arc::new(objects),
+            object_read_latency: Duration::ZERO,
         }
+    }
+
+    /// Delays each object read or batch by one simulated remote round trip.
+    /// Schedule counts still measure calls independently of elapsed time.
+    #[must_use]
+    pub fn with_object_read_latency(mut self, latency: Duration) -> Self {
+        self.object_read_latency = latency;
+        self
     }
 
     /// Independently cloneable authority and object handles.
@@ -169,11 +180,13 @@ impl<A, O> Simulation<A, O> {
                 schedule: self.schedule.observer(),
                 state: self.state.clone(),
                 inner: self.authority.clone(),
+                object_read_latency: Duration::ZERO,
             },
             SimulatedStore {
                 schedule: self.schedule.observer(),
                 state: self.state.clone(),
                 inner: self.objects.clone(),
+                object_read_latency: self.object_read_latency,
             },
         )
     }
@@ -184,6 +197,7 @@ pub struct SimulatedStore<T> {
     schedule: Schedule,
     state: Arc<Mutex<Delayed>>,
     inner: Arc<T>,
+    object_read_latency: Duration,
 }
 
 impl<T> Clone for SimulatedStore<T> {
@@ -192,6 +206,7 @@ impl<T> Clone for SimulatedStore<T> {
             schedule: self.schedule.observer(),
             state: self.state.clone(),
             inner: self.inner.clone(),
+            object_read_latency: self.object_read_latency,
         }
     }
 }
