@@ -685,10 +685,14 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
             .execute(command, tree(3))
             .await
             .expect("selected history");
-        let history = match output {
-            GitCommandOutput::Commits { commits, .. } => commits,
-            GitCommandOutput::Action(GitFilesystemAction::Blame { commits, .. }) => commits,
-            _ => panic!("expected selected history"),
+        let (GitCommandOutput::Commits {
+            commits: history, ..
+        }
+        | GitCommandOutput::Action(GitFilesystemAction::Blame {
+            commits: history, ..
+        })) = output
+        else {
+            panic!("expected selected history");
         };
         assert_eq!(history.first().map(|commit| commit.id), Some(commits[2]));
     }
@@ -700,14 +704,12 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
             .execute(command, tree(3))
             .await
             .expect("selected paths");
-        let paths = match output {
-            GitCommandOutput::Action(GitFilesystemAction::Diff { tracked_paths, .. })
-            | GitCommandOutput::Action(GitFilesystemAction::Clean { tracked_paths, .. }) => {
-                tracked_paths
-            }
-            _ => panic!("expected selected paths"),
+        let (GitCommandOutput::Action(GitFilesystemAction::Diff { tracked_paths, .. })
+        | GitCommandOutput::Action(GitFilesystemAction::Clean { tracked_paths, .. })) = output
+        else {
+            panic!("expected selected paths");
         };
-        assert_eq!(paths, selected_paths);
+        assert_eq!(tracked_paths, selected_paths);
     }
     assert!(
         matches!(repository.execute(GitCommand::LsFiles, tree(3)).await.expect("selected files"),

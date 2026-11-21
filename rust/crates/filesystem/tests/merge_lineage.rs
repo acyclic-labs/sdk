@@ -786,7 +786,7 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
         FenceOutcome::Advanced(_)
     ));
     assert!(
-        matches!((store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: authority, epoch: Epoch::GENESIS, expected: expected, commit: committed_proposal, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)))?,
+        matches!((store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: authority, epoch: Epoch::GENESIS, expected, commit: committed_proposal, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)))?,
             AppendOutcome::AlreadyCommitted(replayed) if replayed == committed
         )
     );
@@ -796,7 +796,7 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
                 acyclic_fs::GuardedAppend {
                     authority_id: authority,
                     epoch: Epoch::GENESIS,
-                    expected: expected,
+                    expected,
                     commit: proposal(3, 3, b"late"),
                     permit: acyclic_fs::PublicationPermit::Unrestricted,
                 },

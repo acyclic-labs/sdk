@@ -270,7 +270,6 @@ async fn generated_roundtrip(
     }
     let operation = |byte| wire::OperationOptions {
         idempotency_key: vec![byte; 16],
-        ..Default::default()
     };
     let created = client
         .create_workspace(request(
@@ -557,7 +556,6 @@ mod full_cloud {
             profile: wire::FilesystemProfile::Portable as i32,
             operation: Some(wire::OperationOptions {
                 idempotency_key: vec![5; 16],
-                ..Default::default()
             }),
         });
         let mut authorization =
@@ -587,7 +585,6 @@ mod full_cloud {
             workspace: Some(workspace),
             operation: Some(wire::OperationOptions {
                 idempotency_key: vec![6; 16],
-                ..Default::default()
             }),
         });
         delete.metadata_mut().insert("authorization", authorization);

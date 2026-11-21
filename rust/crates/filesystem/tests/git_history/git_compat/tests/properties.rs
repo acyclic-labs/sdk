@@ -96,7 +96,10 @@ proptest! {
             prop_assert_eq!(conflicts, &(!stale).then_some(paths));
             let restored: GitPendingTransition = serde_json::from_slice(&serde_json::to_vec(&pending).map_err(test_error)?).map_err(test_error)?;
             prop_assert_eq!(&pending, &restored);
-            if !stale {
+            if stale {
+                let inspected = repository.execute(GitCommand::Status, GitTreeRef::exact(main, generation(2))).await;
+                prop_assert!(matches!(inspected, Err(GitCompatError::TransitionPending(id)) if id == transition));
+            } else {
                 let executor = TestExecutor::returning(GitFilesystemResult::Applied {
                     tree: Some(GitTreeRef::exact(main, generation(2))),
                     tracked_paths: Some(BTreeSet::from([format!("/{path}")])),
@@ -113,9 +116,6 @@ proptest! {
                 prop_assert!(executor.operations.lock().map_err(test_error)?.is_empty());
                 let retained = repository.pending_transition().await.map_err(test_error)?;
                 prop_assert_eq!(retained.as_ref(), Some(&pending));
-            } else {
-                let inspected = repository.execute(GitCommand::Status, GitTreeRef::exact(main, generation(2))).await;
-                prop_assert!(matches!(inspected, Err(GitCompatError::TransitionPending(id)) if id == transition));
             }
             Ok(())
         })?;

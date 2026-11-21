@@ -277,8 +277,10 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
     let streamed_identity = FileId::from_bytes([199; 16]);
     let hard_link = path("hard-link")?;
     let renamed = path("renamed")?;
-    let mut replacement_metadata = FileMetadata::default();
-    replacement_metadata.modified_ns = MetadataField::Value(42);
+    let replacement_metadata = FileMetadata {
+        modified_ns: MetadataField::Value(42),
+        ..FileMetadata::default()
+    };
     let large = OwnedBytes::from(vec![0x5a; MAXIMUM_INLINE_FILE_BYTES + 1]);
     let transaction = (checkout.apply_authored_transaction(
         vec![

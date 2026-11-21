@@ -164,7 +164,6 @@ mod workspace_context_wire {
             WorkspaceContext, WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState,
             WorkspaceId, WorkspaceRootId,
         };
-        use acyclic_fs_format::identity::{Digest, OperationId};
         use acyclic_fs_wire::wire::filesystem::v2 as wire;
         use prost::Message;
         use std::collections::BTreeMap;

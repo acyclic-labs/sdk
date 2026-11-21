@@ -234,7 +234,7 @@ async fn cold_fold_crosses_the_stream_request_page_boundary() -> Result {
         )
         .await?;
     assert_eq!(folded.state, count);
-    assert_eq!(calls.load(Ordering::Relaxed), count as usize);
+    assert_eq!(calls.load(Ordering::Relaxed), usize::try_from(count)?);
     ctx.remaining()?;
     Ok(())
 }
@@ -387,7 +387,7 @@ mod equivalence {
             let chunk = NonZeroU64::new(chunk).unwrap();
             let mut checkpoint = seed();
             for cut in 0..=records.len() {
-                let start = checkpoint.sequence as usize;
+                let start = usize::try_from(checkpoint.sequence).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
                 let mut fold = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx)?, chunk).unwrap();
                 for (index, record) in records.iter().enumerate().take(cut).skip(start) {
                     fold = fold.advance(index as u64, record, &mut ctx).unwrap();

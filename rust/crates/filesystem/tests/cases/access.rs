@@ -886,7 +886,7 @@ proptest! {
             }
         }
         // Negative control: the former unescaped construction grants peer names.
-        let unsafe_path = root.replace('*', "x").replace('?', "x");
+        let unsafe_path = root.replace(['*', '?'], "x");
         if unsafe_path != root && !root.contains(['[', ']', '{', '}']) {
             let mut old = capability();
             old.layers[0][0].resource.path = format!("{root}/**");

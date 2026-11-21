@@ -81,7 +81,7 @@ async fn pinned_directory_discovery_has_constant_work_as_retained_workspaces_gro
     wrong.0.entries.clear();
     let mut extra_read = after.clone();
     extra_read.1.backend_read_operations += 1;
-    let mut extra_copy = after.clone();
+    let mut extra_copy = after;
     extra_copy.0.work.bytes_copied += 1;
     for (fault, observed) in [
         ("has_more on both listings", (more.clone(), more)),
