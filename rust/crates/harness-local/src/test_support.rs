@@ -106,22 +106,6 @@ pub fn native_write(path: &std::path::Path, bytes: &[u8]) -> crate::Result<()> {
     }
 }
 
-/// Replaces the next checkout capture's root identity with a fixture. The
-/// world owns this thread-local input and sets it before opening its harness.
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-pub fn inject_checkout_identity(
-    object: [u8; 16],
-    generation: acyclic_fs_native_contract::NativeRootGeneration,
-) {
-    crate::local::owner::INJECTED.with(|injected| injected.set(Some((object, generation))));
-}
-
-/// Clears the fixture root identity after a world retires.
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-pub fn clear_checkout_identity() {
-    crate::local::owner::INJECTED.with(|injected| injected.set(None));
-}
-
 /// Runs the production local state-directory separation and preparation boundary.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn separated_local_state_directory(

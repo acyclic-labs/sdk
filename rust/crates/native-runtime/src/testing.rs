@@ -70,6 +70,7 @@ mod metadata;
 mod sites;
 pub mod snapshot;
 pub mod sweep;
+pub(crate) use metadata::stable_identity;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times, source_identity};
 pub use sites::{SiteCall, SiteFault};
 #[cfg(test)]
@@ -205,6 +206,8 @@ struct State {
     boundary: Option<Arc<dyn std::any::Any + Send + Sync>>,
     metadata: Option<Arc<metadata::Provider>>,
     source_identity: Option<Arc<metadata::SourceIdentityProvider>>,
+    // Each distinct host identity per domain, numbered in first-sight order.
+    stand_ins: std::collections::BTreeMap<(&'static str, Vec<u8>), u64>,
 }
 
 struct Inner {

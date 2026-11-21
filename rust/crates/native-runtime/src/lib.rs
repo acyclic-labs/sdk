@@ -174,6 +174,23 @@ pub use blocking_future::blocking_future;
 pub mod test_fixtures;
 #[cfg(feature = "test-support")]
 pub mod testing;
+
+/// A seeded simulation's stand-in for a host-derived identity (a root's file
+/// handle, a path's digest), numbered per domain in the world's first-sight
+/// order. Outside a simulation, and in builds without `test-support`, the
+/// original unchanged.
+#[inline]
+pub fn stable_identity<const N: usize>(domain: &'static str, original: [u8; N]) -> [u8; N] {
+    #[cfg(feature = "test-support")]
+    {
+        testing::stable_identity(domain, original)
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = domain;
+        original
+    }
+}
 pub use blocking::{InlineBlocking, run_blocking_io, wait_native_future};
 pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,

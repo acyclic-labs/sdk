@@ -35,10 +35,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     // Negative control for accidentally rekeying configured volumes.
     static REKEY_VOLUMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Replaces a capture's object id and generation, as a filesystem that
-    /// reissues ids or renumbers them across remounts.
-    pub(crate) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs_native_contract::NativeRootGeneration)>> =
-        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -139,9 +135,7 @@ impl Checkout {
             // a device number a remount may reassign.
             let mut object = incarnation.identity.to_bytes();
             object[..8].copy_from_slice(&incarnation.volume.to_le_bytes());
-            let generation = incarnation.generation;
-            #[cfg(any(test, feature = "test-support"))]
-            let (object, generation) = INJECTED.get().unwrap_or((object, generation));
+            let (object, generation) = simulated_root(object, incarnation.generation);
             Ok(Self {
                 path,
                 identity: RootWitness::capture(object, generation),
@@ -157,6 +151,27 @@ impl Checkout {
             ))
         }
     }
+}
+
+/// A seeded world records its schedule's stand-in for the root's physical
+/// identity, so its owner record and every later capture repeat exactly.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn simulated_root(
+    object: [u8; 16],
+    generation: acyclic_fs_native_contract::NativeRootGeneration,
+) -> ([u8; 16], acyclic_fs_native_contract::NativeRootGeneration) {
+    use acyclic_fs_native_contract::NativeRootGeneration;
+    use acyclic_native_runtime::stable_identity;
+    let generation = match generation {
+        NativeRootGeneration::FileHandle(handle) => NativeRootGeneration::FileHandle(
+            stable_identity("acyclic.local.checkout-root-handle/v1", handle),
+        ),
+        other => other,
+    };
+    (
+        stable_identity("acyclic.local.checkout-root-object/v1", object),
+        generation,
+    )
 }
 
 /// Select host state using immutable native root evidence, without publishing

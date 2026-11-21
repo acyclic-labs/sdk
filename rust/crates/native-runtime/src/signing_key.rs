@@ -155,7 +155,9 @@ impl Store<'_> {
             }
             Self::Injected(store) => return store.identity(),
         }
-        *hash.finalize().as_bytes()
+        // A private-file store's identity digests its host path; a seeded
+        // world records its schedule's stand-in instead.
+        crate::stable_identity("acyclic.signing-custody/v2", *hash.finalize().as_bytes())
     }
 
     fn entry(&self, name: &str) -> io::Result<keyring::Entry> {

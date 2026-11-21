@@ -91,3 +91,32 @@ pub fn source_identity(original: [u8; 32]) -> [u8; 32] {
         .and_then(|context| context.schedule.0.state().source_identity.clone());
     provider.map_or(original, |provider| provider(original))
 }
+
+/// Selects the identity a host-derived value (a root's file handle, a path's
+/// digest) records in logical state. A seeded world numbers each distinct
+/// original per domain in its own first-sight order and records a stand-in
+/// derived from the domain and that number alone, so every process and every
+/// incarnation of one world records the same identities. Outside a seeded
+/// simulation the original is returned unchanged.
+pub fn stable_identity<const N: usize>(domain: &'static str, original: [u8; N]) -> [u8; N] {
+    let Some(context) = Context::simulation().filter(|context| context.schedule.is_seeded()) else {
+        return original;
+    };
+    let ordinal = {
+        let mut state = context.schedule.0.state();
+        let next = state
+            .stand_ins
+            .range((domain, Vec::new())..)
+            .take_while(|((seen, _), _)| *seen == domain)
+            .count() as u64;
+        *state
+            .stand_ins
+            .entry((domain, original.to_vec()))
+            .or_insert(next)
+    };
+    let mut hash = blake3::Hasher::new_derive_key(domain);
+    hash.update(&ordinal.to_le_bytes());
+    let mut stand_in = [0; N];
+    hash.finalize_xof().fill(&mut stand_in);
+    stand_in
+}

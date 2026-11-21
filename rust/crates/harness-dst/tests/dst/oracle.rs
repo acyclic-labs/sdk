@@ -350,23 +350,6 @@ impl WorldDirectory {
     fn path(&self) -> &Path {
         &self.path
     }
-
-    /// The checkout identity is a function of the world's case and seed, not
-    /// of the scheduler incarnation, so every incarnation reopens the same
-    /// state.
-    fn identity(&self) -> ([u8; 16], acyclic_fs_native_contract::NativeRootGeneration) {
-        let mut object = [0; 16];
-        object.copy_from_slice(
-            &blake3::hash(format!("dst-object:{}:{}", self.key.0, self.key.1).as_bytes())
-                .as_bytes()[..16],
-        );
-        let handle = *blake3::hash(format!("dst-handle:{}:{}", self.key.0, self.key.1).as_bytes())
-            .as_bytes();
-        (
-            object,
-            acyclic_fs_native_contract::NativeRootGeneration::FileHandle(handle),
-        )
-    }
 }
 
 impl Drop for WorldDirectory {
@@ -549,11 +532,6 @@ impl World {
                     bytes
                 })
             };
-            // The checkout's root identity is a host file handle. A replay
-            // supplies its own fixture identity so the owner record and every
-            // later capture are a function of the world's case and seed alone,
-            // and every incarnation reopens the same state.
-            let checkout_identity = self.directory.identity();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
@@ -575,10 +553,6 @@ impl World {
                 let results = Arc::clone(&results);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
-                    acyclic_harness::test_support::inject_checkout_identity(
-                        checkout_identity.0,
-                        checkout_identity.1,
-                    );
                     let config = local_harness_config(
                         directory.join("checkout"),
                         (model, provider.clone()),
@@ -625,7 +599,6 @@ impl World {
                         Error::Invalid("world harness still has live connections".into())
                     })?;
                     harness.disconnect().await?;
-                    acyclic_harness::test_support::clear_checkout_identity();
                     Ok::<_, Error>(())
                 })
             };
@@ -682,11 +655,6 @@ impl World {
         entry(async move {
             let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
             let provider = Arc::new(self.service.reopened());
-            let checkout_identity = self.directory.identity();
-            acyclic_harness::test_support::inject_checkout_identity(
-                checkout_identity.0,
-                checkout_identity.1,
-            );
             let config =
                 local_harness_config(self.directory.path().join("checkout"), (model, provider))?
                     .without_user_settings()
@@ -751,7 +719,6 @@ impl World {
                 .map_err(|_| Error::Invalid("world harness still has live connections".into()))?
                 .disconnect()
                 .await?;
-            acyclic_harness::test_support::clear_checkout_identity();
             Ok(findings)
         })
     }
