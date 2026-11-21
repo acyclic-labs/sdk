@@ -584,64 +584,67 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         .map_err(|failure| failure.error)?
         .value;
         assert_eq!(preview.conflict_count(), 1);
-        let mut content = preview
-            .open_conflict_content(&conflict, ConflictSide::Ours)
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-            .ok_or("sparse body missing")?;
-        assert!(matches!(
-            content.record().payload,
-            FilePayload::Regular { .. }
-        ));
-        let baseline = original.live_allocation_bytes()?;
-        let mut first_live = None;
-        for (offset, expected) in [
-            (0, stored.as_slice()),
-            (4094, crossing.as_slice()),
-            (0, stored.as_slice()),
-        ] {
-            let read = content
-                .read_range(acyclic_fs::ByteRange {
-                    offset,
-                    length: expected.len() as u64,
-                })
+        let baseline;
+        {
+            let mut content = preview
+                .open_conflict_content(&conflict, ConflictSide::Ours)
                 .await
-                .map_err(|failure| failure.error)?;
-            assert_eq!(read.value, expected);
-            if native && offset == 0 {
-                let live = original.live_allocation_bytes()?;
-                if let Some(first) = first_live {
-                    assert_eq!(live, first, "object page retained an earlier range");
+                .map_err(|failure| failure.error)?
+                .value
+                .ok_or("sparse body missing")?;
+            assert!(matches!(
+                content.record().payload,
+                FilePayload::Regular { .. }
+            ));
+            baseline = original.live_allocation_bytes()?;
+            let mut first_live = None;
+            for (offset, expected) in [
+                (0, stored.as_slice()),
+                (4094, crossing.as_slice()),
+                (0, stored.as_slice()),
+            ] {
+                let read = content
+                    .read_range(acyclic_fs::ByteRange {
+                        offset,
+                        length: expected.len() as u64,
+                    })
+                    .await
+                    .map_err(|failure| failure.error)?;
+                assert_eq!(read.value, expected);
+                if native && offset == 0 {
+                    let live = original.live_allocation_bytes()?;
+                    if let Some(first) = first_live {
+                        assert_eq!(live, first, "object page retained an earlier range");
+                    }
+                    first_live = Some(live);
                 }
-                first_live = Some(live);
             }
         }
-        drop(content);
-        let mut content = preview
-            .open_conflict_content(&conflict, ConflictSide::Ours)
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-            .ok_or("reselected sparse body missing")?;
-        if native {
-            assert_eq!(original.live_allocation_bytes()?, baseline);
-        }
-        assert!(matches!(
-            content
-                .read_range(acyclic_fs::ByteRange {
-                    offset: u64::MAX,
-                    length: 1
-                })
+        {
+            let mut content = preview
+                .open_conflict_content(&conflict, ConflictSide::Ours)
                 .await
-                .map_err(|failure| failure.error),
-            Err(WorkspaceError::Filesystem(FsError::FileRead(
-                acyclic_fs::kernel::FileRangeReadError::Extent(
-                    acyclic_fs::kernel::ExtentReadError::InvalidRange
-                )
-            )))
-        ));
-        drop(content);
+                .map_err(|failure| failure.error)?
+                .value
+                .ok_or("reselected sparse body missing")?;
+            if native {
+                assert_eq!(original.live_allocation_bytes()?, baseline);
+            }
+            assert!(matches!(
+                content
+                    .read_range(acyclic_fs::ByteRange {
+                        offset: u64::MAX,
+                        length: 1
+                    })
+                    .await
+                    .map_err(|failure| failure.error),
+                Err(WorkspaceError::Filesystem(FsError::FileRead(
+                    acyclic_fs::kernel::FileRangeReadError::Extent(
+                        acyclic_fs::kernel::ExtentReadError::InvalidRange
+                    )
+                )))
+            ));
+        }
         if native {
             assert_eq!(
                 original.live_allocation_bytes()?,
