@@ -25,7 +25,8 @@
 #                   and nothing sensitive is on it. The case runs as uid 0 of the initial user namespace, in its own
 #                   network namespace (loopback up) and mount namespace, in a leaf of a delegated system scope
 #                   (ACYCLIC_TEST_CGROUP, as for cgroup), with exactly CAP_SETUID, CAP_SETGID and CAP_NET_ADMIN
-#                   effective. Its securebits are noroot, so an executable's file capabilities still apply. Each line
+#                   effective. Its securebits are noroot, so an executable's file capabilities still apply. Its TMPDIR, TMP
+#                   and TEMP name a fresh root-owned case directory under /dev/shm/acyclic-root. Each line
 #                   `<variable> <binary> [<uid>:<gid> <mode> [<file capabilities>]]` of ACYCLIC_TEST_SEALED (by default
 #                   0:0 0555, no capabilities) names one of the target's CARGO_BIN_EXE_<binary>: the case's <variable>
 #                   is a root-owned fs-verity-sealed copy of it in a fresh case directory under
@@ -40,7 +41,8 @@ fail() { echo "privileged.sh: $*" >&2; exit 1; }
 has() { case " $ACYCLIC_TEST_PRIVILEGES " in *" $1 "*) return 0 ;; esac; return 1; }
 # Whether the case runs as real host root (machines-native, host-root).
 native() { has machines-native || has host-root; }
-# Claims a fresh case directory under $1 as $claimed, locked on descriptor 9, which every exec to the case inherits.
+# Claims a fresh case directory under $1 as $claimed, locked on a descriptor of its own, which every exec to the case
+# inherits (so one case can hold several).
 claim() {
   { mkdir -p -m 0755 "$1" && exec 8>>"$1/.lock" && flock 8; } || fail "cannot lock $1"
   for held in "$1"/case-*; do
@@ -48,7 +50,7 @@ claim() {
       { chmod -R u+rwX "$held" && rm -rf "$held"; } || fail "cannot remove the abandoned $held"
     fi
   done
-  { claimed=$(mktemp -d "$1/case-XXXXXXXX") && exec 9<"$claimed" && flock -n 9; } || fail "cannot claim a case directory in $1"
+  { claimed=$(mktemp -d "$1/case-XXXXXXXX") && exec {lock}<"$claimed" && flock -n "$lock"; } || fail "cannot claim a case directory in $1"
   exec 8>&-
 }
 stage=${ACYCLIC_TEST_PRIVILEGE_STAGE:-}
@@ -101,6 +103,10 @@ if [ "$stage" = root ]; then
     export "$variable=$sealed"
   done <<<"${ACYCLIC_TEST_SEALED:-}"
   unset ACYCLIC_TEST_SEALED
+  # The runner's temporary directory is the leg user's (0700), which uid 0 without CAP_DAC_OVERRIDE cannot enter: the
+  # case's is root's own, on the same memory filesystem, so whoever creates it is whoever uses it.
+  claim /dev/shm/acyclic-root
+  export TMPDIR=$claimed TMP=$claimed TEMP=$claimed
   ACYCLIC_TEST_PRIVILEGE_STAGE=scope exec systemd-run --scope --quiet --collect -p Delegate=yes -- /bin/bash "$0" "$@"
 fi
 if [ "$stage" = scope ]; then
