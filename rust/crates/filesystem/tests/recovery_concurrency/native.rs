@@ -89,8 +89,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
 
             assert!(
                 journal
-                    .custody
-                    .as_ref()
+                    .custody()
                     .expect("original custody")
                     .work()
                     .shares_allocation_context(&work)
@@ -133,8 +132,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                 panic!("expected the injected crash to retain its real owned packet");
             };
             let custody = packet
-                .custody
-                .as_ref()
+                .custody()
                 .expect("native fault never becomes ordinary None");
             assert!(custody.work().shares_allocation_context(&work));
             let retained_packet_bytes = custody.bytes();
@@ -177,8 +175,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                 assert_eq!(&retained, &packet);
                 assert!(
                     retained
-                        .custody
-                        .as_ref()
+                        .custody()
                         .expect("funded reopened packet")
                         .work()
                         .shares_allocation_context(&work)
@@ -241,8 +238,7 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
     };
     assert!(
         packet
-            .custody
-            .as_ref()
+            .custody()
             .expect("intact original error custody")
             .work()
             .shares_allocation_context(&work)

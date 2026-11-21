@@ -75,26 +75,21 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             None => self
                 .backend
                 .native_work()
-                .map(|work| work.claim(plan_owned_bytes(&plan)?, 0, crate::WorkCounters::UNCHARGED))
+                .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
                 .transpose()?,
         };
         self.check_plan(&plan)?;
-        let journal = MaterializationJournal {
-            history_id: OperationId::new(),
-            version: JOURNAL_VERSION,
-            revision: 1,
+        let mut journal = MaterializationJournal::new(
             plan,
-            root_identity: self.backend.allocation_identity(),
-            preparation_identity: self.backend.preparation_identity(),
-            preparation_progress: None,
-            work: self.observed_work()?.unwrap_or_default(),
-            preimages: Vec::new(),
-            phase: MaterializationPhase::Preparing,
-            applied: 0,
-            restored: 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            custody,
-        };
+            self.backend.allocation_identity(),
+            MaterializationPhase::Preparing,
+        );
+        journal.preparation_identity = self.backend.preparation_identity();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = custody {
+            journal.fund(custody)?;
+        }
+        journal.work = self.observed_work()?.unwrap_or_default();
         self.check_custody(&journal)?;
         let (stored, journal) = self
             .store
@@ -161,12 +156,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         if self.backend.native_work().is_some()
             && journal.preimages.capacity() < journal.plan.edits.len()
         {
-            let custody = journal
-                .custody
-                .as_mut()
-                .ok_or(NativeTreeMaterializationError::MissingCustody)
-                .map_err(MaterializationError::Native)?;
-            reserve_buffer(&mut journal.preimages, journal.plan.edits.len(), custody)
+            journal
+                .reserve_preimages(journal.plan.edits.len())
                 .map_err(MaterializationError::Native)?;
         }
         // Capture only observes, and a Preparing journal recaptures from its
@@ -186,23 +177,14 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 .await
                 .map_err(MaterializationError::Backend)?;
             #[cfg(not(target_arch = "wasm32"))]
-            let mut preimage = preimage;
-            #[cfg(not(target_arch = "wasm32"))]
             if self.backend.native_work().is_some() {
-                let mut allocation = preimage
-                    .custody
-                    .take()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)
+                journal
+                    .append_funded_preimage(preimage)
                     .map_err(MaterializationError::Native)?;
-                let custody = journal
-                    .custody
-                    .as_mut()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)
-                    .map_err(MaterializationError::Native)?;
-                custody
-                    .absorb(&mut allocation)
-                    .map_err(MaterializationError::Native)?;
+            } else {
+                journal.preimages.push(preimage);
             }
+            #[cfg(target_arch = "wasm32")]
             journal.preimages.push(preimage);
             guard().await?;
         }
@@ -401,8 +383,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.backend.native_work() {
             let allocation = _journal
-                .custody
-                .as_ref()
+                .custody()
                 .ok_or(NativeTreeMaterializationError::MissingCustody)?;
             if !work.shares_allocation_context(allocation.work())
                 || allocation.bytes() < journal_owned_bytes(_journal)?

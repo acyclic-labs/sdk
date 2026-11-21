@@ -200,50 +200,33 @@ where
             // later host edits. Changed generations still need a durable
             // acknowledgement even when their files already match the host.
             // Planning held the root and matched its identity to the request.
-            return Ok((
-                None,
-                MaterializationJournal {
-                    history_id: OperationId::new(),
-                    version: JOURNAL_VERSION,
-                    revision: 1,
-                    plan,
-                    root_identity: Some(request.source_root_identity.to_bytes()),
-                    preparation_identity: None,
-                    preparation_progress: None,
-                    preimages: Vec::new(),
-                    phase: MaterializationPhase::Applied,
-                    applied: 0,
-                    restored: 0,
-                    work: work.journal_work()?,
-                    custody: Some(custody),
-                },
-            ));
+            let mut journal = MaterializationJournal::new(
+                plan,
+                Some(request.source_root_identity.to_bytes()),
+                MaterializationPhase::Applied,
+            );
+            journal.fund(custody)?;
+            journal.work = work.journal_work()?;
+            return Ok((None, journal));
         }
         let actual = publication_root_identity(&root, &operation, &request, work)?;
+        let mut journal = MaterializationJournal::new(
+            plan,
+            Some(actual.to_bytes()),
+            MaterializationPhase::Preparing,
+        );
+        journal.fund(custody)?;
         let parent = super::directory_preparation::prepare_publication_parent(
             &operation,
             work,
             before_effect,
         )
         .await?;
-        let journal = MaterializationJournal {
-            history_id: OperationId::new(),
-            version: JOURNAL_VERSION,
-            revision: 1,
-            plan,
-            root_identity: Some(actual.to_bytes()),
-            preparation_identity: None,
-            preparation_progress: Some(MaterializationPreparationProgress {
-                parent: parent.identity().to_bytes(),
-                pending: false,
-            }),
-            preimages: Vec::new(),
-            phase: MaterializationPhase::Preparing,
-            applied: 0,
-            restored: 0,
-            work: work.journal_work()?,
-            custody: Some(custody),
-        };
+        journal.preparation_progress = Some(MaterializationPreparationProgress {
+            parent: parent.identity().to_bytes(),
+            pending: false,
+        });
+        journal.work = work.journal_work()?;
         let (stored, journal) = store
             .compare_and_swap(request.operation_id, 0, journal)
             .await?;

@@ -32,7 +32,7 @@ impl MaterializationJournalStore for Store {
             .ok_or(sdk::NativeTreeMaterializationError::InvalidLayout)?;
         replacement.revision = journal.revision;
         Ok(Box::pin(async move {
-            if let Some(allocation) = &journal.custody {
+            if let Some(allocation) = journal.custody() {
                 journal.work = allocation.work().journal_work()?;
                 replacement.work = journal.work;
             }

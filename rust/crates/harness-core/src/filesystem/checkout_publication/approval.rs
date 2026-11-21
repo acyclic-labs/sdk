@@ -97,8 +97,7 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
             .shares_invocation_context(work)
             || self
                 .journal
-                .custody
-                .as_ref()
+                .custody()
                 .is_none_or(|custody| !custody.work().shares_invocation_context(work))
         {
             return Err(Error::Unauthorized(

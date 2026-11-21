@@ -9,6 +9,35 @@ use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use std::fmt::Error;
 
+#[test]
+fn generation_transition_keeps_v1_plan_bytes() {
+    #[derive(Serialize)]
+    enum V1Intent {
+        GenerationTransition {
+            from: GenerationId,
+            to: GenerationId,
+        },
+    }
+    #[derive(Serialize)]
+    struct V1Plan {
+        operation_id: OperationId,
+        intent: V1Intent,
+        edits: Vec<MaterializationEdit>,
+    }
+    let from = GenerationId::new(Digest::from_bytes([1; 32]));
+    let to = GenerationId::new(Digest::from_bytes([2; 32]));
+    let operation_id = OperationId::from_bytes([3; 16]);
+    let bytes = serde_json::to_vec(&V1Plan {
+        operation_id,
+        intent: V1Intent::GenerationTransition { from, to },
+        edits: Vec::new(),
+    })
+    .unwrap();
+    let plan: MaterializationPlan = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(plan.intent, MaterializationIntent::transition(from, to));
+    assert_eq!(serde_json::to_vec(&plan).unwrap(), bytes);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn prepared_codec_credit_excludes_competing_work_and_survives_cancellation()

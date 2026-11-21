@@ -22,11 +22,8 @@ async fn interrupted_preparation(prefix: usize, foreign: Option<usize>) -> TestR
     let original = work()?;
     let operation_id = OperationId::new();
     let root_identity = original.root_identity(&root)?.to_bytes();
-    let mut journal = MaterializationJournal {
-        history_id: OperationId::new(),
-        version: JOURNAL_VERSION,
-        revision: 1,
-        plan: MaterializationPlan {
+    let mut journal = MaterializationJournal::new(
+        MaterializationPlan {
             operation_id,
             intent: MaterializationIntent::transition(
                 GenerationId::new(crate::Digest::from_bytes([1; 32])),
@@ -34,24 +31,15 @@ async fn interrupted_preparation(prefix: usize, foreign: Option<usize>) -> TestR
             ),
             edits: Vec::new(),
         },
-        root_identity: Some(root_identity),
-        preparation_identity: None,
-        preparation_progress: Some(MaterializationPreparationProgress {
-            parent: original.root_identity(&parent)?.to_bytes(),
-            pending: true,
-        }),
-        work: original.journal_work()?,
-        preimages: Vec::new(),
-        phase: MaterializationPhase::Preparing,
-        applied: 0,
-        restored: 0,
-        custody: None,
-    };
-    journal.custody = Some(original.claim(
-        journal_owned_bytes(&journal)?,
-        0,
-        crate::WorkCounters::UNCHARGED,
-    )?);
+        Some(root_identity),
+        MaterializationPhase::Preparing,
+    );
+    journal.preparation_progress = Some(MaterializationPreparationProgress {
+        parent: original.root_identity(&parent)?.to_bytes(),
+        pending: true,
+    });
+    journal.fund(original.claim(0, 0, crate::WorkCounters::UNCHARGED)?)?;
+    journal.work = original.journal_work()?;
     let (stored, journal) = store
         .materialization(original.clone())
         .compare_and_swap(operation_id, 0, journal)

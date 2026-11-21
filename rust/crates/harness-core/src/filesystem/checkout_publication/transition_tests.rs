@@ -692,8 +692,7 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
         .await?;
     assert!(
         journal
-            .custody
-            .as_ref()
+            .custody()
             .is_some_and(|custody| custody.work().shares_ledger(&fixture.work))
     );
     let loaded = acyclic_fs::load_native_materialization_journal(
@@ -707,8 +706,7 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
     .ok_or("prepared journal is absent")?;
     assert!(
         loaded
-            .custody
-            .as_ref()
+            .custody()
             .is_some_and(|custody| custody.work().shares_ledger(&fixture.work))
     );
     // The former preparation boundary constructed a separate ledger from the
@@ -731,8 +729,7 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
     .value;
     assert!(
         journal
-            .custody
-            .as_ref()
+            .custody()
             .is_some_and(|custody| !custody.work().shares_ledger(&fixture.work))
     );
     assert!(!fixture.root.join("note").exists());

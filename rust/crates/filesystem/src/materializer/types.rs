@@ -127,7 +127,7 @@ pub struct MaterializationJournal {
     /// Capacity retained by this journal.
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
-    pub custody: Option<NativeAllocation>,
+    custody: Option<NativeAllocation>,
 }
 impl PartialEq for MaterializationJournal {
     fn eq(&self, other: &Self) -> bool {
@@ -163,7 +163,28 @@ impl MaterializationJournal {
         if !plan.edits.is_empty() {
             return None;
         }
-        Some(Self {
+        Some(Self::new(
+            plan,
+            root_identity,
+            MaterializationPhase::Applied,
+        ))
+    }
+
+    pub(crate) fn new(
+        plan: MaterializationPlan,
+        root_identity: Option<[u8; 16]>,
+        phase: MaterializationPhase,
+    ) -> Self {
+        Self::with_history(plan, root_identity, phase, OperationId::new())
+    }
+
+    pub(crate) fn with_history(
+        plan: MaterializationPlan,
+        root_identity: Option<[u8; 16]>,
+        phase: MaterializationPhase,
+        history_id: OperationId,
+    ) -> Self {
+        Self {
             version: JOURNAL_VERSION,
             revision: 1,
             plan,
@@ -172,13 +193,71 @@ impl MaterializationJournal {
             preparation_progress: None,
             work: crate::WorkCounters::UNCHARGED,
             preimages: Vec::new(),
-            phase: MaterializationPhase::Applied,
+            phase,
             applied: 0,
             restored: 0,
-            history_id: OperationId::new(),
+            history_id,
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
-        })
+        }
+    }
+
+    /// Retains the journal on the incoming allocation's ledger, including
+    /// owned backing that the planner or decoder did not account for.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fund(
+        &mut self,
+        mut allocation: NativeAllocation,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        let required = super::journal_owned_bytes(self)?;
+        let missing = required.saturating_sub(allocation.bytes());
+        if missing != 0 {
+            allocation.grow(missing)?;
+        }
+        self.custody = Some(allocation);
+        Ok(())
+    }
+
+    /// The accounting allocation retained by this journal.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn custody(&self) -> Option<&NativeAllocation> {
+        self.custody.as_ref()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reserve_preimages(
+        &mut self,
+        count: usize,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        let allocation = self
+            .custody
+            .as_mut()
+            .ok_or(NativeTreeMaterializationError::MissingCustody)?;
+        super::reserve_buffer(&mut self.preimages, count, allocation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn append_funded_preimage(
+        &mut self,
+        mut image: MaterializationPreimage,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        let allocation = self
+            .custody
+            .as_mut()
+            .ok_or(NativeTreeMaterializationError::MissingCustody)?;
+        let count = self
+            .preimages
+            .len()
+            .checked_add(1)
+            .ok_or(crate::WorkError::Overflow)?;
+        super::reserve_buffer(&mut self.preimages, count, allocation)?;
+        let mut incoming = image
+            .custody
+            .take()
+            .ok_or(NativeTreeMaterializationError::MissingCustody)?;
+        allocation.absorb(&mut incoming)?;
+        self.preimages.push(image);
+        Ok(())
     }
     /// Copies an effect-free approval without broadening its immutable plan.
     pub fn copy_empty(&self) -> Option<Self> {

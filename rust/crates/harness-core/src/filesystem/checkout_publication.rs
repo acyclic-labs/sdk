@@ -193,11 +193,11 @@ impl CheckoutPublication {
                 let mut copy = approved.copy_empty().ok_or_else(|| {
                     Error::Unauthorized("checkout approval contains preimages".into())
                 })?;
-                copy.custody = Some(work.claim(
+                copy.fund(work.claim(
                     0,
                     0,
                     acyclic_fs_work::performance::WorkCounters::UNCHARGED,
-                )?);
+                )?)?;
                 copy
             }
             (None, Some(_)) => {

@@ -17,14 +17,9 @@ async fn native_write_count(image: Vec<u8>) -> u64 {
             path: "file".into(),
             image,
         });
-    journal.custody = Some(
-        work.claim(
-            crate::materializer::journal_owned_bytes(&journal).unwrap(),
-            0,
-            crate::WorkCounters::UNCHARGED,
-        )
-        .unwrap(),
-    );
+    journal
+        .fund(work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap())
+        .unwrap();
     let store = LocalCoreStateStore::new(directory.path()).materialization(work.clone());
     work.state.lock().write_probe = Some(crate::ledger::WriteProbe {
         writes: 0,
@@ -161,7 +156,7 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
                 .await
                 .unwrap()
                 .unwrap();
-        let allocation = record.custody.as_ref().unwrap();
+        let allocation = record.custody().unwrap();
         assert!(allocation.bytes() > 0);
         assert!(allocation.work().shares_ledger(&work));
         assert_eq!(
@@ -249,14 +244,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     assert_eq!(completed.root_identity, root_identity);
     assert_eq!(completed.work, prefix);
     assert_eq!(completed.phase, crate::MaterializationPhase::Preparing);
-    assert!(
-        completed
-            .custody
-            .as_ref()
-            .unwrap()
-            .work()
-            .shares_ledger(&work)
-    );
+    assert!(completed.custody().unwrap().work().shares_ledger(&work));
     work.receipt().unwrap().verify(budget).unwrap();
     drop((completed, measured, store));
     let reopened = LocalCoreStateStore::new(&state);
@@ -509,36 +497,26 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 image: vec![1],
             })
             .collect();
-        journal.custody = Some(
-            work.claim(
-                crate::materializer::journal_owned_bytes(&journal).unwrap(),
-                0,
-                crate::WorkCounters::UNCHARGED,
-            )
-            .unwrap(),
-        );
+        journal
+            .fund(work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap())
+            .unwrap();
         let (stored, mut journal) =
             MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
                 .await
                 .unwrap();
         assert!(stored);
-        let custody = journal.custody.as_mut().unwrap();
-        crate::materializer::reserve_buffer(&mut journal.preimages, count, custody).unwrap();
+        journal.reserve_preimages(count).unwrap();
         let mut first = None;
         for index in 0..count {
-            let (image, mut custody) = work.copy_bytes(&[255; 64]).unwrap();
-            journal
-                .custody
-                .as_mut()
-                .unwrap()
-                .absorb(&mut custody)
-                .unwrap();
+            let (image, custody) = work.copy_bytes(&[255; 64]).unwrap();
             let before = work.receipt().unwrap();
             assert!(store.matches(&journal).await.unwrap());
-            journal.preimages.push(crate::MaterializationPreimage {
-                image,
-                custody: None,
-            });
+            journal
+                .append_funded_preimage(crate::MaterializationPreimage {
+                    image,
+                    custody: Some(custody),
+                })
+                .unwrap();
             let expected = journal.revision;
             journal.revision += 1;
             let (stored, updated) =

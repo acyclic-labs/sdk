@@ -91,17 +91,8 @@ pub(super) fn workspace_context(
 }
 
 pub(super) fn materialization_journal(operation_id: OperationId) -> MaterializationJournal {
-    MaterializationJournal {
-        history_id: OperationId::new(),
-        #[cfg(not(target_arch = "wasm32"))]
-        custody: None,
-        version: crate::materializer::JOURNAL_VERSION,
-        revision: 1,
-        root_identity: None,
-        preparation_identity: None,
-        preparation_progress: None,
-        work: crate::WorkCounters::UNCHARGED,
-        plan: crate::MaterializationPlan {
+    MaterializationJournal::new(
+        crate::MaterializationPlan {
             operation_id,
             intent: crate::MaterializationIntent::transition(
                 acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes([1; 32])),
@@ -109,11 +100,9 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
             ),
             edits: Vec::new(),
         },
-        preimages: Vec::new(),
-        phase: crate::MaterializationPhase::Prepared,
-        applied: 0,
-        restored: 0,
-    }
+        None,
+        crate::MaterializationPhase::Prepared,
+    )
 }
 pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
     LazyWorkspaceState {

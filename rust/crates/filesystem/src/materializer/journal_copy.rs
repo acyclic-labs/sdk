@@ -19,14 +19,12 @@ impl MaterializationJournal {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let copying = journal
-            .custody
-            .as_ref()
+            .custody()
             .map(|allocation| allocation.work().reserve_work(copied))
             .transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let custody = journal
-            .custody
-            .as_ref()
+            .custody()
             .map(|allocation| {
                 let bytes = sdk::materializer::journal_owned_bytes(journal)?;
                 allocation
@@ -34,21 +32,32 @@ impl MaterializationJournal {
                     .claim(bytes, 0, sdk::WorkCounters::UNCHARGED)
             })
             .transpose()?;
-        let copy = MaterializationJournal {
-            plan: journal.plan.clone(),
-            preimages: journal
-                .preimages
-                .iter()
-                .map(|image| sdk::MaterializationPreimage {
-                    image: image.image.clone(),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    custody: None,
-                })
-                .collect(),
-            #[cfg(not(target_arch = "wasm32"))]
-            custody,
-            ..*journal
-        };
+        let mut copy = MaterializationJournal::with_history(
+            journal.plan.clone(),
+            journal.root_identity,
+            journal.phase,
+            journal.history_id,
+        );
+        copy.version = journal.version;
+        copy.revision = journal.revision;
+        copy.preparation_identity = journal.preparation_identity;
+        copy.preparation_progress = journal.preparation_progress;
+        copy.work = journal.work;
+        copy.applied = journal.applied;
+        copy.restored = journal.restored;
+        copy.preimages = journal
+            .preimages
+            .iter()
+            .map(|image| sdk::MaterializationPreimage {
+                image: image.image.clone(),
+                #[cfg(not(target_arch = "wasm32"))]
+                custody: None,
+            })
+            .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = custody {
+            copy.fund(custody)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(copying) = copying {
             copying.record_completed(copied)?;
@@ -82,6 +91,9 @@ fn copy_bytes(
         } else {
             return Err(sdk::NativeTreeMaterializationError::InvalidLayout);
         }
+    }
+    if let Intent::GenerationTransition { .. } = &journal.plan.intent {
+        add(1, Intent::TRANSITION_HEAP_BYTES)?;
     }
     if let Intent::NativePreparation {
         selection,

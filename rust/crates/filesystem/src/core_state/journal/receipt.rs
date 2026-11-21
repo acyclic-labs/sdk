@@ -124,21 +124,23 @@ pub(super) fn reconstruct(
         absorb(&mut custody, image_custody)?;
         preimages.push(image);
     }
-    Ok(MaterializationJournal {
-        history_id: receipt.history_id,
-        version: receipt.version,
-        revision: receipt.revision,
+    let mut journal = MaterializationJournal::with_history(
         plan,
-        root_identity: receipt.root_identity,
-        preparation_identity: receipt.preparation_identity,
-        preparation_progress: receipt.preparation_progress,
-        work: receipt.work,
-        preimages,
-        phase: receipt.phase,
-        applied: receipt.applied,
-        restored: receipt.restored,
-        custody,
-    })
+        receipt.root_identity,
+        receipt.phase,
+        receipt.history_id,
+    );
+    journal.revision = receipt.revision;
+    journal.preparation_identity = receipt.preparation_identity;
+    journal.preparation_progress = receipt.preparation_progress;
+    journal.work = receipt.work;
+    journal.preimages = preimages;
+    journal.applied = receipt.applied;
+    journal.restored = receipt.restored;
+    if let Some(custody) = custody {
+        journal.fund(custody)?;
+    }
+    Ok(journal)
 }
 
 fn absorb(

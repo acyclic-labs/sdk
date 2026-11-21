@@ -17,7 +17,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         &'a self,
         mut journal: MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'a>, Self::Error> {
-        let work = match (&self.journal_work, &journal.custody) {
+        let work = match (&self.journal_work, journal.custody()) {
             (Some(work), _) => work.clone(),
             (_, Some(allocation)) => allocation.work().clone(),
             _ => NativeMaterializationWork::new(
@@ -26,16 +26,12 @@ impl MaterializationJournalStore for LocalCoreStateStore {
             )
             .map_err(|(cause, _)| LocalCoreStateStoreError::from(cause))?,
         };
-        if let Some(custody) = &journal.custody {
+        if let Some(custody) = journal.custody() {
             if !custody.work().shares_allocation_context(&work) {
                 return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
             }
         } else {
-            journal.custody = Some(work.claim(
-                crate::materializer::journal_owned_bytes(&journal)?,
-                0,
-                crate::WorkCounters::UNCHARGED,
-            )?);
+            journal.fund(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)?;
         }
         if journal.phase != crate::MaterializationPhase::Preparing
             || !journal.is_valid_for(journal.plan.operation_id)
@@ -139,17 +135,13 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         mut replacement: MaterializationJournal,
     ) -> Result<(bool, MaterializationJournal), Self::Error> {
         if let Some(work) = &self.journal_work {
-            match &replacement.custody {
+            match replacement.custody() {
                 Some(custody) if !custody.work().shares_ledger(work) => {
                     return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
                 }
                 Some(_) => {}
                 None => {
-                    replacement.custody = Some(work.claim(
-                        crate::materializer::journal_owned_bytes(&replacement)?,
-                        0,
-                        crate::WorkCounters::UNCHARGED,
-                    )?);
+                    replacement.fund(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)?;
                 }
             }
         }
