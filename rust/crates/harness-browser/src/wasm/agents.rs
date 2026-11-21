@@ -32,11 +32,11 @@ use acyclic_stream::{
     StreamProvider,
 };
 use futures::{FutureExt as _, TryStreamExt as _, future::AbortHandle};
-use js_sys::Function;
+use js_sys::{Array, Function};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tsify::Tsify;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::{JsCast as _, prelude::*};
 
 mod actor_host;
 mod guest;
@@ -230,8 +230,12 @@ struct WasmAgentRecord {
 #[derive(Clone, Default)]
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
-    model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
-    models: Option<Arc<crate::model::ModelResolver>>,
+    model: Option<(
+        Model,
+        acyclic_stream::ProviderOwner<dyn ModelProvider>,
+        CompactionPolicy,
+    )>,
+    models: Option<acyclic_stream::ProviderOwner<crate::model::ModelResolver>>,
     workspace: Option<Workspace>,
     workspace_source: Option<JsValue>,
 }
@@ -267,22 +271,21 @@ impl WasmAgentRegistry {
     pub fn bind_model(
         &mut self,
         model: Model,
-        provider: Arc<dyn ModelProvider>,
+        provider: acyclic_stream::ProviderOwner<dyn ModelProvider>,
         compaction: CompactionPolicy,
     ) -> Result<()> {
         model.validate()?;
         let selection = format!("{}/{}", model.provider, model.name);
         let initial;
-        let models = match &self.models {
-            Some(models) => models.as_ref(),
-            None => {
-                initial = crate::model::ModelResolver::new(selection, |_| {
-                    Err(Error::Invalid("model is not registered".into()))
-                });
-                &initial
-            }
+        let models = if let Some(models) = &self.models {
+            models.as_ref()
+        } else {
+            initial = crate::model::ModelResolver::new(selection, |_| {
+                Err(Error::Invalid("model is not registered".into()))
+            });
+            &initial
         };
-        self.models = Some(Arc::new(
+        self.models = Some(acyclic_stream::ProviderOwner::new(
             models.with_binding((model.clone(), provider.clone()))?,
         ));
         self.model = Some((model, provider, compaction));
@@ -387,7 +390,7 @@ impl WasmAgentRegistry {
         model.validate().map_err(js_error)?;
         self.bind_model(
             model,
-            Arc::new(HostModel {
+            acyclic_stream::ProviderOwner::new(HostModel {
                 generate,
                 reconcile,
                 capacity,
@@ -511,7 +514,7 @@ impl WasmAgents {
             owner,
             registry,
             providers,
-            Arc::new(handler),
+            acyclic_stream::ProviderOwner::new(handler),
             report,
             true,
         )
@@ -521,7 +524,7 @@ impl WasmAgents {
     /// guest artifact ([`guest::AgentGuest`]): `manifest` is the guest's
     /// canonical manifest and `onRecord` its entry. This host keeps
     /// scheduling, controls and publication.
-    #[wasm_bindgen(js_name = openHosting)]
+    #[wasm_bindgen(js_name = openHosting, variadic)]
     pub fn open_hosting(
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
@@ -533,14 +536,13 @@ impl WasmAgents {
         )]
         on_record: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "(query: Uint8Array, signal: AbortSignal) => Promise<boolean>"
+            unchecked_param_type = "[on_interrupt: (query: Uint8Array, signal: AbortSignal) => Promise<boolean>, report?: (actor: string, error: string) => void]"
         )]
-        on_interrupt: Function,
-        #[wasm_bindgen(
-            unchecked_param_type = "((actor: string, error: string) => void) | undefined"
-        )]
-        report: Option<Function>,
+        callbacks: &Array,
     ) -> std::result::Result<WasmAgents, JsValue> {
+        let on_interrupt = callbacks.get(0).unchecked_into();
+        let report = callbacks.get(1);
+        let report = (!report.is_null() && !report.is_undefined()).then(|| report.unchecked_into());
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let manifest = acyclic_actors::guest::wire::decode_manifest(manifest)
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
@@ -554,7 +556,7 @@ impl WasmAgents {
             owner,
             registry,
             providers.providers.clone(),
-            Arc::new(handler),
+            acyclic_stream::ProviderOwner::new(handler),
             report,
             true,
         )
@@ -600,7 +602,7 @@ impl WasmAgents {
         owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
         providers: Providers,
-        handler: Arc<dyn Handler>,
+        handler: acyclic_stream::ProviderOwner<dyn Handler>,
         report: Option<Function>,
         background: bool,
     ) -> std::result::Result<WasmAgents, JsValue> {
@@ -825,7 +827,7 @@ impl WasmAgents {
             None => StreamPath::new(AGENTS).map_err(stream_error)?,
         };
         let after = after
-            .map(|path| StreamPath::new(path))
+            .map(StreamPath::new)
             .transpose()
             .map_err(stream_error)?;
         let hierarchy_version = version

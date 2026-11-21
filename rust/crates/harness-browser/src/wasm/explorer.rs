@@ -3,7 +3,7 @@
 //! records. Persistence is the reader's snapshot, which the page stores in
 //! IndexedDB under the same byte budget.
 
-use super::json::to_js_client;
+use super::{json::to_js_client, numeric::saturating_u64};
 use acyclic_harness_client::{
     Explorer, ReaderPolicy,
     explorer::{HistoryRow, Pos, Row},
@@ -33,7 +33,7 @@ struct State {
 impl State {
     fn now(&self) -> u64 {
         // Whole milliseconds since the explorer opened.
-        (monotonic_now() - self.origin).max(0.0) as u64
+        saturating_u64(monotonic_now() - self.origin)
     }
 
     fn wake_in(&self) -> Option<u64> {
@@ -132,7 +132,7 @@ impl WasmExplorer {
     pub fn new(stream: &WasmStream, changed: Function, memory: f64) -> Result<Self, JsValue> {
         // Whole bytes; the budget saturates at u64::MAX.
         let policy = if memory > 0.0 {
-            ReaderPolicy::for_device_memory(memory as u64)
+            ReaderPolicy::for_device_memory(saturating_u64(memory))
         } else {
             ReaderPolicy::default()
         };
@@ -209,7 +209,7 @@ impl WasmExplorer {
                         path: path.as_str(),
                         role: role.as_deref(),
                         depth: depth(pos),
-                        status: status.as_ref(),
+                        status: status.as_deref(),
                         conversation: *conversation,
                         expanded: *expanded,
                     },

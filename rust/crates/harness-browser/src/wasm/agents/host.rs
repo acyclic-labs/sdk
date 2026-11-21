@@ -244,8 +244,8 @@ impl ModelProvider for HostModel {
         &self,
         reader: Arc<dyn ContentResidencyVerifier>,
         maximum_bytes: Option<u64>,
-    ) -> Option<Arc<dyn ModelProvider>> {
-        Some(Arc::new(Self {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
+        Some(acyclic_stream::ProviderOwner::new(Self {
             content: Some((reader, maximum_bytes)),
             ..self.clone()
         }))

@@ -8,8 +8,8 @@ use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, SessionId,
     TaskId, TurnId,
     conversation::{
-        BoundedContentFuture, ContentIo, ContentResidencyVerifier, ConversationMessage,
-        FileDescriptor, FileRef, Limits, ReferencedAttachments, TaskOutcomeRecord, VolumeRef,
+        ConversationMessage, FileDescriptor, FileRef, Limits, ReferencedAttachments,
+        TaskOutcomeRecord, VolumeRef,
     },
     core::{
         AggregateKind, Authority, ExtensionAdmission, ExtensionConfiguration, ExtensionDependency,
@@ -27,20 +27,19 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 mod cancel;
+mod numeric;
 mod reader;
 #[cfg(feature = "browser")]
 pub use agents::{WasmAgentProviders, WasmAgentRegistry, WasmMachinesWorkspace, WasmObjects};
 pub use reader::BrowserContentReader;
 mod context;
-use context::*;
 mod contract;
 mod declarations;
 mod identity;
 mod json;
 use json::*;
-mod model;
-use model::*;
 mod agent_authority;
+mod model;
 mod tool;
 use tool::*;
 mod agent_client;

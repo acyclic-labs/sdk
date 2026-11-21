@@ -268,8 +268,9 @@ pub struct WasmAgentCommand {
 impl WasmAgentCommand {
     /// The bound of one invocation frame, shared with conformance drivers.
     #[wasm_bindgen(js_name = maximumInvocationBytes)]
-    pub fn maximum_invocation_bytes() -> u32 {
-        acyclic_stream::MAX_COMMAND_BYTES as u32
+    pub fn maximum_invocation_bytes() -> Result<u32, JsValue> {
+        u32::try_from(acyclic_stream::MAX_COMMAND_BYTES)
+            .map_err(|_| command_error(CommandError::Capacity))
     }
 
     /// Admit an encoded command of any size: past one frame, the shared

@@ -122,7 +122,7 @@ impl WasmMachinesWorkspace {
                 let reference: acyclic_auth::secrets::SecretRef = serde_wasm_bindgen::from_value(reference).map_err(|_| super::js_error(crate::Error::Invalid("Daytona requires a canonical SecretRef object; recovery: retain the protected sandbox binding".into())))?;
                 let resolver = BrowserCredentialResolver(field(&source, "credentialResolver")?);
                 let config = DaytonaConfig::new(reference, observation.contract.platform);
-                Arc::new(DaytonaProvider::new(config, Arc::new(resolver), Arc::new(BrowserTransport::global().map_err(super::js_error)?)).map_err(|error| super::js_error(crate::Error::Machines(error)))?)
+                Arc::new(DaytonaProvider::new(config, Arc::new(resolver), acyclic_stream::ProviderOwner::new(BrowserTransport::global().map_err(super::js_error)?)).map_err(|error| super::js_error(crate::Error::Machines(error)))?)
             }
             _ => return Err(super::js_error(crate::Error::Unsupported("Machines provider reference is not admitted; recovery: retain the original provider selection".into()))),
         };

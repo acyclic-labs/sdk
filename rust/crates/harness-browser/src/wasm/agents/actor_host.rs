@@ -6,7 +6,7 @@ use acyclic_actors::{
     local::{RuntimeLimits, Store, SystemClock},
 };
 use acyclic_stream::{StreamPath, StreamProvider, WasmStream};
-use js_sys::Function;
+use js_sys::{Array, Function, Uint32Array};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
@@ -30,6 +30,7 @@ impl WasmActorHost {
     /// Pure factory: no provider reads, creation, turn or background runtime.
     /// The owner must authenticate/admit the actor before opening this binding.
     /// `onRecord` implements the canonical Actors guest wire, not AgentGuest.
+    #[wasm_bindgen(variadic)]
     pub fn open(
         stream: &WasmStream,
         root: &str,
@@ -43,9 +44,11 @@ impl WasmActorHost {
             unchecked_param_type = "(query: Uint8Array, signal: AbortSignal) => Promise<boolean>"
         )]
         on_interrupt: Function,
-        active: u32,
-        work: u32,
+        #[wasm_bindgen(unchecked_param_type = "[active: number, work: number]")] limits: &Array,
     ) -> Result<WasmActorHost, JsValue> {
+        let limits = Uint32Array::new(&Array::of2(&limits.get(0), &limits.get(1)));
+        let active = limits.get_index(0);
+        let work = limits.get_index(1);
         let actor = ActorReference::decode(actor).map_err(failed)?;
         let root = StreamPath::new(root).map_err(failed)?;
         let manifest = wire::decode_manifest(manifest).map_err(failed)?;
@@ -60,7 +63,7 @@ impl WasmActorHost {
                 acyclic_actors::guest::Requests::default(),
                 Store::new(stream.provider(), root),
                 actor,
-                Arc::new(handler),
+                acyclic_stream::ProviderOwner::new(handler),
                 Arc::new(SystemClock),
                 limits,
             ),

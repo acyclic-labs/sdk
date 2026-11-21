@@ -122,7 +122,8 @@ impl McpHttpProvider for BrowserProvider {
                     acyclic_stream::javascript_bytes::snapshot_prefix(&bytes, |length| {
                         body.frontier
                             .admit(length as usize)
-                            .map(|allowed| (allowed as u32, ()))
+                            .and_then(|allowed| u32::try_from(allowed).ok())
+                            .map(|allowed| (allowed, ()))
                             .ok_or_else(|| js_error(Error::Indeterminate(body.operation)))
                     })
                     .map_err(|_| Error::Indeterminate(body.operation))?;
@@ -237,7 +238,8 @@ impl WasmMcpHttpTransport {
         let (body, ()) = acyclic_stream::javascript_bytes::snapshot_prefix(&body, |length| {
             frontier
                 .admit(length as usize)
-                .map(|allowed| (allowed as u32, ()))
+                .and_then(|allowed| u32::try_from(allowed).ok())
+                .map(|allowed| (allowed, ()))
                 .ok_or_else(|| js_error(Error::Indeterminate(operation)))
         })?;
         let body = Bytes::from(body);

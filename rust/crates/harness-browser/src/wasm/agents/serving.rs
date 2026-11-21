@@ -115,7 +115,9 @@ impl WasmAgentServer {
                 within,
             },
             Turns {
-                executors: Arc::new(Providers::executors(&options, registry)?),
+                executors: acyclic_stream::ProviderOwner::new(Providers::executors(
+                    &options, registry,
+                )?),
                 limits: TurnLimits {
                     maximum_bytes: limits.file_bytes,
                     history_turns: HISTORY_TURNS,
@@ -132,7 +134,7 @@ impl WasmAgentServer {
         let bound = bound
             .hosting(
                 acyclic_actors::guest::Requests::default(),
-                Arc::new(acyclic_actors::guest::wire::Remote::new(
+                acyclic_stream::ProviderOwner::new(acyclic_actors::guest::wire::Remote::new(
                     manifest,
                     guest::call(on_record),
                     guest::interrupt(on_interrupt),

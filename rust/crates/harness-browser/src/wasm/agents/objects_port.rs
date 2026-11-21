@@ -1,6 +1,7 @@
 //! A host's Objects v1 storage behind the one blob engine and client: either
 //! an admitted account's original binary port, or the host's durable keys
 //! under [`Store`]. The harness keeps no second object store.
+use super::super::numeric::{saturating_u64, u64_to_f64};
 use acyclic_objects::binary::javascript::{JavaScriptTransport, ObjectsV1Request, js_error};
 use acyclic_objects::{
     Blobs, Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
@@ -206,7 +207,7 @@ const EXACT: u64 = 1 << 53;
 
 fn position(value: u64) -> Result<f64, MediumError> {
     (value <= EXACT)
-        .then_some(value as f64)
+        .then_some(u64_to_f64(value))
         .ok_or_else(|| invalid("position beyond a JavaScript integer"))
 }
 
@@ -281,11 +282,15 @@ impl Medium for HostMedium {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
-        let page: Array = settle(self.0.list(prefix, after.map(str::to_owned), limit as f64))
-            .await?
-            .dyn_into()
-            .map_err(|_| invalid("medium list is not an array"))?;
-        if page.length() as usize > limit {
+        let limit = u32::try_from(limit).map_err(|_| invalid("medium list limit exceeds u32"))?;
+        let page: Array = settle(
+            self.0
+                .list(prefix, after.map(str::to_owned), f64::from(limit)),
+        )
+        .await?
+        .dyn_into()
+        .map_err(|_| invalid("medium list is not an array"))?;
+        if page.length() > limit {
             return Err(invalid("medium list exceeds its limit"));
         }
         let mut previous = after.map(str::to_owned);
@@ -295,10 +300,9 @@ impl Medium for HostMedium {
                     .dyn_into()
                     .map_err(|_| invalid("medium list entry is not a pair"))?;
                 let key = entry.get(0).as_string();
-                let size = entry
-                    .get(1)
-                    .as_f64()
-                    .filter(|size| size.fract() == 0.0 && *size >= 0.0 && *size <= EXACT as f64);
+                let size = entry.get(1).as_f64().filter(|size| {
+                    size.fract() == 0.0 && *size >= 0.0 && *size <= u64_to_f64(EXACT)
+                });
                 match (key, size) {
                     (Some(key), Some(size))
                         if key.starts_with(prefix)
@@ -307,7 +311,7 @@ impl Medium for HostMedium {
                                 .is_none_or(|previous| key.as_str() > previous) =>
                     {
                         previous = Some(key.clone());
-                        Ok((key, size as u64))
+                        Ok((key, saturating_u64(size)))
                     }
                     _ => Err(invalid(
                         "medium list entry out of order or outside its prefix",

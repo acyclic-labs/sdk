@@ -164,7 +164,7 @@ impl Providers {
                 Arc::clone(&self.filesystem),
                 owner.issuer.clone(),
                 admission.clone(),
-                Arc::new(Self::executors(options, registry)?),
+                acyclic_stream::ProviderOwner::new(Self::executors(options, registry)?),
                 (turn_limits, options.preset.approval_policy.clone()),
             )
             .with_filesystem_tools(),

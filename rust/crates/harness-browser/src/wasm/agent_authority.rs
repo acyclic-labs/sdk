@@ -18,10 +18,6 @@ impl WasmAgentAuthority {
         )
         .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))
     }
-
-    fn verifier(&self) -> Result<crate::core::AuthorityVerifier, JsValue> {
-        self.issuer.verifier(&mut None).map_err(js_error)
-    }
 }
 
 #[wasm_bindgen]

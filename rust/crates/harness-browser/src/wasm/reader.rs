@@ -1,4 +1,4 @@
-use super::to_js_admitted;
+use super::{numeric::u64_to_f64, to_js_admitted};
 use crate::{
     Error, Result,
     conversation::{BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileRef},
@@ -34,7 +34,7 @@ impl ContentResidencyVerifier for BrowserContentReader {
                 .call2(
                     &JsValue::UNDEFINED,
                     &encoded,
-                    &JsValue::from_f64(maximum as f64),
+                    &JsValue::from_f64(u64_to_f64(maximum)),
                 )
                 .map_err(|_| Error::Storage("model file read failed".into()))?;
             let bytes = JsFuture::from(Promise::resolve(&promise))
