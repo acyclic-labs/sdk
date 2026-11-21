@@ -16,7 +16,10 @@
 //!   its process group), unlinks the record and exits as the program did.
 //!   A fence takes each record's lock, which the kernel releases only when
 //!   the warden exits, so the identity of the waited-for tree never depends
-//!   on a PID. A record still linked after its lock is free belongs to a
+//!   on a PID. A process the tree started that can still act for it after
+//!   its program exits, however it sets its process group, takes the tree's
+//!   custody with [`ProcessCustody::hold`] and shares the record's lock: the
+//!   warden retires the tree, and a fence returns, only once it has exited. A record still linked after its lock is free belongs to a
 //!   warden killed outright; its recorded process group is killed and awaited.
 //! - Windows: each tree is a named Job with `KILL_ON_JOB_CLOSE`. A fence
 //!   opens each recorded Job by name, terminates it and awaits that tree's
@@ -84,7 +87,17 @@ impl ProcessCustodyLease {
     }
 }
 
-/// One owner's directory of live process-tree records. It holds no
+/// One owner's directory of live process-tree records.
+///
+/// A custodied program receives exactly the environment its command sets,
+/// plus its custody's names: `ACYCLIC_PROCESS_CUSTODY_DIRECTORY`, this
+/// directory; `ACYCLIC_PROCESS_CUSTODY_RECORDS`, the records of every
+/// custodied tree enclosing its owner, one per line; and
+/// `ACYCLIC_PROCESS_CUSTODY_HOLDERS`, the descriptor of its warden's channel.
+/// [`ProcessCustody::hold`] and [`ProcessCustody::admit`] read them; none
+/// names a secret.
+///
+/// It holds no
 /// descriptor while idle: each spawn opens the directory and checks that it is
 /// still the one this custody fenced, and the tree's record keeps that
 /// descriptor while the tree runs.
@@ -116,7 +129,150 @@ pub(super) struct Record {
     link: Option<super::custodian::Link>,
 }
 
+/// The enclosing trees' records, outermost first, one per line.
+#[cfg(unix)]
+const ENCLOSING_RECORDS: &str = "ACYCLIC_PROCESS_CUSTODY_RECORDS";
+/// The nearest custody directory; its record is named by the tree's group.
+#[cfg(unix)]
+const NEAREST_DIRECTORY: &str = "ACYCLIC_PROCESS_CUSTODY_DIRECTORY";
+/// The descriptor of the nearest warden's channel (`ProcessCustody::admit`).
+#[cfg(unix)]
+pub(super) const CHANNEL: &str = "ACYCLIC_PROCESS_CUSTODY_HOLDERS";
+
+/// The nearest warden's channel, if the environment names a Unix socket. A
+/// descriptor reused since it was named is no channel.
+#[cfg(unix)]
+pub(super) fn channel() -> Option<std::os::fd::RawFd> {
+    let channel = std::env::var_os(CHANNEL)?.to_str()?.parse().ok()?;
+    // SAFETY: plain fields; all-zero is a valid address.
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of_val(&address)).ok()?;
+    // SAFETY: writable address storage of the stated length.
+    let named =
+        unsafe { libc::getsockname(channel, (&raw mut address).cast(), &raw mut length) } == 0;
+    (named && i32::from(address.ss_family) == libc::AF_UNIX).then_some(channel)
+}
+
+/// Names `pid` in `role` (`record::HOST`) to the warden over `channel` and
+/// waits for its reply, on a pipe of this naming's own, so concurrent namers
+/// never share one.
+#[cfg(unix)]
+pub(super) fn name(channel: std::os::fd::RawFd, role: i32, pid: i32) -> io::Result<()> {
+    use std::io::Read as _;
+    use std::os::fd::AsRawFd as _;
+    let (mut reply, replier) = std::io::pipe()?;
+    let mut bytes = [0_u8; 8];
+    let (head, tail) = bytes.split_at_mut(4);
+    head.copy_from_slice(&role.to_ne_bytes());
+    tail.copy_from_slice(&pid.to_ne_bytes());
+    let mut vector = libc::iovec {
+        iov_base: bytes.as_mut_ptr().cast(),
+        iov_len: bytes.len(),
+    };
+    let mut control = [0_u64; 4];
+    // SAFETY: the macros only compute sizes.
+    let (space, length) = unsafe { (libc::CMSG_SPACE(4), libc::CMSG_LEN(4)) };
+    // SAFETY: plain fields; all-zero is a valid header.
+    let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
+    header.msg_iov = &raw mut vector;
+    header.msg_iovlen = 1;
+    header.msg_control = control.as_mut_ptr().cast();
+    header.msg_controllen = space.try_into().map_err(|_| io::ErrorKind::InvalidInput)?;
+    // SAFETY: the control buffer holds one descriptor's message, which these
+    // macros address inside it.
+    unsafe {
+        let message = libc::CMSG_FIRSTHDR(&raw const header);
+        (*message).cmsg_level = libc::SOL_SOCKET;
+        (*message).cmsg_type = libc::SCM_RIGHTS;
+        (*message).cmsg_len = length.try_into().map_err(|_| io::ErrorKind::InvalidInput)?;
+        libc::CMSG_DATA(message)
+            .cast::<libc::c_int>()
+            .write_unaligned(replier.as_raw_fd());
+    }
+    loop {
+        // SAFETY: a header naming readable buffers of its stated lengths.
+        let sent = unsafe { libc::sendmsg(channel, &raw const header, 0) };
+        if sent >= 0 {
+            break;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    drop(replier);
+    let mut code = [0; 4];
+    // End of file: the warden ended without recording the naming.
+    reply.read_exact(&mut code)?;
+    match i32::from_ne_bytes(code) {
+        0 => Ok(()),
+        error => Err(io::Error::from_raw_os_error(error)),
+    }
+}
+
 impl ProcessCustody {
+    /// Takes this process's custody: a shared lock on the record of every
+    /// custodied tree that encloses it. A process that inherits the returned
+    /// files keeps each such tree in custody, unretired, until it exits,
+    /// however it sets its process group. A tree already retired has no
+    /// record left to hold.
+    #[cfg(unix)]
+    pub fn hold() -> io::Result<Vec<File>> {
+        use std::os::fd::AsFd as _;
+        let mut holds = Vec::new();
+        for record in enclosing_records() {
+            let file = match File::open(&record) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            crate::FileLock::try_lock_description(file.as_fd(), crate::FileLockMode::Shared)?;
+            holds.push(file);
+        }
+        Ok(holds)
+    }
+
+    /// Names `holder`, a process this one started with its custody
+    /// ([`Self::hold`]), to the nearest tree's warden. The tree's drain spares
+    /// it and awaits its exit, however it sets its process group; an explicit
+    /// cancellation of the tree still kills it, so a hung holder never wedges
+    /// a cancelled tree. Outside a warded tree there is nothing to name.
+    /// Admission waits for the warden's reply: an error means the holder is
+    /// not spared.
+    #[cfg(unix)]
+    pub fn admit(holder: u32) -> io::Result<()> {
+        Self::admit_as(super::record::HOLDER, holder)
+    }
+
+    /// Names `action`, an owner-exit action this process started, to the
+    /// nearest tree's warden, which spares and awaits it even when the tree
+    /// is cancelled: the loss of its owner is what it runs for.
+    #[cfg(target_os = "linux")]
+    pub(super) fn admit_action(action: u32) -> io::Result<()> {
+        Self::admit_as(super::record::ACTION, action)
+    }
+
+    #[cfg(unix)]
+    fn admit_as(role: i32, pid: u32) -> io::Result<()> {
+        let pid = i32::try_from(pid).map_err(|_| io::ErrorKind::InvalidInput)?;
+        channel().map_or(Ok(()), |channel| name(channel, role, pid))
+    }
+
+    /// The environment that names this custody's records to a tree it starts.
+    #[cfg(unix)]
+    pub(super) fn environment(&self) -> [(&'static str, std::ffi::OsString); 2] {
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+        let mut records = Vec::new();
+        for record in enclosing_records() {
+            records.extend_from_slice(record.as_os_str().as_bytes());
+            records.push(b'\n');
+        }
+        [
+            (ENCLOSING_RECORDS, std::ffi::OsString::from_vec(records)),
+            (NEAREST_DIRECTORY, self.path.clone().into_os_string()),
+        ]
+    }
+
     /// Opens or creates `path` as the custody directory of this owner. Only
     /// one live owner may use a directory; it must fence before spawning.
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -308,6 +464,12 @@ mod unix {
                 // Do not resolve the admitted path a second time in std.
                 command.cwd = None;
             }
+            use std::os::fd::AsRawFd as _;
+            // The warden's channel; each end lives until the spawn returns.
+            let (warden_channel, program_channel) = std::os::unix::net::UnixDatagram::pair()?;
+            warden_channel.set_nonblocking(true)?;
+            let (channel, inherited) = (warden_channel.as_raw_fd(), program_channel.as_raw_fd());
+            command.env(super::CHANNEL, inherited.to_string());
             let mut native = command.to_std()?;
             let owner = libc::pid_t::try_from(std::process::id())
                 .map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -315,11 +477,11 @@ mod unix {
             // custody directory stays open while the spawn runs.
             unsafe {
                 native.pre_exec(move || {
-                    super::super::warden::enter(directory, owner).map_err(Into::into)
+                    super::super::warden::enter(directory, owner, channel).map_err(Into::into)
                 });
             }
             if let Some(boundary) = boundary {
-                boundary.install(&mut native, command.unix.arg0.as_deref())?;
+                boundary.install(&mut native, command.unix.arg0.as_deref(), inherited)?;
             } else {
                 // Every program starts with only its three standard streams.
                 // macOS has no atomic close-on-exec pipe, so a descriptor
@@ -334,12 +496,13 @@ mod unix {
                         .resolved()
                         .into_iter()
                         .map(|(key, value)| (key.name, value));
-                    crate::execution::SealedExec::new(
+                    let mut exec = crate::execution::SealedExec::new(
                         &native,
                         command.unix.arg0.as_deref(),
                         environment,
-                    )?
-                    .install(&mut native);
+                    )?;
+                    exec.inherit(inherited)?;
+                    exec.install(&mut native);
                 }
             }
             super::super::platform::spawn_controlled(&mut native, meter, retained)
@@ -361,7 +524,8 @@ mod unix {
         Ok((metadata.dev(), metadata.ino()))
     }
 
-    /// Fences one record. False for a name that is not a record.
+    /// Fences one record. False for a name that is not a record. Waits for
+    /// the warden and every process that holds its tree's custody.
     pub(super) fn fence(path: &Path, name: &std::ffi::OsStr) -> io::Result<bool> {
         let Some(pid) = name
             .to_str()
@@ -375,7 +539,7 @@ mod unix {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
             Err(error) => return Err(error),
         };
-        // Blocks until the warden, the lock's only other holder, has exited.
+        // Blocks until the warden and every custody holder have exited.
         let record = crate::FileLock::acquire(record, crate::FileLockMode::Exclusive)?;
         if record.metadata()?.nlink() == 0 {
             // The warden drained its tree and unlinked the record.
@@ -803,3 +967,30 @@ use windows::fence;
 pub(super) use windows::job_name;
 #[cfg(windows)]
 pub(super) use windows::members;
+
+/// The records of every custodied tree enclosing this process, outermost
+/// first. The nearest is named by this process's group, which its warden's
+/// PID names.
+#[cfg(unix)]
+fn enclosing_records() -> Vec<PathBuf> {
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    let mut records: Vec<PathBuf> = std::env::var_os(ENCLOSING_RECORDS)
+        .map(|records| {
+            records
+                .as_bytes()
+                .split(|byte| *byte == b'\n')
+                .filter(|record| !record.is_empty())
+                .map(|record| PathBuf::from(std::ffi::OsString::from_vec(record.to_vec())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(directory) = std::env::var_os(NEAREST_DIRECTORY) {
+        let mut storage = [0; 24];
+        // SAFETY: getpgrp has no preconditions.
+        let group = unsafe { libc::getpgrp() };
+        if let Some(name) = super::record::name(group, &mut storage) {
+            records.push(Path::new(&directory).join(std::ffi::OsStr::from_bytes(name.to_bytes())));
+        }
+    }
+    records
+}

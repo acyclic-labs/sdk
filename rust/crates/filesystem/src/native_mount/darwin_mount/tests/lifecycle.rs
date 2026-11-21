@@ -295,6 +295,8 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
             owner_image.as_ptr(),
             owner_image.len(),
             -1,
+            std::ptr::null(),
+            0,
         )
     };
     assert_eq!(status, 0);

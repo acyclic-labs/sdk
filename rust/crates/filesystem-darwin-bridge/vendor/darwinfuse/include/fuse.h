@@ -288,7 +288,8 @@ struct fuse_operations {
  * Returns a channel on success, NULL on failure (including unknown options).
  */
 struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args,
-                            const unsigned char *owner_image, size_t owner_image_len, int fence);
+                            const unsigned char *owner_image, size_t owner_image_len, int fence,
+                            const int *holds, size_t hold_count);
 pid_t fuse_mount_owner_pid(const struct fuse *f);
 
 /* Destroy a prepared channel not transferred to a FUSE instance.

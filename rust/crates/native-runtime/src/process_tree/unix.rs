@@ -312,7 +312,7 @@ fn nonblocking(pipe: &impl Pipe, meter: Option<&dyn crate::NativeReadMeter>) -> 
 pub(super) struct Guard {
     process_group: libc::pid_t,
     active: bool,
-    #[cfg(target_os = "linux")]
+    /// A warden is the direct child: cancellation is its signal.
     supervised: bool,
 }
 
@@ -388,7 +388,6 @@ pub(super) fn adopt(
             guard: Guard {
                 process_group,
                 active: true,
-                #[cfg(target_os = "linux")]
                 supervised: true,
             },
             output_taken: false,
@@ -564,7 +563,6 @@ impl SpawnObjects<'_> {
                     guard: Guard {
                         process_group: 0,
                         active: false,
-                        #[cfg(target_os = "linux")]
                         supervised: false,
                     },
                     output_taken: false,
@@ -675,7 +673,6 @@ impl SpawnObjects<'_> {
                         guard: Guard {
                             process_group: pid,
                             active: true,
-                            #[cfg(target_os = "linux")]
                             supervised: false,
                         },
                         output_taken: false,
@@ -731,12 +728,11 @@ impl Guard {
         if !self.active {
             return Ok(());
         }
-        let (target, signal) = (-self.process_group, libc::SIGKILL);
-        #[cfg(target_os = "linux")]
+        // A warden kills the tree, and also its custody holders.
         let (target, signal) = if self.supervised {
             (self.process_group, libc::SIGUSR1)
         } else {
-            (target, signal)
+            (-self.process_group, libc::SIGKILL)
         };
         // SAFETY: the unreaped child reserves the warden PID or group ID.
         if unsafe { libc::kill(target, signal) } == 0 {

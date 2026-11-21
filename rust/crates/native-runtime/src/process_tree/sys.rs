@@ -63,8 +63,8 @@ mod apple {
     use super::{CStr, Errno, Fd, Pid, c_int, check, errno};
 
     pub(in super::super) use libc::{
-        ENOENT, EPERM, EPIPE, O_CREAT, O_EXCL, O_RDWR, SIGCHLD, SIGHUP, SIGINT, SIGKILL, SIGPIPE,
-        SIGQUIT, SIGTERM, WNOHANG,
+        EAGAIN, ENOENT, EPERM, EPIPE, O_CREAT, O_EXCL, O_RDWR, SIGCHLD, SIGHUP, SIGINT, SIGKILL,
+        SIGPIPE, SIGQUIT, SIGTERM, SIGUSR1, WNOHANG,
     };
 
     pub(in super::super) fn openat(
@@ -130,14 +130,26 @@ mod apple {
         Ok((reaped, status))
     }
 
-    /// Takes `fd`'s exclusive lock without waiting, held until this
-    /// process exits.
-    pub(in super::super) fn try_lock(fd: Fd) -> Result<(), Errno> {
+    /// Takes `fd`'s shared lock without waiting, held until this process
+    /// exits or closes `fd`.
+    pub(in super::super) fn try_share(fd: Fd) -> Result<(), Errno> {
         use std::os::fd::FromRawFd as _;
         // SAFETY: the record descriptor the warden opened, which stays open
         // for the warden's whole life.
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        crate::FileLock::try_hold_until_exit(file, crate::FileLockMode::Exclusive)
+        crate::FileLock::try_hold_until_exit(file, crate::FileLockMode::Shared)
+            .map_err(|error| Errno(error.raw_os_error().unwrap_or(libc::EIO)))
+    }
+
+    /// Waits for `fd`'s exclusive lock, which every other holder has released,
+    /// then closes `fd`. The warden installs no signal handler, so the wait
+    /// is never interrupted.
+    pub(in super::super) fn lock(fd: Fd) -> Result<(), Errno> {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: a descriptor the warden just opened and owns alone.
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        crate::FileLock::acquire(file, crate::FileLockMode::Exclusive)
+            .map(drop)
             .map_err(|error| Errno(error.raw_os_error().unwrap_or(libc::EIO)))
     }
 
@@ -164,6 +176,91 @@ mod apple {
             libc::sigemptyset(&raw mut set);
             libc::sigaddset(&raw mut set, signal);
             libc::sigprocmask(libc::SIG_UNBLOCK, &raw const set, core::ptr::null_mut());
+        }
+    }
+
+    /// Maps `length` new bytes of private memory.
+    pub(in super::super) fn map(length: usize) -> Result<*mut u8, Errno> {
+        // SAFETY: a new private anonymous mapping.
+        let base = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        if base == libc::MAP_FAILED {
+            Err(errno())
+        } else {
+            Ok(base.cast())
+        }
+    }
+
+    /// Releases one whole mapping from `map`.
+    ///
+    /// # Safety
+    ///
+    /// `base` and `length` name a whole mapping no reference uses again.
+    pub(in super::super) unsafe fn unmap(base: *mut u8, length: usize) {
+        // SAFETY: the caller's contract.
+        unsafe { libc::munmap(base.cast(), length) };
+    }
+
+    /// Receives one naming frame and its reply descriptor: `None` at end of
+    /// file, `EAGAIN` when none is pending, `EINVAL` for a malformed one.
+    pub(in super::super) fn receive_frame(socket: Fd) -> Result<Option<([u8; 8], Fd)>, Errno> {
+        let mut frame = [0_u8; 8];
+        let mut control = [0_u64; 4];
+        let mut vector = libc::iovec {
+            iov_base: frame.as_mut_ptr().cast(),
+            iov_len: frame.len(),
+        };
+        // SAFETY: plain fields; all-zero is a valid header.
+        let mut header: libc::msghdr = unsafe { core::mem::zeroed() };
+        header.msg_iov = &raw mut vector;
+        header.msg_iovlen = 1;
+        header.msg_control = control.as_mut_ptr().cast();
+        header.msg_controllen = 32;
+        // SAFETY: a header naming writable buffers of its stated lengths.
+        let read = unsafe { libc::recvmsg(socket, &raw mut header, 0) };
+        let read = usize::try_from(read).map_err(|_| errno())?;
+        let mut reply = -1;
+        // SAFETY: the macros walk the control buffer the kernel just filled.
+        unsafe {
+            let mut message = libc::CMSG_FIRSTHDR(&raw const header);
+            while !message.is_null() {
+                if (*message).cmsg_level == libc::SOL_SOCKET
+                    && (*message).cmsg_type == libc::SCM_RIGHTS
+                {
+                    let data = libc::CMSG_DATA(message).cast::<c_int>();
+                    let length = usize::try_from((*message).cmsg_len)
+                        .unwrap_or(0)
+                        .saturating_sub(usize::try_from(libc::CMSG_LEN(0)).unwrap_or(0));
+                    for index in 0..length / 4 {
+                        let descriptor = data.add(index).read_unaligned();
+                        if reply < 0 {
+                            reply = descriptor;
+                        } else {
+                            super::close(descriptor);
+                        }
+                    }
+                }
+                message = libc::CMSG_NXTHDR(&raw const header, message);
+            }
+        }
+        if read == frame.len() && reply >= 0 && header.msg_flags & libc::MSG_CTRUNC == 0 {
+            return Ok(Some((frame, reply)));
+        }
+        if reply >= 0 {
+            super::close(reply);
+        }
+        if read == 0 && reply < 0 {
+            Ok(None)
+        } else {
+            Err(Errno(libc::EINVAL))
         }
     }
 

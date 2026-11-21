@@ -57,6 +57,8 @@ unsafe extern "C" {
         owner_image: *const u8,
         owner_image_len: usize,
         fence: c_int,
+        holds: *const c_int,
+        hold_count: usize,
     ) -> c_int;
     pub(super) fn acyclic_fs_darwin_mount_interrupt(session: *mut c_void);
     #[cfg(test)]

@@ -122,6 +122,8 @@ struct fuse_chan {
     const unsigned char  *owner_image;
     size_t               owner_image_len;
     int                  fence;
+    const int           *holds;
+    size_t               hold_count;
 };
 
 struct fuse {
@@ -179,7 +181,7 @@ static int do_mount_nfs(struct fuse_chan *ch)
 
     DFUSE_LOG("mount_nfs -o %s %s %s", opts, server, ch->mountpoint);
     int status = acyclic_mount_owner_start(&ch->owner, ch->owner_image,
-        ch->owner_image_len, ch->fence, opts, server, ch->mountpoint, socket_path);
+        ch->owner_image_len, ch->fence, ch->holds, ch->hold_count, opts, server, ch->mountpoint, socket_path);
     if (status) {
         DFUSE_ERR("Mount custodian could not attach NFS: %s", strerror(status));
         return -1;
@@ -192,7 +194,8 @@ static int do_mount_nfs(struct fuse_chan *ch)
 /* ---- Component API implementation ---- */
 
 struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args,
-                            const unsigned char *owner_image, size_t owner_image_len, int fence)
+                            const unsigned char *owner_image, size_t owner_image_len, int fence,
+                            const int *holds, size_t hold_count)
 {
     if (!mountpoint) return NULL;
 
@@ -227,6 +230,8 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args,
     ch->owner_image = owner_image;
     ch->owner_image_len = owner_image_len;
     ch->fence = fence;
+    ch->holds = holds;
+    ch->hold_count = hold_count;
 
     /* Create NFS server; fuse_new() attaches the operations */
     darwinfuse_config_t config;
@@ -521,7 +526,7 @@ int nfs4_test_mounted_io(const char *root, const unsigned char *owner_image, siz
      * read, write, open and create) while still allowing metadata. */
     char *argv[] = {(char *)"acyclic-fs", (char *)"-o", (char *)"nobrowse", NULL};
     struct fuse_args args = FUSE_ARGS_INIT(3, argv);
-    struct fuse_chan *channel = fuse_mount(root, &args, owner_image, owner_image_len, -1);
+    struct fuse_chan *channel = fuse_mount(root, &args, owner_image, owner_image_len, -1, NULL, 0);
     if (!channel) return EIO;
     struct fuse_operations ops = {
         .getattr = mounted_io_getattr,

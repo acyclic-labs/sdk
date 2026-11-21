@@ -921,15 +921,17 @@ impl PreparedExecution {
     }
 
     /// Adds enforcement after the process owner's custody hook. The command
-    /// has already been admitted once and is consumed by the launch owner.
+    /// has already been admitted once and is consumed by the launch owner,
+    /// and the program also inherits the warden's channel, `_inherited`.
     #[cfg(all(unix, not(target_os = "linux")))]
     pub(crate) fn install(
         self,
         _command: &mut std::process::Command,
         _arg0: Option<&std::ffi::OsStr>,
+        _inherited: std::os::fd::RawFd,
     ) -> io::Result<()> {
         #[cfg(target_os = "macos")]
-        self.platform.install(_command, _arg0)?;
+        self.platform.install(_command, _arg0, _inherited)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",

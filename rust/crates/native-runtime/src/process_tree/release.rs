@@ -90,6 +90,13 @@ impl ProcessExitAction {
         };
         admitted?;
         recorded?;
+        // The enclosing tree spares the action its drain, even a cancelling
+        // one, and awaits it.
+        let mut action = action;
+        if let Err(error) = super::ProcessCustody::admit_action(action.id()) {
+            let _ = action.cancel();
+            return Err(error);
+        }
         Ok(action)
     }
 

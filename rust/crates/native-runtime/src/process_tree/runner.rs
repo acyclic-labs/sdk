@@ -59,10 +59,6 @@ const ON_RELEASE: u8 = 16;
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
 
-/// The warden's host-registration pipe, inherited by the program.
-const HOST_PIDS: RawFd = 3;
-const HOST_MAGIC: [u8; 4] = *b"ACH0";
-
 /// Appends current launch settings restored after the static runner's exec.
 /// Kernel security restrictions are inherited by a fresh runner on every
 /// launch: status fields cannot attest Landlock or other opaque policies.
@@ -265,7 +261,7 @@ fn start_inner(
     } else {
         std::env::vars_os().collect()
     };
-    let environment = environment(command, &inherited);
+    let environment = environment(command, &inherited, activity.is_none());
     // Which standard streams the owner has open, decided before this
     // function allocates a descriptor that could take a closed one's number.
     // The custody directory was opened by the caller, so its number is
@@ -414,9 +410,12 @@ fn start_inner(
     Ok((child, failure.map_or(Ok(()), Err)))
 }
 
+/// The program's environment. A warded program also learns its warden's
+/// channel, which the runner places at descriptor 3.
 fn environment<'a>(
     command: &'a ProcessCommand,
     inherited: &'a [(OsString, OsString)],
+    warded: bool,
 ) -> BTreeMap<&'a OsStr, &'a OsStr> {
     let mut environment: BTreeMap<&OsStr, &OsStr> = BTreeMap::new();
     for (key, value) in inherited {
@@ -427,6 +426,11 @@ fn environment<'a>(
             Some(value) => environment.insert(&key.name, value),
             None => environment.remove(key.name.as_os_str()),
         };
+    }
+    if warded {
+        environment.insert(OsStr::new(super::custody::CHANNEL), OsStr::new("3"));
+    } else {
+        environment.remove(OsStr::new(super::custody::CHANNEL));
     }
     environment
 }
@@ -806,27 +810,6 @@ extern "C" fn host_exec(argument: *mut libc::c_void) -> libc::c_int {
     }
 }
 
-/// A warded program inherits the warden's registration socket at fd 3. The
-/// warden writes a magic frame before the program starts, so an unrelated
-/// pipe or socket at the same descriptor is not mistaken for it.
-fn has_warden() -> bool {
-    let mut magic = [0_u8; 4];
-    // SAFETY: fd 3 is this process's descriptor; the buffer is writable.
-    let peek = unsafe {
-        libc::recv(
-            HOST_PIDS,
-            magic.as_mut_ptr().cast(),
-            magic.len(),
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    if peek != 4 || magic != HOST_MAGIC {
-        return false;
-    }
-    // SAFETY: the same descriptor and buffer; consume the magic frame.
-    unsafe { libc::recv(HOST_PIDS, magic.as_mut_ptr().cast(), magic.len(), 0) == 4 }
-}
-
 /// A top-level owner has no warden to register with and no tree custody to
 /// escape. Keep the host its child and reap it here, so neither the host nor
 /// an intermediate clone becomes a zombie.
@@ -870,9 +853,9 @@ pub(super) fn start_packet_device_host(
     admission: File,
     events: OwnedFd,
 ) -> io::Result<()> {
-    if !has_warden() {
+    let Some(channel) = super::custody::channel() else {
         return start_top_level_host(listener, admission, events);
-    }
+    };
     let executable = image()?;
     let (status_read, status_write) = pipe()?;
     let mut spawn = HostSpawn {
@@ -917,10 +900,7 @@ pub(super) fn start_packet_device_host(
     // The status pipe's write end is close-on-exec: end of file is the proof
     // that `execveat` succeeded and `/proc/<pid>/exe` names the host image.
     match host_frame(&mut status_read)? {
-        None => {
-            register_host(value);
-            Ok(())
-        }
+        None => super::custody::name(channel, super::record::HOST, value),
         Some((HOST_FAILED, error)) => Err(io::Error::from_raw_os_error(error)),
         Some(_) => Err(io::ErrorKind::InvalidData.into()),
     }
@@ -946,15 +926,4 @@ fn host_frame(status: &mut File) -> io::Result<Option<(u8, i32)>> {
             .map_err(|_| io::ErrorKind::InvalidData)?,
     );
     Ok(Some((frame[0], value)))
-}
-
-/// Tells the warden that `host` is a packet-device host, not a tree member.
-/// The warden passes this pipe to the program at a fixed descriptor; a
-/// top-level owner has no warden and no pipe, so there is nothing to tell.
-fn register_host(host: i32) {
-    // SAFETY: `has_warden` identified the warden's registration socket at
-    // this descriptor; a full socket only delays registration.
-    unsafe {
-        libc::write(HOST_PIDS, (&raw const host).cast(), 4);
-    }
 }

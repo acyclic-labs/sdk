@@ -12,45 +12,69 @@ use super::record::{self, BOOT_BYTES, START_BYTES};
 use super::sys::{self, Errno, Fd, Pid};
 use core::ffi::CStr;
 
-/// The packet-device hosts this tree's program started. They are children of
-/// the warden only because `CLONE_PARENT` makes them siblings of the program;
-/// they serve every owner in the namespace, so tree retirement must not kill
-/// them. The program registers each host's PID over a pipe before it exits.
+/// The processes this tree's program names to the warden, over a socket that
+/// `ACYCLIC_PROCESS_CUSTODY_HOLDERS` names to the program and its descendants
+/// (`ProcessCustody::admit`). Each naming is a role and a PID (`record::HOST`)
+/// with one descriptor, to which the warden replies with 0 or an error number.
+/// A packet-device host is a child of the warden only because `CLONE_PARENT`
+/// makes it a sibling of the program; it serves every owner in the namespace,
+/// so retirement never kills it. A custody holder acts for this tree: the
+/// drain spares and awaits it, and only an explicit cancellation kills it. An
+/// owner-exit action is spared and awaited even then. On Linux the runner
+/// places the program's end at this descriptor; on macOS the owner chooses it.
 #[cfg(target_os = "linux")]
 const HOST_PIDS: Fd = 3;
-#[cfg(target_os = "linux")]
-const HOST_MAGIC: [u8; 4] = *b"ACH0";
-#[cfg(target_os = "linux")]
-const MAXIMUM_HOSTS: usize = 8;
-#[cfg(target_os = "linux")]
-pub(super) const EXIT_ACTION_NAME: &CStr = c"acyclic-cleanup";
+/// What a naming made of its process (`record::HOST`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Host,
+    Holder,
+    Action,
+}
 
-#[cfg(target_os = "linux")]
-struct Hosts {
-    pids: [Pid; MAXIMUM_HOSTS],
+/// One process the program named to the warden.
+#[derive(Clone, Copy)]
+struct Entry {
+    pid: Pid,
+    role: Role,
+}
+
+/// Every process the program named, in private memory that grows with them:
+/// no count of hosts or holders is bounded.
+struct Named {
+    entries: *mut Entry,
+    capacity: usize,
     count: usize,
+    /// The owner cancelled the tree: holders die with it.
+    cancelled: bool,
 }
 
-#[cfg(target_os = "linux")]
+/// Whether a channel stays open to more namings.
 #[derive(PartialEq, Eq)]
-enum HostKind {
-    Shared,
-    ExitAction,
+enum Channel {
+    Open,
+    Closed,
 }
 
-/// A host is a direct child in its own group running this same trusted image.
-/// Shared packet hosts may outlive the warden. Owner-exit actions are spared
-/// the tree's kill but must finish before the warden reports retirement.
+/// A packet-device host is a direct child in its own group running this same
+/// trusted image. It may outlive the warden, named or not.
 #[cfg(target_os = "linux")]
-fn owned_host(pid: Pid) -> Option<HostKind> {
+fn owned_host(pid: Pid) -> bool {
     if pid <= 0 {
-        return None;
+        return false;
     }
     let mut name = [0; 24];
-    let name = record::name(pid, &mut name)?.to_bytes();
+    let Some(name) = record::name(pid, &mut name) else {
+        return false;
+    };
+    let name = name.to_bytes();
     let mut path = [0; 64];
-    let status = host_path(name, b"/status\0", &mut path)?;
-    let file = sys::open(status, sys::O_RDONLY | sys::O_CLOEXEC).ok()?;
+    let Some(status) = host_path(name, b"/status\0", &mut path) else {
+        return false;
+    };
+    let Ok(file) = sys::open(status, sys::O_RDONLY | sys::O_CLOEXEC) else {
+        return false;
+    };
     let mut buffer = [0_u8; 1024];
     let mut parent = None;
     let mut read = 0;
@@ -65,12 +89,6 @@ fn owned_host(pid: Pid) -> Option<HostKind> {
     }
     sys::close(file);
     let bytes = buffer.get(..read).unwrap_or_default();
-    // Only the role of the authenticated runner is taken from its name.
-    let exit_action = bytes
-        .split(|byte| *byte == b'\n')
-        .next()
-        .and_then(|line| line.strip_prefix(b"Name:\t"))
-        == Some(EXIT_ACTION_NAME.to_bytes());
     let mut index = 0;
     while index < bytes.len() {
         if bytes.get(index..index + 5) == Some(b"PPid:") {
@@ -92,28 +110,28 @@ fn owned_host(pid: Pid) -> Option<HostKind> {
         index += 1;
     }
     if parent != Some(sys::getpid()) {
-        return None;
+        return false;
     }
     // The packet-device host leads its own process group. A nested warden
     // runs the same image but belongs to the runner's group, so it is not a
     // host and must still be retired with the tree.
     if sys::getpgid(pid) != Ok(pid) {
-        return None;
+        return false;
     }
-    let exe = host_path(name, b"/exe\0", &mut path)?;
-    let host_exe = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC).ok()?;
+    let Some(exe) = host_path(name, b"/exe\0", &mut path) else {
+        return false;
+    };
+    let Ok(host_exe) = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC) else {
+        return false;
+    };
     let Ok(self_exe) = sys::open(c"/proc/self/exe", sys::O_RDONLY | sys::O_CLOEXEC) else {
         sys::close(host_exe);
-        return None;
+        return false;
     };
     let same = same_executable(host_exe, self_exe);
     sys::close(host_exe);
     sys::close(self_exe);
-    same.then_some(if exit_action {
-        HostKind::ExitAction
-    } else {
-        HostKind::Shared
-    })
+    same
 }
 
 /// The runner image is a sealed memory file created independently by each
@@ -159,44 +177,173 @@ fn host_path<'a>(pid: &[u8], suffix: &[u8], buffer: &'a mut [u8; 64]) -> Option<
     CStr::from_bytes_with_nul(buffer.get(..length)?).ok()
 }
 
-#[cfg(target_os = "linux")]
-impl Hosts {
+impl Named {
     const EMPTY: Self = Self {
-        pids: [0; MAXIMUM_HOSTS],
+        entries: core::ptr::null_mut(),
+        capacity: 0,
         count: 0,
+        cancelled: false,
     };
 
-    fn contains(&self, pid: Pid) -> bool {
-        self.pids
-            .get(..self.count)
-            .is_some_and(|pids| pids.contains(&pid))
+    fn entries(&self) -> &[Entry] {
+        if self.entries.is_null() {
+            return &[];
+        }
+        // SAFETY: the first `count` entries of this mapping are initialized.
+        unsafe { core::slice::from_raw_parts(self.entries, self.count) }
     }
 
-    fn add(&mut self, pid: Pid) {
-        if pid > 0
-            && owned_host(pid) == Some(HostKind::Shared)
-            && !self.contains(pid)
-            && let Some(slot) = self.pids.get_mut(self.count)
-        {
-            *slot = pid;
-            self.count += 1;
+    /// The role `pid` was named with.
+    fn role(&self, pid: Pid) -> Option<Role> {
+        self.entries()
+            .iter()
+            .find(|entry| entry.pid == pid)
+            .map(|entry| entry.role)
+    }
+
+    /// Whether the drain spares `child`: a host or an action always, a holder
+    /// unless the owner cancelled the tree.
+    #[cfg(target_os = "linux")]
+    fn spares(&self, child: Pid) -> bool {
+        match self.role(child) {
+            Some(Role::Holder) => !self.cancelled,
+            Some(Role::Host | Role::Action) => true,
+            None => owned_host(child),
         }
+    }
+
+    /// Whether `child` may outlive the tree: a host.
+    #[cfg(target_os = "linux")]
+    fn outlives(&self, child: Pid) -> bool {
+        match self.role(child) {
+            Some(role) => role == Role::Host,
+            None => owned_host(child),
+        }
+    }
+
+    /// Records one naming. A holder is still the program's descendant, so
+    /// only a host is checked here; a host not yet the warden's child is
+    /// recognized by its image at the drain.
+    fn name(
+        &mut self,
+        naming: [u8; 8],
+        #[cfg(target_vendor = "apple")] queue: Fd,
+    ) -> Result<(), Errno> {
+        let [r0, r1, r2, r3, p0, p1, p2, p3] = naming;
+        let pid = Pid::from_ne_bytes([p0, p1, p2, p3]);
+        let role = match i32::from_ne_bytes([r0, r1, r2, r3]) {
+            record::HOST => {
+                return if host(pid)? {
+                    self.insert(pid, Role::Host)
+                } else {
+                    Ok(())
+                };
+            }
+            record::HOLDER => Role::Holder,
+            record::ACTION => Role::Action,
+            _ => return Err(Errno(sys::EINVAL)),
+        };
+        // The drain kills the tree's group whole, so a holder inside it
+        // could never be spared.
+        #[cfg(target_vendor = "apple")]
+        {
+            // SAFETY: getpgid only reads the named process's group.
+            let group = unsafe { libc::getpgid(pid) };
+            if group == sys::getpid() {
+                return Err(Errno(sys::EINVAL));
+            }
+        }
+        // Its exit removes it; one already gone needs no waiting.
+        #[cfg(target_vendor = "apple")]
+        if !watch_exit(queue, pid)? {
+            return Ok(());
+        }
+        self.insert(pid, role)
+    }
+
+    fn insert(&mut self, pid: Pid, role: Role) -> Result<(), Errno> {
+        if pid <= 0 {
+            return Err(Errno(sys::EINVAL));
+        }
+        if self.role(pid).is_some() {
+            return Ok(());
+        }
+        if self.count == self.capacity {
+            let size = core::mem::size_of::<Entry>();
+            let capacity = self.capacity.saturating_mul(2).max(4096 / size);
+            let bytes = capacity.checked_mul(size).ok_or(Errno(sys::EINVAL))?;
+            let grown = sys::map(bytes)?.cast::<Entry>();
+            if !self.entries.is_null() {
+                // SAFETY: both mappings hold at least `count` entries and are
+                // distinct; the old one is released only after the copy.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(self.entries, grown, self.count);
+                    sys::unmap(self.entries.cast(), self.capacity * size);
+                }
+            }
+            self.entries = grown;
+            self.capacity = capacity;
+        }
+        // SAFETY: `count` is below the mapping's capacity.
+        unsafe { self.entries.add(self.count).write(Entry { pid, role }) };
+        self.count += 1;
+        Ok(())
     }
 
     fn remove(&mut self, pid: Pid) {
-        let Some(index) = self
-            .pids
-            .get(..self.count)
-            .and_then(|pids| pids.iter().position(|&candidate| candidate == pid))
-        else {
+        let Some(index) = self.entries().iter().position(|entry| entry.pid == pid) else {
             return;
         };
-        let last = self.count.saturating_sub(1);
-        let tail = self.pids.get(last).copied();
-        if let (Some(slot), Some(tail)) = (self.pids.get_mut(index), tail) {
-            *slot = tail;
+        self.count -= 1;
+        // SAFETY: both indices are below the old count, inside the mapping.
+        unsafe { *self.entries.add(index) = *self.entries.add(self.count) };
+    }
+
+    /// Kills every named holder still running.
+    #[cfg(target_vendor = "apple")]
+    fn kill_holders(&self) {
+        for entry in self.entries() {
+            if entry.role == Role::Holder {
+                let _ = sys::kill(entry.pid, sys::SIGKILL);
+            }
         }
-        self.count = last;
+    }
+}
+
+/// Whether a positive frame names a packet-device host to record. A host
+/// not yet recognized is still spared by its image at the drain.
+#[cfg(target_os = "linux")]
+fn host(frame: Pid) -> Result<bool, Errno> {
+    Ok(owned_host(frame))
+}
+
+/// macOS has no packet-device hosts.
+#[cfg(target_vendor = "apple")]
+fn host(_frame: Pid) -> Result<bool, Errno> {
+    Err(Errno(sys::EINVAL))
+}
+
+/// Serves every pending naming on `channel`, replying to each namer.
+fn serve(channel: Fd, named: &mut Named, #[cfg(target_vendor = "apple")] queue: Fd) -> Channel {
+    loop {
+        let (naming, reply) = match sys::receive_frame(channel) {
+            Ok(Some(naming)) => naming,
+            Ok(None) => return Channel::Closed,
+            Err(Errno(sys::EAGAIN)) => return Channel::Open,
+            // A malformed naming has no namer to answer.
+            Err(Errno(sys::EINTR | sys::EINVAL)) => continue,
+            Err(_) => return Channel::Closed,
+        };
+        let code = match named.name(
+            naming,
+            #[cfg(target_vendor = "apple")]
+            queue,
+        ) {
+            Ok(()) => 0,
+            Err(Errno(error)) => error,
+        };
+        let _ = write_full(reply, &code.to_ne_bytes());
+        sys::close(reply);
     }
 }
 
@@ -208,6 +355,7 @@ pub(super) fn enter(
     directory: Fd,
     owner: Pid,
     #[cfg(target_os = "linux")] home: Pid,
+    #[cfg(target_vendor = "apple")] channel: Fd,
 ) -> Result<(), Errno> {
     // An inherited host handler must not run in the warden.
     sys::set_signal(sys::SIGCHLD, false);
@@ -256,8 +404,7 @@ pub(super) fn enter(
             return Err(error);
         }
     };
-    // The program registers packet-device hosts it starts, so retirement
-    // leaves them alive and reaps them when they exit.
+    // The program names the hosts and holders it starts (`HOST_PIDS`).
     #[cfg(target_os = "linux")]
     let [host_pids, host_pids_out] = match sys::socketpair() {
         Ok(ends) => ends,
@@ -269,7 +416,7 @@ pub(super) fn enter(
         }
     };
     #[cfg(target_os = "linux")]
-    if let Err(error) = sys::write(host_pids, &HOST_MAGIC) {
+    if let Err(error) = sys::nonblocking(host_pids) {
         sys::close(host_pids);
         sys::close(host_pids_out);
         sys::close(admission);
@@ -314,8 +461,18 @@ pub(super) fn enter(
     // owner had, including other trees' pipe ends. Release them before the
     // group move, so no other tree's peer outlives that tree's program
     // because this one is still starting.
+    // A cancellation can come as soon as the spawn returns; it must reach
+    // this queue, never kill the warden.
     #[cfg(target_vendor = "apple")]
-    close_except([directory, record, watch, admit], warden);
+    sys::set_signal(sys::SIGUSR1, true);
+    #[cfg(target_vendor = "apple")]
+    if let Err(error) = watch_channel(watch, channel) {
+        sys::close(admit);
+        unlink();
+        return Err(error);
+    }
+    #[cfg(target_vendor = "apple")]
+    close_except([directory, record, watch, admit, channel], warden);
     #[cfg(target_os = "linux")]
     let left = leave_group(home);
     #[cfg(target_vendor = "apple")]
@@ -337,6 +494,8 @@ pub(super) fn enter(
         control,
         #[cfg(target_os = "linux")]
         host_pids,
+        #[cfg(target_vendor = "apple")]
+        channel,
     )
 }
 
@@ -419,9 +578,11 @@ fn anchor_until_warden_exits(warden: Pid) -> ! {
 /// Locks the record, writes the warden's identity, and returns the owner's
 /// exit watch.
 fn arm(record: Fd, owner: Pid, warden: Pid) -> Result<Fd, Errno> {
-    // Held until the warden exits: the program closes its copy before exec.
+    // Shared until the warden retires the tree: the program closes its copy
+    // before exec, and each process that takes the tree's custody shares it
+    // on a description of its own.
     if record >= 0 {
-        sys::try_lock(record)?;
+        sys::try_share(record)?;
         let mut boot = [0; BOOT_BYTES];
         record::boot_identity(&mut boot)?;
         let mut start = [0; START_BYTES];
@@ -540,6 +701,7 @@ fn supervise(
     name: &CStr,
     #[cfg(target_os = "linux")] control: Fd,
     #[cfg(target_os = "linux")] host_pids: Fd,
+    #[cfg(target_vendor = "apple")] channel: Fd,
 ) -> ! {
     // Graceful requests to the group reach the program; the warden reports
     // the program's own outcome.
@@ -553,13 +715,16 @@ fn supervise(
     #[cfg(target_os = "linux")]
     close_except([directory, record, watch, control, host_pids], warden);
     #[cfg(target_vendor = "apple")]
-    close_except([directory, record, watch], warden);
-    #[cfg(target_os = "linux")]
-    let mut hosts = Hosts::EMPTY;
+    close_except([directory, record, watch, channel], warden);
+    let mut hosts = Named::EMPTY;
     let status = await_exit(
         watch,
         owner,
         program,
+        #[cfg(target_vendor = "apple")]
+        channel,
+        #[cfg(target_vendor = "apple")]
+        &mut hosts,
         #[cfg(target_os = "linux")]
         control,
         #[cfg(target_os = "linux")]
@@ -575,16 +740,28 @@ fn supervise(
         program,
         status,
         #[cfg(target_os = "linux")]
-        &hosts,
+        control,
+        #[cfg(target_os = "linux")]
+        host_pids,
+        #[cfg(target_vendor = "apple")]
+        channel,
+        &mut hosts,
     );
     if directory >= 0 {
+        // A process that took the tree's custody (`ProcessCustody::hold`)
+        // can still act for it however it set its process group, as a
+        // mount custodian does: the tree retires only once each has exited.
+        sys::close(record);
+        if let Ok(record) = sys::openat(directory, name, sys::O_RDWR | sys::O_CLOEXEC, 0) {
+            let _ = sys::lock(record);
+        }
         let _ = sys::unlinkat(directory, name);
     }
     exit_as(status)
 }
 
 /// Waits for the program to exit, returning its status, or for the owner to
-/// exit, returning `None`.
+/// exit or cancel the tree, returning `None`.
 #[cfg(target_os = "linux")]
 fn await_exit(
     watch: Fd,
@@ -593,7 +770,7 @@ fn await_exit(
     control: Fd,
     warden: Pid,
     host_pids: Fd,
-    hosts: &mut Hosts,
+    hosts: &mut Named,
 ) -> Option<i32> {
     // An unreaped child's PID cannot be reused.
     let child = sys::pidfd(program).ok()?;
@@ -606,40 +783,14 @@ fn await_exit(
     loop {
         match sys::poll(&mut ready) {
             Ok(_) => {}
-            Err(Errno(sys::EINTR)) => {
-                if let Some(status) = reap_spare(program, hosts) {
-                    return Some(status);
-                }
-                continue;
-            }
+            Err(Errno(sys::EINTR)) => continue,
             Err(_) => return None,
         }
-        // Read host registrations before the program's exit: the program
-        // writes them before it exits, and retirement must not kill a host
-        // whose registration is already in the pipe.
-        if ready[3].ready() {
-            let mut buffer = [0_u8; 4 * MAXIMUM_HOSTS];
-            let closed = match sys::read(host_pids, &mut buffer) {
-                Ok(0) => true,
-                Ok(read) => {
-                    for chunk in buffer.get(..read).unwrap_or_default().as_chunks::<4>().0 {
-                        hosts.add(Pid::from_ne_bytes(*chunk));
-                    }
-                    false
-                }
-                Err(Errno(sys::EINTR)) => continue,
-                Err(_) => true,
-            };
-            if closed {
-                // The program closed the registration pipe. Stop polling a
-                // hung-up descriptor on every wake.
-                ready[3].disable();
-            }
-            // The intermediate clone exits at once; reap it here rather than
-            // leaving one zombie per host launch until the tree retires.
-            if let Some(status) = reap_spare(program, hosts) {
-                return Some(status);
-            }
+        // Namings first: each namer waits for its reply, so the program
+        // cannot exit with one unserved.
+        if ready[3].ready() && serve(host_pids, hosts) == Channel::Closed {
+            // Stop polling a hung-up descriptor on every wake.
+            ready[3].disable();
         }
         if ready[1].ready() {
             return reap(program);
@@ -654,9 +805,17 @@ fn await_exit(
                 Ok(128) => {}
                 _ => return None,
             }
-            if u32::from_ne_bytes([signal[0], signal[1], signal[2], signal[3]])
-                != sys::SIGTERM as u32
-            {
+            let signal = u32::from_ne_bytes([signal[0], signal[1], signal[2], signal[3]]);
+            if signal == sys::SIGCHLD as u32 {
+                // A host's intermediate clone, or an orphan, exited.
+                if let Some(status) = reap_spare(program, hosts) {
+                    return Some(status);
+                }
+                continue;
+            }
+            if signal != sys::SIGTERM as u32 {
+                // The owner cancelled the tree: its holders die with it.
+                hosts.cancelled = true;
                 return None;
             }
             // Both unreaped PIDs reserve groups belonging to this tree. A root
@@ -673,19 +832,32 @@ fn await_exit(
     }
 }
 #[cfg(target_vendor = "apple")]
-fn await_exit(watch: Fd, owner: Pid, program: Pid) -> Option<i32> {
+fn await_exit(watch: Fd, owner: Pid, program: Pid, channel: Fd, named: &mut Named) -> Option<i32> {
     match watch_exit(watch, program) {
         Ok(true) => {}
         Ok(false) => return reap(program),
         Err(_) => return None,
     }
     loop {
-        match next_exit(watch) {
-            Ok(pid) if pid == program => return reap(program),
-            Ok(pid) if pid == owner => return None,
-            Ok(_) => {}
+        match next_event(watch) {
+            Ok(Event::Exit(pid)) if pid == program => return reap(program),
+            Ok(Event::Exit(pid)) if pid == owner => return None,
+            Ok(Event::Exit(pid)) => named.remove(pid),
+            Ok(Event::Readable(end)) => receive_namings(watch, channel, named, end),
+            Ok(Event::Cancelled) => {
+                named.cancelled = true;
+                return None;
+            }
             Err(_) => return None,
         }
+    }
+}
+
+/// Serves the channel's namings, and stops watching it once it has ended.
+#[cfg(target_vendor = "apple")]
+fn receive_namings(queue: Fd, channel: Fd, named: &mut Named, end: bool) {
+    if serve(channel, named, queue) == Channel::Closed || end {
+        let _ = unwatch_channel(queue, channel);
     }
 }
 
@@ -703,7 +875,7 @@ fn reap(program: Pid) -> Option<i32> {
 /// status if it was among them. The intermediate host clone exits at once;
 /// leaving it unreaped would keep one zombie per host launch.
 #[cfg(target_os = "linux")]
-fn reap_spare(program: Pid, hosts: &mut Hosts) -> Option<i32> {
+fn reap_spare(program: Pid, hosts: &mut Named) -> Option<i32> {
     loop {
         match sys::wait(-1, 1) {
             Ok((reaped, raw)) if reaped == program => return Some(raw),
@@ -715,21 +887,26 @@ fn reap_spare(program: Pid, hosts: &mut Hosts) -> Option<i32> {
     }
 }
 
-/// Kills and reaps every remaining descendant. As child subreaper, every
-/// orphaned descendant becomes this warden's child, so an empty wait means
-/// the whole tree is gone.
+/// Kills and reaps every remaining descendant but the tree's custody
+/// holders, whose exits it awaits until the owner cancels the tree. As child
+/// subreaper, every orphaned descendant becomes this warden's child, so an
+/// empty wait means the whole tree is gone.
 #[cfg(target_os = "linux")]
 fn drain(
     _watch: Fd,
     warden: Pid,
     program: Pid,
     mut status: Option<i32>,
-    hosts: &Hosts,
+    control: Fd,
+    channel: Fd,
+    hosts: &mut Named,
 ) -> Option<i32> {
     let mut path = [0_u8; 64];
     let Some(children) = children_path(warden, &mut path) else {
         return status;
     };
+    // Holders the drain spares can still name more.
+    let mut open = Channel::Open;
     loop {
         // Reap completed children before doing any termination work. An empty
         // wait proves there is no tree left: no group kill or proc scan is needed.
@@ -751,15 +928,38 @@ fn drain(
             // Without the children listing, the tree still dies as a group.
             return status;
         }
-        // Shared packet-device hosts serve other trees. Exit actions belong
-        // to this tree's cleanup and must finish before returning its status.
+        // Shared packet-device hosts serve other trees. Holders act for this
+        // tree and must finish before it reports its status.
         if only_hosts(children, hosts) {
             return status;
         }
-        match sys::wait(-1, 0) {
-            Ok((reaped, raw)) if reaped == program => status = status.or(Some(raw)),
+        // A child's exit, a naming, or the owner's cancellation, which kills
+        // holders.
+        let mut ready = [
+            sys::PollFd::readable(control),
+            sys::PollFd::readable(channel),
+        ];
+        if open == Channel::Closed {
+            ready[1].disable();
+        }
+        match sys::poll(&mut ready) {
             Ok(_) | Err(Errno(sys::EINTR)) => {}
             Err(_) => return status,
+        }
+        if ready[1].ready() {
+            open = serve(channel, hosts);
+        }
+        if !ready[0].ready() {
+            continue;
+        }
+        let mut signal = [0; 128];
+        match sys::read(control, &mut signal) {
+            Ok(128) => {
+                hosts.cancelled |= u32::from_ne_bytes([signal[0], signal[1], signal[2], signal[3]])
+                    == sys::SIGUSR1 as u32;
+            }
+            Err(Errno(sys::EINTR)) => {}
+            _ => return status,
         }
     }
 }
@@ -777,10 +977,10 @@ fn children_path(warden: Pid, buffer: &mut [u8; 64]) -> Option<&CStr> {
     CStr::from_bytes_with_nul(buffer.get(..length)?).ok()
 }
 
-/// Sends SIGKILL to each listed child that is not a registered host. False
-/// when the listing is unavailable.
+/// Sends SIGKILL to each listed child the drain does not spare. False when
+/// the listing is unavailable.
 #[cfg(target_os = "linux")]
-fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
+fn kill_children(path: &CStr, hosts: &Named) -> bool {
     let Ok(file) = sys::open(path, sys::O_RDONLY | sys::O_CLOEXEC) else {
         return false;
     };
@@ -796,8 +996,7 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
                         .saturating_add(Pid::from(byte - b'0')),
                 );
             } else if let Some(child) = current.take()
-                && !hosts.contains(child)
-                && owned_host(child).is_none()
+                && !hosts.spares(child)
             {
                 let _ = sys::kill(child, sys::SIGKILL);
             }
@@ -807,8 +1006,7 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
         }
     }
     if let Some(child) = current
-        && !hosts.contains(child)
-        && owned_host(child).is_none()
+        && !hosts.spares(child)
     {
         let _ = sys::kill(child, sys::SIGKILL);
     }
@@ -816,9 +1014,9 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
     true
 }
 
-/// Whether every listed child is a registered packet-device host.
+/// Whether every listed child is a packet-device host.
 #[cfg(target_os = "linux")]
-fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
+fn only_hosts(path: &CStr, hosts: &Named) -> bool {
     let Ok(file) = sys::open(path, sys::O_RDONLY | sys::O_CLOEXEC) else {
         return false;
     };
@@ -835,7 +1033,7 @@ fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
                         .saturating_add(Pid::from(byte - b'0')),
                 );
             } else if let Some(child) = current.take() {
-                only &= hosts.contains(child) || owned_host(child) == Some(HostKind::Shared);
+                only &= hosts.outlives(child);
             }
         }
         if read < buffer.len() {
@@ -843,21 +1041,142 @@ fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
         }
     }
     if let Some(child) = current {
-        only &= hosts.contains(child) || owned_host(child) == Some(HostKind::Shared);
+        only &= hosts.outlives(child);
     }
     sys::close(file);
     only
 }
 
-/// Kills the tree's process group and waits for each member to exit.
+/// What woke the warden's queue.
 #[cfg(target_vendor = "apple")]
-fn drain(queue: Fd, warden: Pid, program: Pid, mut status: Option<i32>) -> Option<i32> {
+enum Event {
+    /// The process with this PID exited.
+    Exit(Pid),
+    /// The channel has namings, or has ended when true.
+    Readable(bool),
+    /// The owner cancelled the tree.
+    Cancelled,
+}
+
+/// Blocks for one event on the warden's queue.
+#[cfg(target_vendor = "apple")]
+fn next_event(queue: Fd) -> Result<Event, Errno> {
+    // SAFETY: plain fields; all-zero is a valid output value.
+    let mut event: libc::kevent = unsafe { core::mem::zeroed() };
+    loop {
+        // SAFETY: no changes and one writable event.
+        let ready = unsafe {
+            libc::kevent(
+                queue,
+                core::ptr::null(),
+                0,
+                &raw mut event,
+                1,
+                core::ptr::null(),
+            )
+        };
+        if ready > 0 {
+            return Ok(match event.filter {
+                libc::EVFILT_READ => Event::Readable(event.flags & libc::EV_EOF != 0),
+                libc::EVFILT_SIGNAL => Event::Cancelled,
+                _ => Event::Exit(Pid::try_from(event.ident).map_err(|_| Errno(sys::EINVAL))?),
+            });
+        }
+        let error = last_error();
+        if ready < 0 && error != Errno(sys::EINTR) {
+            return Err(error);
+        }
+    }
+}
+
+/// Watches `channel` for namings and the owner's cancelling SIGUSR1, which
+/// the queue records though the warden ignores it.
+#[cfg(target_vendor = "apple")]
+fn watch_channel(queue: Fd, channel: Fd) -> Result<(), Errno> {
+    let change = |ident: usize, filter| libc::kevent {
+        ident,
+        filter,
+        flags: libc::EV_ADD,
+        fflags: 0,
+        data: 0,
+        udata: core::ptr::null_mut(),
+    };
+    let changes = [
+        change(
+            usize::try_from(channel).map_err(|_| Errno(sys::EINVAL))?,
+            libc::EVFILT_READ,
+        ),
+        change(
+            usize::try_from(sys::SIGUSR1).map_err(|_| Errno(sys::EINVAL))?,
+            libc::EVFILT_SIGNAL,
+        ),
+    ];
+    apply(queue, &changes)
+}
+
+/// Stops watching an ended channel, so its end of file does not wake the queue.
+#[cfg(target_vendor = "apple")]
+fn unwatch_channel(queue: Fd, channel: Fd) -> Result<(), Errno> {
+    let change = libc::kevent {
+        ident: usize::try_from(channel).map_err(|_| Errno(sys::EINVAL))?,
+        filter: libc::EVFILT_READ,
+        flags: libc::EV_DELETE,
+        fflags: 0,
+        data: 0,
+        udata: core::ptr::null_mut(),
+    };
+    apply(queue, &[change])
+}
+
+#[cfg(target_vendor = "apple")]
+fn apply(queue: Fd, changes: &[libc::kevent]) -> Result<(), Errno> {
+    let count = libc::c_int::try_from(changes.len()).map_err(|_| Errno(sys::EINVAL))?;
+    // SAFETY: initialized changes of the stated count and no event output.
+    if unsafe {
+        libc::kevent(
+            queue,
+            changes.as_ptr(),
+            count,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null(),
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(last_error())
+    }
+}
+
+/// Kills the tree's process group and waits for each member to exit, and
+/// for each named holder outside it, which only a cancellation kills.
+#[cfg(target_vendor = "apple")]
+fn drain(
+    queue: Fd,
+    warden: Pid,
+    program: Pid,
+    mut status: Option<i32>,
+    channel: Fd,
+    named: &mut Named,
+) -> Option<i32> {
+    if status.is_none() {
+        // The owner left or cancelled while the program runs. A dying process
+        // already fails the group check below while it still holds its
+        // descriptors, so only its reap proves they are released. The
+        // unreaped child's PID names it even outside the group.
+        let _ = sys::kill(program, sys::SIGKILL);
+        status = reap(program);
+    }
     let mut members = [0 as Pid; 256];
     loop {
         // The warden left this group, and its live PID keeps the group's ID
         // from naming any other group: one signal reaches exactly the tree,
         // never a listed PID that may since have been reused.
         let _ = sys::kill(-warden, sys::SIGKILL);
+        if named.cancelled {
+            named.kill_holders();
+        }
         reap_ready(program, &mut status);
         let Ok(count) = group_members(warden, &mut members) else {
             return status;
@@ -873,12 +1192,15 @@ fn drain(queue: Fd, warden: Pid, program: Pid, mut status: Option<i32>) -> Optio
             live |= watch_exit(queue, member).unwrap_or(false)
                 && unsafe { libc::getpgid(member) } == warden;
         }
-        if !live {
+        if !live && named.count == 0 {
             reap_ready(program, &mut status);
             return status;
         }
-        if next_exit(queue).is_err() {
-            return status;
+        match next_event(queue) {
+            Ok(Event::Exit(pid)) => named.remove(pid),
+            Ok(Event::Readable(end)) => receive_namings(queue, channel, named, end),
+            Ok(Event::Cancelled) => named.cancelled = true,
+            Err(_) => return status,
         }
     }
 }

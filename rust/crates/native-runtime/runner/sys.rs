@@ -350,11 +350,6 @@ pub fn setpgid(pid: Pid, group: Pid) -> Result<(), Errno> {
     unsafe { call(number::SETPGID, [arg(pid), arg(group), 0, 0, 0, 0]) }.map(drop)
 }
 
-pub fn set_process_name(name: &CStr) -> Result<(), Errno> {
-    // SAFETY: PR_SET_NAME reads a NUL-terminated name of at most 15 bytes.
-    unsafe { call(number::PRCTL, [15, name.as_ptr().addr(), 0, 0, 0, 0]) }.map(drop)
-}
-
 pub fn kill(pid: Pid, signal: i32) -> Result<(), Errno> {
     // SAFETY: sends a signal; no memory is involved.
     unsafe { call(number::KILL, [arg(pid), arg(signal), 0, 0, 0, 0]) }.map(drop)
@@ -377,6 +372,23 @@ pub fn wait(pid: Pid, flags: i32) -> Result<(Pid, i32), Errno> {
 pub fn try_lock(file: Fd) -> Result<(), Errno> {
     // SAFETY: locks an open file of this process.
     unsafe { call(number::FLOCK, [arg(file), LOCK_EX_NB, 0, 0, 0, 0]) }.map(drop)
+}
+
+/// Takes `file`'s shared lock without waiting.
+pub fn try_share(file: Fd) -> Result<(), Errno> {
+    // SAFETY: locks an open file of this process.
+    unsafe { call(number::FLOCK, [arg(file), 1 | 4, 0, 0, 0, 0]) }.map(drop)
+}
+
+/// Waits for `file`'s exclusive lock, which every other holder has released.
+pub fn lock(file: Fd) -> Result<(), Errno> {
+    loop {
+        // SAFETY: locks an open file of this process.
+        match unsafe { call(number::FLOCK, [arg(file), 2, 0, 0, 0, 0]) } {
+            Err(Errno(EINTR)) => {}
+            result => return result.map(drop),
+        }
+    }
 }
 
 /// Releases the shared open description before any inherited copy closes.
@@ -455,12 +467,13 @@ pub fn memory_file(file: Fd) -> Result<(), Errno> {
     unsafe { call(number::FCNTL, [arg(file), 1034, 0, 0, 0, 0]) }.map(|_| ())
 }
 
-/// Warden control stays addressable when the guest changes group or session.
-/// Block before forking; prepare_program restores the guest's original mask.
+/// Warden control stays addressable when the guest changes group or session,
+/// and reports each child's exit. Block before forking; prepare_program
+/// restores the guest's original mask.
 pub fn tree_control() -> Result<Fd, Errno> {
     set_signal_checked(SIGUSR1, false)?;
     set_signal_checked(SIGTERM, false)?;
-    let mask = (1_u64 << (SIGUSR1 - 1)) | (1_u64 << (SIGTERM - 1));
+    let mask = (1_u64 << (SIGUSR1 - 1)) | (1_u64 << (SIGTERM - 1)) | (1_u64 << (SIGCHLD - 1));
     // SAFETY: a readable native kernel signal set; SIG_BLOCK preserves other bits.
     unsafe {
         call(
@@ -812,6 +825,45 @@ pub fn receive(socket: Fd, header: &mut MessageHeader) -> Result<usize, Errno> {
             ],
         )
     }
+}
+
+/// Receives one naming frame and its reply descriptor: `None` at end of file,
+/// `EAGAIN` when none is pending, `EINVAL` for a malformed one.
+pub fn receive_frame(socket: Fd) -> Result<Option<([u8; 8], Fd)>, Errno> {
+    let mut frame = [0_u8; 8];
+    let mut control = [0_u64; 4];
+    let mut vector = IoVector {
+        base: frame.as_mut_ptr(),
+        length: frame.len(),
+    };
+    let mut header = MessageHeader {
+        name: 0,
+        name_length: 0,
+        iov: &raw mut vector,
+        iov_length: 1,
+        control: control.as_mut_ptr().cast(),
+        control_length: core::mem::size_of_val(&control),
+        flags: 0,
+    };
+    let read = receive(socket, &mut header)?;
+    // SAFETY: the control words, viewed as the bytes the kernel filled.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            control.as_ptr().cast::<u8>(),
+            header.control_length.min(core::mem::size_of_val(&control)),
+        )
+    };
+    let handles =
+        crate::ancillary::decode::<1>(bytes, header.flags, close).map_err(|()| Errno(EINVAL))?;
+    if read == 0 && handles.count == 0 {
+        return Ok(None);
+    }
+    let reply = handles.one(close).map_err(|()| Errno(EINVAL))?;
+    if read != frame.len() {
+        close(reply);
+        return Err(Errno(EINVAL));
+    }
+    Ok(Some((frame, reply)))
 }
 
 /// Releases one whole anonymous mapping after its last reference is gone.

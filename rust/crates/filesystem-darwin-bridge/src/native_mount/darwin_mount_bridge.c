@@ -371,7 +371,8 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
                           const char *mountpoint, uintptr_t context,
                           void (*mounted)(void *arg), void *mounted_arg,
                           int *interrupted_before_namespace,
-                          const unsigned char *owner_image, size_t owner_image_len, int fence) {
+                          const unsigned char *owner_image, size_t owner_image_len, int fence,
+                          const int *holds, size_t hold_count) {
   if (session == NULL) {
     return 4;
   }
@@ -384,7 +385,8 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
   }
   pthread_mutex_unlock(&session->mutex);
   struct fuse_args arguments = FUSE_ARGS_INIT(argc, argv);
-  struct fuse_chan *channel = fuse_mount(mountpoint, &arguments, owner_image, owner_image_len, fence);
+  struct fuse_chan *channel = fuse_mount(mountpoint, &arguments, owner_image, owner_image_len, fence,
+                                         holds, hold_count);
   if (channel == NULL) {
     return 2;
   }

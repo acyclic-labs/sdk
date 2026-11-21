@@ -347,7 +347,6 @@ fn warden(spec: &Spec) -> ! {
 fn released(spec: &Spec, activity: Fd) -> ! {
     let result = (|| {
         sys::setpgid(0, 0)?;
-        sys::set_process_name(warden::EXIT_ACTION_NAME)?;
         // Loss of the dispatcher is independent of this admitted action.
         sys::close(CONTROL);
         let owner = match watch_release_owner(spec) {
@@ -372,25 +371,9 @@ fn released(spec: &Spec, activity: Fd) -> ! {
         sys::close(spec.directory);
         sys::close(activity);
         if execute {
-            // Keep the original trusted process in custody through cleanup.
-            // Replacing it with the cleanup executable lets the enclosing
-            // warden mistake it for abandoned application work and kill it.
-            let child = sys::fork()?;
-            if child == 0 {
-                let _ = exec(spec);
-                sys::exit(127);
-            }
-            loop {
-                match sys::wait(child, 0) {
-                    Ok((_, status)) => sys::exit(if status & 0x7f == 0 {
-                        status >> 8
-                    } else {
-                        128 + (status & 0x7f)
-                    }),
-                    Err(Errno(sys::EINTR)) => continue,
-                    Err(error) => return Err(error),
-                }
-            }
+            // The owner admitted this PID as a holder of the enclosing tree's
+            // custody, so the cleanup keeps it through exec.
+            return Err(exec(spec));
         }
         Ok(())
     })();

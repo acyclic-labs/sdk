@@ -409,6 +409,9 @@ fn run_loop(
         )
         .map_err(|_| driver_errno(libc::EOVERFLOW))?;
         let owner_image = acyclic_fs_darwin_bridge::MOUNT_OWNER_IMAGE;
+        // The custodian can act for this process's trees after it exits.
+        let holds = acyclic_native_runtime::ProcessCustody::hold()?;
+        let hold_fds: Vec<c_int> = holds.iter().map(AsRawFd::as_raw_fd).collect();
         // SAFETY: the provider retains its SDK session, callback storage and retirement
         // fence until it reports exit. The custodian image is static.
         let status = unsafe {
@@ -424,8 +427,11 @@ fn run_loop(
                 owner_image.as_ptr(),
                 owner_image.len(),
                 fence,
+                hold_fds.as_ptr(),
+                hold_fds.len(),
             )
         };
+        drop(holds);
         if interrupted != 0 {
             driver.state().control.start_aborted = true;
         }

@@ -221,6 +221,7 @@ impl Prepared {
         self,
         command: &mut std::process::Command,
         arg0: Option<&std::ffi::OsStr>,
+        inherited: std::os::fd::RawFd,
     ) -> io::Result<()> {
         use std::os::unix::process::CommandExt;
         // The boundary admits only the environment the command sets.
@@ -228,7 +229,8 @@ impl Prepared {
             .get_envs()
             .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
             .collect::<Vec<_>>();
-        let exec = SealedExec::new(command, arg0, environment)?;
+        let mut exec = SealedExec::new(command, arg0, environment)?;
+        exec.inherit(inherited)?;
         // SAFETY: the child uses only native calls and parent-owned buffers;
         // neither the allocator nor sandbox compiler runs after our fork.
         unsafe {
@@ -256,6 +258,8 @@ pub(crate) struct SealedExec {
     _environment: Vec<std::ffi::CString>,
     argv: Vec<*mut libc::c_char>,
     envp: Vec<*mut libc::c_char>,
+    /// A descriptor beyond the standard streams that the program inherits.
+    inherited: Option<std::os::fd::RawFd>,
     environ: *mut *mut *mut libc::c_char,
     spawn: unsafe extern "C" fn(
         *mut libc::pid_t,
@@ -341,6 +345,7 @@ impl SealedExec {
             program,
             argv: pointers(&arguments),
             envp: pointers(&environment),
+            inherited: None,
             // SAFETY: capture the native environment pointer's address, not
             // its contents. Only the fork child's private copy is changed.
             environ: unsafe { libc::_NSGetEnviron() },
@@ -363,6 +368,18 @@ impl SealedExec {
         Ok(result)
     }
 
+    /// Also passes `descriptor` to the program, as its own number. It stays
+    /// close-on-exec in this process, so no concurrent spawn inherits it.
+    pub(crate) fn inherit(&mut self, descriptor: std::os::fd::RawFd) -> io::Result<()> {
+        // SAFETY: a live action object; the caller keeps the descriptor open
+        // until the spawn returns.
+        status(unsafe {
+            posix_spawn_file_actions_addinherit_np(&raw mut self.actions.0, descriptor)
+        })?;
+        self.inherited = Some(descriptor);
+        Ok(())
+    }
+
     /// Makes this exec `command`'s final hook, after every hook added before.
     pub(crate) fn install(self, command: &mut std::process::Command) {
         use std::os::unix::process::CommandExt;
@@ -372,6 +389,14 @@ impl SealedExec {
 
     /// In the forked child: replaces it with the program; returns only on failure.
     fn enter(&self) -> io::Result<()> {
+        // The exec refuses to inherit a close-on-exec descriptor (EBADF), so
+        // the fork child clears the flag on its own copy only.
+        if let Some(descriptor) = self.inherited {
+            // SAFETY: F_SETFD changes only this fork child's descriptor flags.
+            if unsafe { libc::fcntl(descriptor, libc::F_SETFD, 0) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
         // Native posix_spawnp reads PATH from environ, not envp. Match std's
         // child-only environment handoff; restore it on every failed exec.
         // Apple implements lookup and script fallback without a heap allocator.

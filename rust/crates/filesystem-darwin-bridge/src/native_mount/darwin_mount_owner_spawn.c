@@ -29,6 +29,7 @@ static int write_image(const char *path, const unsigned char *image, size_t leng
 }
 
 static int spawn_owner(pid_t *pid, const char *path, int control, int fence,
+                       const int *holds, size_t hold_count,
                        const char *options, const char *source,
                        const char *destination, const char *socket_path) {
     char process[32], descriptor[32];
@@ -44,13 +45,17 @@ static int spawn_owner(pid_t *pid, const char *path, int control, int fence,
     error = posix_spawnattr_init(&attributes);
     if (!error) {
         /* The custodian survives the owner's process group. It inherits only
-         * the original control endpoint, fence and optional diagnostics. */
+         * the original control endpoint, fence, the enclosing process trees'
+         * custody holds, which keep those trees unretired until it exits, and
+         * optional diagnostics. */
         error = posix_spawnattr_setflags(&attributes,
                     POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP);
         if (!error) error = posix_spawnattr_setpgroup(&attributes, 0);
         if (!error) error = posix_spawn_file_actions_addinherit_np(&actions, control);
         if (!error && fence >= 0)
             error = posix_spawn_file_actions_addinherit_np(&actions, fence);
+        for (size_t i = 0; !error && i < hold_count; i++)
+            error = posix_spawn_file_actions_addinherit_np(&actions, holds[i]);
         if (!error && fcntl(STDERR_FILENO, F_GETFD) >= 0)
             error = posix_spawn_file_actions_addinherit_np(&actions, STDERR_FILENO);
         if (!error)
@@ -109,7 +114,8 @@ int acyclic_mount_owner_wait(struct acyclic_mount_owner *owner) {
 
 int acyclic_mount_owner_start(struct acyclic_mount_owner *owner,
                               const unsigned char *image, size_t image_len,
-                              int fence, const char *options, const char *source,
+                              int fence, const int *holds, size_t hold_count,
+                              const char *options, const char *source,
                               const char *destination, const char *socket_path) {
     if (owner->pid || !image || !image_len) return EINVAL;
     /* Only this server has access to its mkdtemp directory. */
@@ -119,7 +125,7 @@ int acyclic_mount_owner_start(struct acyclic_mount_owner *owner,
     int error = write_image(path, image, image_len);
     if (error) return error;
     pid_t pid;
-    error = spawn_owner(&pid, path, owner->peer, fence,
+    error = spawn_owner(&pid, path, owner->peer, fence, holds, hold_count,
                         options, source, destination, socket_path);
     (void)close(owner->peer);
     owner->peer = -1;

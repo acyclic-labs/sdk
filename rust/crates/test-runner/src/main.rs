@@ -905,6 +905,109 @@ mod tests {
         }
     }
 
+    /// Starts a helper that holds the tree's custody in a process group of its own, empties its
+    /// own temporary directory, and exits. The helper marks `retired` once `release` is written.
+    #[cfg(unix)]
+    #[test]
+    fn custodian_fixture() {
+        use std::os::unix::process::CommandExt as _;
+        if !(acting() && Path::new("release").exists()) {
+            return;
+        }
+        // The nearest custody is the runner's tree for this case.
+        let nearest = ProcessCustody::hold().unwrap().pop().unwrap();
+        let exited = fs::OpenOptions::new().write(true).open("exited").unwrap();
+        // The helpers' output reaches end of file only once every helper is gone.
+        let gone = fs::OpenOptions::new().write(true).open("gone").unwrap();
+        // Holders admitted first, each until the last helper ends: no count of
+        // holders is bounded, and the last one admitted is spared like the first.
+        let (lasting, last) = io::pipe().unwrap();
+        for _ in 0..11 {
+            let holder = Command::new("/bin/cat")
+                .stdin(lasting.try_clone().unwrap())
+                .stdout(gone.try_clone().unwrap())
+                .stderr(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            ProcessCustody::admit(holder.id()).unwrap();
+        }
+        drop(lasting);
+        let helper = Command::new("/bin/sh")
+            .args(["-c", "read line < release; : > retired"])
+            .stdin(nearest)
+            .stdout(gone)
+            .stderr(last)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        ProcessCustody::admit(helper.id()).unwrap();
+        fs::write("helper", helper.id().to_string()).unwrap();
+        // The case deletes everything it made, a mount fence's path included.
+        for entry in fs::read_dir(env::temp_dir()).unwrap() {
+            fs::remove_dir_all(entry.unwrap().path()).unwrap();
+        }
+        drop(exited);
+    }
+
+    /// A case ends only once every process holding its tree's custody has exited, though the
+    /// case deleted its own directory, however many it admitted. One that dies releases its
+    /// hold, and one still holding when the case times out dies with the case.
+    #[cfg(unix)]
+    #[test]
+    fn a_case_ends_only_after_its_custody_holders() {
+        for ending in ["release", "crash", "cancel"] {
+            let mut custodied = suite(&format!("custodian-{ending}"));
+            if ending == "cancel" {
+                custodied.limit = Duration::from_secs(1);
+            }
+            for fifo in ["release", "exited", "gone"] {
+                let made = Command::new("mkfifo")
+                    .arg(custodied.package.join(fifo))
+                    .status()
+                    .unwrap();
+                assert!(made.success());
+            }
+            let (failed, out, retired) = thread::scope(|scope| {
+                let running = scope.spawn(|| {
+                    let selection = [OsString::from("tests::custodian_fixture")];
+                    let mut out = Vec::new();
+                    let failed = run_suite(&custodied, &selection, &mut out).unwrap();
+                    let retired = custodied.package.join("retired").exists();
+                    (failed, String::from_utf8(out).unwrap(), retired)
+                });
+                let exited = File::open(custodied.package.join("exited")).unwrap();
+                let gone = File::open(custodied.package.join("gone")).unwrap();
+                // End of file: the case's program is gone while its helper still holds custody.
+                io::read_to_string(exited).unwrap();
+                match ending {
+                    "release" => fs::write(custodied.package.join("release"), "\n").unwrap(),
+                    "crash" => {
+                        let helper = fs::read_to_string(custodied.package.join("helper")).unwrap();
+                        let killed = Command::new("kill")
+                            .args(["-KILL", helper.trim()])
+                            .status()
+                            .unwrap();
+                        assert!(killed.success());
+                    }
+                    _ => {}
+                }
+                let ran = running.join().unwrap();
+                // End of file: the helper ended before the case did; a live helper holds this open.
+                io::read_to_string(gone).unwrap();
+                ran
+            });
+            custodied.temporary.release().unwrap();
+            fs::remove_dir_all(&custodied.package).unwrap();
+            assert_eq!(failed, usize::from(ending == "cancel"), "{ending}: {out}");
+            assert_eq!(
+                retired,
+                ending == "release",
+                "{ending}: the case ended before its custody holder: {out}"
+            );
+        }
+    }
+
     /// The two ends of a FIFO named `meet`, which only `cases_run_at_once_up_to_the_reservation`
     /// creates: opening either end blocks until the other is open, so both pass only when the
     /// runner runs them at once.

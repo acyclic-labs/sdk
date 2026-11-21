@@ -377,6 +377,9 @@ impl ProcessTree {
         }
         #[cfg(unix)]
         {
+            for (key, value) in custody.environment() {
+                command.env(key, value);
+            }
             let directory =
                 process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     custody.directory()

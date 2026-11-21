@@ -63,7 +63,31 @@ fn a_custodied_program_receives_exactly_its_environment_and_directory() {
     let (root, custody) = custody();
     let mut cleared = ProcessCommand::new("/usr/bin/env");
     cleared.env_clear().env("ACYCLIC_ONLY", "1");
-    assert_eq!(output(&mut cleared, &custody), "ACYCLIC_ONLY=1\n");
+    // Exactly its environment plus its custody's names.
+    let mut expected = vec!["ACYCLIC_ONLY=1".to_owned()];
+    for (key, value) in custody.environment() {
+        expected.push(format!(
+            "{key}={}",
+            value.to_str().expect("utf-8 custody name")
+        ));
+    }
+    expected.push(format!("{}=3", super::super::custody::CHANNEL));
+    // `env` ends each entry with a newline; the records value ends in its own.
+    let printed: String = expected
+        .iter()
+        .map(|entry| {
+            format!(
+                "{entry}
+"
+            )
+        })
+        .collect();
+    let mut expected: Vec<String> = printed.lines().map(str::to_owned).collect();
+    expected.sort();
+    let received = output(&mut cleared, &custody);
+    let mut received: Vec<String> = received.lines().map(str::to_owned).collect();
+    received.sort();
+    assert_eq!(received, expected);
     // Control: without clearing, the owner's environment reaches it too.
     let mut inherited = ProcessCommand::new("/usr/bin/env");
     inherited.env("ACYCLIC_ONLY", "1");

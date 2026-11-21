@@ -6,6 +6,16 @@
 use super::sys::{self, Errno, Pid};
 use core::ffi::CStr;
 
+/// The role a naming to a tree's warden gives its process. Each naming is
+/// the role then the PID, native-endian (`ProcessCustody::admit`).
+pub(super) const HOST: i32 = 0;
+/// A custody holder: the drain spares and awaits it, and an explicit
+/// cancellation kills it.
+pub(super) const HOLDER: i32 = 1;
+/// An owner-exit action: the drain spares and awaits it even on
+/// cancellation, since its owner's loss is what it runs for.
+pub(super) const ACTION: i32 = 2;
+
 /// Bytes of boot identity a record holds.
 pub(super) const BOOT_BYTES: usize = 64;
 
