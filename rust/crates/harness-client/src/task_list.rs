@@ -52,6 +52,8 @@ struct Item<'a> {
     state: Option<TaskState>,
     text: Cow<'a, str>,
     first_text: bool,
+    // The item's content opens with a bracket, so it must be a valid task.
+    bracketed: bool,
 }
 
 fn text(value: CowStr<'_>) -> Cow<'_, str> {
@@ -71,14 +73,30 @@ pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
     ) {
         match event {
             Event::Start(Tag::Item) => {
+                // Past the bullet, or the ordinal and its delimiter.
+                let content = markdown
+                    .get(span.clone())?
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .get(1..)?
+                    .trim_start();
                 stack.push(items.len());
                 items.push(Item {
                     first_text: true,
+                    bracketed: content.starts_with('['),
                     ..Default::default()
                 });
             }
             Event::End(TagEnd::Item) => {
-                stack.pop();
+                // A bracket that produced neither a marker nor text was read
+                // as something else, such as a link reference definition
+                // (`[~]:a`): a checkbox line that is not a valid task.
+                if stack
+                    .pop()
+                    .and_then(|index| items.get(index))
+                    .is_some_and(|item| item.bracketed && item.first_text && item.state.is_none())
+                {
+                    return None;
+                }
             }
             Event::Start(Tag::CodeBlock(_)) => {
                 code = true;

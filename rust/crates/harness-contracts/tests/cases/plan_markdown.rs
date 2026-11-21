@@ -12,6 +12,7 @@ fn checked_in_fuzz_corpus() {
         ("fenced", Some(1)),
         ("indented", None),
         ("lifecycle", Some(3)),
+        ("link-definition", None),
         ("malformed", None),
         ("mixed", Some(5)),
         ("unicode", Some(3)),
