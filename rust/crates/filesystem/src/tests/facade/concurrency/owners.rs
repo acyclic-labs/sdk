@@ -2,8 +2,8 @@
 use super::*;
 
 #[derive(Clone)]
-struct ForeignOwner {
-    inner: Arc<crate::StreamAuthorityStore<acyclic_stream::MemoryStream>>,
+struct ForeignOwner<A = crate::StreamAuthorityStore<acyclic_stream::MemoryStream>> {
+    inner: Arc<A>,
     claims: Arc<acyclic_stream::OperationClaims>,
     forbid_probe: Arc<std::sync::atomic::AtomicBool>,
     racing_operation: Option<OperationId>,
@@ -22,7 +22,7 @@ impl Drop for Retirement {
     }
 }
 
-impl AsyncAuthorityStore for ForeignOwner {
+impl<A: AsyncAuthorityStore + Clone + 'static> AsyncAuthorityStore for ForeignOwner<A> {
     fn retains_operation_payload(&self) -> bool {
         self.inner.retains_operation_payload()
     }
@@ -131,6 +131,7 @@ impl AsyncAuthorityStore for ForeignOwner {
     ) -> Result<crate::AppendGroupOutcome, crate::AuthorityError<G::Error>> {
         if let Some(gate) = &self.dispatch_gate {
             gate.appends.fetch_add(1, Ordering::SeqCst);
+            gate.members.store(requests.len(), Ordering::SeqCst);
             gate.active.store(true, Ordering::SeqCst);
             gate.started.notify_one();
             gate.release.notified().await;
@@ -557,6 +558,7 @@ struct DispatchGate {
     preflights: std::sync::atomic::AtomicUsize,
     quotes: std::sync::atomic::AtomicUsize,
     appends: std::sync::atomic::AtomicUsize,
+    members: std::sync::atomic::AtomicUsize,
 }
 
 impl DispatchGate {
@@ -1220,3 +1222,6 @@ async fn successor_chained_after_a_recovered_retry_commits() -> TestResult {
     );
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod group_dst;
