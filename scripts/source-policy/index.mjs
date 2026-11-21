@@ -12,9 +12,15 @@ let ts;
 // spelling does not exempt the loop or its underlying timer reference.
 // Case-insensitive candidates cover PowerShell in both sources and child programs.
 const temporal = /^(?:sleep(?:_(?:for|until)|Ex|ConditionVariable(?:CS|SRW))?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_(?:for|until|timeout(?:_while|_ms)?)|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil|(?:sqlite3_)?busy_(?:timeout|handler)|PeriodicReader|with_batch_exporter|with_scheduled_delay|(?:http2_)?keep_?alive_interval|set_tcp_keepalive)$/i;
-const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
+// In text, the words that are also English or SQL (`select a committed cell`, `SELECT a.*`) are a timer only as a call.
+const embeddedTemporal = new RegExp('\\b(?:(?:select|poll|delay|interval)(?=\\s*\\()|(?:' + temporal.source.slice(1, -1) + ')(?<!\\b(?:select|poll|delay|interval)))\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
-const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
+// Inside text a policy name configures something only as a flag, key or call (`--retry 5`, `retries=3`,
+// `retry(`); prose ('retry the identity request'), a path (`polling-policy.mjs`) or a longer word (the Kubernetes
+// reason 'BackoffLimitExceeded') is data (2026-11-21).
+const embeddedPolicy = /(?:^|[^\w-])--?(?:retry|retries|backoff|polling)\b|\b(?:retry|retries|backoff|polling)\s*[=:(]/i;
+const embeddedName = /poll_|POLL_|poll[A-Z]|[_A-Z]INTERVAL|wait[_A-Z].*Ready/;
+const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || embeddedPolicy.test(spelling) || embeddedName.test(spelling);
 // A timeout bounds one wait (a call's option, `--timeout=`, `timeout(d, f)`): a deadline on an event, not a timer
 // wait. Inside a loop it is the loop's timer, as a clock is; outside every loop it is no finding (2026-11-21: a
 // `kubectl wait --for=... --timeout=` watch and every `{timeout}` option made Cloud's local-cell helpers polling).
@@ -23,8 +29,49 @@ const embeddedDeadlines = /\btimeout(?:_at)?\b/gi;
 const embeddedTimer = spelling => embeddedCandidate(spelling.replace(embeddedDeadlines, ''));
 const loop = new Set(['for', 'while', 'loop', 'do']);
 // A clock read makes a loop around it a deadline or recheck loop; alone it is a measurement.
+// A loop that subscribes (a watch, follow or subscription, list-then-watch resync included) waits on events: a clock
+// or deadline in it bounds that wait. A sleep or other timer in it still makes it polling (2026-11-21: Cloud's
+// waitKubernetes resync loop made every readiness caller a finding).
+const subscription = /^(?:watch|follow|subscribe)(?:[A-Z_]\w*)?$/;
 const clock = /^(?:now|elapsed|Instant|SystemTime|monotonic|perf_counter|hrtime|Stopwatch|GetTickCount(?:64)?|QueryPerformanceCounter|clock_gettime|deadline)$/;
 const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
+
+// A host object's unknown member is a function only where its value is used as one: called, or escaping as a value
+// (an argument, a binding, a return, an element). A read of a member of it (`process[stream].write`), arithmetic or a
+// comparison uses it as data (2026-11-21: Cloud's `totals[key] += process[key]` made every perf caller a finding).
+function escapes(node) {
+ let at = node;
+ for (;;) {
+  const parent = at.parent;
+  if (!parent) return false;
+  if (ts.isParenthesizedExpression(parent) || ts.isAsExpression?.(parent) || ts.isNonNullExpression?.(parent)
+   || (ts.isConditionalExpression(parent) && parent.condition !== at)
+   || (ts.isBinaryExpression(parent) && parent.right === at && [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken,
+    ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.CommaToken].includes(parent.operatorToken.kind))) { at = parent; continue; }
+  if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === at) return false;
+  if (ts.isBinaryExpression(parent)) return parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && parent.right === at;
+  return !(ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent) || ts.isTypeOfExpression(parent)
+   || ts.isTemplateSpan(parent) || ts.isExpressionStatement(parent) || ts.isIfStatement(parent) || ts.isSwitchStatement(parent)
+   || (ts.isConditionalExpression(parent) && parent.condition === at));
+ }
+}
+
+// Reflect calls a function only through apply and construct, and only an unknown one is indirect: a named target
+// (`Reflect.construct(Uint8Array, ...)`) is its own word. Reflect.get returns a function only from a host object by an
+// unknown key (a temporal constant key is a timer); its other methods call nothing (2026-11-21: Cloud's
+// lib/seal/bytes.mjs `Reflect.get(Uint8Array.prototype, 'byteLength', value)`).
+function reflectIndirect(node) {
+ const callee = node.expression;
+ if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || callee.expression.text !== 'Reflect') return false;
+ const [target, key] = node.arguments ?? [];
+ const named = x => !!x && (ts.isIdentifier(x) || (ts.isPropertyAccessExpression(x) && named(x.expression)));
+ const method = callee.name.text;
+ if (method === 'apply' || method === 'construct') return !named(target) || (ts.isIdentifier(target) && temporal.test(target.text));
+ if (method !== 'get') return false;
+ const constant = key && constantString(key);
+ if (constant !== undefined && constant !== null && constant !== '') return temporal.test(constant) || policyName.test(constant);
+ return !named(target) || (ts.isIdentifier(target) && hostObjects.has(target.text));
+}
 const opening = new Set(['(', '[', '{']);
 const closing = new Set([')', ']', '}']);
 const bindingEnds = new Set([';', ',', ')', ']', '}']);
@@ -115,7 +162,7 @@ function scriptTokens(file, source, parser) {
    const property = constantString(node.argumentExpression);
    if (property !== undefined && (temporal.test(property) || policyName.test(property))) out.push({value: property, kind: 'word', line, start});
    else if (property === 'wait' || property === 'yield') out.push({value: property, kind: 'indirection', line, start});
-   else if (property === undefined && ts.isIdentifier(node.expression) && hostObjects.has(node.expression.text)) out.push({value: node.getText(parsed), kind: 'indirection', line, start});
+   else if (property === undefined && ts.isIdentifier(node.expression) && hostObjects.has(node.expression.text) && escapes(node)) out.push({value: node.getText(parsed), kind: 'indirection', line, start});
   }
   if (ts.isPropertyAccessExpression(node) && (node.name.text === 'wait' || node.name.text === 'yield')) out.push({value: node.name.text, kind: 'indirection', line, start});
   if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
@@ -123,9 +170,15 @@ function scriptTokens(file, source, parser) {
    const specifier = callee.kind === ts.SyntaxKind.ImportKeyword && node.arguments?.length === 1 ? node.arguments[0] : undefined;
    if (specifier && ts.isStringLiteralLike(specifier) && /^\.{1,2}\//.test(specifier.text))
     out.push({value: specifier.text, kind: 'module-load', line, start});
-   else if (ts.isElementAccessExpression(callee) || callee.kind === ts.SyntaxKind.ImportKeyword
+   // A computed callee with a static key (`object['close']()`, `source[Symbol.asyncDispose]()`) names its method like
+   // a member call; a temporal key is already a word above. Only an unknown key can be any function
+   // (2026-11-21: Cloud's `source[Symbol.asyncDispose]()` made every process command caller a finding).
+   else if ((ts.isElementAccessExpression(callee) && constantString(callee.argumentExpression) === undefined
+     && !(ts.isPropertyAccessExpression(callee.argumentExpression) && ts.isIdentifier(callee.argumentExpression.expression)
+      && callee.argumentExpression.expression.text === 'Symbol'))
+    || callee.kind === ts.SyntaxKind.ImportKeyword
     || (ts.isIdentifier(callee) && (callee.text === 'eval' || callee.text === 'Function' || callee.text === 'require'))
-    || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect')) out.push({value: callee.getText(parsed), kind: 'indirection', line, start});
+    || reflectIndirect(node)) out.push({value: callee.getText(parsed), kind: 'indirection', line, start});
   }
   const children = node.getChildren(parsed);
   if (children.length) {
@@ -491,7 +544,8 @@ function scriptLoops(parsed) {
  const visit = node => {
   if (ts.isIterationStatement(node, false)) {
    const body = node.statement;
-   loops.set(node.getStart(parsed), {end: node.end, empty: ts.isEmptyStatement(body) || (ts.isBlock(body) && !body.statements.length)});
+   loops.set(node.getStart(parsed), {end: node.end, empty: ts.isEmptyStatement(body) || (ts.isBlock(body) && !body.statements.length),
+    iteration: ts.isForOfStatement(node) || ts.isForInStatement(node)});
   }
   ts.forEachChild(node, visit);
  };
@@ -501,17 +555,19 @@ function scriptLoops(parsed) {
 
 // Each loop keyword's extent in the token stream: index -> {end, empty}, the last
 // token of its header and body and whether the body is empty. A keyword that
-// starts no loop (a shell `do`, a do-while's `while`) has none.
+// starts no loop (a shell `do`, a do-while's `while`) has none. An iteration (`for x of`, `for x in`) visits each
+// element once: it re-observes no state, so a clock or deadline in it bounds one element's work.
 function loopExtents(file, source, stream, scriptForms, typeFor) {
  const out = new Map();
+ const rust = file.endsWith('.rs');
  if (scriptForms) {
   const at = new Map(stream.map((t, i) => [t.start, i]));
-  for (const [start, {end, empty}] of scriptForms) {
+  for (const [start, {end, empty, iteration}] of scriptForms) {
    const i = at.get(start);
    if (i === undefined) continue;
    let last = i;
    while (last + 1 < stream.length && stream[last + 1].start < end) last++;
-   out.set(i, {end: last, empty});
+   out.set(i, {end: last, empty, iteration});
   }
   return out;
  }
@@ -536,7 +592,7 @@ function loopExtents(file, source, stream, scriptForms, typeFor) {
     if (word(j, 'do')) depth++;
     else if (word(j, 'done') && --depth === 0) { end = j; break; }
    }
-   out.set(i, {end, empty: false});
+   out.set(i, {end, empty: false, iteration: stream[i].value === 'for'});
   }
   return out;
  }
@@ -544,10 +600,10 @@ function loopExtents(file, source, stream, scriptForms, typeFor) {
   const column = i => stream[i].start - source.lastIndexOf('\n', stream[i].start - 1) - 1;
   for (let i = 0; i < stream.length; i++) {
    if (!word(i, 'for', 'while')) continue;
-   if (enclosing[i] !== undefined) { out.set(i, {end: close.get(enclosing[i]) ?? lineEnd(i), empty: false}); continue; } // a comprehension
+   if (enclosing[i] !== undefined) { out.set(i, {end: close.get(enclosing[i]) ?? lineEnd(i), empty: false, iteration: true}); continue; } // a comprehension
    let end = lineEnd(i);
    while (end + 1 < stream.length && column(end + 1) > column(i)) end = lineEnd(end + 1);
-   out.set(i, {end, empty: false});
+   out.set(i, {end, empty: false, iteration: stream[i].value === 'for'});
   }
   return out;
  }
@@ -570,7 +626,7 @@ function loopExtents(file, source, stream, scriptForms, typeFor) {
    }
    if (t.value === ';' || t.value === '}') { end = j; break; }
   }
-  out.set(i, {end, empty});
+  out.set(i, {end, empty, iteration: rust && stream[i].value === 'for'});
  }
  return out;
 }
@@ -622,15 +678,129 @@ export function pollingUnit(file, source, parser = undefined) {
  // spellings remain conservative candidates, including native imports/aliases.
  const rust = file.endsWith('.rs');
  const path = (i, crate) => stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':' && crate.has(stream[i - 3]?.value);
- const futurePoll = i => rust && stream[i]?.value === 'poll' && (path(i, futureTrait)
+ const directPoll = i => rust && stream[i]?.value === 'poll' && (path(i, futureTrait)
   || (stream[i + 1]?.value === '!' && (path(i, futureCrates) || stream[i - 1]?.value !== ':')));
+ // A method `.poll(cx)` whose one argument is a task Context (a `Context` path, or a name declared of type Context)
+ // is Future::poll too; an event loop's `poll.poll(&mut events, timeout)` takes two. A local `fn` whose body polls
+ // nothing but a future that way is a step of that future, and so is each call of it: a loop that steps a future
+ // and waits only on an awaited event (`wakes.notified().await`) is no timer loop (2026-11-21: Cloud's gateway
+ // metering test `fn poll(future, wakes)` made its wake-driven step loop a finding).
+ const closeOf = new Map(), open = [];
+ for (let i = 0; i < stream.length; i++) {
+  if (stream[i].kind !== 'punctuation') continue;
+  if (opening.has(stream[i].value)) open.push(i);
+  else if (closing.has(stream[i].value) && open.length) closeOf.set(open.pop(), i);
+ }
+ const contexts = new Set(), steps = new Set();
+ if (rust) {
+  for (let i = 0; i + 1 < stream.length; i++) {
+   if (stream[i].kind !== 'word' || stream[i + 1].value !== ':' || stream[i + 2]?.value === ':') continue;
+   for (let j = i + 2; j < Math.min(stream.length, i + 10) && stream[j].value !== ',' && stream[j].value !== ')'; j++)
+    if (stream[j].value === 'Context') { contexts.add(stream[i].value); break; }
+  }
+  for (let i = 1; i + 1 < stream.length; i++) {
+   if (stream[i].value !== 'poll' || stream[i - 1].value !== '.' || stream[i + 1].value !== '(') continue;
+   const end = closeOf.get(i + 1);
+   if (end === undefined) continue;
+   let depth = 0, commas = 0, context = false;
+   for (let j = i + 2; j < end; j++) {
+    const t = stream[j];
+    if (t.kind === 'punctuation' && opening.has(t.value)) depth++;
+    else if (t.kind === 'punctuation' && closing.has(t.value)) depth--;
+    else if (depth === 0 && t.value === ',') commas++;
+    if (t.kind === 'word' && (t.value === 'Context' || contexts.has(t.value))) context = true;
+   }
+   if (context && commas === 0) steps.add(i);
+  }
+ }
+ const stepping = new Set();
+ if (rust) {
+  for (let i = 0; i + 2 < stream.length; i++) {
+   if (stream[i].kind !== 'word' || stream[i].value !== 'fn' || stream[i + 1].kind !== 'word') continue;
+   let b = i + 2;
+   while (b < stream.length && stream[b].value !== '{' && stream[b].value !== ';') b++;
+   const end = closeOf.get(b);
+   if (stream[b]?.value !== '{' || end === undefined) continue;
+   let polls = 0, other = false;
+   for (let j = b + 1; j < end; j++) {
+    const t = stream[j];
+    if (t.kind !== 'word' && t.kind !== 'indirection' && t.kind !== 'module-load') continue;
+    if (directPoll(j) || steps.has(j)) polls++;
+    else if (t.kind !== 'word' || temporal.test(t.value) || policyName.test(t.value) || clock.test(t.value)) other = true;
+   }
+   if (polls && !other) stepping.add(stream[i + 1].value);
+  }
+ }
+ // A type is no timer: `Poll` named from `task` (`std::task::Poll`, `task::{Context, Poll}`) or spelled as its
+ // variants is a future's result, unless the file uses mio, whose `Poll` is an event-loop poller.
+ const taskPoll = rust && !stream.some(t => t.value === 'mio') && stream.some((t, i) => t.value === 'Poll'
+  && (stream[i + 1]?.value === ':' && ['Ready', 'Pending'].includes(stream[i + 3]?.value)
+   || stream.slice(Math.max(0, i - 12), i).some((u, k, a) => u.value === 'task' && a[k + 1]?.value === ':')));
+ // A predicate wait (`rx.wait_for(|value| ...)`, a watch receiver's) wakes on each published value: an event, no
+ // clock. A wait with a duration stays a timer.
+ const predicateWait = i => rust && /^wait_(?:for|until)$/.test(stream[i]?.value ?? '') && stream[i - 1]?.value === '.'
+  && stream[i + 1]?.value === '(' && (stream[i + 2]?.value === '|' || stream[i + 2]?.value === '||' || stream[i + 2]?.value === 'move');
+ const futurePoll = i => directPoll(i) || steps.has(i) || predicateWait(i) || (taskPoll && stream[i]?.value === 'Poll')
+  || (rust && stepping.has(stream[i]?.value) && stream[i - 1]?.value !== '.'
+  && !(stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':'));
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
  const aliases = new Map();
  const name = lexicalNames(stream, rust);
- const candidate = (t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value));
+ // Names resolve before they match. A local binding (`const select = selector => ...`, `const elapsed = field(...)`)
+ // is its own code: it is a timer only when its initializer reaches one, not by its spelling. A policy name that is
+ // a data field, a member or key that is not called (a Job's `backoffLimit`), configures no retry here
+ // (2026-11-21: each was a Cloud finding).
+ const spans = new Map();
+ for (let i = 0; i < stream.length; i++) {
+  if (stream[i].kind !== 'word' || stream[i + 1]?.value !== '=' || stream[i + 2]?.value === '=' || name(i) === stream[i].value) continue;
+  let depth = 0, j = i + 2;
+  for (; j < stream.length; j++) {
+   const t = stream[j];
+   if (t.kind === 'punctuation' && opening.has(t.value)) depth++;
+   else if (t.kind === 'punctuation' && closing.has(t.value) && --depth < 0) break;
+   else if (depth === 0 && t.kind === 'punctuation' && (t.value === ';' || t.value === ',')) break;
+   else if (depth === 0 && t.kind === 'word' && t.line > stream[i].line && statementStarts.has(t.value) && stream[j - 1]?.value !== '=>') break;
+  }
+  spans.set(name(i), [i + 2, j]);
+ }
+ // Inside its own initializer a spelling is the outer name (`let interval = interval(d)`).
+ const local = i => { const span = spans.get(name(i)); return name(i) !== stream[i].value && !(span && i >= span[0] && i < span[1]); };
+ const called = i => stream[i + 1]?.value === '(' || (rust && stream[i + 1]?.value === '!');
+ const dataField = i => policyName.test(stream[i].value) && !temporal.test(stream[i].value) && !called(i)
+  && (stream[i - 1]?.value === '.' || stream[i - 1]?.value === '?.' || (stream[i + 1]?.value === ':' && stream[i + 2]?.value !== ':'
+   && (stream[i - 1]?.value === '{' || stream[i - 1]?.value === ',')));
+ // A policy name is a retry only where it repeats work: a local binding whose initializer has no loop, no timer or
+ // clock, no other policy name and no call of itself runs its action once, whatever it is named; a predicate
+ // (`retryable`) decides, it repeats nothing (2026-11-21: Cloud's upgrade-cell fixture `const retry = async (action,
+ // {retryable}) => { try { return await action(); } ... }`).
+ const predicate = /^(?:is_?)?retr[iy]able$/i;
+ const inert = new Map();
+ const inertPolicy = i => {
+  const value = stream[i].value;
+  if (temporal.test(value)) return false;
+  if (predicate.test(value)) return true;
+  const span = spans.get(name(i));
+  if (!span || name(i) === value) return false;
+  if (inert.has(name(i))) return inert.get(name(i));
+  let quiet = true;
+  for (let j = span[0]; j < span[1] && quiet; j++) {
+   const t = stream[j];
+   if (t.kind === 'indirection' || t.kind === 'module-load') quiet = false;
+   else if (t.kind === 'literal') quiet = !embeddedTimer(t.value);
+   else if (t.kind === 'word') quiet = !loop.has(t.value) && name(j) !== name(i) && !(temporal.test(t.value) && !local(j))
+    && !clock.test(t.value) && (!policyName.test(t.value) || predicate.test(t.value));
+  }
+  inert.set(name(i), quiet);
+  return quiet;
+ };
+ const candidate = (t, i) => t.kind === 'word' && !futurePoll(i) && !dataField(i)
+  && ((temporal.test(t.value) && !local(i)) || (policyName.test(t.value) && !inertPolicy(i)));
  const forbidden = new Set(stream.flatMap((t, i) => candidate(t, i) && !deadlineWord.test(t.value) ? [name(i)] : []));
+ for (const [binding, [from, to]] of spans) {
+  for (let j = from; j < to; j++) if (candidate(stream[j], j) && !deadlineWord.test(stream[j].value)) { forbidden.add(binding); break; }
+ }
  const bounds = new Set(stream.flatMap((t, i) => candidate(t, i) && deadlineWord.test(t.value) ? [name(i)] : []));
  const edge = (from, to) => {
   if (!from || !to) return;
@@ -688,6 +858,10 @@ export function pollingUnit(file, source, parser = undefined) {
  // it. A timer outside every loop is its own finding; a clock outside every loop is a measurement.
  const extents = loopExtents(file, source, stream, scriptForms, rustForms?.typeFor);
  const reasons = new Map(), active = [], found = [];
+ const subscribes = new Set();
+ for (const [i, {end}] of extents) {
+  for (let j = i + 1; j <= end; j++) if (stream[j].kind === 'word' && subscription.test(stream[j].value)) { subscribes.add(i); break; }
+ }
  const directTimer = i => {
   const token = stream[i];
   return token.kind === 'literal' || temporal.test(token.value) || clock.test(token.value);
@@ -695,8 +869,9 @@ export function pollingUnit(file, source, parser = undefined) {
  for (let i = 0; i < stream.length; i++) {
   while (active.length && extents.get(active[active.length - 1]).end < i) active.pop();
   const kind = kindAt(i), owner = active[active.length - 1];
-  const timer = kind === 'timer-or-readiness' || kind === 'embedded-timer-or-retry' || kind === 'deadline'
-   || (stream[i].kind === 'word' && clock.test(stream[i].value));
+  const bound = kind === 'deadline' || (!kind && stream[i].kind === 'word' && clock.test(stream[i].value) && !local(i));
+  const timer = kind === 'timer-or-readiness' || kind === 'embedded-timer-or-retry'
+   || (bound && owner !== undefined && !subscribes.has(owner) && !extents.get(owner).iteration);
   if (timer && owner !== undefined) {
    const previous = reasons.get(owner);
    if (previous === undefined || previous < 0 || (!directTimer(previous) && directTimer(i))) reasons.set(owner, i);

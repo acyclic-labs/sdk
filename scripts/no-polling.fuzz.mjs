@@ -68,8 +68,8 @@ export function fuzz(data, analyze = sourcePolicy.pollingSites) {
    ['scripts/control.mjs', 'runHost(' + JSON.stringify(program) + ')'],
   ]) assert.ok(analyze(file, source).some(site => site.kind === 'embedded-timer-or-retry'), source);
  }
- const settings = `settings: [${word}\u00a0#owner's"fragment, {polling: 1}]`;
- assert.deepEqual(analyze('scripts/control.yaml', settings).map(site => site.start), [settings.indexOf('polling')]);
+ const settings = `settings: [${word}\u00a0#owner's"fragment, {POLL_IV: 1}]`;
+ assert.deepEqual(analyze('scripts/control.yaml', settings).map(site => site.start), [settings.indexOf('POLL_IV')]);
  for (const command of ['\\sleep', 'sl\\eep', 'sl\\\neep', 's\\l\\e\\e\\p']) {
   const source = `${command} ${word}`;
   assert.ok(analyze('scripts/control.sh', source).some(site => site.kind === 'timer-or-readiness'), source);

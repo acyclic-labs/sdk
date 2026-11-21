@@ -3,7 +3,7 @@ import {posix} from 'node:path';
 import ts from 'typescript-parser';
 import {pollingUnit, sameRustImportLayout, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
 
-/** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean, rechecks: Set<Dependency>, result: boolean}} Dependency */
+/** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean, rechecks: Set<Dependency>, calls: Set<Dependency>, result: boolean}} Dependency */
 /** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
 /** @typedef {{node: import('typescript-parser').Node, target?: Dependency, unresolved?: string}} Reference */
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -89,7 +89,18 @@ function dependencyComponents(nodes) {
   // or its own parameters unchanged): that re-observes one condition. A walk over a finite structure (each call on a
   // child) is iteration, like a loop over a listing (2026-11-21: Cloud's `own(join(entry, name))` tree walk made
   // every copyOwnedFile caller a polling finding).
-  component.hazardous = component.members.some(node => node.hazardous || [...node.rechecks].some(target => owner.get(target) === component))
+  // The re-entry must close a cycle of calls: a cycle only of references (a stored waiter a publisher wakes, a
+  // registered callback) is event dispatch, not recursion (2026-11-21: Cloud's Changes `done`/`cleanup` pair).
+  const callsBack = (from, to) => {
+   const seen = new Set([from]), queue = [from];
+   for (let at = 0; at < queue.length; at++) for (const next of queue[at].calls) {
+    if (next === to) return true;
+    if (!seen.has(next) && owner.get(next) === component) { seen.add(next); queue.push(next); }
+   }
+   return false;
+  };
+  component.hazardous = component.members.some(node => node.hazardous
+   || [...node.rechecks].some(target => owner.get(target) === component && (target === node || callsBack(target, node))))
    || [...component.edges].some(child => child.hazardous);
   component.fingerprint = digest([
    component.members.map(node => [node.id, node.unit]).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
@@ -224,11 +235,15 @@ function awaitedExportNames(call) {
 }
 
 /** @param {Map<string, string>} sources */
-export function projectPollingSites(sources, {historical = false} = {}) {
+export function projectPollingSites(sources, {historical = false, dispositions = []} = {}) {
  /** @type {Map<string, ReturnType<typeof pollingUnit>>} */
  const units = new Map();
  /** @type {ReturnType<typeof pollingUnit>['sites']} */
  const sites = [];
+ // A site with an accepted typed disposition (a caller deadline, a transport backoff) is that disposition's: no
+ // hazard to its callers either. Its fingerprint holds its whole unit, so any edit to the producer reopens it and
+ // every caller (2026-11-21: one disposed deadline timer made every transitive caller a finding).
+ const disposed = new Set(dispositions.map(item => item.file + ':' + item.fingerprint));
  const errors = [];
  const workspaceNames = new Set();
  const files = new Map();
@@ -254,7 +269,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    errors.push(error);
    continue;
   }
-  for (const site of unit.sites) sites.push(site);
+  for (const site of unit.sites) if (!disposed.has(file + ':' + site.fingerprint)) sites.push(site);
   if (script(file) && !unit.parsed?.isDeclarationFile) { units.set(file, unit); files.set('/' + file, source); }
  }
  if (errors.length === 1) throw errors[0];
@@ -285,7 +300,13 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    required(moduleLoads, file).set(token.start, symbol);
   }
  }
- const modeled = site => site.kind === 'indirect-timer-or-call' && moduleLoads.get(site.file)?.has(site.start);
+ // A policy name bound to string data (`export const backoffCodes = ['transport_unavailable']`) names codes or
+ // reasons, not a retry: each of its sites is data wherever the checker resolves the name, across imports too
+ // (2026-11-21: one such read in Cloud's identity-native made every machines.mjs importer a finding). A number, a
+ // period or a count, stays a policy.
+ const dataSites = new Set();
+ const modeled = site => (site.kind === 'indirect-timer-or-call' && moduleLoads.get(site.file)?.has(site.start))
+  || dataSites.has(site.file + ':' + site.start) || disposed.has(site.file + ':' + site.fingerprint);
 
  // A top-level function owns its lexical context, including all local bindings.
  // Compute its token identity once even when many symbols refer into that scope.
@@ -318,7 +339,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   const previous = dependencies.get(id);
   if (previous) return previous;
   /** @type {Dependency} */
-  const value = {id, unit, edges: new Set(), hazardous: false, callable: false, rechecks: new Set(), result: false};
+  const value = {id, unit, edges: new Set(), hazardous: false, callable: false, rechecks: new Set(), calls: new Set(), result: false};
   dependencies.set(id, value);
   return value;
  };
@@ -422,6 +443,27 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   return call.arguments.every((argument, k) => ts.isIdentifier(argument) && params[k] !== undefined
    && ts.isIdentifier(params[k].name) && params[k].name.text === argument.text);
  };
+ /** @param {import('typescript-parser').Expression} value */
+ const stringData = value => {
+  while (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) || ts.isSatisfiesExpression(value)) value = value.expression;
+  return ts.isStringLiteralLike(value) || (ts.isArrayLiteralExpression(value) && value.elements.every(item => ts.isStringLiteralLike(item)));
+ };
+ for (const [file, unit] of units) {
+  const wanted = new Set(unit.sites.filter(site => site.kind === 'timer-or-readiness').map(site => site.start));
+  const source = program.getSourceFile('/' + file);
+  if (!wanted.size || !source) continue;
+  /** @param {import('typescript-parser').Node} node */
+  const visit = node => {
+   if (ts.isIdentifier(node) && wanted.has(node.getStart(source))) {
+    const declarations = canonical(checker.getSymbolAtLocation(node))?.declarations ?? [];
+    if (declarations.length && declarations.every(item => ts.isVariableDeclaration(item) && item.initializer
+     && ts.isVariableDeclarationList(item.parent) && (item.parent.flags & ts.NodeFlags.Const) && stringData(item.initializer)))
+     dataSites.add(file + ':' + node.getStart(source));
+   }
+   ts.forEachChild(node, visit);
+  };
+  visit(source);
+ }
  /** @type {Reference[]} */
  const references = [];
  /** @type {{node: import('typescript-parser').Node, owner: Dependency, target: Dependency}[]} */
@@ -492,6 +534,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    if (ts.isCallExpression(node)) {
     const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name : node.expression;
     const target = ts.isIdentifier(callee) ? symbolDependency(checker.getSymbolAtLocation(callee)) : undefined;
+    if (target) owner.calls.add(target);
     if (target && sameState(node)) owner.rechecks.add(target);
    }
    if (ts.isIdentifier(node)) {
@@ -551,7 +594,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
 /** @param {Map<string, string>} before @param {Map<string, string>} after */
 export function newProjectPollingSites(before, after, dispositions = [], policy = {}) {
  validateDispositions(dispositions, policy);
- const candidates = projectPollingSites(after);
+ const candidates = projectPollingSites(after, {dispositions});
  if (!candidates.length) return candidates;
  const retained = new Map();
  const historical = new Map(before);
@@ -560,8 +603,7 @@ export function newProjectPollingSites(before, after, dispositions = [], policy 
   if (previous !== undefined && current !== undefined && sameRustImportLayout(file, previous, current))
    historical.set(file, current);
  }
- for (const site of projectPollingSites(historical, {historical: true})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
- for (const item of dispositions) retained.set(item.file + ':' + item.fingerprint, Math.max(1, retained.get(item.file + ':' + item.fingerprint) ?? 0));
+ for (const site of projectPollingSites(historical, {historical: true, dispositions})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
  return candidates.filter(site => {
   const key = site.file + ':' + site.fingerprint;
   const count = retained.get(key) ?? 0;

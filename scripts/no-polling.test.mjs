@@ -85,10 +85,10 @@ test('PowerShell casing preserves wait, loop and alias review', () => {
 test('YAML plain scalar hashes preserve later flow settings', () => {
  const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-comments.json', import.meta.url), 'utf8'));
  for (const {source, keys} of captured.records) {
-  // The captured key is a deadline (no finding outside a loop); the same-length `polling` keeps every position.
+  // The captured key is a deadline (no finding outside a loop); the same-length policy key `POLL_IV` keeps every position.
   const expected = keys.filter(key => key.value === 'timeout').map(key => key.start);
   for (const extension of ['yaml', 'yml']) {
-   assert.deepEqual(pollingSites(`scripts/control.${extension}`, source.replaceAll('timeout', 'polling')).map(site => site.start), expected, source);
+   assert.deepEqual(pollingSites(`scripts/control.${extension}`, source.replaceAll('timeout', 'POLL_IV')).map(site => site.start), expected, source);
   }
  }
 });
@@ -236,6 +236,102 @@ test('helper dependencies follow bindings rather than spelling or every export i
  }
 });
 
+test('a loop that subscribes waits on events: its clock bounds the wait, a sleep in it still polls', () => {
+ // 2026-11-21: Cloud's waitKubernetes list-then-watch resync loop, bounded by now(), was a polling loop.
+ const resync = 'async function wait(paths, timeout) { const until = now() + timeout;\n'
+  + ' for (;;) { const listed = await list(paths); if (done(listed)) return listed;\n'
+  + '  await watchCursors(listed.cursors(), {now, timeout: until - now()}); } }';
+ assert.deepEqual(pollingSites(script, resync), []);
+ assert.deepEqual(pollingSites(script, 'for await (const entry of stream.follow(cursor)) { if (Date.now() > deadline) break; use(entry); }'), []);
+ for (const source of [
+  resync.replace('await watchCursors(listed.cursors(), {now, timeout: until - now()});', 'await Bun.sleep(10);'),
+  resync.replace('await watchCursors(', 'await Bun.sleep(10); await watchCursors('),
+  'for (;;) { const listed = await list(paths); if (done(listed) || now() > until) return listed; }',
+ ]) assert.deepEqual(pollingSites(script, source).map(site => site.kind), ['loop'], source);
+});
+
+test('a computed call with a static key is a named call; an unknown key stays indirect', () => {
+ for (const source of ['await source[Symbol.asyncDispose]();', "handle['close']();"])
+  assert.deepEqual(pollingSites(script, source), [], source);
+ assert.ok(pollingSites(script, "globalThis['setTimeout'](f, 1);").some(site => site.kind === 'timer-or-readiness'));
+ assert.ok(pollingSites(script, 'globalThis[name](f, 1);').some(site => site.kind === 'indirect-timer-or-call'));
+});
+
+test('a host member read as data and a Reflect read or named construct are no indirect call', () => {
+ for (const source of ['totals[key] += process[key];', 'process[stream].write(bytes);', "const n = Reflect.get(Uint8Array.prototype, 'byteLength', value);",
+  "const copy = Reflect.construct(Uint8Array, [buffer]);", 'if (globalThis[name] === undefined) throw Error(name);'])
+  assert.deepEqual(pollingSites(script, source), [], source);
+ for (const source of ['const f = process[name];', 'run(globalThis[name]);', 'Reflect.get(globalThis, name)(f, 1);',
+  'Reflect.apply(table[name], undefined, [f]);', "Reflect.get(globalThis, 'setTimeout')(f, 1);"])
+  assert.ok(pollingSites(script, source).length, source);
+});
+
+test('a function named retry that runs its action once is no retry; one that repeats is', () => {
+ assert.deepEqual(pollingSites(script, 'const retry = async (action, {retryable}) => {\n'
+  + '  try { return await action(() => 1000); }\n  catch (error) { if (!retryable(error)) throw error; throw error; }\n};\n'
+  + 'export const cell = new Cell({retry});\n'), []);
+ for (const source of ['const retry = async action => { for (;;) { try { return await action(); } catch { await sleep(10); } } };',
+  'const retry = async action => { try { return await action(); } catch { return retry(action); } };',
+  'const retry = action => setTimeout(action, 10);'])
+  assert.ok(pollingSites(script, source).length, source);
+});
+
+test('a local fn that only steps a future is a future poll; a loop waiting on an awaited event is not polling', () => {
+ const step = 'use std::task::{Context, Poll};\nfn poll<F: Future>(future: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output> {\n'
+  + '    future.poll(&mut Context::from_waker(&Waker::from(wakes.clone())))\n}\n';
+ assert.deepEqual(pollingSites(rust, step + 'async fn t() {\n    while !*ended.borrow() {\n        wakes.1.notified().await;\n'
+  + '        assert!(poll(cleanup.as_mut(), &wakes).is_pending());\n    }\n}\n'), []);
+ assert.deepEqual(pollingSites(rust, 'fn step(f: Pin<&mut F>, cx: &mut Context<\'_>) -> std::task::Poll<()> { f.poll(cx) }\n'), []);
+ assert.deepEqual(pollingSites(rust, 'async fn t() { loop { rx.wait_for(|v| *v).await.unwrap(); f(); } }\n'), []);
+ assert.ok(pollingSites(rust, 'fn t() { loop { pair.wait_for(guard, PAUSE); } }\n').some(site => site.kind === 'loop'));
+ assert.ok(pollingSites(rust, 'use mio::Poll;\nfn t() { let p = Poll::new(); }\n').length);
+ // An event loop's poll (two arguments) and a local fn that sleeps stay timers wherever they are called.
+ assert.ok(pollingSites(rust, 'fn run() { loop { events.poll(&mut list, Some(timeout)).unwrap(); } }\n').some(site => site.kind === 'loop'));
+ assert.ok(pollingSites(rust, 'fn poll(f: Pin<&mut F>, cx: &mut Context<\'_>) { std::thread::sleep(PAUSE); f.poll(cx); }\n'
+  + 'fn run() { loop { poll(f.as_mut(), cx); } }\n').some(site => site.kind === 'loop'));
+});
+
+test('names resolve before matching: a local function and a data field are not timers or retries', () => {
+ // 2026-11-21: Cloud's local `select` and a Job's `backoffLimit` and 'BackoffLimitExceeded' were findings.
+ for (const source of [
+  "function route() { const select = selector => patch(selector); for (const host of hosts) select({host}); }",
+  "for (const job of jobs) { if (job.status.failed > job.spec.backoffLimit) refuse(job.status.reason === 'BackoffLimitExceeded'); }",
+  "const job = {spec: {backoffLimit: 0, template}}; for (const pod of pods) submit(job, pod);",
+  "for (const line of log) { const elapsed = field(line, 'elapsed_us'); total += Number(elapsed); }",
+  "for (;;) { const row = next(); if (!row) break; fail('select a committed cell environment'); }",
+  "for (const step of steps) run(step, 'retry the identity request', './fixtures/polling-policy.mjs');",
+  // An iteration visits each element once; a deadline on each element's wait is no recheck.
+  "for (const host of hosts) kube(['delete', 'pod', host, '--wait=true', '--timeout=30s']);",
+  'for (const failure of failures) if (deadline?.aborted) report(failure);',
+ ]) assert.deepEqual(pollingSites(script, source), [], source);
+ // The real spellings stay findings: a called retry, a retry flag, select itself, and a timer behind a local name.
+ for (const source of [
+  'for (const host of hosts) client.retry(host);',
+  "for (const host of hosts) run('curl', ['--retry', '5', host]);",
+  'for (const fd of fds) select(fd);',
+  'const pause = ms => new Promise(resolve => setTimeout(resolve, ms)); while (!ready()) await pause(10);',
+  'const sleep = ms => { return new Promise(resolve => setTimeout(resolve, ms)); };\nwhile (!ready()) await sleep(10);',
+  "for (;;) { const rows = query('SELECT pg_sleep(1)'); if (rows.length) break; await db.select(1); }",
+  'for (const host of hosts) await Bun.sleep(10);',
+  'let deadline = now() + 10; while (!ready() && now() < deadline) step();',
+ ]) assert.ok(pollingSites(script, source).some(site => site.kind === 'loop'), source);
+});
+
+test('a disposed site is no hazard to its callers, and an edit to it reopens them', () => {
+ // 2026-11-21: a caller-deadline timer (Cloud's lib/change.mjs) made every transitive caller a finding.
+ const helper = 'typescript/packages/example/test/deadline.ts';
+ const timer = 'export function deadline(signal, ms) { const timer = setTimeout(() => signal.abort(), ms); return () => clearTimeout(timer); }';
+ const sources = new Map([[helper, timer],
+  [script, "import {deadline} from './deadline.js'; export function operation(signal) { return deadline(signal, 10); }"]]);
+ const sites = projectPollingSites(sources);
+ assert.ok(sites.some(site => site.file === script));
+ const accepted = sites.filter(site => site.file === helper).map(site => disposition(site, 'caller-deadline',
+  'original caller deadline', 'expiry or caller cancellation', 'drop the caller deadline and require no timer'));
+ assert.deepEqual(newProjectPollingSites(new Map(), sources, accepted), []);
+ const changed = new Map(sources).set(helper, timer.replace('ms);', 'ms * 2);'));
+ assert.ok(newProjectPollingSites(new Map(), changed, accepted).some(site => site.file === script));
+});
+
 test('a walk over a finite structure and reads of a helper result are no polling references', () => {
  // 2026-11-21: Cloud's owned-copy tree walk and every line reading a kubectl helper's result were findings.
  const helper = 'typescript/packages/example/test/helper.ts';
@@ -251,6 +347,19 @@ test('a walk over a finite structure and reads of a helper result are no polling
   [kube, "import {apply, prove} from './helper.js';\nexport function start(probe) {\n const applied = JSON.parse(apply([probe]));\n"
    + " const pods = applied.items.filter(item => item.kind === 'Pod');\n if (pods.length !== 1) throw new Error(pods[0].metadata.uid);\n prove(pods[0].metadata.name);\n}"],
  ]) assert.deepEqual(projectPollingSites(new Map([[helper, producer], [script, consumer]])), [], consumer);
+ // A policy name bound to string data is codes, not a retry, through an import too; a numeric period stays a policy.
+ const codes = "export const backoffCodes = ['transport_unavailable', 'leadership_unavailable'];";
+ const classify = "import {backoffCodes} from './helper.js';\nexport function classify(reply, failure) { if (backoffCodes.includes(reply.error)) failure.code = reply.error; }";
+ assert.deepEqual(projectPollingSites(new Map([[helper, codes], [script, classify]])), []);
+ assert.ok(projectPollingSites(new Map([[helper, 'export const FLUSH_INTERVAL = 10;'], [script, classify.replaceAll('backoffCodes', 'FLUSH_INTERVAL')]])).length);
+ // Waiters that reference each other and call without arguments close no call cycle: a publisher wakes them.
+ const waiters = 'export class Changes { #waiters = new Set(); publish() { for (const wake of this.#waiters) wake(); }\n'
+  + ' changed() { return new Promise(resolve => { const done = () => { cleanup(); resolve(); };\n'
+  + '  const cleanup = () => { this.#waiters.delete(done); }; this.#waiters.add(done); }); } }';
+ assert.deepEqual(projectPollingSites(new Map([[helper, waiters],
+  [script, "import {Changes} from './helper.js'; export const next = changes => changes.changed();"]])), []);
+ const retry = 'export function settle() { const again = () => check(); const check = () => again(); return check(); }';
+ assert.ok(projectPollingSites(new Map([[helper, retry], [script, "import {settle} from './helper.js'; settle();"]])).length);
  // A helper that polls is still a finding where it is called, not on every read of what it returned.
  const settle = 'export async function settle() { while (!ready()) await Bun.sleep(10); return state; }';
  const reads = "import {settle} from './helper.js';\nexport async function operation() {\n const state = await settle();\n return state.size + state.count;\n}";

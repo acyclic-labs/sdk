@@ -75,11 +75,11 @@ test('non-script and retired snapshots validate source without irrelevant compil
  assert.ok(await compilerEntries(() => retire(redundant.graph.newProjectPollingSites)) > 0,
   'removing candidate elision must analyze the retired original modules');
  const unreviewed = await mutant('./source-policy/project.mjs',
-  ' validateDispositions(dispositions, policy);\n const candidates = projectPollingSites(after);',
-  ' const candidates = projectPollingSites(after);\n if (!candidates.length) return candidates;\n validateDispositions(dispositions, policy);');
+  ' validateDispositions(dispositions, policy);\n const candidates = projectPollingSites(after, {dispositions});',
+  ' const candidates = projectPollingSites(after, {dispositions});\n if (!candidates.length) return candidates;\n validateDispositions(dispositions, policy);');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), unreviewed), {name: 'AssertionError'});
  const discarded = await mutant('./source-policy/project.mjs',
-  ' const candidates = projectPollingSites(after);', ' const candidates = [];');
+  ' const candidates = projectPollingSites(after, {dispositions});', ' const candidates = [];');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), discarded), {name: 'AssertionError'});
 });
 
@@ -110,7 +110,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), collation),
   {name: 'AssertionError', message: /snapshot enumeration/});
  const baseline = await mutant('./source-policy/project.mjs',
-  'projectPollingSites(historical, {historical: true})', '[]');
+  'projectPollingSites(historical, {historical: true, dispositions})', '[]');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), baseline),
   {name: 'AssertionError', message: /shadowed source changed the exact runtime dependency/});
  const resolution = await mutant('./source-policy/project.mjs',
@@ -163,7 +163,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['if (historical && error instanceof SourceSyntaxError) continue;',
    'if (error instanceof SourceSyntaxError) continue;', '}',
    {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/}],
-  ['projectPollingSites(historical, {historical: true})', 'projectPollingSites(before)', [0],
+  ['projectPollingSites(historical, {historical: true, dispositions})', 'projectPollingSites(before)', [0],
    {name: 'SourceSyntaxError', message: /lib\/helper\.ts/}],
  ]) {
   const refusal = await mutant('./source-policy/project.mjs', original, replacement);
