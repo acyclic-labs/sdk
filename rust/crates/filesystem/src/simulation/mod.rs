@@ -164,7 +164,7 @@ impl<A, O> Simulation<A, O> {
         }
     }
 
-    /// Delays each object read or batch by one simulated remote round trip.
+    /// Delays each object read or batch on the seeded schedule's paused clock.
     /// Schedule counts still measure calls independently of elapsed time.
     #[must_use]
     pub fn with_object_read_latency(mut self, latency: Duration) -> Self {

@@ -80,15 +80,12 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
         if self.object_read_latency.is_zero() {
             return Ok(());
         }
-        let deadline = std::time::SystemTime::now()
-            .checked_add(self.object_read_latency)
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|time| u64::try_from(time.as_millis()).ok())
-            .ok_or(crate::WorkError::Overflow)?;
-        acyclic_native_runtime::WallAlarm::wait(deadline)
-            .map_err(|_| ObjectStoreError::Simulation("read latency registration failed"))?
+        self.schedule
+            .wait_for(self.object_read_latency)
             .await
-            .map_err(|_| ObjectStoreError::Simulation("read latency alarm failed"))?;
+            .map_err(|_| {
+                ObjectStoreError::Simulation("object read latency requires a seeded schedule")
+            })?;
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)

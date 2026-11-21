@@ -1,5 +1,29 @@
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn object_latency_waits_on_the_seeded_monotonic_clock()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::CapturedClock;
+    use std::time::Duration;
+
+    let (schedule, _events) = Schedule::seeded(5);
+    schedule
+        .scope(async {
+            let latency = Duration::from_millis(37);
+            let simulation = crate::Simulation::new(&schedule).with_object_read_latency(latency);
+            let (_, objects) = simulation.stores();
+            let cancellation = CancellationToken::new();
+            let (object_id, bytes) = object(b"remote");
+            (work!(objects, put(object_id, bytes.clone()), B, &cancellation)).await?;
+            let clock = CapturedClock::capture().ok_or("seeded clock unavailable")?;
+            let read = (work!(objects, read(object_id, 64), B, &cancellation)).await?;
+            assert_eq!(read.value.bytes, bytes);
+            assert_eq!(clock.elapsed(), latency);
+            Ok(())
+        })
+        .await
+}
+
 #[tokio::test]
 async fn delayed_objects_are_invisible_until_flush() -> Result<(), Box<dyn std::error::Error>> {
     let (schedule, _events) = Schedule::new();

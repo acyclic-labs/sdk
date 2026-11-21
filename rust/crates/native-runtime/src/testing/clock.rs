@@ -192,6 +192,21 @@ impl Schedule {
         }
     }
 
+    /// Waits for a delay on this schedule's paused monotonic clock.
+    ///
+    /// Returns an error unless a seeded driver has entered the schedule.
+    pub async fn wait_for(&self, duration: Duration) -> std::io::Result<()> {
+        let runtime = self.0.state().wall.runtime.clone().ok_or_else(|| {
+            std::io::Error::other("virtual delay requires an active seeded schedule")
+        })?;
+        let timer = {
+            let _runtime = runtime.enter();
+            tokio::time::sleep(duration)
+        };
+        timer.await;
+        Ok(())
+    }
+
     /// Advances both simulated elapsed time and wall time. The driver must use
     /// Tokio's paused current-thread clock; production timers remain unchanged.
     pub async fn advance(&self, duration: Duration) {
