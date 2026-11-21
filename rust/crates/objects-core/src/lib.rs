@@ -26,6 +26,7 @@ pub mod convert;
 mod counted;
 #[doc(hidden)]
 pub mod error;
+pub use error::grpc_status_code_typescript;
 #[doc(hidden)]
 pub mod identity;
 pub mod json;

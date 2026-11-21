@@ -63,6 +63,7 @@ acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 wasm-bindgen-test = "=0.3.67"
 
 [dev-dependencies]
+acyclic-objects-core = { version = "=0.2.0", path = "../objects-core" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

@@ -22,6 +22,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::write(parent.join("nominal.ts"), render_nominal())?;
             std::fs::write(parent.join("guest.ts"), acyclic_actors::guest::typescript())?;
             std::fs::write(
+                parent.join("objects-status.ts"),
+                acyclic_objects_core::grpc_status_code_typescript(),
+            )?;
+            std::fs::write(
                 parent.join("live-update.ts"),
                 acyclic_actors::live_update::typescript(),
             )?;

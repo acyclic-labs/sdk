@@ -257,3 +257,53 @@ fn error_detail(code: wire::ErrorCode, cause: Option<Cause>) -> wire::ErrorDetai
         reason: cause.reason,
     }
 }
+
+/// The guest-runnable TypeScript form of [`Error::from_grpc_status_code`].
+/// It is one self-contained function, so a host may inline it verbatim.
+#[must_use]
+pub fn grpc_status_code_typescript() -> String {
+    let fallback = Error::from_grpc_status_code(-1).code as i32;
+    let cases: String = (0..=16)
+        .map(|status| (status, Error::from_grpc_status_code(status).code as i32))
+        .filter(|&(_, code)| code != fallback)
+        .map(|(status, code)| format!("    case {status}: return {code};\n"))
+        .collect();
+    format!(
+        "// Generated from acyclic_objects::Error::from_grpc_status_code; do not edit.\n\n\
+         /** Classifies a gRPC status without a usable typed detail as its Objects error code. */\n\
+         export function objectsGrpcErrorCode(status: number): number {{\n  switch (status) {{\n\
+         {cases}    default: return {fallback};\n  }}\n}}\n"
+    )
+}
+
+#[cfg(test)]
+mod typescript_tests {
+    use super::{Error, grpc_status_code_typescript};
+
+    /// The rendered guest function answers exactly as the Rust classifier for
+    /// every status: each case line is read back, and every other status
+    /// takes the rendered default.
+    #[test]
+    fn rendered_grpc_classification_equals_the_rust_classifier() {
+        let rendered = grpc_status_code_typescript();
+        let case = |status: i32| {
+            rendered
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(&format!("case {status}: return ")))
+                .or_else(|| {
+                    rendered
+                        .lines()
+                        .find_map(|line| line.trim().strip_prefix("default: return "))
+                })
+                .and_then(|code| code.strip_suffix(';'))
+                .and_then(|code| code.parse::<i32>().ok())
+        };
+        for status in (-1..=17).chain([i32::MIN, i32::MAX]) {
+            assert_eq!(
+                case(status),
+                Some(Error::from_grpc_status_code(status).code as i32),
+                "status {status}"
+            );
+        }
+    }
+}
