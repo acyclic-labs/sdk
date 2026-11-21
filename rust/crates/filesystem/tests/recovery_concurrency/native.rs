@@ -158,9 +158,10 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                 assert!(
                     matches!(
                         store.load(operation_id).await,
-                        Err(CrashStoreError::Memory(StoreError::NativeWork(
-                            acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                        )))
+                        Err(CrashStoreError::Memory(StoreError {
+                            cause: Some(acyclic_fs::NativeTreeMaterializationError::Cancelled),
+                            ..
+                        }))
                     ),
                     "cold reads never replace the cancelled original meter with an unbounded one"
                 );
@@ -233,7 +234,11 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
         before,
         "conflict performs no late copy or allocation"
     );
-    let CrashStoreError::Memory(StoreError::Conflict(packet)) = error else {
+    let CrashStoreError::Memory(StoreError {
+        journal: Some(packet),
+        ..
+    }) = error
+    else {
         panic!("expected the intact real Memory conflict error");
     };
     assert!(

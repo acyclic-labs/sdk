@@ -5,13 +5,60 @@ use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub struct Store(parking_lot::Mutex<BTreeMap<OperationId, Journal>>);
-#[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    #[error("journal changed")]
-    Conflict(Journal),
-    #[error(transparent)]
-    NativeWork(#[from] sdk::MaterializationJournalCopyError),
+pub struct StoreError {
+    pub journal: Option<Journal>,
+    pub cause: Option<sdk::MaterializationJournalCopyError>,
 }
+
+impl StoreError {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn conflict(journal: Journal) -> Self {
+        Self {
+            journal: Some(journal),
+            cause: None,
+        }
+    }
+}
+
+impl From<sdk::MaterializationJournalCopyError> for StoreError {
+    fn from(cause: sdk::MaterializationJournalCopyError) -> Self {
+        Self {
+            journal: None,
+            cause: Some(cause),
+        }
+    }
+}
+
+impl std::fmt::Debug for StoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.cause {
+            Some(cause) => formatter.debug_tuple("NativeWork").field(cause).finish(),
+            None => {
+                let mut debug = formatter.debug_tuple("Conflict");
+                if let Some(journal) = &self.journal {
+                    debug.field(journal);
+                }
+                debug.finish()
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.cause {
+            Some(cause) => std::fmt::Display::fmt(cause, formatter),
+            None => formatter.write_str("journal changed"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_ref().and_then(std::error::Error::source)
+    }
+}
+
 impl MaterializationJournalStore for Store {
     type Error = StoreError;
     #[cfg(not(target_arch = "wasm32"))]
@@ -23,7 +70,7 @@ impl MaterializationJournalStore for Store {
     ) -> Result<Self::ActionCompletion<'_>, StoreError> {
         let operation = journal.plan().operation_id;
         if !self.matches(&journal).await? {
-            return Err(StoreError::Conflict(journal));
+            return Err(StoreError::conflict(journal));
         }
         let mut replacement = journal.try_clone()?;
         journal.revision = journal
@@ -39,7 +86,7 @@ impl MaterializationJournalStore for Store {
             let mut records = self.0.lock();
             if records.get(&operation).map(|current| current.revision) != Some(journal.revision - 1)
             {
-                return Err(StoreError::Conflict(journal));
+                return Err(StoreError::conflict(journal));
             }
             records.insert(operation, replacement);
             Ok(journal)
