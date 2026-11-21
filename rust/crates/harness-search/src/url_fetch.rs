@@ -1,6 +1,8 @@
 //! Credential-free, bounded retrieval of one HTTP(S) source, distinct from search.
 
-use crate::{Error, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::Error;
+use crate::Result;
 use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
