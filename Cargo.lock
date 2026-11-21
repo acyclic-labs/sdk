@@ -24,6 +24,7 @@ dependencies = [
  "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-native-runtime",
+ "acyclic-objects-core",
  "acyclic-observability",
  "acyclic-stream",
  "acyclic-stream-body",
