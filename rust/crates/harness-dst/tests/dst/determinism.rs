@@ -247,29 +247,32 @@ fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> Stri
 fn world(seed: u64) -> std::result::Result<bool, String> {
     let class = class(seed);
     let world_seed = seed % WORLDS.len() as u64;
-    oracle::simulate(seed, || {
-        entry(async move {
-            let first = trace(world_seed, seed, class, false).await?;
-            let second = trace(world_seed, seed, class, false).await?;
-            if first.digest != second.digest {
-                return Err(format!(
-                    "X1 {class} seed {seed} diverged in-process at {}: {} != {}\n{}",
-                    first_difference(&first.trace, &second.trace),
-                    first.digest,
-                    second.digest,
-                    first_durable_difference(&first, &second),
-                ));
-            }
-            let erased = trace(world_seed, seed, class, true).await?;
-            if first.digest == erased.digest {
-                return Err(format!(
-                    "X1 {class} seed {seed} entropy erasure did not change the trace"
-                ));
-            }
-            println!("DST_X1_DIGEST={class} {}", first.digest);
-            Ok(true)
+    // A replay starts from its seed alone: each world owns a fresh seeded
+    // runtime, so no runtime state of an earlier world reaches it.
+    let replay = |erase_entropy| {
+        oracle::simulate(seed, || {
+            entry(trace(world_seed, seed, class, erase_entropy))
         })
-    })
+    };
+    let first = replay(false)?;
+    let second = replay(false)?;
+    if first.digest != second.digest {
+        return Err(format!(
+            "X1 {class} seed {seed} diverged in-process at {}: {} != {}\n{}",
+            first_difference(&first.trace, &second.trace),
+            first.digest,
+            second.digest,
+            first_durable_difference(&first, &second),
+        ));
+    }
+    let erased = replay(true)?;
+    if first.digest == erased.digest {
+        return Err(format!(
+            "X1 {class} seed {seed} entropy erasure did not change the trace"
+        ));
+    }
+    println!("DST_X1_DIGEST={class} {}", first.digest);
+    Ok(true)
 }
 
 #[test]
