@@ -106,7 +106,11 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
         -libc::EXDEV
     );
     first.retire();
-    assert!(views.route(Some(c"/first/same"), 0).is_err());
+    assert_eq!(
+        views.route(Some(c"/first/same"), 0).err(),
+        Some(libc::ENOENT),
+        "a retired view's name is absent, not a stale handle"
+    );
     assert_eq!(
         // SAFETY: the live target validates the retired handle without a path.
         unsafe { acyclic_fs_darwin_mount_fsync(address, ptr::null(), first_handle) },

@@ -417,6 +417,10 @@ async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result
 /// One child through spawn, follow-up, a failed write, an owner restart,
 /// interruption and merge: every turn is the child agent's own commit.
 async fn native_session_lifecycle(host: &str) -> Result<()> {
+    // The subject needs data access to the SDK's own native mounts.
+    if acyclic_fs::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     let mut fixture = Fixture::for_host(host).await?;
     std::fs::write(
         fixture.checkout.path().join("instructions.md"),
@@ -906,6 +910,10 @@ async fn native_child_binding_root_refuses_a_symlink_escape() -> Result<()> {
 
 #[tokio::test]
 async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
+    // The subject needs data access to the SDK's own native mounts.
+    if acyclic_fs::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     let mut fixture = Fixture::for_host("codex").await?;
     let child = fixture
         .session(
@@ -948,6 +956,10 @@ async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -
 /// the same captured fork, and a claimed child stays resident and fenced.
 #[tokio::test]
 async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
+    // The subject needs data access to the SDK's own native mounts.
+    if acyclic_fs::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(());
+    }
     let mut fixture = Fixture::for_host("codex").await?;
     for reference in ["settled", "archived"] {
         let spawn = SessionAction::Spawn {

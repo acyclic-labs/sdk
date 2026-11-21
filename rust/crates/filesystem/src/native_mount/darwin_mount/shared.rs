@@ -133,7 +133,9 @@ impl SharedViews {
         };
         let (serial, context, path) = if let Some(path) = path {
             let (name, relative) = relative_path(path)?;
-            let (serial, context) = self.names.enter_name(name).ok_or(libc::ESTALE)?;
+            // A name no view lists, a retired one included, is absent; only
+            // an original handle can be stale.
+            let (serial, context) = self.names.enter_name(name).ok_or(libc::ENOENT)?;
             if owner.is_some_and(|owner| owner != serial) {
                 return Err(libc::EXDEV);
             }
