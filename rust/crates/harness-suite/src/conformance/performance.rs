@@ -189,10 +189,10 @@ async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measuremen
     if vectors::outputs(&*provider, &active).await? != expected {
         return Err("agent benchmark lost, changed, reordered or duplicated a turn".into());
     }
-    if let Some(idle) = last_idle {
-        if !vectors::outputs(&*provider, &idle).await?.is_empty() {
-            return Err("idle agent acquired an unsolicited conversation effect".into());
-        }
+    if let Some(idle) = last_idle
+        && !vectors::outputs(&*provider, &idle).await?.is_empty()
+    {
+        return Err("idle agent acquired an unsolicited conversation effect".into());
     }
     let (registered_agents, ready_agents) = registrations(&host, expected_agents)?;
     Ok(Measurement {

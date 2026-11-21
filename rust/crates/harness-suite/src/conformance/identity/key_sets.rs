@@ -5,8 +5,8 @@ use super::*;
 pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -> Result {
     let mut source = Source::keys(&[(7, "one")]);
     let original: Value = serde_json::from_slice(&source.bytes)?;
-    let eligible = original["keys"][0].clone();
-    let unrelated = vec![
+    let eligible = first_key(&original)?.clone();
+    let unrelated = [
         json!({"kty":"RSA","alg":"RS256","kid":"one"}),
         json!({"kty":"EC","crv":"P-256","alg":"ES256"}),
         json!({"kty":"oct","alg":"HS256"}),
@@ -16,7 +16,7 @@ pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -
         json!({"kty":"OKP","alg":"EdDSA","use":"enc"}),
         json!({"kty":"OKP","alg":"EdDSA","key_ops":["encrypt"]}),
     ];
-    let mut mixed = unrelated.clone();
+    let mut mixed = unrelated.to_vec();
     mixed.insert(3, eligible.clone());
     source.bytes = serde_json::to_vec(&json!({"keys":mixed}))?;
     let mut verifier = oidc::Verifier::new(config()?);
@@ -42,7 +42,8 @@ pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -
         .as_object_mut()
         .ok_or("JWK object missing")?
         .remove("alg");
-    source.bytes = serde_json::to_vec(&json!({"keys":[unrelated[0], implicit]}))?;
+    let [first_unrelated, ..] = &unrelated;
+    source.bytes = serde_json::to_vec(&json!({"keys":[first_unrelated, implicit]}))?;
     verifier.refresh(&source, now + 1).await?;
     verifier.verify(&valid, now + 1)?;
 
@@ -57,7 +58,7 @@ pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -
         ("key_ops", json!(["verify", "encrypt"])),
     ] {
         let mut malformed = eligible.clone();
-        malformed[field] = value;
+        set_field(&mut malformed, field, value)?;
         invalid.push(json!({"keys":[eligible, malformed]}));
     }
     invalid.push(json!({"keys":[eligible, eligible]}));
@@ -76,9 +77,13 @@ pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -
     let dex: Value = serde_json::from_slice(include_bytes!(
         "../../../fixtures/conformance/identity/dex/jwks.body"
     ))?;
-    let rsa = dex["keys"][0].clone();
+    let rsa = first_key(&dex)?.clone();
     let mut other = eligible;
-    other["kid"] = rsa["kid"].clone();
+    set_field(
+        &mut other,
+        "kid",
+        rsa.get("kid").ok_or("RSA key has no ID")?.clone(),
+    )?;
     source.bytes = serde_json::to_vec(&json!({"keys":[
         {"kty":"EC","alg":"ES256","crv":"P-256"}, other, rsa
     ]}))?;
@@ -92,4 +97,11 @@ pub(super) async fn verify(backend: &dyn Backend, refusal: &Fixture, now: u64) -
     rsa_verifier.refresh(&source, now).await?;
     admit(backend, refusal, &rsa_verifier, &source, &valid, now, false).await?;
     Ok(())
+}
+
+fn first_key(document: &Value) -> Result<&Value> {
+    document
+        .get("keys")
+        .and_then(|keys| keys.get(0))
+        .ok_or_else(|| "fixture has no first key".into())
 }

@@ -30,7 +30,10 @@ impl TurnExecutors for Never {
         _: OperationId,
         _: &'a ModelContent,
         _: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
+    ) -> BoxProviderFuture<
+        'a,
+        acyclic_harness_core::Result<acyclic_stream::ProviderOwner<dyn Executor>>,
+    > {
         Box::pin(async {
             Err(acyclic_harness_core::Error::Invalid(
                 "conformance root preparation ran a turn".into(),
@@ -79,7 +82,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-pub(crate) fn volume(role: WorkspaceRole, name: &str, agent: AgentId) -> Result<WorkspaceEntry> {
+pub(crate) fn volume(role: WorkspaceRole, name: &str, agent: &AgentId) -> Result<WorkspaceEntry> {
     Ok(WorkspaceEntry::initial_volume(
         role,
         name.into(),
@@ -115,8 +118,8 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     let clock = Arc::new(super::fixtures::AuthorityClock::new());
     let issuer = AuthorityRoot::with_clock("conformance", [7; 32], issued.clone(), clock.clone());
     let agent = crate::conformance::fixtures::adopted().agent;
-    let private = volume(WorkspaceRole::Private, PRIVATE_VOLUME, agent.clone())?;
-    let shared = volume(WorkspaceRole::Shared, "shared", agent.clone())?;
+    let private = volume(WorkspaceRole::Private, PRIVATE_VOLUME, &agent)?;
+    let shared = volume(WorkspaceRole::Shared, "shared", &agent)?;
     let journal = acyclic_harness_core::conversation::journal_volume(
         private.volume()?.provider().clone(),
         &agent,
@@ -192,7 +195,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         within: ActorReference::new(b"conformance", b"agents", b"host")?,
     };
     let turns = Turns {
-        executors: Arc::new(Never),
+        executors: acyclic_stream::ProviderOwner::new(Never),
         limits: TurnLimits {
             maximum_bytes: Some(64 * 1024),
             history_turns: 8,

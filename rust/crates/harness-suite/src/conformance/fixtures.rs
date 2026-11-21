@@ -8,10 +8,7 @@
 use crate::conformance::Result;
 use acyclic_harness_core::agent::*;
 use acyclic_stream::UnixMillisClock as _;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The original issuance and verification clock, advanced at an exact cut.
 pub(super) struct AuthorityClock(AtomicU64);
@@ -66,8 +63,11 @@ pub fn request(id: &str) -> Result<InboxRecord> {
 
 /// Route role-selected models through the fixture's original deterministic provider.
 pub(super) fn models(
-    provider: Arc<dyn crate::model::ModelProvider>,
-) -> crate::Result<(crate::model::ModelBinding, Arc<crate::model::ModelResolver>)> {
+    provider: acyclic_stream::ProviderOwner<dyn crate::model::ModelProvider>,
+) -> crate::Result<(
+    crate::model::ModelBinding,
+    acyclic_stream::ProviderOwner<crate::model::ModelResolver>,
+)> {
     let model = crate::model::Model::new("conformance".into(), "scripted".into(), "1".into())?;
     let selected = provider.clone();
     let models = crate::model::ModelResolver::new("conformance/scripted", move |selection| {
@@ -79,7 +79,10 @@ pub(super) fn models(
             selected.clone(),
         ))
     });
-    Ok(((model, provider), Arc::new(models)))
+    Ok((
+        (model, provider),
+        acyclic_stream::ProviderOwner::new(models),
+    ))
 }
 
 pub(super) fn entry(

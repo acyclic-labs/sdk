@@ -21,11 +21,11 @@ pub(crate) fn limits() -> Result<ActorLimits> {
     Ok(ActorLimits::new(1_000, 1 << 20, 1 << 16)?)
 }
 
-pub(crate) fn handler<P>(provider: &ProviderOwner<P>) -> Result<Arc<dyn Handler>>
+pub(crate) fn handler<P>(provider: &ProviderOwner<P>) -> Result<ProviderOwner<dyn Handler>>
 where
     P: acyclic_harness_core::store::JournalProvider + ?Sized + 'static,
 {
-    Ok(Arc::new(AgentHandler::new(
+    Ok(ProviderOwner::new(AgentHandler::new(
         actor_store(provider)?,
         Driver,
         limits()?,
@@ -42,7 +42,7 @@ pub(crate) fn host(
 
 pub(crate) fn hosting(
     provider: ProviderOwner<Observed>,
-    handler: Arc<dyn Handler>,
+    handler: ProviderOwner<dyn Handler>,
     composer: Option<Arc<dyn acyclic_actors::guest::Composer>>,
 ) -> Result<AgentHost<Observed>> {
     Ok(AgentHost::hosting(

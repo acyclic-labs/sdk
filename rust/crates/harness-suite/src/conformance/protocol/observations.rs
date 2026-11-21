@@ -109,9 +109,10 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                     // Mutate the actual producer's envelope, not a parallel
                     // fixture. Readers must reject an unknown outer field even
                     // when its original invocation remains valid.
-                    let mut foreign: serde_json::Value = serde_json::from_slice(&bytes)?;
-                    foreign["foreign_invocation_authority"] = true.into();
-                    if serde_json::from_value::<RecordedInvocation>(foreign).is_ok() {
+                    let mut foreign: serde_json::Map<String, serde_json::Value> =
+                        serde_json::from_slice(&bytes)?;
+                    foreign.insert("foreign_invocation_authority".into(), true.into());
+                    if serde_json::from_value::<RecordedInvocation>(foreign.into()).is_ok() {
                         return Err(
                             "execution invocation accepted foreign envelope authority".into()
                         );
@@ -122,7 +123,8 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                     // name, arguments and envelope still belong to the original call.
                     let original = invocation.operation_id;
                     let mut changed = original.into_bytes();
-                    changed[0] ^= 1;
+                    let [first, ..] = &mut changed;
+                    *first ^= 1;
                     invocation.operation_id =
                         acyclic_harness_core::OperationId::from_bytes(changed);
                     if admission(&invocation, record.operation_id, *step, call_id).is_ok() {

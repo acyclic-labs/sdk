@@ -85,7 +85,10 @@ impl TurnExecutors for Approving {
         _: OperationId,
         _: &'a ModelContent,
         authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
+    ) -> BoxProviderFuture<
+        'a,
+        acyclic_harness_core::Result<acyclic_stream::ProviderOwner<dyn Executor>>,
+    > {
         Box::pin(async move {
             let mut tools = ToolRegistry::default();
             tools.register(
@@ -103,7 +106,7 @@ impl TurnExecutors for Approving {
             )?;
             let executor = StockExecutor::new(
                 Model::new("conformance".into(), "scripted".into(), "1".into())?,
-                Arc::new(Scripted),
+                acyclic_stream::ProviderOwner::new(Scripted),
                 ContextPipeline::default(),
                 tools,
             )
@@ -119,7 +122,8 @@ impl TurnExecutors for Approving {
                 )?,
                 Arc::clone(&authority.approval),
             )?;
-            Ok(Arc::new(executor) as Arc<dyn Executor>)
+            Ok(acyclic_stream::ProviderOwner::new(executor)
+                as acyclic_stream::ProviderOwner<dyn Executor>)
         })
     }
 }
@@ -183,7 +187,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
     let private = volume(
         acyclic_harness_core::agent::WorkspaceRole::Private,
         PRIVATE_VOLUME,
-        agent.clone(),
+        &agent,
     )?;
     let journal = acyclic_harness_core::conversation::journal_volume(
         private.volume()?.provider().clone(),
@@ -218,7 +222,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
         },
         Turns {
-            executors: Arc::new(Approving(Arc::clone(&calls))),
+            executors: acyclic_stream::ProviderOwner::new(Approving(Arc::clone(&calls))),
             limits: TurnLimits {
                 maximum_bytes: Some(64 * 1024),
                 history_turns: 8,

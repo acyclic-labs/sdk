@@ -173,10 +173,10 @@ impl Observed {
         &self,
         command: acyclic_stream::WriteRequest,
     ) -> Result<acyclic_stream::WriteOutcome, StreamError> {
-        let request = match &command {
-            acyclic_stream::WriteRequest::Commit(request)
-            | acyclic_stream::WriteRequest::CommitAccepted(request) => request,
-            _ => return Err(StreamError::InvalidArgument),
+        let (acyclic_stream::WriteRequest::Commit(request)
+        | acyclic_stream::WriteRequest::CommitAccepted(request)) = &command
+        else {
+            return Err(StreamError::InvalidArgument);
         };
         match self.commit_fault(request) {
             Some(Fault::Before) => Err(StreamError::Unavailable),

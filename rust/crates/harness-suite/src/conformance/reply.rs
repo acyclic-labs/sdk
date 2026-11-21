@@ -11,7 +11,6 @@ use crate::conformance::{
 };
 use acyclic_harness_core::agent::*;
 use acyclic_stream::ProviderOwner;
-use std::sync::Arc;
 
 /// Host whose hooks settle `native-*` messages.
 const HOST: &str = "conformance";
@@ -161,7 +160,7 @@ async fn pending(host: &AgentHost<Observed>, root: &AgentPath, prompt: &(IntentI
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
     let provider = ProviderOwner::new(Observed::new(storage.open().await?));
-    let handler = backend.handler(Arc::new(AgentHandler::new(
+    let handler = backend.handler(ProviderOwner::new(AgentHandler::new(
         actor_store(&provider)?,
         Replying,
         limits()?,
@@ -210,7 +209,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 async fn native(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
     let provider = ProviderOwner::new(Observed::new(storage.open().await?));
-    let handler = backend.handler(Arc::new(AgentHandler::new(
+    let handler = backend.handler(ProviderOwner::new(AgentHandler::new(
         actor_store(&provider)?,
         Replying,
         limits()?,

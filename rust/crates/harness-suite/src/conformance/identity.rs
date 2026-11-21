@@ -14,6 +14,21 @@ use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 use tokens::*;
 
+fn set_field(document: &mut Value, field: &str, value: Value) -> Result {
+    document
+        .as_object_mut()
+        .ok_or("fixture is not a JSON object")?
+        .insert(field.into(), value);
+    Ok(())
+}
+
+fn first_key_mut(document: &mut Value) -> Result<&mut Value> {
+    document
+        .get_mut("keys")
+        .and_then(|keys| keys.get_mut(0))
+        .ok_or_else(|| "fixture has no first key".into())
+}
+
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     // Refusals cannot change this original nonempty history: every check below
     // requires its cumulative turn I/O to remain zero. Accepted turns stay fresh.
@@ -46,7 +61,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         ("sub", json!("")),
     ] {
         let mut changed = original.clone();
-        changed[field] = value;
+        set_field(&mut changed, field, value)?;
         admit(
             backend,
             refusal,
@@ -90,7 +105,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     )
     .await?;
     let mut multi = original.clone();
-    multi["aud"] = json!([AUDIENCE, "another-client"]);
+    set_field(&mut multi, "aud", json!([AUDIENCE, "another-client"]))?;
     admit(
         backend,
         refusal,
@@ -101,7 +116,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         false,
     )
     .await?;
-    multi["azp"] = json!("another-client");
+    set_field(&mut multi, "azp", json!("another-client"))?;
     admit(
         backend,
         refusal,
@@ -112,7 +127,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         false,
     )
     .await?;
-    multi["azp"] = json!(AUDIENCE);
+    set_field(&mut multi, "azp", json!(AUDIENCE))?;
     admit(
         backend,
         refusal,
@@ -124,7 +139,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     )
     .await?;
     let mut short = original.clone();
-    short["exp"] = json!(now + 20);
+    set_field(&mut short, "exp", json!(now + 20))?;
     admit(
         backend,
         refusal,
@@ -345,9 +360,9 @@ async fn refresh_bounds(now: u64) -> Result {
     let valid = token(7, "one", &claims(now))?;
     let mut duplicate = Source::keys(&[(7, "one"), (8, "one")]);
     let mut confused: Value = serde_json::from_slice(&source.bytes)?;
-    confused["keys"][0]["alg"] = json!("HS256");
+    set_field(first_key_mut(&mut confused)?, "alg", json!("HS256"))?;
     let mut malformed: Value = serde_json::from_slice(&source.bytes)?;
-    malformed["keys"][0]["x"] = json!("AQ");
+    set_field(first_key_mut(&mut malformed)?, "x", json!("AQ"))?;
     for (index, body) in [
         std::mem::take(&mut duplicate.bytes),
         serde_json::to_vec(&confused)?,

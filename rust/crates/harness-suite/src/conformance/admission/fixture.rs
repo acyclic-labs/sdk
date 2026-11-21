@@ -44,14 +44,14 @@ impl Fixture {
         let binding = crate::conformance::roots::volume(
             acyclic_harness_core::agent::WorkspaceRole::Private,
             PRIVATE_VOLUME,
-            agent.clone(),
+            &agent,
         )?;
         let objects = storage.objects().await?;
         let capabilities = objects.capabilities;
         let (model, models) =
-            crate::conformance::fixtures::models(Arc::new(ScriptedModelProvider::new([
-                ScriptedTurn::Text("history".into()),
-            ])))?;
+            crate::conformance::fixtures::models(acyclic_stream::ProviderOwner::new(
+                ScriptedModelProvider::new([ScriptedTurn::Text("history".into())]),
+            ))?;
         let executors = StockExecutors::new(
             model,
             ToolRegistry::default(),
@@ -82,7 +82,7 @@ impl Fixture {
                 )?,
             },
             Turns {
-                executors: Arc::new(executors),
+                executors: acyclic_stream::ProviderOwner::new(executors),
                 limits: TurnLimits {
                     maximum_bytes: Some(64 * 1024),
                     history_turns: 8,
@@ -166,7 +166,7 @@ impl Fixture {
         label: &str,
         expected: &str,
     ) -> Result {
-        let executors = Arc::new(Executors(AtomicUsize::new(0)));
+        let executors = acyclic_stream::ProviderOwner::new(Executors(AtomicUsize::new(0)));
         let provider = self.provider.clone();
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             provider,
@@ -183,7 +183,7 @@ impl Fixture {
                 Default::default(),
             ),
         ));
-        let handler = backend.handler(Arc::new(AgentHandler::new(
+        let handler = backend.handler(ProviderOwner::new(AgentHandler::new(
             actor_store(&self.scheduler)?,
             driver,
             vectors::limits()?,

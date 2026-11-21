@@ -116,7 +116,8 @@ pub async fn open<B: Backend + ?Sized>(
         &mut None,
         None,
     )?;
-    let (model, models) = crate::conformance::fixtures::models(Arc::new(Scripted))?;
+    let (model, models) =
+        crate::conformance::fixtures::models(acyclic_stream::ProviderOwner::new(Scripted))?;
     let executors = crate::filesystem::StockExecutors::new(
         model,
         tools,
@@ -133,7 +134,7 @@ pub async fn open<B: Backend + ?Sized>(
             provider: crate::conformance::roots::volume(
                 acyclic_harness_core::agent::WorkspaceRole::Private,
                 PRIVATE_VOLUME,
-                crate::conformance::fixtures::adopted().agent,
+                &crate::conformance::fixtures::adopted().agent,
             )?
             .volume()?
             .provider()
@@ -141,7 +142,7 @@ pub async fn open<B: Backend + ?Sized>(
             within: ActorReference::new(b"account", b"agents", b"host")?,
         },
         Turns {
-            executors: Arc::new(executors),
+            executors: acyclic_stream::ProviderOwner::new(executors),
             limits: TurnLimits {
                 maximum_bytes: Some(1 << 20),
                 history_turns: 8,
@@ -163,7 +164,7 @@ pub async fn open<B: Backend + ?Sized>(
             fresh: vec![crate::conformance::roots::volume(
                 acyclic_harness_core::agent::WorkspaceRole::Private,
                 PRIVATE_VOLUME,
-                crate::conformance::fixtures::adopted().agent,
+                &crate::conformance::fixtures::adopted().agent,
             )?],
             retained: Vec::new(),
             brief: None,

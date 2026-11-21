@@ -132,7 +132,7 @@ pub trait Backend: ProviderPlatform {
     fn fresh(&self) -> BoxProviderFuture<'_, Result<Box<dyn Storage>>>;
     /// Install the host's guest boundary. Native hosts can return `handler`;
     /// guest hosts must pass it through their real codec/transport.
-    fn handler(&self, handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>>;
+    fn handler(&self, handler: ProviderOwner<dyn Handler>) -> Result<ProviderOwner<dyn Handler>>;
     /// A real hosted endpoint using the suite's shared model/tool fixture and
     /// `policy`. It must enter through the backend's production composition.
     fn serving(
@@ -143,7 +143,7 @@ pub trait Backend: ProviderPlatform {
 
 /// Use the canonical guest wire boundary around a handler. The closure retains
 /// the guest until its call completes, and dropping a call drops its turn.
-pub fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
+pub fn remote(handler: ProviderOwner<dyn Handler>) -> Result<ProviderOwner<dyn Handler>> {
     wire::remote(handler)
 }
 

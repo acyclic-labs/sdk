@@ -107,7 +107,7 @@ pub(super) fn header_mutation(token: &str, field: &str, value: Value) -> Result<
     let mut parts = token.split('.');
     let raw = parts.next().ok_or("missing token header")?;
     let mut header: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(raw)?)?;
-    header[field] = value;
+    super::set_field(&mut header, field, value)?;
     Ok(format!(
         "{}.{}.{}",
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header)?),

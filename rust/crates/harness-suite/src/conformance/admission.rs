@@ -32,7 +32,10 @@ impl TurnExecutors for Executors {
         _: OperationId,
         _: &'a ModelContent,
         _: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
+    ) -> BoxProviderFuture<
+        'a,
+        acyclic_harness_core::Result<acyclic_stream::ProviderOwner<dyn Executor>>,
+    > {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             Err(acyclic_harness_core::Error::Invalid(

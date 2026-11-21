@@ -8,7 +8,7 @@ use acyclic_actors::guest::CancellationToken;
 use acyclic_harness_core::agent::*;
 use acyclic_stream::ProviderOwner;
 use futures::channel::oneshot;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 struct Waiting(Mutex<Option<oneshot::Sender<()>>>);
 
@@ -77,7 +77,7 @@ async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     let storage = backend.fresh().await?;
     let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let (started, running) = oneshot::channel();
-    let handler = backend.handler(Arc::new(AgentHandler::new(
+    let handler = backend.handler(ProviderOwner::new(AgentHandler::new(
         actor_store(&provider)?,
         Waiting(Mutex::new(Some(started))),
         vectors::limits()?,

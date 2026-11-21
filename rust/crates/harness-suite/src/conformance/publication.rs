@@ -32,7 +32,11 @@ impl Counts {
         log.iter()
             .enumerate()
             .filter(|(index, record)| {
-                record.is_none_or(|record| !log[..*index].contains(&Some(record)))
+                record.is_none_or(|record| {
+                    !log.iter()
+                        .take(*index)
+                        .any(|earlier| *earlier == Some(record))
+                })
             })
             .count()
     }
@@ -63,9 +67,14 @@ impl Composition for ParticipantCounts {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
         {
-            request.effects[0]
-                .conditions
-                .push(CommitCondition::Absent { path });
+            let Some(effect) = request.effects.first_mut() else {
+                return Box::pin(async {
+                    Err(GuestError::Handler(
+                        "published test request has no effects".into(),
+                    ))
+                });
+            };
+            effect.conditions.push(CommitCondition::Absent { path });
         }
         Box::pin(async { Ok(request) })
     }
@@ -99,7 +108,7 @@ impl Composition for ParticipantCounts {
     }
 }
 
-struct Participating(Arc<dyn Handler>);
+struct Participating(ProviderOwner<dyn Handler>);
 impl Handler for Participating {
     fn manifest(&self) -> &Manifest {
         self.0.manifest()
@@ -132,7 +141,9 @@ async fn conflict(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
     let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let counts = Arc::new(Counts::default());
-    let handler = backend.handler(Arc::new(Participating(vectors::handler(&provider)?)))?;
+    let handler = backend.handler(ProviderOwner::new(Participating(vectors::handler(
+        &provider,
+    )?)))?;
     let host = vectors::hosting(
         provider.clone(),
         handler,
@@ -164,7 +175,9 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     let storage = backend.fresh().await?;
     let provider = ProviderOwner::new(Observed::capturing(storage.open().await?));
     let counts = Arc::new(Counts::default());
-    let handler = backend.handler(Arc::new(Participating(vectors::handler(&provider)?)))?;
+    let handler = backend.handler(ProviderOwner::new(Participating(vectors::handler(
+        &provider,
+    )?)))?;
     let host = vectors::hosting(
         provider.clone(),
         handler,

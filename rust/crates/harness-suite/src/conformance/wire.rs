@@ -8,10 +8,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
+pub(crate) fn remote(handler: ProviderOwner<dyn Handler>) -> Result<ProviderOwner<dyn Handler>> {
     let manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
     let interrupt_handler = handler.clone();
-    Ok(Arc::new(wire::Remote::new(
+    Ok(ProviderOwner::new(wire::Remote::new(
         manifest,
         move |_request, bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
             let handler = handler.clone();
@@ -67,7 +67,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let mut manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
     manifest.limits = acyclic_actors::domain::ActorLimits::new(1, 1 << 20, 1 << 16)?;
     let aborted = Arc::new(AtomicUsize::new(0));
-    let handler = backend.handler(Arc::new(Stalled {
+    let handler = backend.handler(ProviderOwner::new(Stalled {
         manifest,
         aborted: aborted.clone(),
     }))?;
