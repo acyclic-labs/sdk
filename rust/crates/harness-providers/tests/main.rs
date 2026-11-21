@@ -87,6 +87,8 @@ fn provider_scenarios(protocol: &str) -> TestResult {
     let (services, drivers) = case_workers::layout(capacity, paths.len());
     let runtime = scenario_runtime(services)?;
     let mut guard = progress_guard::Guard::new();
+    let io = guard.io.clone();
+    let registry = guard.registry.clone();
     let root = &root;
     let results = case_workers::run(
         &runtime,
@@ -94,18 +96,20 @@ fn provider_scenarios(protocol: &str) -> TestResult {
         capacity,
         drivers,
         &mut guard,
-        |path| async move {
-            let mut value = scenario_data::load_value(root, &path)?;
-            assert_eq!(
-                value.as_object_mut().ok_or("scenario")?.remove("driver"),
-                Some("provider".into())
-            );
-            let case = serde_json::from_value(value)?;
-            stall::guarded(&path, providers::run(case))
-                .await?
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-            println!("PASS {}", path.strip_prefix(root)?.display());
-            TestResult::Ok(())
+        |path| {
+            stall::run(io.clone(), registry.clone(), path.clone(), async move {
+                let mut value = scenario_data::load_value(root, &path)?;
+                assert_eq!(
+                    value.as_object_mut().ok_or("scenario")?.remove("driver"),
+                    Some("provider".into())
+                );
+                let case = serde_json::from_value(value)?;
+                providers::run(case)
+                    .await
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                println!("PASS {}", path.strip_prefix(root)?.display());
+                TestResult::Ok(())
+            })
         },
         |_| {},
     )?;

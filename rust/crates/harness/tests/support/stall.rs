@@ -90,9 +90,10 @@ async fn permanently_stalled_follow_is_rejected_without_external_termination() {
         guard.io.clone(),
         registry.clone(),
         PathBuf::from("negative-control/stalled-follow.json"),
-        async {
-            waiting("status follow", std::future::pending::<()>()).await;
-        },
+        guarded(
+            Path::new("nested-follow"),
+            waiting("status follow", std::future::pending::<()>()),
+        ),
     );
     let error = guard
         .run(stalled)
