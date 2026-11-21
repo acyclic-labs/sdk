@@ -15,8 +15,8 @@ mod mounted_io;
 
 /// Reports when the native probe confirms that this host denies the process
 /// data access to its own NFS mounts (the macOS network-volume privacy
-/// permission). The probe mounts one real view and creates a directory in it,
-/// once per process; only a permission error skips. Any other outcome runs the
+/// permission). The probe mounts one real view, creates a directory in it and
+/// opens its root as the product holds a view, once per process; only a permission error skips. Any other outcome runs the
 /// caller, whose own assertions then report it.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
@@ -24,7 +24,7 @@ pub fn skip_if_network_volume_data_denied() -> bool {
     #[cfg(target_os = "macos")]
     if let Some(error) = mounted_io::denied() {
         eprintln!(
-            "skipped: required-host-capability=macos-network-volume-data-access unavailable on this host (probe: mkdir in a mounted view: {error})"
+            "skipped: required-host-capability=macos-network-volume-data-access unavailable on this host (probe: mkdir and root open in a mounted view: {error})"
         );
         return true;
     }

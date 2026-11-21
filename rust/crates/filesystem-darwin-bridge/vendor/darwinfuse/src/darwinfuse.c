@@ -22,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sys/mount.h>
@@ -511,6 +512,19 @@ static void mounted_io_ready(void *arg)
         if (test->result != 0)
             DFUSE_ERR("Mounted readiness mkdir failed: %s (callback reached=%d)",
                       strerror(test->result), atomic_load(&test->created_mode) != 0);
+    }
+    if (test->result == 0) {
+        /* The product holds a view by opening its root exactly so
+         * (`open_root_directory`); data-access denial refuses this open. */
+        int root = open(test->root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (root < 0 || fstat(root, &stat) != 0)
+            test->result = errno;
+        else if (!S_ISDIR(stat.st_mode))
+            test->result = EIO;
+        if (root >= 0)
+            close(root);
+        if (test->result != 0)
+            DFUSE_ERR("Mounted readiness root open failed: %s", strerror(test->result));
     }
     fuse_exit(test->fuse);
 }

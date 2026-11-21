@@ -211,7 +211,9 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
     use acyclic_native_runtime::{ProcessPipeReader, ProcessTree};
     use tokio::io::{AsyncBufReadExt as _, BufReader};
 
-    let fixture = fixture()?;
+    let Some(fixture) = local_fixture()? else {
+        return Ok(());
+    };
     let state = fixture._directory.path().join("observer-service");
     let mut absent = cli_command(&fixture, acyclic_test_support::cargo_binary!("graphcoder"));
     absent
@@ -454,6 +456,15 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
     Ok(())
 }
 
+/// A local owner holds this run's volume through a native mounted view, so a
+/// host that denies data access to its own mounts cannot run the subject.
+fn local_fixture() -> TestResult<Option<Fixture>> {
+    if acyclic_fs::native_mount::skip_if_mount_data_access_denied() {
+        return Ok(None);
+    }
+    fixture().map(Some)
+}
+
 async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> TestResult<Output> {
     let goal = fixture._directory.path().join("goal.md");
     let configuration = fixture._directory.path().join("supervision.json");
@@ -501,7 +512,9 @@ async fn terminal_script(
     status: i32,
     calls: usize,
 ) -> TestResult {
-    let fixture = fixture()?;
+    let Some(fixture) = local_fixture()? else {
+        return Ok(());
+    };
     let model = model_responses(fixture._directory.path(), responses, "responses").await?;
     let output = run_goal(&fixture, &model, &policy).await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -535,7 +548,9 @@ async fn headless_spend_stops_at_the_configured_reservation() -> TestResult {
 async fn headless_configured_morph_chat_preserves_usage_and_process_credentials() -> TestResult {
     const KEY: &str = "fixture-morph-chat-process-key";
     for (credential, measured) in [(false, true), (true, true), (true, false)] {
-        let fixture = fixture()?;
+        let Some(fixture) = local_fixture()? else {
+            return Ok(());
+        };
         let authentication = Arc::new(Mutex::new(Vec::new()));
         let observed = authentication.clone();
         let model = model_with(fixture._directory.path(), "chat", move |headers, _, _| {
@@ -704,7 +719,9 @@ async fn headless_quiet_tool_stops_from_its_original_actor_alarm() -> TestResult
 async fn headless_no_progress_uses_the_same_terminal_signal_status_for_pause_and_stop() -> TestResult
 {
     for action in [Action::Pause, Action::Stop] {
-        let fixture = fixture()?;
+        let Some(fixture) = local_fixture()? else {
+            return Ok(());
+        };
         let model = model(fixture._directory.path()).await?;
         let mut policy = Policy {
             no_progress_turns: Some(1),
@@ -750,7 +767,9 @@ async fn headless_original_goal_change_is_healthy_under_no_progress_supervision(
             json!({"path":"volume:///home/GOAL.md","content":completed}),
         ),
     ] {
-        let fixture = fixture()?;
+        let Some(fixture) = local_fixture()? else {
+            return Ok(());
+        };
         let first = tool_response(name, arguments, 0);
         let model = model_responses(
             fixture._directory.path(),
@@ -786,7 +805,9 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() ->
         return Ok(());
     }
     async fn scenario(changed: bool, earlier_edit: bool) -> TestResult {
-        let fixture = fixture()?;
+        let Some(fixture) = local_fixture()? else {
+            return Ok(());
+        };
         std::fs::write(fixture.workspace.join("progress.txt"), b"before").unwrap();
         let content = if changed { "after!" } else { "before" };
         #[cfg(unix)]
@@ -877,7 +898,9 @@ async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() ->
     if acyclic_native_runtime::execution::skip_if_windows_psec_unavailable() {
         return Ok(());
     }
-    let fixture = fixture()?;
+    let Some(fixture) = local_fixture()? else {
+        return Ok(());
+    };
     let model = model_responses(
         fixture._directory.path(),
         vec![
@@ -927,7 +950,9 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() -
     use std::sync::atomic::{AtomicUsize, Ordering};
     const ROOT_KEY: &str = "fixture-root-process-credential";
     const WORKER_KEY: &str = "fixture-worker-process-credential";
-    let fixture = fixture()?;
+    let Some(fixture) = local_fixture()? else {
+        return Ok(());
+    };
     let plugins = task_plugins(&fixture)?;
     let root_selection = acyclic_harness::templates::root()
         .unwrap()

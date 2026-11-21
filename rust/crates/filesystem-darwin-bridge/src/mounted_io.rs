@@ -8,7 +8,8 @@ unsafe extern "C" {
 }
 
 /// Mounts a fixture view at a fresh directory under the temporary root, then
-/// looks up and creates an entry through the kernel; returns that errno.
+/// looks up and creates an entry and opens its root as the product holds a
+/// view, all through the kernel; returns the first errno.
 pub(crate) fn mounted_io() -> std::io::Result<c_int> {
     // mount_nfs records the resolved mount point, so the path must be canonical.
     let root = std::env::temp_dir()
