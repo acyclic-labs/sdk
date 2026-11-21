@@ -29,8 +29,9 @@ cargo_build_script(
         "build.rs",
     ],
     tags = ["resources:memory:256"],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = [
+        "proto/auth/v1/auth.proto",
+    ],
     pkg_name = "acyclic-auth",
     edition = "2024",
     version = "0.2.0",
@@ -55,7 +56,7 @@ cargo_build_script(
 rust_library(
     name = "acyclic_auth",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/trust/follower_tests.rs"], allow_empty = True) + [
         "tests/common/addressing.rs",
         "tests/common/credential.rs",
         "tests/common/mod.rs",
@@ -132,8 +133,18 @@ rust_library(
 
 rust_test(
     name = "acyclic_auth_test_cases",
-    crate = ":acyclic_auth",
-    compile_data = [
+    crate_name = "acyclic_auth",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "tests/common/addressing.rs",
+        "tests/common/credential.rs",
+        "tests/common/mod.rs",
+        "tests/common/secret_ref.rs",
+        "tests/common/signed.rs",
+        "tests/common/trust.rs",
+        "tests/common/trust_record.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/auth/fuzz:corpus/trust_record/environment-bootstrap",
         "//rust/crates/auth/fuzz:corpus/trust_record/environment-rotation",
         "//rust/crates/auth/fuzz:corpus/trust_record/environment-successor",
@@ -147,6 +158,7 @@ rust_test(
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values(\"client\", \"grpc\", \"grpc-metadata\", \"javascript\", \"js-credential\", \"native-javascript\", \"test-support\"))",
@@ -158,19 +170,52 @@ rust_test(
     ],
     lint_config = "//:workspace_test_lints",
     deps = [
+        ":build_script",
+    ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
+        "//rust/crates/auth-refusal:acyclic_auth_refusal",
         "//rust/crates/differential:acyclic_differential",
+        "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
+        "//rust/vendor/napi-3.15.0:napi",
+        "@sdk_crates//arc-swap-1.9.2",
         "@sdk_crates//axum-0.8.9",
+        "@sdk_crates//base64_0_23_1-0.23.1",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//chacha20poly1305-0.11.0",
+        "@sdk_crates//ed25519-dalek-3.0.0",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//getrandom-0.4.3",
+        "@sdk_crates//hmac-0.13.0",
+        "@sdk_crates//http-1.5.0",
         "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//prost-types-0.14.4",
+        "@sdk_crates//reqwest_0_12_28-0.12.28",
+        "@sdk_crates//rustls-0.23.46",
+        "@sdk_crates//rustls-platform-verifier-0.7.1",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//subtle-2.6.1",
         "@sdk_crates//syn_3_0_9-3.0.9",
         "@sdk_crates//tempfile-3.27.0",
+        "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-subscriber-0.3.23",
+        "@sdk_crates//ts-rs-12.0.1",
+        "@sdk_crates//url-2.5.8",
+        "@sdk_crates//zeroize-1.9.1",
+    ],
+    proc_macro_deps = [
+        "//rust/crates/contract-derive:acyclic_contract_derive",
+        "@sdk_crates//napi-derive-3.6.13",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     args = [
@@ -644,8 +689,9 @@ cargo_build_script(
         "build.rs",
     ],
     tags = ["resources:memory:256"],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = [
+        "proto/auth/v1/auth.proto",
+    ],
     pkg_name = "acyclic-auth",
     edition = "2024",
     version = "0.2.0",
@@ -671,7 +717,7 @@ rust_library(
     name = "acyclic_auth_wasm",
     crate_name = "acyclic_auth",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/trust/follower_tests.rs"], allow_empty = True) + [
         "tests/common/addressing.rs",
         "tests/common/credential.rs",
         "tests/common/mod.rs",

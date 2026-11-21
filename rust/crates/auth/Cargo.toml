@@ -12,6 +12,8 @@ description = "Shared capability chain contract and verification"
 
 [package.metadata.bazel]
 integration-test-shards = 2
+build-script-inputs = ["proto"]
+unit-test-only-sources = ["src/trust/follower_tests.rs"]
 
 [features]
 javascript = ["dep:js-sys", "dep:wasm-bindgen", "acyclic-auth-refusal/javascript", "acyclic-auth-operation/javascript"]
