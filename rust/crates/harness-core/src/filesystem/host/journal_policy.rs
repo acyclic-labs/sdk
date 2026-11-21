@@ -19,12 +19,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let owned;
-            let io = match io {
-                Some(io) => io,
-                None => {
-                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &owned
-                }
+            let io = if let Some(io) = io {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
             };
             verifier.verify(host_scope, &mut Some(&mut io.history_io()))?;
             if volume.provider() != &self.provider
@@ -153,7 +152,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Self::commit_contextual_publication(
                 transaction,
                 io,
-                FilePublication::Authorized(fence, &grant, None),
+                FilePublication::Authorized(&fence, &grant, None),
                 None,
                 self.clock_handle(),
             )?

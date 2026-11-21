@@ -42,7 +42,7 @@ impl AssignedTrials {
         if self.assigned == 0 {
             return Err(Error::Statistics("report requires an assigned trial"));
         }
-        let assigned = self.assigned as f64;
+        let assigned = super::count_as_f64(self.assigned);
         let unscored = self.assigned - self.valid;
         let costs = self.costs.report(self.assigned);
         Ok(TrialReport {
@@ -52,10 +52,12 @@ impl AssignedTrials {
             unscored,
             correct: self.correct,
             adopted_injection: self.adopted_injection,
-            correct_per_assigned: self.correct as f64 / assigned,
-            correct_per_valid: (self.valid != 0).then(|| self.correct as f64 / self.valid as f64),
-            adoption_per_assigned_lower_bound: self.adopted_injection as f64 / assigned,
-            unscored_rate: unscored as f64 / assigned,
+            correct_per_assigned: super::count_as_f64(self.correct) / assigned,
+            correct_per_valid: (self.valid != 0)
+                .then(|| super::count_as_f64(self.correct) / super::count_as_f64(self.valid)),
+            adoption_per_assigned_lower_bound: super::count_as_f64(self.adopted_injection)
+                / assigned,
+            unscored_rate: super::count_as_f64(unscored) / assigned,
             priced_trials: costs.priced_trials,
             known_cost_usd: costs.known_cost_usd,
             total_cost_usd: costs.total_cost_usd,
@@ -96,7 +98,7 @@ impl Costs {
             total_cost_usd,
             cost_per_assigned_usd: total_cost_usd
                 .filter(|_| assigned != 0)
-                .map(|cost| cost / assigned as f64),
+                .map(|cost| cost / super::count_as_f64(assigned)),
         }
     }
 }

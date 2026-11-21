@@ -89,7 +89,10 @@ impl ContextManifest {
                     .map(|name| (name.as_str(), false)),
             );
             selected.sort_unstable_by_key(|(name, _)| *name);
-            if selected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            if selected
+                .array_windows()
+                .any(|[(first, _), (second, _)]| first == second)
+            {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Conflict,
@@ -111,7 +114,9 @@ impl ContextManifest {
                 if let Ok(index) =
                     selected.binary_search_by_key(&skill.name.as_str(), |(name, _)| *name)
                 {
-                    let (_, seen) = &mut selected[index];
+                    let (_, seen) = selected.get_mut(index).ok_or_else(|| {
+                        stock_boundary(io, ErrorCode::Invalid, "manifest skill index is invalid")
+                    })?;
                     if std::mem::replace(seen, true) {
                         return Err(stock_boundary(
                             io,
@@ -134,7 +139,7 @@ impl ContextManifest {
             let mut names = crate::core::reserve_copy_vector::<&str>(self.tools.len(), &mut quota)?;
             names.extend(self.tools.iter().map(|tool| tool.name.as_str()));
             names.sort_unstable();
-            if names.windows(2).any(|pair| pair[0] == pair[1]) {
+            if names.array_windows().any(|[left, right]| left == right) {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Conflict,
@@ -243,7 +248,13 @@ impl ContextManifest {
         limits: Limits,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
         let (tools, stage, _) = Self::bind_observed(
-            reference, reader, reader, publisher, tools, limits, None, true,
+            reference,
+            reader,
+            reader,
+            publisher,
+            tools,
+            (limits, None),
+            true,
         )
         .await?;
         Ok((tools, stage))

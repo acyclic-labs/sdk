@@ -241,8 +241,7 @@ where
         let policy = self
             .run_admission
             .as_ref()
-            .map(|source| &source.value)
-            .unwrap_or(&defaults);
+            .map_or(&defaults, |source| &source.value);
         let queries = Queries::new(&*self.stream, agent, *run);
         let Some(inputs) = inputs else {
             return Ok(None);

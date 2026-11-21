@@ -110,7 +110,8 @@ fn suffix(text: &str, budget: usize) -> &str {
     for (index, character) in text.char_indices().rev() {
         used += escaped(character);
         if used > budget {
-            return &text[index + character.len_utf8()..];
+            // The offset is the end of a scalar emitted by char_indices.
+            return text.get(index + character.len_utf8()..).unwrap_or_default();
         }
     }
     text
@@ -165,7 +166,8 @@ pub(crate) fn prefix(text: &str, budget: usize) -> &str {
     for (index, character) in text.char_indices() {
         used += escaped(character);
         if used > budget {
-            return &text[..index];
+            // char_indices supplies a UTF-8 boundary in the same string.
+            return text.get(..index).unwrap_or_default();
         }
     }
     text

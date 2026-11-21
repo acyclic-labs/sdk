@@ -211,11 +211,14 @@ impl Permissions {
                 .any(|path| match name.encoding() {
                     acyclic_fs::kernel::NameEncoding::Utf8
                     | acyclic_fs::kernel::NameEncoding::PosixBytes => name.as_bytes() == path,
-                    acyclic_fs::kernel::NameEncoding::WindowsUtf16Le => name
-                        .as_bytes()
-                        .chunks_exact(2)
-                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                        .eq(path.iter().copied().map(u16::from)),
+                    acyclic_fs::kernel::NameEncoding::WindowsUtf16Le => {
+                        let (pairs, _) = name.as_bytes().as_chunks::<2>();
+                        pairs
+                            .iter()
+                            .copied()
+                            .map(u16::from_le_bytes)
+                            .eq(path.iter().copied().map(u16::from))
+                    }
                 }),
             _ => false,
         };

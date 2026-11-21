@@ -202,6 +202,126 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         }
     }
 
+    fn quiet_job_transition(
+        &self,
+        state: &State,
+        delivery: &Delivery,
+        record: &acyclic_stream::Record,
+    ) -> Result<Transition, Error> {
+        if delivery.subscriptions.get(JOBS).is_none_or(|input| {
+            crate::supervision::tool_jobs::path(&state.agent)
+                .ok()
+                .as_ref()
+                != Some(&input.path)
+        }) {
+            return Err(Error::Record("quiet creation source differs"));
+        }
+        let effects = super::quiet::create(
+            &self.store,
+            &delivery.actor,
+            &state.agent,
+            self.source(
+                &crate::conversation::journal_volume(
+                    self.volumes.provider.clone(),
+                    &state.agent.id(),
+                )
+                .map_err(turn)?,
+            )
+            .map_err(turn)?,
+            record,
+        )?;
+        state.transition(effects, false)
+    }
+
+    async fn descendant_transition(
+        &self,
+        state: &State,
+        delivery: &Delivery,
+        (subscription, suffix, sequence): (&str, &str, u64),
+        record: &acyclic_stream::Record,
+    ) -> Result<Transition, Error> {
+        let child = AgentPath::try_from(suffix.to_owned())?;
+        let bound = delivery
+            .subscriptions
+            .get(subscription)
+            .ok_or(Error::Record("descendant status subscription is absent"))?;
+        if bound.path != child.status()? || bound.cursor != sequence || record.sequence != sequence
+        {
+            return Err(Error::Record(
+                "descendant status delivery differs from its wait",
+            ));
+        }
+        let status = StatusRecord::decode(&record.value)?;
+        let archived = matches!(
+            status.phase,
+            Phase::Done {
+                outcome: AgentOutcome::Archived
+            }
+        );
+        if !archived && !matches!(status.phase, Phase::Done { .. }) {
+            return state.transition(Vec::new(), false);
+        }
+        let mut effects = Vec::new();
+        let mut added = Vec::new();
+        if !archived {
+            // A child that completed normally has already reported and
+            // never publishes a second terminal status. Its cascade still
+            // archives its open children, so wait on that subtree instead.
+            // Reading it now also covers a child that spawned after the
+            // stop's snapshot: a reported child cannot spawn again.
+            let open = self.descendant_children(&delivery.actor, &child).await?;
+            let by = Sender::Host {
+                host: "harness".into(),
+            };
+            let intent = IntentId::try_from(format!("file-stop-{sequence}"))?;
+            added = self
+                .descendant_status(
+                    &delivery.actor,
+                    &state.agent,
+                    (&by, &intent),
+                    &child,
+                    &open,
+                    &mut effects,
+                )
+                .await?;
+            added.retain(|change| match change {
+                SubscriptionChange::Add { id, .. } => delivery.subscriptions.get(id).is_none(),
+                SubscriptionChange::Remove { .. }
+                | SubscriptionChange::Pause { .. }
+                | SubscriptionChange::Resume { .. } => true,
+            });
+        }
+        let remaining = delivery
+            .subscriptions
+            .iter()
+            .filter(|(id, _)| id.starts_with(DESCENDANT_STATUS))
+            .count();
+        let mut changes = vec![SubscriptionChange::Remove {
+            id: subscription.to_owned(),
+        }];
+        changes.extend(added);
+        let mut transition = if remaining == 1 && changes.len() == 1 {
+            let position = crate::supervision::Position {
+                stream: child.status()?,
+                sequence,
+            };
+            let effect = self
+                .lifecycle(
+                    &state.agent,
+                    &position,
+                    vec![crate::supervision::Lifecycle::Stopped { signal: None }],
+                    None,
+                )
+                .await?;
+            effects.push(effect);
+            state.transition(effects, true)?
+        } else {
+            state.transition(effects, false)?
+        };
+        transition.subscriptions.extend(changes);
+        Ok(transition)
+    }
+
     async fn transition(
         &self,
         delivery: Delivery,
@@ -238,29 +358,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .ok_or(Error::Record("control source record"))?;
         let mut effects = Vec::new();
         if subscription == JOBS {
-            if delivery.subscriptions.get(JOBS).is_none_or(|input| {
-                crate::supervision::tool_jobs::path(&state.agent)
-                    .ok()
-                    .as_ref()
-                    != Some(&input.path)
-            }) {
-                return Err(Error::Record("quiet creation source differs"));
-            }
-            effects.extend(super::quiet::create(
-                &self.store,
-                &delivery.actor,
-                &state.agent,
-                self.source(
-                    &crate::conversation::journal_volume(
-                        self.volumes.provider.clone(),
-                        &state.agent.id(),
-                    )
-                    .map_err(turn)?,
-                )
-                .map_err(turn)?,
-                record,
-            )?);
-            return state.transition(effects, false);
+            return self.quiet_job_transition(&state, &delivery, record);
         }
         #[cfg(not(target_arch = "wasm32"))]
         if subscription == HOOKS {
@@ -271,89 +369,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             return self.deliver_hook(state, &delivery, name, record).await;
         }
         if let Some(suffix) = subscription.strip_prefix(DESCENDANT_STATUS) {
-            let child = AgentPath::try_from(suffix.to_owned())?;
-            let bound = delivery
-                .subscriptions
-                .get(subscription)
-                .ok_or(Error::Record("descendant status subscription is absent"))?;
-            if bound.path != child.status()?
-                || bound.cursor != sequence
-                || record.sequence != sequence
-            {
-                return Err(Error::Record(
-                    "descendant status delivery differs from its wait",
-                ));
-            }
-            let status = StatusRecord::decode(&record.value)?;
-            let archived = matches!(
-                status.phase,
-                Phase::Done {
-                    outcome: AgentOutcome::Archived
-                }
-            );
-            if !archived && !matches!(status.phase, Phase::Done { .. }) {
-                return state.transition(Vec::new(), false);
-            }
-            let mut effects = Vec::new();
-            let mut added = Vec::new();
-            if !archived {
-                // A child that completed normally has already reported and
-                // never publishes a second terminal status. Its cascade still
-                // archives its open children, so wait on that subtree instead.
-                // Reading it now also covers a child that spawned after the
-                // stop's snapshot: a reported child cannot spawn again.
-                let open = self.descendant_children(&delivery.actor, &child).await?;
-                let by = Sender::Host {
-                    host: "harness".into(),
-                };
-                let intent = IntentId::try_from(format!("file-stop-{sequence}"))?;
-                added = self
-                    .descendant_status(
-                        &delivery.actor,
-                        &state.agent,
-                        &by,
-                        &intent,
-                        &child,
-                        &open,
-                        &mut effects,
-                    )
-                    .await?;
-                added.retain(|change| match change {
-                    SubscriptionChange::Add { id, .. } => delivery.subscriptions.get(id).is_none(),
-                    SubscriptionChange::Remove { .. }
-                    | SubscriptionChange::Pause { .. }
-                    | SubscriptionChange::Resume { .. } => true,
-                });
-            }
-            let remaining = delivery
-                .subscriptions
-                .iter()
-                .filter(|(id, _)| id.starts_with(DESCENDANT_STATUS))
-                .count();
-            let mut changes = vec![SubscriptionChange::Remove {
-                id: subscription.to_owned(),
-            }];
-            changes.extend(added);
-            let mut transition = if remaining == 1 && changes.len() == 1 {
-                let position = crate::supervision::Position {
-                    stream: child.status()?,
-                    sequence,
-                };
-                let effect = self
-                    .lifecycle(
-                        &state.agent,
-                        &position,
-                        vec![crate::supervision::Lifecycle::Stopped { signal: None }],
-                        None,
-                    )
-                    .await?;
-                effects.push(effect);
-                state.transition(effects, true)?
-            } else {
-                state.transition(effects, false)?
-            };
-            transition.subscriptions.extend(changes);
-            return Ok(transition);
+            return self
+                .descendant_transition(&state, &delivery, (subscription, suffix, sequence), record)
+                .await;
         }
         let mut retired = subscription == CLOSED;
         if retired
@@ -416,8 +434,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 )
                 .map_err(turn)?;
                 let mut present = [false; 2];
-                for (index, path) in ["control/pause", "control/stop"].into_iter().enumerate() {
-                    present[index] = self
+                for (present, path) in present.iter_mut().zip(["control/pause", "control/stop"]) {
+                    *present = self
                         .volumes
                         .stat_private_path(
                             state.private.volume()?,
@@ -521,8 +539,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                             .descendant_status(
                                 &delivery.actor,
                                 &state.agent,
-                                &by,
-                                &intent,
+                                (&by, &intent),
                                 &state.agent,
                                 &root_state.open_children,
                                 &mut effects,
@@ -554,8 +571,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     let Some(delta) = self
                         .volumes
                         .read_private_append(
-                            state.private.volume()?,
-                            &grant,
+                            (state.private.volume()?, &grant),
                             "control/steer.md",
                             &generation,
                             state.steer.as_ref(),
@@ -684,8 +700,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         &self,
         within: &ActorReference,
         root: &AgentPath,
-        by: &Sender,
-        intent: &IntentId,
+        (by, intent): (&Sender, &IntentId),
         parent: &AgentPath,
         children: &crate::agent::Children,
         effects: &mut Vec<CommitEffect>,

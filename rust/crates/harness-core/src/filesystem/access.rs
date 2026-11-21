@@ -291,8 +291,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
         Some(reference),
         scope,
         generation,
-        payload,
-        ceiling,
+        (payload, ceiling),
         io,
         now,
     )
@@ -309,8 +308,7 @@ pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObject
     reference: Option<&str>,
     scope: &Scope,
     generation: Option<GenerationId>,
-    payload: &[u8],
-    ceiling: Option<&crate::Capabilities>,
+    (payload, ceiling): (&[u8], Option<&crate::Capabilities>),
     io: &'a PreparationIo,
     now: u64,
 ) -> Result<CompiledAccess<'a>> {
@@ -432,7 +430,10 @@ fn authenticated_principal<'a>(
             continue;
         }
         let entry = io.reserve_decode(std::mem::size_of::<String>() as u64)?;
-        let role = io.history_io().clone_text(&label[prefix.len()..])?;
+        let name = label
+            .strip_prefix(prefix)
+            .ok_or_else(|| io.invalid("filesystem role label lacks its prefix"))?;
+        let role = io.history_io().clone_text(name)?;
         let text = io.guard_owned(role.capacity() as u64)?;
         roles.insert(role);
         hold.absorb(entry)?;

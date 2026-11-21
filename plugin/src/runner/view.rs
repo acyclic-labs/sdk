@@ -2719,8 +2719,15 @@ mod tests {
                 },
             )
             .await?;
-            view.apply(&conversation, Event::Turn { sequence, entry }, sequence + 1)
-                .await?;
+            view.apply(
+                &conversation,
+                Event::Turn {
+                    sequence,
+                    entry: *entry,
+                },
+                sequence + 1,
+            )
+            .await?;
             let failure = view.exit().expect_err("old turn replaced terminal failure");
             assert_eq!(failure.to_string(), message);
             assert_eq!(

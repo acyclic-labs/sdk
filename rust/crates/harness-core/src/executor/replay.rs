@@ -40,21 +40,22 @@ impl ExecutionReplay {
     /// Validates a retained-model page without copying its execution records.
     pub(crate) fn observe_page<'a>(
         &mut self,
-        page: impl ExactSizeIterator<Item = &'a ExecutionRecord> + Clone,
+        page: impl ExactSizeIterator<Item = &'a ExecutionRecord>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if page.len() > EXECUTION_REPLAY_PAGE_RECORDS as usize {
+        let page_len = page.len();
+        if page_len > EXECUTION_REPLAY_PAGE_RECORDS as usize {
             return Err(Error::Storage("execution replay page exceeds bound".into()));
         }
-        if page.len() == 0 {
+        if page_len == 0 {
             return Ok(());
         }
         let next_tail = self
             .after
-            .checked_add(page.len() as u64)
+            .checked_add(page_len as u64)
             .ok_or_else(|| Error::Conflict("execution journal sequence overflows".into()))?;
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
-        for (index, record) in page.clone().enumerate() {
+        for (index, record) in page.enumerate() {
             if let Some(io) = io {
                 io.preflight(acyclic_fs_work::performance::WorkCounters {
                     bytes_hashed: record.idempotency_key.len() as u64,
@@ -85,7 +86,7 @@ impl ExecutionReplay {
                 .ok_or_else(|| Error::Storage("execution replay page exceeds bound".into()))? = key;
         }
         let previous_len = self.keys.len();
-        for key in keys.iter().take(page.len()) {
+        for key in keys.iter().take(page_len) {
             if let Err(error) = stock_vec_push(&mut self.keys, *key, io) {
                 self.keys.truncate(previous_len);
                 return Err(error);

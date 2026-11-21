@@ -105,8 +105,7 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
         reference.as_deref(),
         signed,
         None,
-        payload,
-        Some(ceiling),
+        (payload, Some(ceiling)),
         &io,
         access::access_now()?,
     )
@@ -163,8 +162,7 @@ pub async fn require_workspace_subtree_read<
     volume: &VolumeRef,
     root: &str,
     generation: acyclic_fs_format::object_reference::GenerationId,
-    verifier: &AuthorityVerifier,
-    scope: &Scope,
+    (verifier, scope): (&AuthorityVerifier, &Scope),
     io: &PreparationIo,
     surface: &'static str,
 ) -> Result<()> {
@@ -191,8 +189,10 @@ pub async fn require_workspace_subtree_read<
         Some(&reference),
         scope,
         Some(generation),
-        access::capability_payload(label, VolumeOperation::Read, io)?,
-        None,
+        (
+            access::capability_payload(label, VolumeOperation::Read, io)?,
+            None,
+        ),
         io,
         access::access_now()?,
     )

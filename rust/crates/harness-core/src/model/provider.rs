@@ -320,6 +320,7 @@ impl futures::stream::FusedStream for NativeModelStream<'_> {
 mod tests;
 impl ModelEvent {
     /// Transport admission or span observation, not model output.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn is_observation(&self) -> bool {
         matches!(self, Self::Wait(_) | Self::Trace { .. })
     }
@@ -403,7 +404,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn bind_conversation(
         &self,
         _: crate::OperationId,
-    ) -> Option<std::sync::Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         None
     }
     /// Derives an immutable epoch selection from this original provider. The
@@ -413,7 +414,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &self,
         _: &Model,
         _: &crate::profile::AgentProfile<'_>,
-    ) -> Result<(Model, std::sync::Arc<dyn ModelProvider>)> {
+    ) -> Result<(Model, acyclic_stream::ProviderOwner<dyn ModelProvider>)> {
         Err(Error::Unsupported(
             "selected provider cannot admit a profile; recovery: select a provider with epoch profile admission".into(),
         ))
@@ -425,7 +426,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &self,
         _: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
         _: Option<u64>,
-    ) -> Option<std::sync::Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         None
     }
     /// Binds a provider's filesystem inputs under the executing agent's
@@ -436,7 +437,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         _: &'a ModelContent,
         _: &'a crate::runtime::ContentBindings,
         _: Option<u64>,
-    ) -> Option<BoxFuture<'a, Result<std::sync::Arc<dyn ModelProvider>>>> {
+    ) -> Option<BoxFuture<'a, Result<acyclic_stream::ProviderOwner<dyn ModelProvider>>>> {
         None
     }
     /// Sealed profile admitted with the exact immutable model selection.

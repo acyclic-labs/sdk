@@ -206,8 +206,7 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
                 retry_key,
                 &event,
                 (None, None),
-                &observation,
-                &[],
+                (&observation, &[]),
                 io.as_ref(),
             )
             .await?
@@ -261,8 +260,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
             retry,
             &first,
             (None, None),
-            &bytes(operation, "start", &first)?,
-            &[],
+            (&bytes(operation, "start", &first)?, &[]),
             None,
         )
         .await?

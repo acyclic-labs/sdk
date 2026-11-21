@@ -402,6 +402,7 @@ pub(super) fn issue(
 /// A sealed credential for exactly `grants`, each `(resource, prefix,
 /// actions)`, for `audience` at `timestamp`. Its certificate is
 /// bound to `parent`: it expires no later and is revoked with it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn resource_credential(
     issuer: &AuthorityRoot,
     parent: &VerifiedCapability,

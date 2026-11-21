@@ -71,50 +71,6 @@ impl ExtensionRuntime {
         }
         Ok(leases)
     }
-
-    /// Checks that committed metadata selects the linked code.
-    pub(crate) fn validate_admission(
-        &self,
-        admission: Option<&ExtensionAdmission>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if let Some(io) = work.as_deref_mut() {
-            io.check_cancellation()?;
-        }
-        if let Some(admission) = admission {
-            admission.validate(work)?;
-            if admission.selected().len() != self.retained.len() {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Conflict,
-                    "extension admission differs from linked composition",
-                ));
-            }
-            for selected in admission.selected() {
-                let mut found = false;
-                for linked in self.selected() {
-                    if let Some(io) = work.as_deref_mut() {
-                        io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                            bytes: 0,
-                            items: 1,
-                        })?;
-                    }
-                    if selected.name == linked.name && selected.version == linked.version {
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    return Err(crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Conflict,
-                        "extension admission differs from linked composition",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 fn parse_requirement(requirement: &str) -> Result<Option<ExtensionDependency>> {

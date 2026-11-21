@@ -40,7 +40,14 @@ impl<'a> InstructionSources<'a> {
                 positions.push(position);
             } else {
                 original.with(|work| {
-                    if files[prior].source().same_source(file.source(), work)? {
+                    let prior = files.get(prior).ok_or_else(|| {
+                        crate::store::guarded_boundary(
+                            work,
+                            crate::wire::ErrorCode::Invalid,
+                            "instruction source index is invalid",
+                        )
+                    })?;
+                    if prior.source().same_source(file.source(), work)? {
                         Ok(())
                     } else {
                         Err(crate::store::guarded_boundary(
@@ -62,7 +69,13 @@ impl<'a> InstructionSources<'a> {
         self.positions.iter().map(move |&position| {
             step(io, 1)?;
             trace_operation("instruction-source-projection", 1);
-            Ok(&self.files[position])
+            self.files.get(position).ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "instruction source position is invalid",
+                )
+            })
         })
     }
 }

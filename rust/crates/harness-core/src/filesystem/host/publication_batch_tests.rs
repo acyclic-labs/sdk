@@ -807,7 +807,7 @@ impl PublicationCase<'_> {
                 display_name: "legacy-target",
             }];
             assert!(matches!(
-                self.host.put_changes(self.volume, self.write, &changes, &old_key, Some(64), access, None)?.await,
+                self.host.put_changes((self.volume, self.write), &changes, &old_key, Some(64), access, None)?.await,
                 Err(error) if error.code() == crate::wire::ErrorCode::Unsupported
             ));
             assert_eq!(self.host.resolve(workspace, None).await?, before);
@@ -950,8 +950,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         };
         let original = host
             .put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &changes,
                 &key,
                 Some(64),
@@ -1057,8 +1056,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         );
         let replay = host
             .put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &changes,
                 &key,
                 Some(64),
@@ -1089,8 +1087,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         // The first member is valid; an existing later destination refuses the whole cut.
         let collision = host
             .put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &[add("unpublished"), add("second")],
                 &IdempotencyKey::new("conditional-conflict")?,
                 Some(64),
@@ -1103,8 +1100,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         assert_eq!(host.resolve(&workspace, None).await?, before);
         let directory = host
             .put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &[add("unpublished"), add("nested")],
                 &IdempotencyKey::new("directory-destination")?,
                 Some(64),
@@ -1146,8 +1142,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         };
         assert!(
             host.put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &[add("valid"), add("forbidden/file")],
                 &IdempotencyKey::new("conditional-parent")?,
                 Some(64),
@@ -1160,8 +1155,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         assert_eq!(host.resolve(&workspace, None).await?, before);
         assert!(
             host.put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &[ContentChange::UpdateExpected {
                     source: first,
                     bytes: b"denied"
@@ -1180,8 +1174,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         for ceiling in [&create, &volume_write] {
             let denied = host
                 .put_changes(
-                    &volume,
-                    &write,
+                    (&volume, &write),
                     &[ContentChange::DeleteExpected { source: first }],
                     &IdempotencyKey::new("conditional-delete-without-grant")?,
                     Some(64),
@@ -1219,8 +1212,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             ] {
                 let denied = async {
                     host.put_changes(
-                        &volume,
-                        &write,
+                        (&volume, &write),
                         changes,
                         &IdempotencyKey::new("conditional-delete-denied")?,
                         Some(64),
@@ -1246,8 +1238,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             })?;
             let removed = host
                 .put_changes(
-                    &volume,
-                    &write,
+                    (&volume, &write),
                     &[ContentChange::DeleteExpected { source: first }],
                     &delete_key,
                     Some(64),
@@ -1267,8 +1258,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             );
             let replay = host
                 .put_changes(
-                    &volume,
-                    &write,
+                    (&volume, &write),
                     &[ContentChange::DeleteExpected { source: first }],
                     &delete_key,
                     Some(64),
@@ -1289,8 +1279,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             );
             let absent = host
                 .put_changes(
-                    &volume,
-                    &write,
+                    (&volume, &write),
                     &[ContentChange::Delete { path: first.path() }],
                     &IdempotencyKey::new(format!("absent-delete-{index}"))?,
                     Some(64),
@@ -1320,8 +1309,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         };
         let mut receipt = host
             .put_changes(
-                &volume,
-                &write,
+                (&volume, &write),
                 &[add("progress")],
                 &IdempotencyKey::new("progress-create")?,
                 Some(64),
@@ -1346,8 +1334,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 )?;
                 let rejected = host
                     .put_changes(
-                        &volume,
-                        &write,
+                        (&volume, &write),
                         &[ContentChange::UpdateExpected {
                             source: &forged,
                             bytes,
@@ -1378,8 +1365,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             }];
             let next = host
                 .put_changes(
-                    &volume,
-                    &write,
+                    (&volume, &write),
                     &changes,
                     &IdempotencyKey::new(key)?,
                     Some(64),

@@ -17,8 +17,15 @@ pub(super) fn with_request_prefix(
         .iter()
         .take_while(|message| message.role == crate::model::ModelRole::System)
         .count();
+    let trailing = source.messages.get(leading..).ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "summary prefix exceeds source messages",
+        )
+    })?;
     let (messages, _) = with_history_io(io, |work| {
-        crate::context::clone_messages(prefix, None, &source.messages[leading..], work)
+        crate::context::clone_messages(prefix, None, trailing, work)
     })?;
     source.messages = messages;
     source.current_input_index = source
@@ -53,9 +60,7 @@ impl StockExecution<'_> {
     ) -> Result<(crate::context::ContextSummary, String)> {
         self.summarize_part(
             journal,
-            parent,
-            operation_id,
-            step,
+            (parent, operation_id, step),
             material,
             phase,
             ModelPurpose::Summary,
@@ -128,18 +133,14 @@ impl StockExecution<'_> {
     pub(super) async fn summarize_part(
         &self,
         journal: &dyn ExecutionJournal,
-        parent: Option<&TurnInput>,
-        operation_id: OperationId,
-        step: u32,
+        (parent, operation_id, step): (Option<&TurnInput>, OperationId, u32),
         material: (crate::context::Context, ModelContent),
         phase: &mut DispatchPhase,
         purpose: ModelPurpose,
     ) -> Result<(crate::context::ContextSummary, String)> {
         self.summarize_output(
             journal,
-            parent,
-            operation_id,
-            step,
+            (parent, operation_id, step),
             material,
             &[],
             phase,
@@ -156,9 +157,7 @@ impl StockExecution<'_> {
     pub(super) async fn summarize_output(
         &self,
         journal: &dyn ExecutionJournal,
-        parent: Option<&TurnInput>,
-        operation_id: OperationId,
-        step: u32,
+        (parent, operation_id, step): (Option<&TurnInput>, OperationId, u32),
         material: (crate::context::Context, ModelContent),
         prefix: &[ModelMessage],
         phase: &mut DispatchPhase,
@@ -286,12 +285,11 @@ impl StockExecution<'_> {
                 "summary source is empty",
             ));
         }
-        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
-            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-            _ => {
-                stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
-                crate::contract::canonical_json_bytes(&source)?.into()
-            }
+        let source_bytes: acyclic_stream::OwnedBytes = if let Some(io) = self.io {
+            io.encode(&source, self.stock.limits.file_bytes, true)?
+        } else {
+            stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
+            crate::contract::canonical_json_bytes(&source)?.into()
         };
         let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
         Ok((source_bytes, source_digest, source_messages))
@@ -315,9 +313,9 @@ impl StockExecution<'_> {
                 .transpose()?
                 .unwrap_or(0),
         )?;
-        let io = scope.io();
         // Input and output die before the scope on every early return.
-        let events = events;
+        let (scope, events) = (scope, events);
+        let io = scope.io();
         if let Some(io) = io {
             io.check_cancellation()?;
         }

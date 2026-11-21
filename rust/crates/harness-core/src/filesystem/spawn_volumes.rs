@@ -279,12 +279,11 @@ fn planned_bindings(
     Ok((bindings, planned))
 }
 
+type ChildVolumePlans = (Vec<Vec<WorkspaceEntry>>, Vec<Planned>, Vec<AgentPath>);
+
 /// The one planning function: each requested child's bindings and the volumes
 /// its spawn creates, derived only from `parent`'s own bindings.
-fn children(
-    parent: &AgentState,
-    requested: &[Requested],
-) -> Result<(Vec<Vec<WorkspaceEntry>>, Vec<Planned>, Vec<AgentPath>), Error> {
+fn children(parent: &AgentState, requested: &[Requested]) -> Result<ChildVolumePlans, Error> {
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
     let mut journals = Vec::with_capacity(requested.len());
@@ -437,6 +436,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                 companions: Vec::new(),
                 journals: vec![child.clone()],
                 root_policy: policy
+                    .as_ref()
                     .map(super::hosting::policy::RootPolicySeed::new)
                     .transpose()
                     .map_err(guest)?,

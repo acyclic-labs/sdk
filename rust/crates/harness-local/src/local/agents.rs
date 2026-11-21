@@ -1031,7 +1031,7 @@ impl LocalHarness {
         Bound::admitted_host(
             authority,
             caller,
-            Arc::clone(&self.files),
+            &self.files,
             within,
             turns,
             cuts,

@@ -25,7 +25,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let digest = hash.finalize().to_hex();
         let volume = VolumeRef::new(
             self.provider.clone(),
-            format!("system-{}", &digest[..32]),
+            format!(
+                "system-{}",
+                digest.get(..32).ok_or_else(|| Error::Invalid(
+                    "system digest is shorter than its name".into()
+                ))?
+            ),
             VolumeClass::Project,
             crate::conversation::VolumeOwner::Project("system".into()),
             &mut None,

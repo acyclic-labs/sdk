@@ -37,6 +37,8 @@ mod tests;
 const REPLY_SUBSCRIPTION: &str = "reply-v1:";
 const ADMISSION_SUBSCRIPTION: &str = "ancestor-admission-v1";
 
+type DeliveredWake = (Wake, u64, String, Option<String>);
+
 fn reply_subscription(watch: &super::ReplyWatch) -> Result<String, Error> {
     serde_json::to_string(watch)
         .map(|value| format!("{REPLY_SUBSCRIPTION}{value}"))
@@ -468,29 +470,133 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
-    async fn transition(
+    async fn resume_ancestor(
         &self,
-        delivery: Delivery,
+        path: &AgentPath,
+        bound: &acyclic_actors::guest::Subscription,
         checkpoint: Option<&Checkpoint>,
-        cancellation: acyclic_actors::guest::CancellationToken,
-        failure: Option<&str>,
-    ) -> Result<Transition, Error> {
-        let saved = match checkpoint {
-            Some(checkpoint) => {
-                Some(checkpoint_state(self.agents.store.provider().as_ref(), checkpoint).await?)
-            }
-            None => None,
-        };
-        let cut = delivery
-            .subscriptions
-            .get(INBOX)
-            .ok_or(Error::Record("agent inbox subscription missing"))?;
-        let settled_at_micros = delivery
-            .record
-            .as_ref()
-            .map(|record| record.committed_at_micros);
+        now_unix_ms: u64,
+    ) -> Result<Option<Transition>, Error> {
+        let (current, fence) = self
+            .agents
+            .store
+            .provider()
+            .latest_fenced(bound.path.clone(), None, Default::default())
+            .await
+            .map_err(Error::Stream)?;
+        let current = current.ok_or(Error::Record("ancestor admission is missing"))?;
+        let admission = acyclic_actors::local::AdmissionState::from_record(&current.value)
+            .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
+        if !admission.paused {
+            let original = crate::supervision::Position {
+                stream: bound.path.clone(),
+                sequence: bound
+                    .cursor
+                    .checked_sub(1)
+                    .ok_or(Error::Record("ancestor pause cursor is zero"))?,
+            };
+            let run = crate::supervision::streams::paused_at(
+                self.agents.store.provider().as_ref(),
+                path,
+                &original,
+            )
+            .await
+            .map_err(|error| Error::Turn(Box::new(error)))?;
+            let event = crate::supervision::Event {
+                version: 1,
+                agent: path.clone(),
+                run: Some(run),
+                source: crate::supervision::Position {
+                    stream: bound.path.clone(),
+                    sequence: current.sequence,
+                },
+                event: crate::supervision::Lifecycle::Resumed {},
+            };
+            // Reopening must be visible before the continued model or
+            // tool can wait on external IO. This one alarm schedules
+            // the retained turn after that publication; it never polls.
+            return Ok(Some(Transition {
+                response: None,
+                checkpoint: checkpoint
+                    .cloned()
+                    .ok_or(Error::Record("ancestor wait has no checkpoint"))?,
+                alarm: AlarmChange::Set {
+                    deadline_unix_ms: now_unix_ms,
+                },
+                pause: false,
+                participant: None,
+                effects: vec![CommitEffect::hard(
+                    vec![fence],
+                    vec![acyclic_stream::CommitMutation::Append {
+                        path: crate::supervision::streams::path(path)
+                            .map_err(|_| Error::Record("agent event path"))?,
+                        records: vec![
+                            crate::supervision::streams::lifecycle_record(&event)
+                                .map_err(|_| Error::Record("ancestor resume event"))?,
+                        ],
+                    }],
+                )],
+                subscriptions: vec![acyclic_actors::guest::SubscriptionChange::Remove {
+                    id: ADMISSION_SUBSCRIPTION.into(),
+                }],
+            }));
+        }
+        Ok(None)
+    }
+
+    async fn reply_settled(
+        &self,
+        actor: &ActorReference,
+        subscriptions: &acyclic_actors::guest::SubscriptionCuts,
+        (subscription, sequence): (&str, u64),
+        saved: Option<&AgentState>,
+        record: &acyclic_stream::Record,
+    ) -> Result<bool, Error> {
+        let watch: super::ReplyWatch = serde_json::from_str(
+            subscription
+                .strip_prefix(REPLY_SUBSCRIPTION)
+                .ok_or(Error::Record("reply subscription is malformed"))?,
+        )
+        .map_err(|_| Error::Record("reply subscription is malformed"))?;
+        let bound = subscriptions
+            .get(subscription)
+            .ok_or(Error::Record("reply subscription is absent"))?;
+        if bound.path != watch.to.status()?
+            || bound.cursor != sequence
+            || record.sequence != sequence
+            || !saved.is_some_and(|state| {
+                state.turn.is_some() && matches!(state.phase, super::Phase::Waiting { .. })
+            })
+        {
+            return Err(Error::Record("reply delivery differs from its wait"));
+        }
+        super::StatusRecord::decode(&record.value)?;
+        let actor = Agents::<P>::actor(actor, &watch.to.id())?;
+        let (mut head, cursor) = self.agents.head(&actor, &watch.to).await?;
+        let state = &mut head.state;
+        Ok(matches!(
+            super::reply(
+                self.agents.store.provider().as_ref(),
+                state,
+                cursor,
+                &watch.id,
+                watch.inbox
+            )
+            .await?,
+            super::Reply::Answered { .. } | super::Reply::Dropped
+        ))
+    }
+
+    async fn delivered_wake(
+        &self,
+        delivery: &Delivery,
+        record: Option<acyclic_stream::Record>,
+        (inbox_cursor, saved): (u64, Option<&AgentState>),
+        checkpoint: Option<&Checkpoint>,
+        failed: bool,
+    ) -> Result<std::ops::ControlFlow<Transition, DeliveredWake>, Error> {
         let mut completed_reply = None;
-        let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+        let (wake, cursor, trigger) = match (&delivery.trigger, record) {
             (
                 Trigger::Record {
                     subscription,
@@ -498,7 +604,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 },
                 Some(record),
             ) if subscription == INBOX
-                && *sequence == cut.cursor
+                && *sequence == inbox_cursor
                 && record.sequence == *sequence =>
             {
                 (
@@ -513,7 +619,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 )
             }
             (Trigger::Alarm { generation, .. }, None) => {
-                (Wake::Alarm, cut.cursor, format!("alarm:{generation}"))
+                (Wake::Alarm, inbox_cursor, format!("alarm:{generation}"))
             }
             (
                 Trigger::Record {
@@ -540,80 +646,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 }
                 acyclic_actors::local::AdmissionState::from_record(&record.value)
                     .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
-                if failure.is_none() {
-                    let (current, fence) = self
-                        .agents
-                        .store
-                        .provider()
-                        .latest_fenced(bound.path.clone(), None, Default::default())
-                        .await
-                        .map_err(Error::Stream)?;
-                    let current = current.ok_or(Error::Record("ancestor admission is missing"))?;
-                    let admission =
-                        acyclic_actors::local::AdmissionState::from_record(&current.value)
-                            .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
-                    if !admission.paused {
-                        let original = crate::supervision::Position {
-                            stream: bound.path.clone(),
-                            sequence: bound
-                                .cursor
-                                .checked_sub(1)
-                                .ok_or(Error::Record("ancestor pause cursor is zero"))?,
-                        };
-                        let run = crate::supervision::streams::paused_at(
-                            self.agents.store.provider().as_ref(),
-                            &state.path,
-                            &original,
-                        )
-                        .await
-                        .map_err(|error| Error::Turn(Box::new(error)))?;
-                        let event = crate::supervision::Event {
-                            version: 1,
-                            agent: state.path.clone(),
-                            run: Some(run),
-                            source: crate::supervision::Position {
-                                stream: bound.path.clone(),
-                                sequence: current.sequence,
-                            },
-                            event: crate::supervision::Lifecycle::Resumed {},
-                        };
-                        // Reopening must be visible before the continued model or
-                        // tool can wait on external IO. This one alarm schedules
-                        // the retained turn after that publication; it never polls.
-                        return Ok(Transition {
-                            response: None,
-                            checkpoint: checkpoint
-                                .cloned()
-                                .ok_or(Error::Record("ancestor wait has no checkpoint"))?,
-                            alarm: AlarmChange::Set {
-                                deadline_unix_ms: delivery.now_unix_ms,
-                            },
-                            pause: false,
-                            participant: None,
-                            effects: vec![CommitEffect::hard(
-                                vec![fence],
-                                vec![acyclic_stream::CommitMutation::Append {
-                                    path: crate::supervision::streams::path(&state.path)
-                                        .map_err(|_| Error::Record("agent event path"))?,
-                                    records: vec![
-                                        crate::supervision::streams::lifecycle_record(&event)
-                                            .map_err(|_| Error::Record("ancestor resume event"))?,
-                                    ],
-                                }],
-                            )],
-                            subscriptions: vec![
-                                acyclic_actors::guest::SubscriptionChange::Remove {
-                                    id: ADMISSION_SUBSCRIPTION.into(),
-                                },
-                            ],
-                        });
-                    }
+                if !failed
+                    && let Some(transition) = self
+                        .resume_ancestor(&state.path, bound, checkpoint, delivery.now_unix_ms)
+                        .await?
+                {
+                    return Ok(std::ops::ControlFlow::Break(transition));
                 }
                 // The original journal rechecks the current authority cut.
                 // A stale paused record must not hide a later owner resume.
                 (
                     Wake::Alarm,
-                    cut.cursor,
+                    inbox_cursor,
                     format!("{subscription}:{sequence}"),
                 )
             }
@@ -624,50 +668,142 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 },
                 Some(record),
             ) if subscription.starts_with(REPLY_SUBSCRIPTION) => {
-                let watch: super::ReplyWatch = serde_json::from_str(
-                    subscription
-                        .strip_prefix(REPLY_SUBSCRIPTION)
-                        .ok_or(Error::Record("reply subscription is malformed"))?,
-                )
-                .map_err(|_| Error::Record("reply subscription is malformed"))?;
-                let bound = delivery
-                    .subscriptions
-                    .get(subscription)
-                    .ok_or(Error::Record("reply subscription is absent"))?;
-                if bound.path != watch.to.status()?
-                    || bound.cursor != *sequence
-                    || record.sequence != *sequence
-                    || !saved.as_ref().is_some_and(|state| {
-                        state.turn.is_some() && matches!(state.phase, super::Phase::Waiting { .. })
-                    })
-                {
-                    return Err(Error::Record("reply delivery differs from its wait"));
-                }
-                super::StatusRecord::decode(&record.value)?;
-                let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;
-                let (mut head, cursor) = self.agents.head(&actor, &watch.to).await?;
-                let state = &mut head.state;
-                let settled = matches!(
-                    super::reply(
-                        self.agents.store.provider().as_ref(),
-                        state,
-                        cursor,
-                        &watch.id,
-                        watch.inbox
+                let settled = self
+                    .reply_settled(
+                        &delivery.actor,
+                        &delivery.subscriptions,
+                        (subscription, *sequence),
+                        saved,
+                        &record,
                     )
-                    .await?,
-                    super::Reply::Answered { .. } | super::Reply::Dropped
-                );
+                    .await?;
                 if settled {
                     completed_reply = Some(subscription.clone());
                 }
                 (
                     Wake::Reply { settled },
-                    cut.cursor,
+                    inbox_cursor,
                     format!("{subscription}:{sequence}"),
                 )
             }
             _ => return Err(Error::Record("delivery does not match its trigger")),
+        };
+        Ok(std::ops::ControlFlow::Continue((
+            wake,
+            cursor,
+            trigger,
+            completed_reply,
+        )))
+    }
+
+    fn continuation_subscriptions(
+        &self,
+        delivery: &Delivery,
+        step: &super::Step,
+        completed_reply: Option<&String>,
+    ) -> Result<(bool, Alarm, Vec<acyclic_actors::guest::SubscriptionChange>), Error> {
+        let mut dependency = None;
+        let mut pause = false;
+        for out in &step.outs {
+            if let Out::Supervised { control, .. } = out
+                && control.action == crate::supervision::Action::Pause
+            {
+                if self.ancestor_admission(
+                    &delivery.actor,
+                    &step.state.path,
+                    &control.source.stream,
+                )? {
+                    dependency = Some(control.source.clone());
+                } else {
+                    pause = true;
+                }
+            }
+        }
+        if pause {
+            dependency = None;
+        }
+        let alarm = if dependency.is_some() {
+            Alarm::Clear
+        } else {
+            step.alarm
+        };
+        let replacement = step.outs.iter().rev().find_map(|out| match out {
+            Out::AwaitReplies(watches) => Some(watches),
+            _ => None,
+        });
+        let waiting =
+            step.state.turn.is_some() && matches!(step.state.phase, super::Phase::Waiting { .. });
+        let mut subscriptions = Vec::new();
+        for (id, _) in delivery.subscriptions.iter() {
+            if id == ADMISSION_SUBSCRIPTION {
+                subscriptions
+                    .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
+            }
+            if id.starts_with(REPLY_SUBSCRIPTION)
+                && (!waiting || replacement.is_some() || completed_reply == Some(id))
+            {
+                subscriptions
+                    .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
+            }
+        }
+        if waiting && let Some(watches) = replacement {
+            for watch in watches {
+                subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
+                    id: reply_subscription(watch)?,
+                    path: watch.to.status()?,
+                    from: Some(watch.from),
+                });
+            }
+        }
+        if let Some(source) = dependency {
+            subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
+                id: ADMISSION_SUBSCRIPTION.into(),
+                path: source.stream,
+                from: Some(
+                    source
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(Error::Record("ancestor admission cursor overflows"))?,
+                ),
+            });
+        }
+        Ok((pause, alarm, subscriptions))
+    }
+
+    async fn transition(
+        &self,
+        mut delivery: Delivery,
+        checkpoint: Option<&Checkpoint>,
+        cancellation: acyclic_actors::guest::CancellationToken,
+        failure: Option<&str>,
+    ) -> Result<Transition, Error> {
+        let saved = match checkpoint {
+            Some(checkpoint) => {
+                Some(checkpoint_state(self.agents.store.provider().as_ref(), checkpoint).await?)
+            }
+            None => None,
+        };
+        let cut = delivery
+            .subscriptions
+            .get(INBOX)
+            .ok_or(Error::Record("agent inbox subscription missing"))?;
+        let settled_at_micros = delivery
+            .record
+            .as_ref()
+            .map(|record| record.committed_at_micros);
+        let record = delivery.record.take();
+        let (mut wake, cursor, trigger, completed_reply) = match self
+            .delivered_wake(
+                &delivery,
+                record,
+                (cut.cursor, saved.as_ref()),
+                checkpoint,
+                failure.is_some(),
+            )
+            .await?
+        {
+            std::ops::ControlFlow::Continue(wake) => wake,
+            std::ops::ControlFlow::Break(transition) => return Ok(transition),
         };
         let path = match (&saved, &wake) {
             (Some(state), _) => state.path.clone(),
@@ -846,71 +982,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     .wake(&Agents::<P>::actor(&delivery.actor, &agent)?)?,
             );
         }
-        let mut dependency = None;
-        let mut pause = false;
-        for out in &step.outs {
-            if let Out::Supervised { control, .. } = out
-                && control.action == crate::supervision::Action::Pause
-            {
-                if self.ancestor_admission(
-                    &delivery.actor,
-                    &step.state.path,
-                    &control.source.stream,
-                )? {
-                    dependency = Some(control.source.clone());
-                } else {
-                    pause = true;
-                }
-            }
-        }
-        if pause {
-            dependency = None;
-        }
-        let alarm = if dependency.is_some() {
-            Alarm::Clear
-        } else {
-            step.alarm
-        };
-        let replacement = step.outs.iter().rev().find_map(|out| match out {
-            Out::AwaitReplies(watches) => Some(watches),
-            _ => None,
-        });
-        let waiting =
-            step.state.turn.is_some() && matches!(step.state.phase, super::Phase::Waiting { .. });
-        let mut subscriptions = Vec::new();
-        for (id, _) in delivery.subscriptions.iter() {
-            if id == ADMISSION_SUBSCRIPTION {
-                subscriptions
-                    .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
-            }
-            if id.starts_with(REPLY_SUBSCRIPTION)
-                && (!waiting || replacement.is_some() || completed_reply.as_ref() == Some(id))
-            {
-                subscriptions
-                    .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
-            }
-        }
-        if waiting && let Some(watches) = replacement {
-            for watch in watches {
-                subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
-                    id: reply_subscription(watch)?,
-                    path: watch.to.status()?,
-                    from: Some(watch.from),
-                });
-            }
-        }
-        if let Some(source) = dependency {
-            subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
-                id: ADMISSION_SUBSCRIPTION.into(),
-                path: source.stream,
-                from: Some(
-                    source
-                        .sequence
-                        .checked_add(1)
-                        .ok_or(Error::Record("ancestor admission cursor overflows"))?,
-                ),
-            });
-        }
+        let (pause, alarm, subscriptions) =
+            self.continuation_subscriptions(&delivery, step, completed_reply.as_ref())?;
         Ok(Transition {
             pause,
             response: None,

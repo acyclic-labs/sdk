@@ -207,21 +207,17 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .map_err(turn)?
             .await
             .map_err(turn)?;
-        let generation = match &receipt {
-            Some(receipt) => receipt.generation.clone(),
-            None => {
-                let reference = super::super::bounded_io::content_workspace(
-                    &self.volumes.provider,
-                    &volume,
-                    None,
-                )
-                .map_err(turn)?;
-                self.volumes
-                    .resolve(&reference, None)
-                    .await
-                    .map_err(turn)?
-                    .generation
-            }
+        let generation = if let Some(receipt) = &receipt {
+            receipt.generation.clone()
+        } else {
+            let reference =
+                super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
+                    .map_err(turn)?;
+            self.volumes
+                .resolve(&reference, None)
+                .await
+                .map_err(turn)?
+                .generation
         };
         let mut snapshot = ClientFiles {
             root,
@@ -284,10 +280,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         for path in paths {
             let mut selected = None;
             for (index, view) in self.file_views.iter().enumerate() {
-                if let Some(source) = view.source(agent, root, path).map_err(turn)? {
-                    if selected.replace((index, source)).is_some() {
-                        return Err(Error::Record("ambiguous client file view"));
-                    }
+                if let Some(source) = view.source(agent, root, path).map_err(turn)?
+                    && selected.replace((index, source)).is_some()
+                {
+                    return Err(Error::Record("ambiguous client file view"));
                 }
             }
             selected_views.push(selected);
@@ -390,7 +386,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             let through = *sources
                 .get(&source)
                 .ok_or(Error::Record("file view cut missing"))?;
-            let view = &self.file_views[index];
+            let view = self
+                .file_views
+                .get(index)
+                .ok_or(Error::Record("file view is absent"))?;
             let values = view
                 .read(
                     self.agents.provider().as_ref(),
@@ -483,10 +482,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 Ok(data) => {
                     let prefix = match std::str::from_utf8(&data) {
                         Ok(text) => text,
-                        Err(error) if error.error_len().is_none() => {
-                            std::str::from_utf8(&data[..error.valid_up_to()])
-                                .map_err(|_| Error::Record("file preview is not UTF-8"))?
-                        }
+                        Err(error) if error.error_len().is_none() => std::str::from_utf8(
+                            data.get(..error.valid_up_to())
+                                .ok_or(Error::Record("invalid file preview range"))?,
+                        )
+                        .map_err(|_| Error::Record("file preview is not UTF-8"))?,
                         Err(_) => return Err(Error::Record("file preview is not UTF-8")),
                     };
                     Some(prefix.to_owned())

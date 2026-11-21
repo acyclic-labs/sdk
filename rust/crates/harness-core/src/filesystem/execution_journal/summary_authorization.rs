@@ -106,24 +106,20 @@ fn decode_summary(
     file: &FileRef,
     io: Option<&PreparationIo>,
 ) -> Result<bool> {
-    let allowed = match io {
-        Some(io) => {
-            let (summary, hold) = io.decode(
-                std::marker::PhantomData::<crate::context::ContextSummary>,
-                bytes,
-                crate::wire::ErrorCode::Invalid,
-            )?;
-            let allowed = payload_matches::<true>(&summary, operation, file);
-            drop(summary);
-            drop(hold);
-            allowed
-        }
-        None => {
-            let summary: crate::context::ContextSummary =
-                crate::contract::json_from_slice(bytes)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-            payload_matches::<true>(&summary, operation, file)
-        }
+    let allowed = if let Some(io) = io {
+        let (summary, hold) = io.decode(
+            std::marker::PhantomData::<crate::context::ContextSummary>,
+            bytes,
+            crate::wire::ErrorCode::Invalid,
+        )?;
+        let allowed = payload_matches::<true>(&summary, operation, file);
+        drop(summary);
+        drop(hold);
+        allowed
+    } else {
+        let summary: crate::context::ContextSummary = crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        payload_matches::<true>(&summary, operation, file)
     };
     Ok(allowed)
 }

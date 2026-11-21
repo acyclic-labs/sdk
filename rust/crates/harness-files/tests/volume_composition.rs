@@ -212,8 +212,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &mut None,
     )?;
     host.fork_volume(
-        &root,
-        &root_reader,
+        (&root, &root_reader),
         &pinned.generation,
         &skills,
         &skills_writer,

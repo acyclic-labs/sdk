@@ -215,3 +215,11 @@ mod proofs {
         assert_eq!(treatment.difference(&baseline).unwrap(), None);
     }
 }
+
+/// Convert exact 32-bit limbs before rounding the combined count once.
+fn count_as_f64(count: u64) -> f64 {
+    let [a, b, c, d, e, f, g, h] = count.to_be_bytes();
+    let high = u32::from_be_bytes([a, b, c, d]);
+    let low = u32::from_be_bytes([e, f, g, h]);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}

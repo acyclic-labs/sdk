@@ -35,7 +35,7 @@ impl ResponseByteFrontier {
         };
         let allowed = length.min(*remaining as usize);
         // The admitted prefix is at most the selected u32 remainder.
-        *remaining -= allowed as u32;
+        *remaining -= u32::try_from(allowed).ok()?;
         self.overflow = length > allowed;
         (!self.overflow || allowed != 0).then_some(allowed)
     }

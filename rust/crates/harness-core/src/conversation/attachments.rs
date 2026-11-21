@@ -194,7 +194,7 @@ pub fn decode_attachment_manifest(
             "unsupported attachment manifest version",
         )
     };
-    acyclic_auth::format::header(bytes, b"[", b"\"1\",", &unsupported, &unsupported)?;
+    acyclic_auth::format::header(bytes, b"[", b"\"1\",", unsupported, unsupported)?;
     if let Some(io) = io {
         let mut failure = None;
         let result = io.decode(

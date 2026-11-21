@@ -288,8 +288,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     )?;
     assert!(matches!(
         host.fork_volume_pinned(
-            &source,
-            &caller_read,
+            (&source, &caller_read),
             &selected_generation,
             &denied_child,
             None,
@@ -303,8 +302,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     assert!(host.resolve(&denied_ref, None).await.is_err());
     assert!(
         host.fork_volume_pinned(
-            &source,
-            &selected_read,
+            (&source, &selected_read),
             &wrong_generation,
             &denied_child,
             None,
@@ -328,8 +326,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         .await?;
     let forked = host
         .fork_volume_pinned(
-            &source,
-            &selected_read,
+            (&source, &selected_read),
             &selected_generation,
             &child,
             None,
@@ -517,11 +514,11 @@ fn unmeasured_sites_confined(
         ),
         (
             "pub async fn read_private_path_indexed<'io>",
-            "async fn read_private_path_indexed_measured<'io>",
+            "async fn read_private_path_indexed_measured(",
         ),
         (
             "pub(in crate::filesystem) async fn read_private_range<'io>",
-            "async fn read_private_range_measured<'io>",
+            "async fn read_private_range_measured(",
         ),
     ];
     let escaped: Vec<_> = sources
@@ -543,9 +540,8 @@ fn unmeasured_sites_confined(
     }
     for (begin, end) in ENTRY_POINTS {
         let function = host
-            .split(begin)
-            .nth(1)
-            .and_then(|rest| rest.split(end).next())
+            .split_once(begin)
+            .and_then(|(_, rest)| rest.split_once(end).map(|(function, _)| function))
             .ok_or_else(|| format!("entry point {begin} is missing"))?;
         if function.matches(needle).count() != 1 {
             return Err(format!("constructor is not inside {begin}"));

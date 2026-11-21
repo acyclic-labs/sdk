@@ -97,12 +97,15 @@ where
         Ok(())
     };
     let (executor, tree, patch) = match prepare(&workspace, args, guard, admit_checkout).await? {
-        Prepared::Complete(output) => return Ok(output),
-        Prepared::Ready {
-            executor,
-            tree,
-            patch,
-        } => (executor, tree, patch),
+        Prepared::Complete(output) => return Ok(*output),
+        Prepared::Ready(command) => {
+            let Ready {
+                executor,
+                tree,
+                patch,
+            } = *command;
+            (executor, tree, patch)
+        }
     };
     let command = if let Some(identity) = workspace.checkout {
         execute(
@@ -120,7 +123,7 @@ where
     } else {
         execute(&workspace, args, tree, patch.as_deref(), &executor).await?
     };
-    finish(executor, command)
+    finish(&executor, command)
 }
 
 /// Runs the shared command engine against an unprojected provider-backed view.
@@ -155,15 +158,18 @@ where
         let guard: &EffectGuard<'_> = &|| Box::pin(before_effect());
         let command = async {
             let (executor, tree, patch) = match prepare(&workspace, args, guard, || Ok(())).await? {
-                Prepared::Complete(output) => return Ok(output),
-                Prepared::Ready {
-                    executor,
-                    tree,
-                    patch,
-                } => (executor, tree, patch),
+                Prepared::Complete(output) => return Ok(*output),
+                Prepared::Ready(command) => {
+                    let Ready {
+                        executor,
+                        tree,
+                        patch,
+                    } = *command;
+                    (executor, tree, patch)
+                }
             };
             let command = execute(&workspace, args, tree, patch.as_deref(), &executor).await?;
-            finish(executor, command)
+            finish(&executor, command)
         };
         match root_cut {
             Some(cut) => cut.scope(command).await,
@@ -173,12 +179,14 @@ where
 }
 
 enum Prepared<'a, P: ?Sized + 'static, O: 'static, S> {
-    Complete(Output<P, O>),
-    Ready {
-        executor: WorkspaceGitExecutor<'a, P, O, S>,
-        tree: GitTreeRef,
-        patch: Option<acyclic_stream::OwnedBytes>,
-    },
+    Complete(Box<Output<P, O>>),
+    Ready(Box<Ready<'a, P, O, S>>),
+}
+
+struct Ready<'a, P: ?Sized + 'static, O: 'static, S> {
+    executor: WorkspaceGitExecutor<'a, P, O, S>,
+    tree: GitTreeRef,
+    patch: Option<acyclic_stream::OwnedBytes>,
 }
 
 async fn prepare<'a, P, O, S>(
@@ -208,10 +216,10 @@ where
         .await?
     {
         before_effect().await?;
-        return Ok(Prepared::Complete(Output {
+        return Ok(Prepared::Complete(Box::new(Output {
             command: Some(output),
             switched: None,
-        }));
+        })));
     }
     admit_checkout()?;
     let permit = workspace.lease.as_ref().map_or(
@@ -243,23 +251,23 @@ where
         before_effect().await?;
         let output = executor.diff_agent(branch, tree, stat).await?;
         before_effect().await?;
-        return Ok(Prepared::Complete(output));
+        return Ok(Prepared::Complete(Box::new(output)));
     }
     if let Some((branch, path, offset)) = crate::tools::fs_command::agent_show(args) {
         before_effect().await?;
         let output = executor.show_agent(branch, path, offset, tree).await?;
         before_effect().await?;
-        return Ok(Prepared::Complete(output));
+        return Ok(Prepared::Complete(Box::new(output)));
     }
-    Ok(Prepared::Ready {
+    Ok(Prepared::Ready(Box::new(Ready {
         executor,
         tree,
         patch,
-    })
+    })))
 }
 
 fn finish<P, O, S>(
-    executor: WorkspaceGitExecutor<'_, P, O, S>,
+    executor: &WorkspaceGitExecutor<'_, P, O, S>,
     command: Option<GitCommandOutput>,
 ) -> crate::Result<Output<P, O>>
 where

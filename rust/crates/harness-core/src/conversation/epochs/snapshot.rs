@@ -146,10 +146,10 @@ impl Snapshot {
             None => (None, None),
         };
         let state = State::restore(wire.generation, wire.epoch.cursor(), pending, head)?;
-        if let Some(pending) = state.pending() {
-            if wire.epoch.key.digest_through(pending.through) != pending.summary {
-                return Err(SnapshotError::Identity);
-            }
+        if let Some(pending) = state.pending()
+            && wire.epoch.key.digest_through(pending.through) != pending.summary
+        {
+            return Err(SnapshotError::Identity);
         }
         Ok(Self {
             epoch: wire.epoch,

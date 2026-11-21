@@ -99,16 +99,29 @@ fn complete_cut(
         .enumerate()
     {
         compaction_step(quota)?;
-        let component = &groups[group.root];
+
+        let component = groups
+            .get(group.root)
+            .ok_or_else(|| component_error(quota.work()))?;
+        let keep = selected
+            .get(group.root)
+            .ok_or_else(|| component_error(quota.work()))?;
         end = end.max(component.end);
-        if component.retained_through == position && !selected[group.root] {
+        if component.retained_through == position && !keep {
             mandatory -= component.size;
         }
         if component.end == position {
             for source in component.sources() {
                 compaction_step(quota)?;
-                if groups[source].retained_through == position && !selected[source] {
-                    mandatory -= groups[source].size;
+
+                let component = groups
+                    .get(source)
+                    .ok_or_else(|| component_error(quota.work()))?;
+                let keep = selected
+                    .get(source)
+                    .ok_or_else(|| component_error(quota.work()))?;
+                if component.retained_through == position && !keep {
+                    mandatory -= component.size;
                 }
             }
         }
@@ -165,22 +178,42 @@ fn mandatory_selection(
     // then select its other members without retaining unrelated interior text.
     for (position, group) in groups.iter().enumerate() {
         compaction_step(quota)?;
-        let keep = selected[position];
-        selected[group.root] |= keep;
+
+        let keep = *selected
+            .get(position)
+            .ok_or_else(|| component_error(quota.work()))?;
+        *selected
+            .get_mut(group.root)
+            .ok_or_else(|| component_error(quota.work()))? |= keep;
     }
     for group in groups {
         compaction_step(quota)?;
-        if selected[group.root] {
-            for source in groups[group.root].sources() {
+
+        if *selected
+            .get(group.root)
+            .ok_or_else(|| component_error(quota.work()))?
+        {
+            for source in groups
+                .get(group.root)
+                .ok_or_else(|| component_error(quota.work()))?
+                .sources()
+            {
                 compaction_step(quota)?;
-                selected[source] = true;
+                *selected
+                    .get_mut(source)
+                    .ok_or_else(|| component_error(quota.work()))? = true;
             }
         }
     }
     for (position, group) in groups.iter().enumerate() {
         compaction_step(quota)?;
-        let keep = selected[group.root];
-        selected[position] |= keep;
+
+        let keep = *selected
+            .get(group.root)
+            .ok_or_else(|| component_error(quota.work()))?;
+        *selected
+            .get_mut(position)
+            .ok_or_else(|| component_error(quota.work()))? |= keep;
     }
     Ok(selected)
 }
@@ -194,7 +227,7 @@ fn retain_latest_changes(
 ) -> Result<()> {
     let original = crate::wire_codec::BorrowedIndexWork::new(quota.work());
     let mut seen = acyclic_collections::FixedIndex::<(), _, 32>::default();
-    for (position, message) in context.messages.iter().enumerate().rev() {
+    for (message, keep) in context.messages.iter().zip(selected.iter_mut()).rev() {
         let Some((notices, _)) = message.content.notice_parts() else {
             continue;
         };
@@ -203,14 +236,14 @@ fn retain_latest_changes(
                 continue;
             }
             let Some(key) = &notice.coalesce_key else {
-                selected[position] = true;
+                *keep = true;
                 continue;
             };
             let digest = original
                 .with(|work| crate::executor::json::canonical_json_digest(key, None, work))?;
             if seen.get(digest, &mut &original)?.is_none() {
                 seen.get_or_try_insert_with(digest, &mut &original, |_| Ok(()))?;
-                selected[position] = true;
+                *keep = true;
             }
         }
     }
@@ -274,9 +307,19 @@ pub(crate) fn compact_context(
         }
         for (position, group) in groups.iter().enumerate() {
             compaction_step(&mut quota)?;
-            let keep = selected[group.root];
-            selected[position] |= keep;
-            if groups[group.root].end == context.messages.len() {
+
+            let keep = *selected
+                .get(group.root)
+                .ok_or_else(|| component_error(quota.work()))?;
+            *selected
+                .get_mut(position)
+                .ok_or_else(|| component_error(quota.work()))? |= keep;
+            if groups
+                .get(group.root)
+                .ok_or_else(|| component_error(quota.work()))?
+                .end
+                == context.messages.len()
+            {
                 return Err(compaction_error(
                     quota.work(),
                     "compaction boundary splits a tool exchange",
@@ -348,6 +391,13 @@ pub(super) fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>)
         io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
     Ok(())
+}
+
+fn component_error(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Error {
+    compaction_error(
+        work,
+        "compaction component references an invalid message index",
+    )
 }
 
 pub(super) fn compaction_error(

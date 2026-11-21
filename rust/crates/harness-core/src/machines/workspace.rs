@@ -90,18 +90,24 @@ impl MachinesWorkspace {
         signed: Scope,
         verifier: AuthorityVerifier,
     ) -> Result<Self> {
+        let MachineObservation {
+            id,
+            state,
+            contract,
+            ..
+        } = admitted;
         let copy_required = host
             .provider
             .capability(acyclic_machines::ProviderCapability::AttachVolume)
             == acyclic_machines::Support::Unsupported;
-        if host.machine_id(&sandbox)? != admitted.id
+        if host.machine_id(&sandbox)? != id
             || if copy_required {
-                admitted.contract.selected_volume_ref.is_some()
+                contract.selected_volume_ref.is_some()
             } else {
-                admitted.contract.selected_volume_ref.as_ref() != Some(&volume.into())
+                contract.selected_volume_ref.as_ref() != Some(&volume.into())
             }
             || !matches!(
-                admitted.state,
+                state,
                 acyclic_machines::MachineState::Running | acyclic_machines::MachineState::Suspended
             )
         {
@@ -121,7 +127,7 @@ impl MachinesWorkspace {
         Ok(Self {
             host,
             sandbox,
-            machine: admitted.id,
+            machine: id,
             volume: volume.clone(),
             signed,
             verifier,
@@ -129,7 +135,7 @@ impl MachinesWorkspace {
             write,
             executable: "bash".into(),
             shell: &acyclic_host_platform::shell::BASH,
-            os: admitted.contract.platform.os,
+            os: contract.platform.os,
             copied: None,
             copy_required,
         })
@@ -244,7 +250,7 @@ impl MachinesWorkspace {
         {
             return Err(Error::Indeterminate(operation));
         }
-        let stop = output.stop.map(Self::stop_result);
+        let stop = output.stop.as_ref().map(Self::stop_result);
         Ok(ToolResult {
             value: serde_json::json!({
                 "success": output.exit_code == Some(0) && stop.is_none(),
@@ -256,7 +262,7 @@ impl MachinesWorkspace {
         })
     }
 
-    pub(crate) fn stop_result(stop: acyclic_machines::ExecStop) -> serde_json::Value {
+    pub(crate) fn stop_result(stop: &acyclic_machines::ExecStop) -> serde_json::Value {
         use acyclic_machines::ExecStopKind;
         let kind = match stop.kind {
             ExecStopKind::Timeout => "timeout",
@@ -393,15 +399,22 @@ impl ToolExecutor for MachinesWorkspace {
                     context.effective_scope().run_limits().deadline_epoch_ms,
                 )
                 .await?;
-            result.value["execution"] = serde_json::json!({
-                "agent": context.task().agent().map(|(path, _)| path.as_str()),
-                "turn": context.turn_id(),
-                "call_id": context.call_id(),
-                "operation": context.operation_id(),
-                "provider": self.sandbox.as_resource().provider(),
-                "machine": self.machine,
-                "volume": &self.volume,
-            });
+            let value = result
+                .value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("shell output must be an object".into()))?;
+            value.insert(
+                "execution".into(),
+                serde_json::json!({
+                    "agent": context.task().agent().map(|(path, _)| path.as_str()),
+                    "turn": context.turn_id(),
+                    "call_id": context.call_id(),
+                    "operation": context.operation_id(),
+                    "provider": self.sandbox.as_resource().provider(),
+                    "machine": self.machine,
+                    "volume": &self.volume,
+                }),
+            );
             Ok(result)
         })
     }

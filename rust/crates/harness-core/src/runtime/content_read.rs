@@ -3,6 +3,7 @@ use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
+#[derive(Clone, Copy)]
 pub(super) enum ReadExtent {
     Metadata,
     Body,

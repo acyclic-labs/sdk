@@ -172,13 +172,11 @@ where
                 ));
             }
             let unmeasured;
-            let io = match io {
-                Some(io) => io,
-                None => {
-                    unmeasured =
-                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &unmeasured
-                }
+            let io = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
             };
             let bytes = self
                 .select_reference(reference, ceiling, io)
@@ -317,13 +315,11 @@ where
     > {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let unmeasured;
-            let ledger = match io {
-                Some(io) => io,
-                None => {
-                    unmeasured =
-                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &unmeasured
-                }
+            let ledger = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
             };
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = ledger.original_native_work() {
@@ -732,12 +728,11 @@ where
             ));
         }
         let unmeasured;
-        let io = match io {
-            Some(io) => io,
-            None => {
-                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                &unmeasured
-            }
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
         };
         let bytes = self
             .select_reference(reference, ceiling, io)
@@ -907,7 +902,7 @@ mod tests;
 impl PrivateDirectoryEntry {
     /// The one Unicode projection for authored and computed directory metadata.
     pub(in crate::filesystem) fn from_filesystem(
-        entry: acyclic_fs::LazyDirectoryEntry,
+        entry: &acyclic_fs::LazyDirectoryEntry,
         ledger: &crate::filesystem::PreparationIo,
     ) -> Result<Self> {
         let (name, allocation) = ledger.account(|ctx| {
@@ -923,7 +918,7 @@ impl PrivateDirectoryEntry {
         let _ = allocation;
         use DirectoryEntryKind as Kind;
         use acyclic_fs::{LazyDirectoryNode, demand::SourceNodeKind, kernel::FileKind};
-        let kind = match entry.node {
+        let kind = match &entry.node {
             LazyDirectoryNode::Authored { kind, .. } => match kind {
                 FileKind::Regular => Kind::File,
                 FileKind::Directory => Kind::Directory,

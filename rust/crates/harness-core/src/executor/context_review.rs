@@ -84,27 +84,6 @@ struct State<'a> {
     ready: Option<Result<Option<Receipt<'a>>>>,
 }
 
-pub(in crate::executor) enum Review<'a> {
-    Local(Background<'a>),
-    Shared(Arc<Background<'a>>),
-}
-
-impl Default for Review<'_> {
-    fn default() -> Self {
-        Self::Local(Background::default())
-    }
-}
-
-impl<'a> std::ops::Deref for Review<'a> {
-    type Target = Background<'a>;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Local(background) => background,
-            Self::Shared(background) => background,
-        }
-    }
-}
-
 impl<'a> Background<'a> {
     pub(super) fn shared(io: Option<&PreparationIo>) -> Result<Arc<Self>> {
         let storage = io.map(PreparationIo::scoped).transpose()?;
@@ -157,13 +136,18 @@ fn review_source(
     let (source, bytes) = with_history_io(io, |work| {
         crate::context::clone_context(base, Some(through), work)
     })?;
-    let header = sent.map_or(&[][..], |sent| {
-        let count = sent
-            .iter()
-            .take_while(|message| message.role == crate::model::ModelRole::System)
-            .count();
-        &sent[..count]
-    });
+    let sent = sent.unwrap_or_default();
+    let count = sent
+        .iter()
+        .take_while(|message| message.role == crate::model::ModelRole::System)
+        .count();
+    let header = sent.get(..count).ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "review source prefix exceeds message count",
+        )
+    })?;
     let (prefix, prefix_bytes) = with_history_io(io, |work| {
         crate::context::clone_messages(header, None, &[], work)
     })?;
@@ -178,6 +162,13 @@ fn review_source(
 }
 
 impl<'a> StockExecution<'a> {
+    pub(in crate::executor) fn review_background(&self) -> Result<&Background<'a>> {
+        let background = self
+            .review
+            .get_or_try_init(|| Background::shared(self.io))?;
+        Ok(background)
+    }
+
     pub(super) async fn with_context_review<T>(
         &self,
         journal: &dyn ExecutionJournal,
@@ -187,22 +178,23 @@ impl<'a> StockExecution<'a> {
         if !self.stock.context_management {
             return worker.await;
         }
-        self.review.enabled.store(true, Ordering::Release);
-        self.review.stopped.store(false, Ordering::Release);
-        self.review.paused.store(false, Ordering::Release);
+        let review = self.review_background()?;
+        review.enabled.store(true, Ordering::Release);
+        review.stopped.store(false, Ordering::Release);
+        review.paused.store(false, Ordering::Release);
         let worker = async {
             let result = worker.await;
-            self.review.paused.store(
+            review.paused.store(
                 matches!(result, Ok(ExecutionProgress::Pending(_))),
                 Ordering::Release,
             );
-            self.review.stopped.store(true, Ordering::Release);
-            self.review.stop.notify_one();
+            review.stopped.store(true, Ordering::Release);
+            review.stop.notify_one();
             result
         };
         let (result, cleanup) = futures::join!(worker, self.context_review_service(journal, input));
-        self.review.enabled.store(false, Ordering::Release);
-        *self.review.state.lock().await = State::default();
+        review.enabled.store(false, Ordering::Release);
+        *review.state.lock().await = State::default();
         cleanup?;
         result
     }
@@ -217,9 +209,13 @@ impl<'a> StockExecution<'a> {
         prior: &[ModelMessage],
         metadata: &Value,
     ) -> Result<()> {
-        if !self.review.enabled.load(Ordering::Acquire) {
+        let Some(review) = self
+            .review
+            .get()
+            .filter(|review| review.enabled.load(Ordering::Acquire))
+        else {
             return Ok(());
-        }
+        };
         if input
             .max_steps
             .is_some_and(|maximum| step >= maximum.saturating_sub(1))
@@ -233,7 +229,7 @@ impl<'a> StockExecution<'a> {
         else {
             return Ok(());
         };
-        let mut state = self.review.state.lock().await;
+        let mut state = review.state.lock().await;
         if state.active || input_tokens < state.review_at {
             return Ok(());
         }
@@ -383,13 +379,13 @@ impl<'a> StockExecution<'a> {
                 )
                 .await;
             drop(job._hold);
-            self.review.state.lock().await.ready = Some(ready);
+            review.state.lock().await.ready = Some(ready);
             return Ok(());
         }
         state.queued = Some(job);
         state.active = true;
         drop(state);
-        self.review.requested.notify_one();
+        review.requested.notify_one();
         Ok(())
     }
 
@@ -403,12 +399,16 @@ impl<'a> StockExecution<'a> {
         capacity: crate::context::ModelContextCapacity,
         at_capacity: bool,
     ) -> Result<Option<crate::model::PreparedModelRequest>> {
-        if !self.review.enabled.load(Ordering::Acquire) {
+        let Some(review) = self
+            .review
+            .get()
+            .filter(|review| review.enabled.load(Ordering::Acquire))
+        else {
             return Ok(None);
-        }
+        };
         let ready = loop {
-            let completed = self.review.completed.notified();
-            let mut state = self.review.state.lock().await;
+            let completed = review.completed.notified();
+            let mut state = review.state.lock().await;
             if !at_capacity || !state.active {
                 break state.ready.take();
             }
@@ -511,6 +511,7 @@ impl<'a> StockExecution<'a> {
         observation: Observation,
         phase: &mut DispatchPhase,
     ) -> Result<Option<Receipt<'a>>> {
+        let review = self.review_background()?;
         let (source, prefix, selected) = source;
         let files = self.rewrite_files(journal, (input, step)).await?;
         let files_hold = files
@@ -523,7 +524,7 @@ impl<'a> StockExecution<'a> {
         session.selected = selected;
         session.configuration = None;
         let capacity = session.model_capacity()?;
-        let rejected = self.review.state.lock().await.rejected.take();
+        let rejected = review.state.lock().await.rejected.take();
         let instruction = with_history_io(session.io, |work| {
             preparation_format(
                 format_args!(
@@ -565,9 +566,7 @@ impl<'a> StockExecution<'a> {
         let output = session
             .summarize_output(
                 journal,
-                Some(input),
-                input.operation_id,
-                step,
+                (Some(input), input.operation_id, step),
                 material,
                 &prefix,
                 phase,
@@ -653,7 +652,7 @@ impl<'a> StockExecution<'a> {
                 )
                 .await;
         }
-        self.review.state.lock().await.review_at = next;
+        review.state.lock().await.review_at = next;
         if !rewrite {
             drop(summary);
             drop(hold);
@@ -695,7 +694,7 @@ impl<'a> StockExecution<'a> {
                 journal.append(operation, &key, &event, self.io)?.await
             })
             .await?;
-        self.review.state.lock().await.rejected = Some(reason);
+        self.review_background()?.state.lock().await.rejected = Some(reason);
         Ok(None)
     }
 
@@ -704,13 +703,14 @@ impl<'a> StockExecution<'a> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
     ) -> Result<()> {
+        let review = self.review_background()?;
         loop {
-            let requested = self.review.requested.notified();
-            let stopped = self.context_review_stopped();
-            if self.review.stopped.load(Ordering::Acquire) {
+            let requested = review.requested.notified();
+            let stopped = Self::context_review_stopped(review);
+            if review.stopped.load(Ordering::Acquire) {
                 return Ok(());
             }
-            let job = self.review.state.lock().await.queued.take();
+            let job = review.state.lock().await.queued.take();
             let Some(job) = job else {
                 futures::pin_mut!(requested, stopped);
                 let _ = futures::future::select(requested, stopped).await;
@@ -718,7 +718,7 @@ impl<'a> StockExecution<'a> {
             };
             let step = job.step;
             let mut phase = DispatchPhase::new();
-            let review = self.evaluate_context_review(
+            let evaluation = self.evaluate_context_review(
                 journal,
                 input,
                 (job.source, job.prefix, job.selected),
@@ -727,8 +727,8 @@ impl<'a> StockExecution<'a> {
                 &mut phase,
             );
             let result = {
-                futures::pin_mut!(review, stopped);
-                match futures::future::select(review, stopped).await {
+                futures::pin_mut!(evaluation, stopped);
+                match futures::future::select(evaluation, stopped).await {
                     futures::future::Either::Left((result, _)) => Some(result),
                     futures::future::Either::Right(_) => None,
                 }
@@ -745,20 +745,20 @@ impl<'a> StockExecution<'a> {
             } else {
                 Ok(())
             };
-            let mut state = self.review.state.lock().await;
+            let mut state = review.state.lock().await;
             state.active = false;
             state.ready = Some(result);
             drop(state);
-            self.review.completed.notify_one();
+            review.completed.notify_one();
             // A cleanup refusal must not strand a worker awaiting this result.
             cleanup?;
         }
     }
 
-    async fn context_review_stopped(&self) {
+    async fn context_review_stopped(review: &Background<'_>) {
         loop {
-            let stopped = self.review.stop.notified();
-            if self.review.stopped.load(Ordering::Acquire) {
+            let stopped = review.stop.notified();
+            if review.stopped.load(Ordering::Acquire) {
                 return;
             }
             // A previous scoped run can leave a notification permit. Only
@@ -803,7 +803,10 @@ impl<'a> StockExecution<'a> {
                             &ExecutionEvent::ModelStopped {
                                 step,
                                 purpose: ModelPurpose::Summary,
-                                worker_paused: self.review.paused.load(Ordering::Acquire),
+                                worker_paused: self
+                                    .review_background()?
+                                    .paused
+                                    .load(Ordering::Acquire),
                             },
                             self.io,
                         )?
@@ -859,7 +862,7 @@ mod tests {
         // Resume the service at its admitted-job boundary, then cancel the
         // original work shared by evaluation and durable cleanup.
         {
-            let mut state = execution.review.state.lock().await;
+            let mut state = execution.review_background()?.state.lock().await;
             state.active = true;
             state.queued = Some(Job {
                 step: 0,
@@ -913,7 +916,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(provider.request_count(), 0);
-        assert!(!execution.review.state.lock().await.active);
+        assert!(!execution.review_background()?.state.lock().await.active);
         Ok(())
     }
 

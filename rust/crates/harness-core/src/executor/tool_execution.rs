@@ -4,6 +4,12 @@ use crate::wire::ErrorCode::{Conflict, Invalid};
 
 mod dispatch;
 
+type AuthorizedTool = (
+    Arc<crate::tool::Tool>,
+    Option<crate::runtime::ToolContext>,
+    String,
+);
+
 /// A model tool call failure recorded without dispatch as its model-visible result.
 enum ToolCallRejection {
     /// The composition binds no granted tool by this name.
@@ -50,6 +56,14 @@ type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>
 
 // The original result precedes its replay decode credit, retained until consumption.
 type ToolReceipt<'a> = (ToolResult, Option<crate::conversation::ContentHold<'a>>);
+type SelectedInvocationTool<'a> = std::ops::ControlFlow<
+    (crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
+    Option<Arc<crate::tool::Tool>>,
+>;
+type RecoveredTool<'a> = std::ops::ControlFlow<
+    (crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
+    Arc<crate::tool::Tool>,
+>;
 
 // One canonical resolution binds both device routing and filesystem identity.
 #[derive(Default)]
@@ -59,6 +73,7 @@ struct CallTarget {
 }
 /// A settled call, refusals and interruptions included, is shown to the model.
 enum ToolInvocationOutcome<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     Controlled(crate::supervision::Control),
     Settled(crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
     Pending(OperationId),
@@ -237,17 +252,19 @@ impl<'io> StockExecution<'io> {
             Some(io) => io.canonical_digest(&selected)?,
             None => json::canonical_json_digest(&selected, None, &mut None)?,
         };
-        let _key_hold;
-        let key = with_history_io(self.io, |work| {
-            preparation_format(
-                format_args!("tool:{}:{}:selection", parent.1, invocation.call_id),
-                work,
-            )
-        })?;
-        _key_hold = self
-            .io
-            .map(|io| io.guard_owned(key.capacity() as u64))
-            .transpose()?;
+        let (_key_hold, key) = {
+            let key = with_history_io(self.io, |work| {
+                preparation_format(
+                    format_args!("tool:{}:{}:selection", parent.1, invocation.call_id),
+                    work,
+                )
+            })?;
+            let hold = self
+                .io
+                .map(|io| io.guard_owned(key.capacity() as u64))
+                .transpose()?;
+            (hold, key)
+        };
         if let Some(reference) = journal.staged_ref(parent.0, &key, self.io)?.await? {
             let (original, _hold) =
                 load_json::<HostCallSelection>(journal, &reference, self.io).await?;
@@ -294,8 +311,7 @@ impl<'io> StockExecution<'io> {
     pub(super) async fn settle_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
+        (operation_id, step): (OperationId, u32),
         (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
@@ -306,8 +322,7 @@ impl<'io> StockExecution<'io> {
             name,
             self.settle_tool_call_inner(
                 journal,
-                operation_id,
-                step,
+                (operation_id, step),
                 (invocation, pinned),
                 invocation_index,
                 prior_messages,
@@ -320,8 +335,7 @@ impl<'io> StockExecution<'io> {
     async fn settle_tool_call_inner(
         &self,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
+        (operation_id, step): (OperationId, u32),
         (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
@@ -358,6 +372,222 @@ impl<'io> StockExecution<'io> {
 
     // One admission, approval and replay path. The model adapter above supplies
     // indexed request metadata and assembles its transcript after settlement.
+    async fn verify_uninstalled_replay(
+        &self,
+        _operation_id: OperationId,
+        original: &crate::tool::RecordedInvocation,
+        (invocation, metadata): (&ToolInvocation, &Value),
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<()> {
+        if original.invocation.call_id != invocation.call_id
+            || original.invocation.name != invocation.name
+            || original.invocation.operation_id != invocation.operation_id
+            || &original.metadata != metadata
+        {
+            return Err(stock_boundary(
+                self.io,
+                Conflict,
+                "tool call identity is bound to another invocation",
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let output = self
+                .tool_hook(
+                    _operation_id,
+                    crate::hooks::HookSite::BeforeTool,
+                    (invocation, None),
+                    None,
+                    true,
+                )
+                .await?;
+            if output.blocks()
+                || output
+                    .updated_input
+                    .as_ref()
+                    .unwrap_or(&invocation.arguments)
+                    != &original.invocation.arguments
+            {
+                return Err(stock_boundary(
+                    self.io,
+                    Conflict,
+                    "tool call identity is bound to another invocation",
+                ));
+            }
+            self.append_hook_context(_hook_context, output)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if &original.invocation != invocation {
+            return Err(stock_boundary(
+                self.io,
+                Conflict,
+                "tool call identity is bound to another invocation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn authorize_selected_tool(
+        &self,
+        selected: Option<Arc<crate::tool::Tool>>,
+        invocation: &ToolInvocation,
+        target: &Result<CallTarget>,
+    ) -> Result<std::result::Result<AuthorizedTool, ToolCallRejection>> {
+        let admitted = match selected {
+            Some(tool) => self
+                .authorize_tool_invocation(
+                    &tool,
+                    invocation,
+                    target
+                        .as_ref()
+                        .ok()
+                        .and_then(|target| target.device.clone()),
+                )?
+                .map(|(context, capability)| (tool, context, capability)),
+            None if self
+                .stock
+                .epoch_tools
+                .as_ref()
+                .is_some_and(|tools| tools.iter().any(|tool| tool.name == invocation.name))
+                || self.selected_tools().was_removed(&invocation.name)? =>
+            {
+                Err(ToolCallRejection::Removed)
+            }
+            None => Err(ToolCallRejection::Unavailable),
+        };
+        Ok(admitted)
+    }
+
+    async fn tool_definition_is_bound(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (operation_id, step): (OperationId, u32),
+        name: &str,
+        definition: &crate::tool::ToolDefinition,
+        (pinned, unstarted): (bool, bool),
+    ) -> Result<bool> {
+        if !pinned
+            && unstarted
+                & self
+                    .selected_tools()
+                    .fixed_for_grants(name, self.stock.tool_scope.grants(), self.io)?
+                    .is_none()
+        {
+            let retained = self
+                .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+                .await?;
+            return Ok(retained.request.as_ref().is_some_and(|request| {
+                request
+                    .request()
+                    .tools
+                    .iter()
+                    .any(|bound| bound == definition)
+            }));
+        }
+        Ok(true)
+    }
+
+    async fn recover_recorded_tool(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (operation_id, step): (OperationId, u32),
+        (invocation, metadata): (&ToolInvocation, &Value),
+        recorded: &RecordedCall<'_>,
+        original: Option<&crate::tool::RecordedInvocation>,
+        hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<RecoveredTool<'io>> {
+        let retained = self
+            .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+            .await?;
+        let (name, revision) = invocation
+            .name
+            .rsplit_once('@')
+            .map_or((invocation.name.as_str(), None), |(name, revision)| {
+                (name, Some(revision))
+            });
+        let definition = retained
+            .request
+            .as_ref()
+            .and_then(|request| {
+                request.request().tools.iter().find(|tool| {
+                    tool.name == name && revision.is_none_or(|revision| tool.revision == revision)
+                })
+            })
+            .ok_or(Error::Indeterminate(operation_id))?;
+        match self.selected_tools().recover(definition, self.io)? {
+            Some(tool) => Ok(std::ops::ControlFlow::Continue(tool)),
+            None if matches!(recorded, RecordedCall::Completed { .. }) => {
+                // Retained results belong to the journal, even after their
+                // source is uninstalled. Only an unresolved effect needs
+                // a live handle to its original producer.
+                let original = original.ok_or(Error::Indeterminate(operation_id))?;
+                self.verify_uninstalled_replay(
+                    operation_id,
+                    original,
+                    (invocation, metadata),
+                    hook_context,
+                )
+                .await?;
+                let RecordedCall::Completed {
+                    result, projection, ..
+                } = recorded
+                else {
+                    return Err(Error::Indeterminate(operation_id));
+                };
+                let (content, receipt) = self
+                    .replay_tool_output(
+                        journal,
+                        operation_id,
+                        &original.invocation,
+                        (result, projection),
+                        (definition, false),
+                        hook_context,
+                    )
+                    .await?;
+                Ok(std::ops::ControlFlow::Break((content, receipt)))
+            }
+            None => Err(Error::Indeterminate(operation_id)),
+        }
+    }
+
+    async fn select_invocation_tool(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        request: (&ToolInvocation, &Value),
+        recorded: &RecordedCall<'_>,
+        (pinned, original): (
+            Option<Arc<crate::tool::Tool>>,
+            Option<&crate::tool::RecordedInvocation>,
+        ),
+        hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<SelectedInvocationTool<'io>> {
+        if matches!(recorded, RecordedCall::Unstarted) {
+            if pinned.is_some() {
+                return Ok(std::ops::ControlFlow::Continue(pinned));
+            }
+            self.selected_tools().refresh().await?;
+            return self
+                .selected_tools()
+                .resolve(&request.0.name, self.io)
+                .map(std::ops::ControlFlow::Continue);
+        }
+        let fixed = match pinned {
+            Some(tool) => Some(tool),
+            None => self.selected_tools().fixed_for_grants(
+                &request.0.name,
+                self.stock.tool_scope.grants(),
+                self.io,
+            )?,
+        };
+        if fixed.is_some() {
+            return Ok(std::ops::ControlFlow::Continue(fixed));
+        }
+        self.recover_recorded_tool(journal, identity, request, recorded, original, hook_context)
+            .await
+            .map(|recovered| recovered.map_continue(Some))
+    }
+
     async fn settle_invocation(
         &self,
         journal: &dyn ExecutionJournal,
@@ -368,6 +598,7 @@ impl<'io> StockExecution<'io> {
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolCallSettlement<'io>>>> {
         let pinned_call = pinned.is_some();
+        #[cfg(not(target_arch = "wasm32"))]
         let invocation_limits = self.invocation_limits();
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
@@ -413,146 +644,33 @@ impl<'io> StockExecution<'io> {
             Ok(CallTarget::default())
         };
         // A settled refusal is a durable result, independent of today's catalog.
-        if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
-            if let RecordedCall::Failed { reason, cause, .. } = recorded {
-                let content = tool_failure_content(reason, cause, self.io)?;
-                return Ok(settled_call(invocation, content, None));
-            }
+        if let RecordedCall::Failed {
+            started: None,
+            reason,
+            cause,
+            ..
+        } = recorded
+        {
+            let content = tool_failure_content(reason, cause, self.io)?;
+            return Ok(settled_call(invocation, content, None));
         }
-        let fixed = if pinned.is_some() {
-            pinned
-        } else if matches!(recorded, RecordedCall::Unstarted) {
-            None
-        } else {
-            self.selected_tools().fixed_for_grants(
-                &invocation.name,
-                self.stock.tool_scope.grants(),
-                self.io,
-            )?
-        };
-        let selected = if let Some(tool) = fixed {
-            Some(tool)
-        } else if !matches!(recorded, RecordedCall::Unstarted) {
-            let retained = self
-                .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
-                .await?;
-            let (name, revision) = invocation
-                .name
-                .rsplit_once('@')
-                .map_or((invocation.name.as_str(), None), |(name, revision)| {
-                    (name, Some(revision))
-                });
-            let definition = retained
-                .request
-                .as_ref()
-                .and_then(|request| {
-                    request.request().tools.iter().find(|tool| {
-                        tool.name == name
-                            && revision.is_none_or(|revision| tool.revision == revision)
-                    })
-                })
-                .ok_or(Error::Indeterminate(operation_id))?;
-            match self.selected_tools().recover(definition, self.io)? {
-                Some(tool) => Some(tool),
-                None if matches!(recorded, RecordedCall::Completed { .. }) => {
-                    // Retained results belong to the journal, even after their
-                    // source is uninstalled. Only an unresolved effect needs
-                    // a live handle to its original producer.
-                    let original = original
-                        .as_ref()
-                        .ok_or(Error::Indeterminate(operation_id))?;
-                    if original.0.invocation.call_id != invocation.call_id
-                        || original.0.invocation.name != invocation.name
-                        || original.0.invocation.operation_id != invocation.operation_id
-                        || &original.0.metadata != metadata
-                    {
-                        return Err(stock_boundary(
-                            self.io,
-                            Conflict,
-                            "tool call identity is bound to another invocation",
-                        ));
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let output = self
-                            .tool_hook(
-                                operation_id,
-                                crate::hooks::HookSite::BeforeTool,
-                                (&invocation, None),
-                                None,
-                                true,
-                            )
-                            .await?;
-                        if output.blocks()
-                            || output
-                                .updated_input
-                                .as_ref()
-                                .unwrap_or(&invocation.arguments)
-                                != &original.0.invocation.arguments
-                        {
-                            return Err(stock_boundary(
-                                self.io,
-                                Conflict,
-                                "tool call identity is bound to another invocation",
-                            ));
-                        }
-                        self.append_hook_context(_hook_context, output)?;
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if original.0.invocation != invocation {
-                        return Err(stock_boundary(
-                            self.io,
-                            Conflict,
-                            "tool call identity is bound to another invocation",
-                        ));
-                    }
-                    let RecordedCall::Completed {
-                        result, projection, ..
-                    } = recorded
-                    else {
-                        return Err(Error::Indeterminate(operation_id));
-                    };
-                    let (content, receipt) = self
-                        .replay_tool_output(
-                            journal,
-                            operation_id,
-                            &original.0.invocation,
-                            result,
-                            projection,
-                            (definition, false),
-                            _hook_context,
-                        )
-                        .await?;
-                    return Ok(settled_call(invocation, content, receipt));
-                }
-                None => return Err(Error::Indeterminate(operation_id)),
+        let selected = match self
+            .select_invocation_tool(
+                journal,
+                (operation_id, step),
+                (&invocation, metadata),
+                &recorded,
+                (pinned, original.as_ref().map(|record| &record.0)),
+                _hook_context,
+            )
+            .await?
+        {
+            std::ops::ControlFlow::Continue(tool) => tool,
+            std::ops::ControlFlow::Break((content, receipt)) => {
+                return Ok(settled_call(invocation, content, receipt));
             }
-        } else {
-            self.selected_tools().refresh().await?;
-            self.selected_tools().resolve(&invocation.name, self.io)?
         };
-        let admitted = match selected {
-            Some(tool) => self
-                .authorize_tool_invocation(
-                    &tool,
-                    &invocation,
-                    target
-                        .as_ref()
-                        .ok()
-                        .and_then(|target| target.device.clone()),
-                )?
-                .map(|(context, capability)| (tool, context, capability)),
-            None if self
-                .stock
-                .epoch_tools
-                .as_ref()
-                .is_some_and(|tools| tools.iter().any(|tool| tool.name == invocation.name))
-                || self.selected_tools().was_removed(&invocation.name)? =>
-            {
-                Err(ToolCallRejection::Removed)
-            }
-            None => Err(ToolCallRejection::Unavailable),
-        };
+        let admitted = self.authorize_selected_tool(selected, &invocation, &target)?;
         let (tool, mut context, _capability) = match admitted {
             Ok(admitted) => admitted,
             Err(rejection) => {
@@ -562,38 +680,30 @@ impl<'io> StockExecution<'io> {
                 return Ok(settled_call(invocation, content, None));
             }
         };
-        if !pinned_call
-            && matches!(recorded, RecordedCall::Unstarted)
-                & self
-                    .selected_tools()
-                    .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
-                    .is_none()
+        if !self
+            .tool_definition_is_bound(
+                journal,
+                (operation_id, step),
+                &invocation.name,
+                &tool.definition,
+                (pinned_call, matches!(recorded, RecordedCall::Unstarted)),
+            )
+            .await?
         {
-            let retained = self
-                .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+            let content = self
+                .settle_tool_refusal(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation,
+                    ToolCallRejection::Failed(stock_boundary(
+                        self.io,
+                        Conflict,
+                        "tool definition changed after the model request",
+                    )),
+                )
                 .await?;
-            if !retained.request.as_ref().is_some_and(|request| {
-                request
-                    .request()
-                    .tools
-                    .iter()
-                    .any(|definition| definition == &tool.definition)
-            }) {
-                let content = self
-                    .settle_tool_refusal(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation,
-                        ToolCallRejection::Failed(stock_boundary(
-                            self.io,
-                            Conflict,
-                            "tool definition changed after the model request",
-                        )),
-                    )
-                    .await?;
-                return Ok(settled_call(invocation, content, None));
-            }
+            return Ok(settled_call(invocation, content, None));
         }
         let tool = tool.as_ref();
         if let Some(context) = &mut context {
@@ -668,14 +778,14 @@ impl<'io> StockExecution<'io> {
             }
             (effective, output, target)
         };
-        if let Some(recorded) = &original {
-            if recorded.0.invocation != invocation || &recorded.0.metadata != metadata {
-                return Err(stock_boundary(
-                    self.io,
-                    Conflict,
-                    "tool call identity is bound to another invocation",
-                ));
-            }
+        if let Some(recorded) = &original
+            && (recorded.0.invocation != invocation || &recorded.0.metadata != metadata)
+        {
+            return Err(stock_boundary(
+                self.io,
+                Conflict,
+                "tool call identity is bound to another invocation",
+            ));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let hook_decision = match pre_hook.take_tool_decision() {
@@ -728,8 +838,7 @@ impl<'io> StockExecution<'io> {
                     journal,
                     operation_id,
                     &invocation,
-                    result,
-                    projection,
+                    (result, projection),
                     (&tool.definition, tool.executor.is_code_mode()),
                     _hook_context,
                 )
@@ -865,8 +974,7 @@ impl<'io> StockExecution<'io> {
                                 filesystem
                             },
                         },
-                        tool,
-                        &mut context,
+                        (tool, &mut context),
                         // The exclusive invocation claim proves its predecessor
                         // future retired. A drop-cancellable executor fenced all
                         // its I/O too, even without a provider-owner restart.
@@ -878,8 +986,8 @@ impl<'io> StockExecution<'io> {
                                     && tool.executor.cancellable_on_drop())
                                 .then_some(records.as_slice())
                             }),
+                            original_started_at,
                         ),
-                        original_started_at,
                         _hook_context,
                     )
                     .await?
@@ -890,6 +998,7 @@ impl<'io> StockExecution<'io> {
                         }
                         (content, receipt)
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
                     ToolInvocationOutcome::Controlled(control) => {
                         return Ok(ExecutionProgress::Controlled(control));
                     }
@@ -992,12 +1101,11 @@ impl<'io> StockExecution<'io> {
         // A retained alias may not be installed in today's registry. Resolve
         // its target from the same immutable binding used for admission.
         let resolved;
-        let selected = match pinned {
-            Some(tool) => Some(tool),
-            None => {
-                resolved = self.selected_tools().resolve(&invocation.name, None)?;
-                resolved.as_deref()
-            }
+        let selected = if let Some(tool) = pinned {
+            Some(tool)
+        } else {
+            resolved = self.selected_tools().resolve(&invocation.name, None)?;
+            resolved.as_deref()
         };
         let canonical = match selected {
             Some(tool) => match tool.executor.canonical(invocation, self.native_work()) {
@@ -1100,15 +1208,15 @@ impl<'io> StockExecution<'io> {
     /// Admits a call no model made, such as a source hook's command, through
     /// the same grant, schema and resource checks as a model's call. A
     /// rejection is returned as its error.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn admit_unattended(
         &self,
         tool: &crate::tool::Tool,
         invocation: &ToolInvocation,
     ) -> Result<()> {
-        match self.admit_tool_invocation(tool, invocation, None)? {
-            Ok(_) => Ok(()),
-            Err(rejection) => Err(rejection.into_failure(self.io).1),
-        }
+        self.admit_tool_invocation(tool, invocation, None)?
+            .map(|_| ())
+            .map_err(|rejection| rejection.into_failure(self.io).1)
     }
 
     fn admit_tool_invocation(
@@ -1119,7 +1227,7 @@ impl<'io> StockExecution<'io> {
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
         // A native declaration is granted by the capability it stands for.
-        let granted = tool.executor.capability().map(Arc::as_ref).unwrap_or(tool);
+        let granted = tool.executor.capability().map_or(tool, Arc::as_ref);
         let capability = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:call:{}", granted.definition.name), work)
         })?;
@@ -1194,7 +1302,7 @@ impl<'io> StockExecution<'io> {
         // call's original ledger; the prompt's custody is held while it settles.
         // Policy and approval judge the canonical call, whatever its spelling.
         let original_canonical = tool.executor.canonical(invocation, self.native_work())?;
-        let judged_tool = tool.executor.capability().map(Arc::as_ref).unwrap_or(tool);
+        let judged_tool = tool.executor.capability().map_or(tool, Arc::as_ref);
         let normalize =
             original_canonical.as_deref().unwrap_or(invocation).name != judged_tool.definition.name;
         // A selected revision retains its journal spelling, while every policy

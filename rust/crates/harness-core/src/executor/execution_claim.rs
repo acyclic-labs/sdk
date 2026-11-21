@@ -71,9 +71,9 @@ impl StartedCalls {
     /// never mistaken for a fenced predecessor's.
     pub(crate) fn start(&self, call: OperationId, io: Option<&PreparationIo>) -> Result<()> {
         let mut calls = self.calls();
-        if !calls.contains_key(&call) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = calls.entry(call) {
             let bytes = std::mem::size_of::<(OperationId, Storage)>() as u64;
-            calls.insert(call, fund(io, bytes, 1)?);
+            entry.insert(fund(io, bytes, 1)?);
         }
         Ok(())
     }

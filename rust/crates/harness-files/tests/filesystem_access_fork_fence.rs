@@ -45,8 +45,7 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
             fixture
                 .host
                 .fork_volume(
-                    &fixture.volume,
-                    &source,
+                    (&fixture.volume, &source),
                     &fixture.generation()?,
                     &target,
                     &destination,
@@ -161,8 +160,7 @@ async fn expiring_fork(offset: u64) -> Result<(), Box<dyn Error>> {
     let result = fixture
         .host
         .fork_volume(
-            &fixture.volume,
-            &source,
+            (&fixture.volume, &source),
             &fixture.generation()?,
             &target,
             &destination,

@@ -102,7 +102,7 @@ async fn family_under(
     };
     let mut children = Vec::new();
     for name in ["left", "right"] {
-        let record = InboxRecord::Spawn(SpawnRequest {
+        let record = InboxRecord::Spawn(Box::new(SpawnRequest {
             by: sender.clone(),
             id: crate::agent::IntentId::try_from(name)?,
             brief: None,
@@ -116,7 +116,7 @@ async fn family_under(
                 peers: Default::default(),
             },
             history: None,
-        });
+        }));
         let Delivered::Committed { inbox } = bound.agents().send(&parent, &sender, &record).await?
         else {
             return Err("child creation did not commit".into());

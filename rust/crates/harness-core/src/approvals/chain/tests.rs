@@ -253,8 +253,7 @@ async fn human_override_ignores_policy_allow_and_policy_digest_must_match() -> R
         &request,
         &files,
         ApprovalResponder::Human("human"),
-        1,
-        &decision,
+        (1, &decision),
     )
     .await?;
     assert!(
@@ -265,8 +264,7 @@ async fn human_override_ignores_policy_allow_and_policy_digest_must_match() -> R
             &request,
             &files,
             ApprovalResponder::Human("forged"),
-            1,
-            &decision
+            (1, &decision),
         )
         .await
         .is_err()
@@ -279,8 +277,7 @@ async fn human_override_ignores_policy_allow_and_policy_digest_must_match() -> R
             &request,
             &files,
             ApprovalResponder::Rules("human"),
-            1,
-            &decision
+            (1, &decision),
         )
         .await
         .is_err()
@@ -293,8 +290,7 @@ async fn human_override_ignores_policy_allow_and_policy_digest_must_match() -> R
             &request,
             &files,
             ApprovalResponder::Human("human"),
-            2,
-            &decision
+            (2, &decision),
         )
         .await
         .is_err()
@@ -382,8 +378,7 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
         &request,
         &files,
         ApprovalResponder::Rules("rules"),
-        1,
-        &decision,
+        (1, &decision),
     )
     .await?;
     assert!(
@@ -394,8 +389,7 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
             &request,
             &files,
             ApprovalResponder::Llm("rules"),
-            1,
-            &decision,
+            (1, &decision),
         )
         .await
         .is_err()
@@ -420,8 +414,7 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
         &request,
         &files,
         ApprovalResponder::Parent(&parent),
-        1,
-        &decision,
+        (1, &decision),
     )
     .await?;
     let foreign_parent = AgentId::from_bytes([4; 16]);
@@ -437,8 +430,7 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
                 &request,
                 &files,
                 responder,
-                1,
-                &decision,
+                (1, &decision),
             )
             .await
             .is_err()
@@ -452,8 +444,7 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
             &request,
             &files,
             ApprovalResponder::Parent(&parent),
-            1,
-            &decision,
+            (1, &decision),
         )
         .await
         .is_err()

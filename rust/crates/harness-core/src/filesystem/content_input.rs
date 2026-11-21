@@ -48,6 +48,7 @@ pub(super) enum PublicationInput<'a> {
     Stream(&'a mut dyn crate::conversation::ContentSource),
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct ContentPublication<'a> {
     pub volume: &'a VolumeRef,
     pub grant: &'a ContentGrant,
@@ -71,7 +72,7 @@ impl PublicationInput<'_> {
         }
     }
 
-    pub(super) fn mutation_bytes(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
+    pub(super) fn mutation_bytes(self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match self {
             Self::Bytes(bytes) => bytes.mutation_bytes(io),
             Self::Owned(bytes) => bytes.mutation_bytes(io),
@@ -110,7 +111,10 @@ impl HashedSource<'_> {
                 "content source read budget exhausted; recovery: supply sufficient source-byte credit",
             ));
         }
-        let read = self.source.read(&mut destination[..maximum]).fuse();
+        let prefix = destination
+            .get_mut(..maximum)
+            .ok_or_else(|| std::io::Error::other("content read exceeds its destination"))?;
+        let read = self.source.read(prefix).fuse();
         let cancelled = cancellation.cancelled().fuse();
         let mut read = core::pin::pin!(read);
         let mut cancelled = core::pin::pin!(cancelled);
@@ -136,7 +140,10 @@ impl HashedSource<'_> {
                 ..Default::default()
             })
             .map_err(std::io::Error::other)?;
-        self.hash.update(&destination[..count]);
+        let bytes = destination
+            .get(..count)
+            .ok_or_else(|| std::io::Error::other("content read exceeded its destination"))?;
+        self.hash.update(bytes);
         Ok(count)
     }
 }

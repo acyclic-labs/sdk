@@ -27,7 +27,7 @@ pub type ApproverModels = std::collections::BTreeMap<
     String,
     (
         crate::model::Model,
-        std::sync::Arc<dyn crate::model::ModelProvider>,
+        acyclic_stream::ProviderOwner<dyn crate::model::ModelProvider>,
     ),
 >;
 pub use agent::{

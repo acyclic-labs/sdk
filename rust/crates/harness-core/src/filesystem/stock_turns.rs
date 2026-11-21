@@ -187,9 +187,9 @@ impl TurnContext for Grants {
 /// the tools with the turn's agent tools bound to its effects, the limits and
 /// compaction, then the host's [`TurnContext`].
 pub struct StockExecutors {
-    binding: Arc<crate::model::ResolvedModel>,
+    binding: acyclic_stream::ProviderOwner<crate::model::ResolvedModel>,
     tools: ToolRegistry,
-    models: Option<Arc<crate::model::ModelResolver>>,
+    models: Option<acyclic_stream::ProviderOwner<crate::model::ModelResolver>>,
     limits: Limits,
     compaction: Option<CompactionPolicy>,
     agent_tools: Vec<String>,
@@ -213,25 +213,31 @@ impl StockExecutors {
 
     /// Binds child and resumed selections through the same protected catalog.
     #[must_use]
-    pub fn with_models(mut self, models: Arc<crate::model::ModelResolver>) -> Self {
+    pub fn with_models(
+        mut self,
+        models: acyclic_stream::ProviderOwner<crate::model::ModelResolver>,
+    ) -> Self {
         self.models = Some(models);
         self
     }
 
-    fn selected(&self, agent: &AgentState) -> Result<Arc<crate::model::ResolvedModel>> {
+    fn selected(
+        &self,
+        agent: &AgentState,
+    ) -> Result<acyclic_stream::ProviderOwner<crate::model::ResolvedModel>> {
         match agent
             .profile
             .as_ref()
             .and_then(|profile| profile.model.as_deref())
         {
-            None => Ok(Arc::clone(&self.binding)),
+            None => Ok(self.binding.clone()),
             Some(selection)
                 if selection
                     .strip_prefix(self.binding.0.provider.as_str())
                     .and_then(|suffix| suffix.strip_prefix('/'))
                     == Some(self.binding.0.name.as_str()) =>
             {
-                Ok(Arc::clone(&self.binding))
+                Ok(self.binding.clone())
             }
             Some(selection) => self
                 .models
@@ -248,13 +254,15 @@ impl StockExecutors {
     /// selects automatic compaction budgets separately for each selected model.
     #[must_use]
     pub fn new(
-        (model, provider): (Model, Arc<dyn ModelProvider>),
+        (model, provider): (Model, acyclic_stream::ProviderOwner<dyn ModelProvider>),
         tools: ToolRegistry,
         (limits, compaction): (Limits, impl Into<Option<CompactionPolicy>>),
         context: Arc<dyn TurnContext>,
     ) -> Self {
         Self {
-            binding: Arc::new(crate::model::ResolvedModel::new((model, provider))),
+            binding: acyclic_stream::ProviderOwner::new(crate::model::ResolvedModel::new((
+                model, provider,
+            ))),
             tools,
             models: None,
             limits,
@@ -402,7 +410,7 @@ impl TurnExecutors for StockExecutors {
         turn: OperationId,
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
+    ) -> BoxProviderFuture<'a, Result<acyclic_stream::ProviderOwner<dyn Executor>>> {
         Box::pin(async move {
             let binding = self.selected(agent)?;
             let native = binding.native_tools()?;
@@ -460,12 +468,12 @@ impl TurnExecutors for StockExecutors {
                     .1
                     .bind_workspace(agent, input, &authority.content, self.limits.file_bytes)
             {
-                Arc::new(crate::model::ResolvedModel::new((
+                acyclic_stream::ProviderOwner::new(crate::model::ResolvedModel::new((
                     binding.0.clone(),
                     provider.await?,
                 )))
             } else {
-                Arc::clone(&binding)
+                binding.clone()
             };
             let executor = StockExecutor::from_binding(binding, ContextPipeline::default(), tools)
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
@@ -545,7 +553,8 @@ impl TurnExecutors for StockExecutors {
                 Some(native) => executor.with_native_tools(native)?,
                 None => executor,
             };
-            Ok(Arc::new(executor) as Arc<dyn Executor>)
+            Ok(acyclic_stream::ProviderOwner::new(executor)
+                as acyclic_stream::ProviderOwner<dyn Executor>)
         })
     }
 }

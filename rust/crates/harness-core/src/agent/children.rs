@@ -151,7 +151,7 @@ impl PartialEq for Children {
 impl Eq for Children {}
 
 fn right(id: [u8; 16], bit: u8) -> bool {
-    id[usize::from(bit) / 8] & (1 << (7 - bit % 8)) != 0
+    u128::from_be_bytes(id).rotate_left(u32::from(bit)) >> 127 != 0
 }
 type Branch = (Digest, u8, Digest, bool);
 

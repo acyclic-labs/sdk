@@ -134,7 +134,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             acyclic_actors::guest::Requests::default(),
             provider,
             within,
-            Arc::new(handler),
+            acyclic_stream::ProviderOwner::new(handler),
             clock,
             composer,
         )?;
@@ -172,7 +172,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         requests: acyclic_actors::guest::Requests,
         provider: acyclic_stream::ProviderOwner<P>,
         within: ActorReference,
-        handler: Arc<dyn Handler>,
+        handler: acyclic_stream::ProviderOwner<dyn Handler>,
         clock: Arc<dyn Clock>,
         composer: Option<Arc<dyn Composer>>,
     ) -> Result<Self, Error> {
@@ -202,7 +202,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     pub fn rehosted(
         &self,
         requests: acyclic_actors::guest::Requests,
-        handler: Arc<dyn Handler>,
+        handler: acyclic_stream::ProviderOwner<dyn Handler>,
         clock: Arc<dyn Clock>,
         composer: Option<Arc<dyn Composer>>,
     ) -> Result<Self, Error> {
@@ -783,7 +783,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let conditions = admission.conditions(from, to)?;
         admission.validate(&*self.provider, from, to).await?;
         let mut request = send(to, &sender, &InboxRecord::Message(message.clone()))?;
-        request.effects[0].conditions.extend(conditions);
+        request
+            .effects
+            .first_mut()
+            .ok_or(Error::Record("peer delivery is missing its commit effect"))?
+            .conditions
+            .extend(conditions);
         self.deliver(to, request).await
     }
 

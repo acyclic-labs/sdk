@@ -5,24 +5,32 @@ use super::*;
 pub(super) const SHOW_PAGE_BYTES: u64 = 64 * 1024;
 
 pub(super) fn shown_file(path: &str, bytes: &[u8], offset: u64, total: u64) -> GitFilesystemResult {
-    let mut value = match std::str::from_utf8(bytes) {
-        Ok(text) => json!({ "path": path, "text": text }),
-        Err(_) => json!({
-            "path": path,
-            "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
-        }),
+    let mut value = serde_json::Map::new();
+    value.insert("path".into(), json!(path));
+    match std::str::from_utf8(bytes) {
+        Ok(text) => value.insert("text".into(), json!(text)),
+        Err(_) => value.insert(
+            "base64".into(),
+            json!(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                bytes
+            )),
+        ),
     };
-    value["offset"] = json!(offset.to_string());
-    value["byteLength"] = json!(total.to_string());
-    value["nextOffset"] = json!(
-        offset
-            .checked_add(bytes.len() as u64)
-            .filter(|next| *next < total)
-            .map(|next| next.to_string())
+    value.insert("offset".into(), json!(offset.to_string()));
+    value.insert("byteLength".into(), json!(total.to_string()));
+    value.insert(
+        "nextOffset".into(),
+        json!(
+            offset
+                .checked_add(bytes.len() as u64)
+                .filter(|next| *next < total)
+                .map(|next| next.to_string())
+        ),
     );
     GitFilesystemResult::Data {
         kind: "file".into(),
-        value,
+        value: serde_json::Value::Object(value),
     }
 }
 

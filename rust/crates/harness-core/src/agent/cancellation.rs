@@ -122,7 +122,8 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     for cut in ranges {
         let mut from = cut.from;
         while from < cut.through {
-            let limit = (cut.through - from).min(super::MAX_QUEUED as u64) as u32;
+            let limit = u32::try_from((cut.through - from).min(super::MAX_QUEUED as u64))
+                .map_err(|_| Error::Record("cancellation page exceeds its record budget"))?;
             let end = from + u64::from(limit);
             let mut sources = provider
                 .read(ReadRequest {
@@ -208,7 +209,10 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                     .push(acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
                 request.effects.len() - 1
             });
-        let effect = &mut request.effects[index];
+        let effect = request
+            .effects
+            .get_mut(index)
+            .ok_or(Error::Record("cancellation is missing its commit effect"))?;
         if let Some(condition) = &fence {
             effect.conditions.push(condition.clone());
         }

@@ -56,14 +56,16 @@ where
         retry: [u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<ToolTerminalOutcome> {
-        let path_hold;
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::distributed::execution_path(query.turn, work)
-        })?;
-        path_hold = io
-            .filter(|io| io.original_native_work().is_none())
-            .map(|io| io.guard_owned(path.as_str().len() as u64))
-            .transpose()?;
+        let (path_hold, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::distributed::execution_path(query.turn, work)
+            })?;
+            let hold = io
+                .filter(|io| io.original_native_work().is_none())
+                .map(|io| io.guard_owned(path.as_str().len() as u64))
+                .transpose()?;
+            (hold, path)
+        };
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history
             .as_mut()

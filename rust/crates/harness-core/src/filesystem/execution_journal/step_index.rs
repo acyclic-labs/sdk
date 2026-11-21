@@ -338,22 +338,47 @@ pub(super) mod codec_fuzz {
                     assert_eq!(entry.step, step);
                     let encoded = encode(&entry, previous);
                     assert_eq!(encoded.as_slice(), value);
-                    for length in 0..113 {
-                        assert!(decode(&value[..length], reference, step, None).is_err());
+                    let mut truncated = &encoded.bytes[..113];
+                    while let Some((_, prefix)) = truncated.split_last() {
+                        assert!(decode(prefix, reference, step, None).is_err());
+                        truncated = prefix;
                     }
-                    let mut invalid_sequence = value.to_vec();
+                    let with_bytes = |bytes| EncodedEntry {
+                        bytes,
+                        has_tool: encoded.has_tool,
+                    };
+                    let mut invalid_sequence = encoded.bytes;
                     invalid_sequence[..8].fill(0);
-                    assert!(decode(&invalid_sequence, reference, step, None).is_err());
-                    let mut invalid_flags = value.to_vec();
+                    assert!(
+                        decode(
+                            with_bytes(invalid_sequence).as_slice(),
+                            reference,
+                            step,
+                            None
+                        )
+                        .is_err()
+                    );
+                    let mut invalid_flags = encoded.bytes;
                     invalid_flags[72] |= 128;
-                    assert!(decode(&invalid_flags, reference, step, None).is_err());
-                    let mut invalid_previous = value.to_vec();
+                    assert!(
+                        decode(with_bytes(invalid_flags).as_slice(), reference, step, None)
+                            .is_err()
+                    );
+                    let mut invalid_previous = encoded.bytes;
                     if previous.is_some() {
                         invalid_previous[73..81].copy_from_slice(&sequence.to_le_bytes());
                     } else {
                         invalid_previous[73] = 1;
                     }
-                    assert!(decode(&invalid_previous, reference, step, None).is_err());
+                    assert!(
+                        decode(
+                            with_bytes(invalid_previous).as_slice(),
+                            reference,
+                            step,
+                            None
+                        )
+                        .is_err()
+                    );
                     let mut trailing = value.to_vec();
                     trailing.push(0);
                     assert!(decode(&trailing, reference, step, None).is_err());

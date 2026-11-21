@@ -93,8 +93,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
         let result = StockExecution::ordinary(&executor)
             .settle_tool_call(
                 &journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation, None),
                 0,
                 &mut prior,

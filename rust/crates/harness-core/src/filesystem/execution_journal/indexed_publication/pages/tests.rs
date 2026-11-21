@@ -41,29 +41,33 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
                 };
                 let contributions = if unconditional {
                     [
-                        Contribution::Append {
+                        Contribution {
                             path: &context,
+                            condition: None,
                             record: &envelope,
                         },
-                        Contribution::Append {
+                        Contribution {
                             path: &epoch,
+                            condition: None,
                             record: &snapshot,
                         },
                     ]
                 } else {
                     [
-                        Contribution::Conditioned {
-                            condition: CommitCondition::Head {
+                        Contribution {
+                            path: &context,
+                            condition: Some(CommitCondition::Head {
                                 path: context.clone(),
                                 expected: 1,
                                 commit_id: seed.commit_id,
-                            },
+                            }),
                             record: &envelope,
                         },
-                        Contribution::Conditioned {
-                            condition: CommitCondition::Absent {
+                        Contribution {
+                            path: &epoch,
+                            condition: Some(CommitCondition::Absent {
                                 path: epoch.clone(),
-                            },
+                            }),
                             record: &snapshot,
                         },
                     ]
@@ -306,17 +310,19 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     let envelope = OwnedBytes::from_static(b"original context envelope");
     let snapshot = OwnedBytes::from_static(b"original epoch checkpoint");
     let contributions = [
-        Contribution::Conditioned {
-            condition: CommitCondition::Tail {
+        Contribution {
+            path: &context,
+            condition: Some(CommitCondition::Tail {
                 path: context.clone(),
                 expected: 1,
-            },
+            }),
             record: &envelope,
         },
-        Contribution::Conditioned {
-            condition: CommitCondition::Absent {
+        Contribution {
+            path: &epoch,
+            condition: Some(CommitCondition::Absent {
                 path: epoch.clone(),
-            },
+            }),
             record: &snapshot,
         },
     ];

@@ -1122,8 +1122,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
     let progress = execution
         .settle_tool_call(
             &journal,
-            input.operation_id,
-            0,
+            (input.operation_id, 0),
             (invocation, None),
             0,
             &mut messages,
@@ -1402,8 +1401,7 @@ async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<
     let progress = StockExecution::ordinary(&executor)
         .settle_tool_call(
             &journal,
-            operation,
-            0,
+            (operation, 0),
             (invocation, None),
             0,
             &mut messages,

@@ -47,13 +47,15 @@ where
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let mut base = self
+        let base = self
             .workspace(plan.common_ancestor_workspace_id())
             .await?
             .generation(plan.common_ancestor(), WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut base = base;
         #[cfg(not(target_arch = "wasm32"))]
         if let OwnedView::Checkout(witness) = &target_view {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -97,13 +99,22 @@ where
             &cancellation,
         )
         .await?;
-        let mut value = json!({
-            "from": hex::encode(base.id().to_bytes().as_slice()),
-            "to": hex::encode(child.id().to_bytes().as_slice()),
-            "parent": hex::encode(parent.id().to_bytes().as_slice()),
-            "fileChanges": diff.counts.file_changes,
-            "bindingChanges": diff.counts.binding_changes,
-        });
+        let mut value = serde_json::Map::from_iter([
+            (
+                "from".into(),
+                json!(hex::encode(base.id().to_bytes().as_slice())),
+            ),
+            (
+                "to".into(),
+                json!(hex::encode(child.id().to_bytes().as_slice())),
+            ),
+            (
+                "parent".into(),
+                json!(hex::encode(parent.id().to_bytes().as_slice())),
+            ),
+            ("fileChanges".into(), json!(diff.counts.file_changes)),
+            ("bindingChanges".into(), json!(diff.counts.binding_changes)),
+        ]);
         if !stat {
             let parent_diff = git_compatible_diff(
                 &base,
@@ -124,22 +135,22 @@ where
                 .iter()
                 .map(|change| change.path.as_str())
                 .collect::<BTreeSet<_>>();
-            value["parentPaths"] = serde_json::Value::Array(parent_diff.paths.iter().map(|change| json!({
+            value.insert("parentPaths".into(), serde_json::Value::Array(parent_diff.paths.iter().map(|change| json!({
                 "path":change.path, "status":change.status,
                 "side":if child_paths.contains(change.path.as_str()) { "both" } else { "parent" },
-            })).collect());
-            value["paths"] = serde_json::Value::Array(
+            })).collect()));
+            value.insert("paths".into(), serde_json::Value::Array(
                 diff.paths
                     .iter()
                     .map(|change| json!({"path":change.path,"status":change.status,"side": if parent_paths.contains(change.path.as_str()) { "both" } else { "child" }}))
                     .collect(),
-            );
+            ));
         }
         self.validate_lease().await?;
         Ok(super::Output {
             command: Some(GitCommandOutput::Filesystem(GitFilesystemResult::Data {
                 kind: "diff".into(),
-                value,
+                value: serde_json::Value::Object(value),
             })),
             switched: None,
         })

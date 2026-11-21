@@ -32,13 +32,22 @@ where
     crate::conversation::BoundedContentFuture::new(None, || futures::FutureExt::map(build(), Ok))
 }
 
+pub(in crate::filesystem) struct WorkspacePublicationChanges<'a, A: 'static, O: 'static> {
+    pub(in crate::filesystem) mutations: &'a [WorkspaceMutation],
+    pub(in crate::filesystem) staged: Option<(
+        acyclic_fs::Transaction<A, O>,
+        String,
+        acyclic_fs::StagedContent,
+    )>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
     Authorized(
-        acyclic_fs::access::PolicyFence,
+        &'a acyclic_fs::access::PolicyFence,
         &'a ContentGrant,
-        Option<acyclic_fs::access::PolicyFence>,
+        Option<&'a acyclic_fs::access::PolicyFence>,
     ),
 }
 
@@ -58,7 +67,7 @@ impl FilePublication<'_> {
 
     fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
         match self {
-            Self::Authorized(fence, _, _) => Some(fence),
+            Self::Authorized(fence, _, _) => Some(*fence),
             Self::Replace(_) => None,
         }
     }
@@ -71,7 +80,7 @@ fn require_publication_time(
 ) -> Result<()> {
     if let FilePublication::Authorized(_, grant, root_fence) = publication {
         grant.recheck(io)?;
-        require_publication_fence(root_fence, "root", now)?;
+        require_publication_fence(root_fence.copied(), "root", now)?;
     }
     require_publication_fence(publication.fence(), "volume", now)
 }

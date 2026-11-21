@@ -193,7 +193,10 @@ pub fn resolve_child_branch(
             "only direct children can be coordinated; ask the owning parent".into(),
         ));
     }
-    arguments[index] = path.map_or_else(|| child.to_string(), |path| format!("{child}:{path}"));
+    let operand = path.map_or_else(|| child.to_string(), |path| format!("{child}:{path}"));
+    *arguments
+        .get_mut(index)
+        .ok_or_else(|| Error::Invalid("child branch operand is absent".into()))? = operand;
     Ok(Some(child))
 }
 
@@ -233,7 +236,7 @@ impl AgentTool {
             return Ok(Some(Box::new(manifest)));
         }
         let copies_operation = identity(b"copies");
-        let copies = match writer
+        let copies = if let Some(copies) = writer
             .observe_changes(
                 writer.volume(),
                 copies_operation,
@@ -243,59 +246,58 @@ impl AgentTool {
             .await?
             .0
         {
-            Some(copies) => copies,
-            None => {
-                // Resolve with the same path and authority checks as read. Stage
-                // the complete selected set in one publication, never one commit
-                // per file. No file is delivered if a member cannot be read.
-                let mut sources = Vec::new();
-                let mut remaining = self.turn.maximum_bytes;
-                for (index, path) in paths.iter().enumerate() {
-                    let destination = format!("inputs/messages/{operation}/files/{index}");
-                    let exhausted =
-                        || Error::tool_rejected("selected files exceed the send byte budget");
-                    if let Some(budget) = remaining {
-                        remaining = Some(
-                            budget
-                                .checked_sub(
-                                    destination.len() as u64
-                                        + std::mem::size_of::<(
-                                            String,
-                                            crate::conversation::FileRef,
-                                            acyclic_stream::OwnedBytes,
-                                        )>() as u64,
-                                )
-                                .ok_or_else(exhausted)?,
-                        );
-                    }
-                    let (file, bytes, _) = context
-                        .read_tool_path_bounded(path, None, remaining, None)
-                        .await?;
-                    if let Some(budget) = remaining {
-                        let metadata_bytes = file.logical_owned_bytes()?;
-                        remaining = Some(
-                            budget
-                                .checked_sub(bytes.len() as u64)
-                                .and_then(|remaining| remaining.checked_sub(metadata_bytes))
-                                .ok_or_else(exhausted)?,
-                        );
-                    }
-                    sources.push((destination, file, bytes));
+            copies
+        } else {
+            // Resolve with the same path and authority checks as read. Stage
+            // the complete selected set in one publication, never one commit
+            // per file. No file is delivered if a member cannot be read.
+            let mut sources = Vec::new();
+            let mut remaining = self.turn.maximum_bytes;
+            for (index, path) in paths.iter().enumerate() {
+                let destination = format!("inputs/messages/{operation}/files/{index}");
+                let exhausted =
+                    || Error::tool_rejected("selected files exceed the send byte budget");
+                if let Some(budget) = remaining {
+                    remaining = Some(
+                        budget
+                            .checked_sub(
+                                destination.len() as u64
+                                    + std::mem::size_of::<(
+                                        String,
+                                        crate::conversation::FileRef,
+                                        acyclic_stream::OwnedBytes,
+                                    )>() as u64,
+                            )
+                            .ok_or_else(exhausted)?,
+                    );
                 }
-                let changes = sources
-                    .iter()
-                    .map(|(path, file, bytes)| ContentChange::CreateAbsent {
-                        path,
-                        bytes: bytes.as_ref(),
-                        media_type: file.descriptor().media_type(),
-                        display_name: file.display_name(),
-                    })
-                    .collect::<Vec<_>>();
-                writer
-                    .stage_changes(writer.volume(), copies_operation, &changes, access)?
-                    .await?
-                    .0
+                let (file, bytes, _) = context
+                    .read_tool_path_bounded(path, None, remaining, None)
+                    .await?;
+                if let Some(budget) = remaining {
+                    let metadata_bytes = file.logical_owned_bytes()?;
+                    remaining = Some(
+                        budget
+                            .checked_sub(bytes.len() as u64)
+                            .and_then(|remaining| remaining.checked_sub(metadata_bytes))
+                            .ok_or_else(exhausted)?,
+                    );
+                }
+                sources.push((destination, file, bytes));
             }
+            let changes = sources
+                .iter()
+                .map(|(path, file, bytes)| ContentChange::CreateAbsent {
+                    path,
+                    bytes: bytes.as_ref(),
+                    media_type: file.descriptor().media_type(),
+                    display_name: file.display_name(),
+                })
+                .collect::<Vec<_>>();
+            writer
+                .stage_changes(writer.volume(), copies_operation, &changes, access)?
+                .await?
+                .0
         };
         let items = copies
             .files()
@@ -350,7 +352,7 @@ impl AgentTool {
         if self.name == "send" {
             let id = IntentId::try_from(format!("send:{operation}")).map_err(Error::from)?;
             if let Some(sent) = turn.effects.sent(&id).await? {
-                return Ok(sent_result(sent));
+                return Ok(sent_result(&sent));
             }
         }
         let _spawning = if self.name == "spawn" {
@@ -822,22 +824,25 @@ impl AgentTool {
                         }
                         None => (None, None),
                     };
-                    let mut entry = json!({
-                        "name": name,
-                        "agent": child.as_str(),
-                        "phase": serde_json::to_value(&observed.phase)
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
-                        "answer": answer,
-                        "progress": observed.activity,
-                    });
+                    let mut entry = serde_json::Map::from_iter([
+                        ("name".into(), json!(name)),
+                        ("agent".into(), json!(child.as_str())),
+                        (
+                            "phase".into(),
+                            serde_json::to_value(&observed.phase)
+                                .map_err(|error| Error::Invalid(error.to_string()))?,
+                        ),
+                        ("answer".into(), json!(answer)),
+                        ("progress".into(), json!(observed.activity)),
+                    ]);
                     if let Some(TurnOutcome::Failed { message }) = outcome {
-                        entry["failed"] = json!(message);
+                        entry.insert("failed".into(), json!(message));
                     }
                     // The first reference selects the branch's display name.
                     if name != child.as_str() {
-                        entry["branch"] = json!(format!("agents/{name}"));
+                        entry.insert("branch".into(), json!(format!("agents/{name}")));
                     }
-                    Ok::<_, Error>(entry)
+                    Ok::<_, Error>(serde_json::Value::Object(entry))
                 })
             },
         ))
@@ -947,7 +952,7 @@ async fn peer_grant_allowed(
     }
 }
 
-fn sent_result(sent: crate::agent::SentMessage) -> ToolResult {
+fn sent_result(sent: &crate::agent::SentMessage) -> ToolResult {
     let value = match sent.delivery {
         crate::agent::Delivered::Committed { inbox } => json!({
             "kind": "accepted", "sent": sent.to, "id": sent.id, "inbox": inbox,

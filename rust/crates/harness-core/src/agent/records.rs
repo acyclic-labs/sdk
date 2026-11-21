@@ -161,19 +161,19 @@ fn versioned_payload(bytes: &[u8]) -> Result<&[u8], Unopened> {
 /// reader of every record kind: bounded by [`MAX_RECORD_BYTES`], and of any
 /// version but [`RECORD_VERSION`] refused whole.
 pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Error> {
-    decode_payload(record_payload(bytes)?).map_err(record_decode_error)
+    decode_payload(record_payload(bytes)?).map_err(|error| record_decode_error(&error))
 }
 
 fn record_payload(bytes: &[u8]) -> Result<&[u8], Error> {
     if bytes.len() > MAX_RECORD_BYTES {
         return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
     }
-    versioned_payload(bytes).map_err(record_decode_error)
+    versioned_payload(bytes).map_err(|error| record_decode_error(&error))
 }
 
-fn record_decode_error(unopened: Unopened) -> Error {
+fn record_decode_error(unopened: &Unopened) -> Error {
     match unopened {
-        Unopened::Version(version) => Error::UnsupportedRecordVersion(version),
+        Unopened::Version(version) => Error::UnsupportedRecordVersion(*version),
         Unopened::Malformed => Error::Record("record is malformed"),
     }
 }
@@ -611,7 +611,7 @@ pub enum InboxRecord {
     /// A host plugin hook.
     Hook(Hook),
     /// Spawn a child on an authorized caller's request.
-    Spawn(SpawnRequest),
+    Spawn(Box<SpawnRequest>),
     /// Compact, rewind or clear the model context.
     Context(ContextRequest),
     /// A registered `hooks/<name>` program's selected source record.
@@ -1029,8 +1029,9 @@ impl AgentRecord for InboxRecord {
                         || expected.iter().enumerate().any(|(index, volume)| {
                             volume.binding.as_volume().is_none_or(|source| {
                                 source.class() != crate::conversation::VolumeClass::Project
-                            }) || expected[..index]
+                            }) || expected
                                 .iter()
+                                .take(index)
                                 .any(|prior| prior.binding.name == volume.binding.name)
                         })
                     {

@@ -598,11 +598,13 @@ async fn stage_messages(
     .await
 }
 
+type MessageDigests = ([u8; 32], Option<[u8; 32]>);
+
 async fn stage_message_delta(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
-    (messages, (content_digest, prefix_digest)): (&[ModelMessage], ([u8; 32], Option<[u8; 32]>)),
+    (messages, (content_digest, prefix_digest)): (&[ModelMessage], MessageDigests),
     previous: Option<MessagePrefix>,
     io: Option<&PreparationIo>,
 ) -> Result<MessagePrefix> {

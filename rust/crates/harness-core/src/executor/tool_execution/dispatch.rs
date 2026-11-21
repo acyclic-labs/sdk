@@ -52,10 +52,8 @@ impl<'io> StockExecution<'io> {
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
         record: crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
-        tool: &crate::tool::Tool,
-        context: &mut Option<crate::runtime::ToolContext>,
-        (started, fenced): (bool, Option<&[ExecutionRecord]>),
-        original_started_at: Option<u64>,
+        (tool, context): (&crate::tool::Tool, &mut Option<crate::runtime::ToolContext>),
+        (started, fenced, original_started_at): (bool, Option<&[ExecutionRecord]>, Option<u64>),
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
@@ -282,56 +280,13 @@ impl<'io> StockExecution<'io> {
         } else if let Some(result) = composed {
             result
         } else {
-            // A fenced original that landed settles from its own receipt; only
-            // an effect that never landed runs again.
-            let landed = if reexecuted {
-                let mut observed = context.clone();
-                let observed = match self
-                    .observe_tool_cancellation(
-                        journal,
-                        tool.executor.cancellable_on_drop(),
-                        None,
-                        self.call_tool_executor(tool, &mut observed, invocation, false),
-                    )
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(error) => Err(error),
-                };
-                match observed {
-                    Ok(None) | Err(Error::Indeterminate(_)) => None,
-                    reconciled => Some(reconciled),
-                }
-            } else {
-                None
-            };
-            match landed {
-                Some(reconciled) => reconciled,
-                None => {
-                    let cancellation = tool.executor.cancellation(
-                        invocation,
-                        context.as_ref(),
-                        self.native_work(),
-                    )?;
-                    match self
-                        .observe_tool_cancellation(
-                            journal,
-                            tool.executor.cancellable_on_drop(),
-                            cancellation,
-                            self.call_tool_executor(
-                                tool,
-                                context,
-                                invocation,
-                                claimed || reexecuted,
-                            ),
-                        )
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(error) => Err(error),
-                    }
-                }
-            }
+            self.execute_or_observe_tool(
+                journal,
+                (tool, context),
+                invocation,
+                (claimed, reexecuted),
+            )
+            .await?
         };
         #[cfg(feature = "test-support")]
         tracing::trace!(
@@ -429,6 +384,44 @@ impl<'io> StockExecution<'io> {
             (_hook_context, completion),
         )
         .await
+    }
+
+    async fn execute_or_observe_tool(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (tool, context): (&crate::tool::Tool, &mut Option<crate::runtime::ToolContext>),
+        invocation: &ToolInvocation,
+        (claimed, reexecuted): (bool, bool),
+    ) -> Result<Result<Option<ToolResult>>> {
+        // A fenced original that landed settles from its own receipt; only
+        // an effect that never landed runs again.
+        if reexecuted {
+            let mut observed = context.clone();
+            let outcome = self
+                .observe_tool_cancellation(
+                    journal,
+                    tool.executor.cancellable_on_drop(),
+                    None,
+                    self.call_tool_executor(tool, &mut observed, invocation, false),
+                )
+                .await
+                .flatten();
+            if !matches!(outcome, Ok(None) | Err(Error::Indeterminate(_))) {
+                return Ok(outcome);
+            }
+        }
+        let cancellation =
+            tool.executor
+                .cancellation(invocation, context.as_ref(), self.native_work())?;
+        let outcome = self
+            .observe_tool_cancellation(
+                journal,
+                tool.executor.cancellable_on_drop(),
+                cancellation,
+                self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
+            )
+            .await;
+        Ok(outcome.flatten())
     }
 
     async fn finish_tool_result(
@@ -847,8 +840,7 @@ impl<'io> StockExecution<'io> {
         journal: &dyn ExecutionJournal,
         _operation: OperationId,
         _invocation: &ToolInvocation,
-        result: &FileRef,
-        projection: &FileRef,
+        (result, projection): (&FileRef, &FileRef),
         (definition, _code_mode): (&crate::tool::ToolDefinition, bool),
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<(crate::model::ToolResultContent, Option<ToolReceipt<'io>>)> {

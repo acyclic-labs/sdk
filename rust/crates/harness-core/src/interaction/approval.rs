@@ -34,6 +34,12 @@ impl Interaction {
     /// or validate the remainder of the request.
     pub fn approval_prompt_preview(bytes: &[u8]) -> Result<Option<String>> {
         use crate::executor::json::{JsonBounds, JsonSpans, SpanEvent, SpanKind};
+        let token = |start, end| {
+            let invalid = || Error::Invalid("approval span exceeds its source".into());
+            let start = usize::try_from(start).map_err(|_| invalid())?;
+            let end = usize::try_from(end).map_err(|_| invalid())?;
+            bytes.get(start..end).ok_or_else(invalid)
+        };
         let mut prompt = false;
         let mut selected = None;
         JsonSpans::default().feed(
@@ -52,7 +58,7 @@ impl Interaction {
                         start,
                         end,
                     } => {
-                        prompt = &bytes[start as usize..end as usize] == br#""prompt""#;
+                        prompt = token(start, end)? == br#""prompt""#;
                     }
                     SpanEvent::End {
                         depth: 1,
@@ -60,7 +66,7 @@ impl Interaction {
                         start,
                         end,
                     } if prompt => {
-                        selected = Some((start as usize, end as usize));
+                        selected = Some(token(start, end)?);
                         return Ok(true);
                     }
                     _ => {}
@@ -69,7 +75,7 @@ impl Interaction {
             },
         )?;
         selected
-            .map(|(start, end)| crate::contract::json_from_slice(&bytes[start..end]))
+            .map(crate::contract::json_from_slice)
             .transpose()
             .map_err(|error| Error::Invalid(error.to_string()))
     }

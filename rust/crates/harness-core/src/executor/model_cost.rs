@@ -684,8 +684,8 @@ impl ModelUsageTotals {
         {
             return Err(ModelPriceError::InvalidRecord);
         }
-        if let Some(selected) = self.currency.as_deref() {
-            if row
+        if let Some(selected) = self.currency.as_deref()
+            && (row
                 .estimated_cost
                 .currency
                 .as_deref()
@@ -695,10 +695,9 @@ impl ModelUsageTotals {
                         .currency
                         .as_deref()
                         .is_some_and(|currency| currency != selected)
-                })
-            {
-                return Err(ModelPriceError::CurrencyMismatch);
-            }
+                }))
+        {
+            return Err(ModelPriceError::CurrencyMismatch);
         }
         let calls = self
             .calls

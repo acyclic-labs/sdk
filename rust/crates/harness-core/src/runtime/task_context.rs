@@ -86,6 +86,7 @@ impl TaskContext {
 
     /// Protected host publication, independent of workspace and tool grants.
     /// A missing journal never selects the task's private publisher instead.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retained_content(&self) -> Result<(&ContentBindings, &dyn ContentPublisher)> {
         let content = self
             .journal_output

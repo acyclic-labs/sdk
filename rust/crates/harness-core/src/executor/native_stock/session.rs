@@ -20,7 +20,8 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) request_cache:
         tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
     pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
-    pub(in crate::executor) review: crate::executor::context_review::Review<'a>,
+    pub(in crate::executor) review:
+        once_cell::sync::OnceCell<Arc<crate::executor::context_review::Background<'a>>>,
 }
 
 /// One writer entrance for an execution and its borrowed summary sessions.
@@ -78,7 +79,9 @@ impl<'a> StockExecution<'a> {
             .as_ref()
             .map_or(&self.stock.model, |selected| &selected.model)
     }
-    pub(in crate::executor) fn selected_provider(&self) -> &Arc<dyn ModelProvider> {
+    pub(in crate::executor) fn selected_provider(
+        &self,
+    ) -> &acyclic_stream::ProviderOwner<dyn ModelProvider> {
         self.selected
             .as_ref()
             .map_or(&self.stock.provider, |selected| &selected.provider)
@@ -198,7 +201,7 @@ impl<'a> StockExecution<'a> {
         };
         Ok(
             match (&self.summary, &self.stock.compaction, self.context) {
-                (Some(_), _, _) => disabled(),
+                (Some(_), _, _) | (None, Some(CompactionPolicy::Disabled), _) => disabled(),
                 (None, Some(policy @ CompactionPolicy::Capacity(_)), _) => {
                     let destination = self
                         .context
@@ -212,7 +215,6 @@ impl<'a> StockExecution<'a> {
                         destination,
                     }
                 }
-                (None, Some(CompactionPolicy::Disabled), _) => disabled(),
                 (None, None, Some((context, _))) => {
                     let destination = context.summary_destination(self.io)?;
                     ResolvedCompaction {

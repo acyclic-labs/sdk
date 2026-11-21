@@ -3,7 +3,7 @@ impl ObjectContentStore {
     /// Checks the original owner before binding the account's blobs.
     pub fn new(
         objects: Arc<dyn Blobs>,
-        expected_provider: ProviderRef,
+        expected_provider: &ProviderRef,
         volume: VolumeRef,
         authorization: (AuthorityVerifier, Scope),
         scope: Scope,
@@ -22,7 +22,7 @@ impl ObjectContentStore {
         )?;
         if maximum_bytes == 0
             || expected_provider.family() != "objects"
-            || volume.provider() != &expected_provider
+            || volume.provider() != expected_provider
         {
             return Err(Error::Invalid("Objects content binding is invalid".into()));
         }

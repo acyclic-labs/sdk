@@ -34,7 +34,14 @@ pub(crate) fn deduplicate_reads(
         for index in 0..messages.len() {
             super::instruction_index::step(io, 1)?;
             let (prior, current) = messages.split_at_mut(index);
-            let parts = match &mut current[0].content {
+            let [current, ..] = current else {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "instruction message position is invalid",
+                ));
+            };
+            let parts = match &mut current.content {
                 ModelContent::Text(_) => continue,
                 ModelContent::Part(part) => std::slice::from_mut(part),
                 ModelContent::Parts(parts) => parts.as_mut_slice(),

@@ -337,7 +337,6 @@ impl AgentState {
     /// The outcome of the spawn named `intent`, read from the state committed
     /// by the step that applied it. Persistent admission and refusal membership
     /// preserve that decision after the child settles or the parent archives.
-    #[must_use]
     pub async fn spawn_outcome(&self, intent: &IntentId) -> Result<SpawnOutcome, Error> {
         let child = self.spawned(intent.as_str())?;
         Ok(if self.spawned_children.contains(&child).await? {
@@ -523,7 +522,7 @@ pub enum Out {
         brief: Option<FileRef>,
         /// Role profile admitted before the spawn effect was recorded; `None`
         /// for a host-requested spawn.
-        profile: Option<super::CreationConfig>,
+        profile: Option<Box<super::CreationConfig>>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<WorkspaceEntry>,
         /// Optional retained conversation cut selected by the caller.
@@ -1053,7 +1052,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             outs.push(Out::Spawn {
                 intent: requested_intent(sequence)?.into(),
                 brief: spawn.brief.map(|brief| *brief),
-                profile: Some(spawn.profile),
+                profile: Some(Box::new(spawn.profile)),
                 volumes: Vec::new(),
                 history: spawn.history,
             });
@@ -1070,9 +1069,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             if cancel.input >= sequence {
                 return Err(Error::Record("cancellation must name an earlier input"));
             }
-            if !state.input_pending(sequence, cancel.input) {
-                state
-            } else {
+            if state.input_pending(sequence, cancel.input) {
                 state.queued.retain(|input| input.inbox != cancel.input);
                 if state.overflow.is_some_and(|from| cancel.input >= from) {
                     state.taken.insert(cancel.input);
@@ -1100,8 +1097,8 @@ async fn draft_step<T: TurnDriver + ?Sized>(
                     state.awaiting.clear();
                     state.need = 0;
                 }
-                state
             }
+            state
         }
         (Some(state), Wake::Inbox { sequence, record }) => {
             let (state, fact) = admit(state, sequence, record, settled_at_micros).await?;
@@ -1391,7 +1388,6 @@ async fn admit(
     }
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
-        InboxRecord::Cancel(_) => Admit::Input,
         InboxRecord::Archive(_) => Admit::Archive,
         InboxRecord::ApprovalRequested(_) => Admit::Ask,
         _ => Admit::Input,
@@ -1446,10 +1442,10 @@ async fn admit(
             }
         }
     }
-    if let InboxRecord::ChildDone(done) = &record {
-        if done.child.is_child_of(&state.path) {
-            state.open_children.remove(&done.child).await?;
-        }
+    if let InboxRecord::ChildDone(done) = &record
+        && done.child.is_child_of(&state.path)
+    {
+        state.open_children.remove(&done.child).await?;
     }
     match &record {
         InboxRecord::WorkspaceChanged(change) if !state.closed => {
@@ -1530,10 +1526,6 @@ fn settle_condition(state: &mut AgentState, reason: WaitReason) {
 fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
-        Out::InputCancelled { .. } => true,
-        Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitReplies(_) | Out::PeerGuard { .. } => {
-            true
-        }
         Out::Send { record, .. } => {
             !matches!(
                 record,
@@ -1564,7 +1556,12 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
         | Out::TurnDone { .. }
         | Out::Supervised { .. }
         | Out::Commit(_)
-        | Out::GoalCompleted { .. } => true,
+        | Out::GoalCompleted { .. }
+        | Out::InputCancelled { .. }
+        | Out::Steered(_)
+        | Out::PendingSpawns(_)
+        | Out::AwaitReplies(_)
+        | Out::PeerGuard { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
     }
 }
@@ -1642,6 +1639,212 @@ fn approval_position(state: &AgentState) -> Option<usize> {
 }
 
 /// Runs at most one turn step, as chosen by [`kernel::pick`].
+async fn run_review<T: TurnDriver + ?Sized>(
+    driver: &T,
+    state: &mut AgentState,
+    cursor: u64,
+    outs: &mut Vec<Out>,
+    cancellation: acyclic_actors::guest::CancellationToken,
+) -> Result<(), Error> {
+    let review = crate::core::until_turn_stopped(Some(cancellation.clone()), async {
+        driver
+            .review(state, cursor, cancellation.clone())
+            .await
+            .map_err(|error| crate::Error::Agent(Box::new(error)))
+    })
+    .await;
+    let review = match review {
+        Ok(review) => Ok(review),
+        Err(crate::Error::Agent(error)) => Err(*error),
+        Err(error) => Err(Error::Turn(Box::new(error))),
+    };
+    let review = match review {
+        // A cancelled review leaves its original page pending. The
+        // next step finishes it, repairing any decision whose wake was
+        // not published; clearing the page would strand every child
+        // whose ask was already consumed from the inbox.
+        Err(Error::Turn(error))
+            if matches!(
+                *error,
+                crate::Error::InteractionRejected(crate::InteractionRejection::Cancelled)
+            ) =>
+        {
+            return Ok(());
+        }
+        result => result?,
+    };
+    let pending = state
+        .approval_control
+        .as_mut()
+        .ok_or(Error::Record("review has no original control"))?;
+    match review {
+        ReviewStep::Selected(selection) => {
+            if pending.selected.is_some() {
+                return Err(Error::Record("review selection is already frozen"));
+            }
+            selection.validate(&state.path, pending.range.start)?;
+            if selection.range.end > pending.range.end || selection.range.end > cursor {
+                return Err(Error::Record("review page exceeds its original control"));
+            }
+            pending.selected = Some(selection);
+        }
+        ReviewStep::Reviewed(reviewed) => {
+            let selected = pending
+                .selected
+                .as_ref()
+                .ok_or(Error::Record("review has no frozen selection"))?;
+            if reviewed
+                .outs
+                .iter()
+                .any(|out| !admissible(out, &state.path))
+            {
+                return Err(Error::Record("review returned an inadmissible effect"));
+            }
+            if let Some(summary) = reviewed.summary {
+                let notice = Out::Send {
+                    to: state.path.clone(),
+                    record: InboxRecord::Notice {
+                        id: IntentId::try_from(format!(
+                            "approval-summary-{}",
+                            selected.range.start
+                        ))?,
+                        notice: super::NoticePayload::Waking(Box::new(summary)),
+                    },
+                };
+                if !admissible(&notice, &state.path) {
+                    return Err(Error::Record("review summary exceeds its record"));
+                }
+                outs.push(notice);
+            }
+            outs.extend(reviewed.outs);
+            pending.range.start = selected.range.end;
+            pending.selected = None;
+            if pending.range.start == pending.range.end {
+                state.approval_control = None;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn record_wait_return(
+    state: &mut AgentState,
+    (alarm_wake, now_unix_ms, waking_input): (bool, u64, Option<u64>),
+    child_settlement: Option<&ChildSettlement>,
+    child_wakes: &mut Option<ChildWakes>,
+) -> Result<(), Error> {
+    if let Phase::Waiting {
+        deadline_unix_ms,
+        input,
+    } = &state.phase
+        && let Some(resume) = &mut state.wait_resume
+    {
+        resume.reason = Some(
+            if alarm_wake && deadline_unix_ms.is_some_and(|deadline| deadline <= now_unix_ms) {
+                WaitReason::Deadline
+            } else if *input && let Some(inbox) = waking_input {
+                WaitReason::Input { inbox }
+            } else {
+                return Err(Error::Record(
+                    "wait resumed without its deadline or selected input",
+                ));
+            },
+        );
+    }
+    // This is the actual wait return, before the driver performs any work.
+    // Completion times came with the original deliveries; this adds no read,
+    // commit or telemetry channel. Partial facts have no return clock until here.
+    let until = state
+        .status_tail
+        .checked_add(u64::from(child_settlement.is_some()))
+        .ok_or(Error::Record("status tail overflows"))?;
+    *child_wakes = state.child_settlements.take().map(|from| ChildWakes {
+        from,
+        until,
+        woke_at_micros: now_unix_ms.saturating_mul(1_000),
+    });
+    Ok(())
+}
+
+fn admit_turn_effects(outs: &[Out], path: &AgentPath, mut conversation: u64) -> Option<u64> {
+    for out in outs {
+        if !admissible(out, path) {
+            return None;
+        }
+        if matches!(out, Out::Conversation(_)) {
+            conversation = conversation.checked_add(1)?;
+        }
+    }
+    Some(conversation)
+}
+
+async fn settle_until(
+    state: &mut AgentState,
+    until: Until,
+    outs: &mut Vec<Out>,
+    awaiting: &mut (super::Children, u32),
+    (now_unix_ms, spawned): (u64, usize),
+) -> Result<kernel::Wait, Error> {
+    let deadline = state
+        .wait_resume
+        .as_ref()
+        .filter(|resume| Some(resume.operation) == until.operation)
+        .map_or_else(
+            || {
+                until.deadline_unix_ms.or_else(|| {
+                    until
+                        .timeout_ms
+                        .map(|timeout| now_unix_ms.saturating_add(timeout))
+                })
+            },
+            |resume| resume.deadline_unix_ms,
+        );
+    state.wait_resume = until.operation.map(|operation| WaitResume {
+        operation,
+        deadline_unix_ms: deadline,
+        reason: None,
+    });
+    // Only an open child can still settle; one already done has and
+    // counts now. This step's own spawns are open children too, so
+    // apply them first: a wait on a child spawned in the same step
+    // asks it. Applying is idempotent for the step's later pass.
+    apply_spawns(state, outs, spawned).await?;
+    let mut open = Vec::new();
+    for child in &until.awaited {
+        if child.is_child_of(&state.path) && state.open_children.contains(child).await? {
+            open.push(child);
+        }
+    }
+    let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
+    let need = until.need.saturating_sub(settled);
+    let sleep = until.awaited.is_empty() && until.replies.is_empty();
+    let reachable = open.len().saturating_add(until.replies.len());
+    let input = until.input;
+    let wait = kernel::until(need, reachable, sleep, deadline, input);
+    #[cfg(feature = "test-support")]
+    control_trace::record(
+        state,
+        Decision::Until(need, reachable, sleep, deadline, input, wait),
+    );
+    if matches!(wait, kernel::Wait::Continue)
+        && let Some(resume) = &mut state.wait_resume
+    {
+        resume.reason = Some(WaitReason::NeedMet);
+    }
+    if matches!(wait, kernel::Wait::Await { .. }) {
+        outs.push(Out::AwaitReplies(until.replies));
+        outs.extend(open.iter().map(|child| Out::Send {
+            to: (**child).clone(),
+            record: InboxRecord::Awaited,
+        }));
+        for child in open {
+            awaiting.0.insert(child).await?;
+        }
+        awaiting.1 = need;
+    }
+    Ok(wait)
+}
+
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
@@ -1678,123 +1881,18 @@ async fn run<T: TurnDriver + ?Sized>(
     );
     let input = match picked {
         Pick::Nothing => return Ok(()),
-        Pick::Review => {
-            let review = crate::core::until_turn_stopped(Some(cancellation.clone()), async {
-                driver
-                    .review(state, cursor, cancellation.clone())
-                    .await
-                    .map_err(|error| crate::Error::Agent(Box::new(error)))
-            })
-            .await;
-            let review = match review {
-                Ok(review) => Ok(review),
-                Err(crate::Error::Agent(error)) => Err(*error),
-                Err(error) => Err(Error::Turn(Box::new(error))),
-            };
-            let review = match review {
-                // A cancelled review leaves its original page pending. The
-                // next step finishes it, repairing any decision whose wake was
-                // not published; clearing the page would strand every child
-                // whose ask was already consumed from the inbox.
-                Err(Error::Turn(error))
-                    if matches!(
-                        *error,
-                        crate::Error::InteractionRejected(crate::InteractionRejection::Cancelled)
-                    ) =>
-                {
-                    return Ok(());
-                }
-                result => result?,
-            };
-            let pending = state
-                .approval_control
-                .as_mut()
-                .ok_or(Error::Record("review has no original control"))?;
-            match review {
-                ReviewStep::Selected(selection) => {
-                    if pending.selected.is_some() {
-                        return Err(Error::Record("review selection is already frozen"));
-                    }
-                    selection.validate(&state.path, pending.range.start)?;
-                    if selection.range.end > pending.range.end || selection.range.end > cursor {
-                        return Err(Error::Record("review page exceeds its original control"));
-                    }
-                    pending.selected = Some(selection);
-                }
-                ReviewStep::Reviewed(reviewed) => {
-                    let selected = pending
-                        .selected
-                        .as_ref()
-                        .ok_or(Error::Record("review has no frozen selection"))?;
-                    if reviewed
-                        .outs
-                        .iter()
-                        .any(|out| !admissible(out, &state.path))
-                    {
-                        return Err(Error::Record("review returned an inadmissible effect"));
-                    }
-                    if let Some(summary) = reviewed.summary {
-                        let notice = Out::Send {
-                            to: state.path.clone(),
-                            record: InboxRecord::Notice {
-                                id: IntentId::try_from(format!(
-                                    "approval-summary-{}",
-                                    selected.range.start
-                                ))?,
-                                notice: super::NoticePayload::Waking(Box::new(summary)),
-                            },
-                        };
-                        if !admissible(&notice, &state.path) {
-                            return Err(Error::Record("review summary exceeds its record"));
-                        }
-                        outs.push(notice);
-                    }
-                    outs.extend(reviewed.outs);
-                    pending.range.start = selected.range.end;
-                    pending.selected = None;
-                    if pending.range.start == pending.range.end {
-                        state.approval_control = None;
-                    }
-                }
-            }
-            return Ok(());
-        }
+        Pick::Review => return run_review(driver, state, cursor, outs, cancellation).await,
         Pick::Resume => None,
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
-    if picked == Pick::Resume
-        && let Phase::Waiting {
-            deadline_unix_ms,
-            input,
-        } = &state.phase
-        && let Some(resume) = &mut state.wait_resume
-    {
-        resume.reason = Some(
-            if alarm_wake && deadline_unix_ms.is_some_and(|deadline| deadline <= now_unix_ms) {
-                WaitReason::Deadline
-            } else if *input && let Some(inbox) = waking_input {
-                WaitReason::Input { inbox }
-            } else {
-                return Err(Error::Record(
-                    "wait resumed without its deadline or selected input",
-                ));
-            },
-        );
-    }
-    // This is the actual wait return, before the driver performs any work.
-    // Completion times came with the original deliveries; this adds no read,
-    // commit or telemetry channel. Partial facts have no return clock until here.
     if picked == Pick::Resume {
-        let until = state
-            .status_tail
-            .checked_add(u64::from(child_settlement.is_some()))
-            .ok_or(Error::Record("status tail overflows"))?;
-        *child_wakes = state.child_settlements.take().map(|from| ChildWakes {
-            from,
-            until,
-            woke_at_micros: now_unix_ms.saturating_mul(1_000),
-        });
+        record_wait_return(
+            state,
+            (alarm_wake, now_unix_ms, waking_input),
+            child_settlement,
+            child_wakes,
+        )?;
     }
     // A resumed turn keeps the input that started it.
     let started = match (&state.turn, &input) {
@@ -1846,19 +1944,9 @@ async fn run<T: TurnDriver + ?Sized>(
         }
     }
     let base_conversation = conversation;
-    let valid = turn.outs.iter().all(|out| {
-        if !admissible(out, &state.path) {
-            return false;
-        }
-        if matches!(out, Out::Conversation(_)) {
-            let Some(next) = conversation.checked_add(1) else {
-                return false;
-            };
-            conversation = next;
-        }
-        true
-    });
-    let admitted = if valid {
+    let admitted = if let Some(conversation) =
+        admit_turn_effects(&turn.outs, &state.path, base_conversation)
+    {
         admit_wait(
             turn.wait,
             state,
@@ -1870,24 +1958,23 @@ async fn run<T: TurnDriver + ?Sized>(
     } else {
         None
     };
-    let (wait, staged, completion) = match admitted {
-        Some(admitted) => admitted,
-        None => {
-            turn.checkpoint = None;
-            turn.outs.clear();
-            turn.drops = None;
-            admit_wait(
-                Wait::Done(AgentOutcome::Failed {
-                    message: INADMISSIBLE_EFFECT.into(),
-                }),
-                state,
-                cursor,
-                base_conversation,
-                child_wakes,
-                child_settlement,
-            )
-            .ok_or(Error::Record("generated failure exceeds its record"))?
-        }
+    let (wait, staged, completion) = if let Some(admitted) = admitted {
+        admitted
+    } else {
+        turn.checkpoint = None;
+        turn.outs.clear();
+        turn.drops = None;
+        admit_wait(
+            Wait::Done(AgentOutcome::Failed {
+                message: INADMISSIBLE_EFFECT.into(),
+            }),
+            state,
+            cursor,
+            base_conversation,
+            child_wakes,
+            child_settlement,
+        )
+        .ok_or(Error::Record("generated failure exceeds its record"))?
     };
     if let Some(end) = turn.drops {
         state.drop_before(end);
@@ -1933,66 +2020,11 @@ async fn run<T: TurnDriver + ?Sized>(
             Some(Phase::WaitingHost { host }),
             None,
         ),
-        Wait::Until(until) => {
-            let deadline = state
-                .wait_resume
-                .as_ref()
-                .filter(|resume| Some(resume.operation) == until.operation)
-                .map_or_else(
-                    || {
-                        until.deadline_unix_ms.or_else(|| {
-                            until
-                                .timeout_ms
-                                .map(|timeout| now_unix_ms.saturating_add(timeout))
-                        })
-                    },
-                    |resume| resume.deadline_unix_ms,
-                );
-            state.wait_resume = until.operation.map(|operation| WaitResume {
-                operation,
-                deadline_unix_ms: deadline,
-                reason: None,
-            });
-            // Only an open child can still settle; one already done has and
-            // counts now. This step's own spawns are open children too, so
-            // apply them first: a wait on a child spawned in the same step
-            // asks it. Applying is idempotent for the step's later pass.
-            apply_spawns(state, outs, spawned).await?;
-            let mut open = Vec::new();
-            for child in &until.awaited {
-                if child.is_child_of(&state.path) && state.open_children.contains(child).await? {
-                    open.push(child);
-                }
-            }
-            let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
-            let need = until.need.saturating_sub(settled);
-            let sleep = until.awaited.is_empty() && until.replies.is_empty();
-            let reachable = open.len().saturating_add(until.replies.len());
-            let input = until.input;
-            let wait = kernel::until(need, reachable, sleep, deadline, input);
-            #[cfg(feature = "test-support")]
-            control_trace::record(
-                state,
-                Decision::Until(need, reachable, sleep, deadline, input, wait),
-            );
-            if matches!(wait, kernel::Wait::Continue)
-                && let Some(resume) = &mut state.wait_resume
-            {
-                resume.reason = Some(WaitReason::NeedMet);
-            }
-            if matches!(wait, kernel::Wait::Await { .. }) {
-                outs.push(Out::AwaitReplies(until.replies));
-                outs.extend(open.iter().map(|child| Out::Send {
-                    to: (**child).clone(),
-                    record: InboxRecord::Awaited,
-                }));
-                for child in open {
-                    awaiting.0.insert(child).await?;
-                }
-                awaiting.1 = need;
-            }
-            (wait, None, None)
-        }
+        Wait::Until(until) => (
+            settle_until(state, until, outs, &mut awaiting, (now_unix_ms, spawned)).await?,
+            None,
+            None,
+        ),
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::User(path) => (kernel::Wait::Input, Some(Phase::WaitingUser { path }), None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
@@ -2016,12 +2048,12 @@ async fn run<T: TurnDriver + ?Sized>(
     };
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
-        (Mode::Approval, Some(waiting), _) => waiting,
+        (Mode::Approval, Some(waiting), _)
+        | (Mode::Idle, Some(waiting @ Phase::WaitingUser { .. }), _) => waiting,
         (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting {
             deadline_unix_ms,
             input: next.input,
         },
-        (Mode::Idle, Some(waiting @ Phase::WaitingUser { .. }), _) => waiting,
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();
             if send {
@@ -2164,8 +2196,8 @@ async fn apply_spawns(
     from: usize,
 ) -> Result<(), Error> {
     let mut index = from;
-    while index < outs.len() {
-        let Out::Spawn { intent, .. } = &outs[index] else {
+    while let Some(out) = outs.get(index) {
+        let Out::Spawn { intent, .. } = out else {
             index += 1;
             continue;
         };

@@ -30,15 +30,10 @@ pub(super) struct Cut<'a> {
 
 /// One already-encoded record and its original optimistic publication fence.
 /// This adds no submission, index or authority; its producer owns the payload.
-pub(in crate::filesystem) enum Contribution<'a> {
-    Conditioned {
-        condition: CommitCondition,
-        record: &'a OwnedBytes,
-    },
-    Append {
-        path: &'a StreamPath,
-        record: &'a OwnedBytes,
-    },
+pub(in crate::filesystem) struct Contribution<'a> {
+    pub(in crate::filesystem) path: &'a StreamPath,
+    pub(in crate::filesystem) condition: Option<CommitCondition>,
+    pub(in crate::filesystem) record: &'a OwnedBytes,
 }
 
 pub(in crate::filesystem::execution_journal) fn contribution_identity(
@@ -78,13 +73,14 @@ pub(in crate::filesystem::execution_journal) fn contribution_identity(
             }
             Ok::<(), Error>(())
         };
-        let digest = match contribution {
-            Contribution::Conditioned { condition, record } => {
-                acyclic_stream::request::conditioned_record_digest_with(condition, record, admit)?
-            }
-            Contribution::Append { path, record } => {
-                acyclic_stream::request::appended_record_digest_with(path, record, admit)?
-            }
+        let digest = if let Some(condition) = &contribution.condition {
+            acyclic_stream::request::conditioned_record_digest_with(
+                condition,
+                contribution.record,
+                admit,
+            )?
+        } else {
+            acyclic_stream::request::appended_record_digest_with(path, contribution.record, admit)?
         };
         hash.update(&digest);
     }
@@ -93,20 +89,14 @@ pub(in crate::filesystem::execution_journal) fn contribution_identity(
 
 impl Contribution<'_> {
     fn target(&self) -> Result<(&StreamPath, Option<u64>)> {
-        match self {
-            Self::Append { path, .. } => Ok((path, None)),
-            Self::Conditioned { condition, .. } => match condition {
+        match &self.condition {
+            None => Ok((self.path, None)),
+            Some(
                 CommitCondition::Head { path, expected, .. }
-                | CommitCondition::Tail { path, expected } => Ok((path, Some(*expected))),
-                CommitCondition::Absent { path } => Ok((path, Some(0))),
-                CommitCondition::Present { .. } => Err(invalid(None)),
-            },
-        }
-    }
-
-    fn record(&self) -> &OwnedBytes {
-        match self {
-            Self::Conditioned { record, .. } | Self::Append { record, .. } => record,
+                | CommitCondition::Tail { path, expected },
+            ) if path == self.path => Ok((path, Some(*expected))),
+            Some(CommitCondition::Absent { path }) if path == self.path => Ok((path, Some(0))),
+            Some(_) => Err(invalid(None)),
         }
     }
 }
@@ -253,14 +243,14 @@ impl Cut<'_> {
                     return Err(invalid(None));
                 }
                 previous = Some(path);
-                if let Contribution::Conditioned { condition, .. } = contribution {
+                if let Some(condition) = &contribution.condition {
                     crate::distributed::add_condition(request, custody, condition.clone())?;
                 }
                 add_records(
                     request,
                     custody,
                     path,
-                    std::slice::from_ref(contribution.record()),
+                    std::slice::from_ref(contribution.record),
                 )?;
             }
             if let Some(effect) = self.derived {
@@ -602,7 +592,7 @@ impl Cut<'_> {
                         append,
                         path,
                         start.unwrap_or(append.start),
-                        std::slice::from_ref(contribution.record()),
+                        std::slice::from_ref(contribution.record),
                     ),
                 )
             };

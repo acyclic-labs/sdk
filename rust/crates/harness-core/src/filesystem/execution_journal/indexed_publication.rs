@@ -67,10 +67,11 @@ where
         let observed =
             crate::store::operations::heads_with_work(self.stream.as_ref(), &request, &mut work)
                 .await?;
-        for (closed, head) in request.paths[closed_start..]
-            .iter()
-            .zip(&observed.heads[closed_start..])
-        {
+        let (actors, closed_heads) = observed
+            .heads
+            .split_at_checked(closed_start)
+            .ok_or_else(|| invalid(io))?;
+        for (closed, head) in request.paths.iter().skip(closed_start).zip(closed_heads) {
             if let Some(record) = head.as_ref().and_then(|head| head.last.as_ref()) {
                 return Err(Error::ExecutionControlled(crate::supervision::Control {
                     source: crate::supervision::Position {
@@ -82,18 +83,14 @@ where
                 }));
             }
         }
-        for path in &request.paths[closed_start..] {
+        for path in request.paths.iter().skip(closed_start) {
             crate::executor::stock_vec_push(
                 &mut effect.conditions,
                 CommitCondition::Absent { path: path.clone() },
                 io,
             )?;
         }
-        for (path, head) in self
-            .actor_admissions
-            .iter()
-            .zip(&observed.heads[..closed_start])
-        {
+        for (path, head) in self.actor_admissions.iter().zip(actors) {
             let head = head.as_ref().ok_or_else(|| invalid(io))?;
             let record = head.last.as_ref().ok_or_else(|| invalid(io))?;
             let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
@@ -151,14 +148,15 @@ fn add_records<R: Clone + Into<acyclic_stream::AppendRecord>>(
     path: &StreamPath,
     input: &[R],
 ) -> Result<()> {
-    custody.reserve(
-        request.effects[0].mutations.len() + 1,
-        &mut request.effects[0].mutations,
-    )?;
+    let effect = request
+        .effects
+        .first_mut()
+        .ok_or_else(|| Error::Invalid("indexed publication is missing its commit effect".into()))?;
+    custody.reserve(effect.mutations.len() + 1, &mut effect.mutations)?;
     let mut records = Vec::new();
     custody.reserve(input.len(), &mut records)?;
     records.extend(input.iter().cloned().map(Into::into));
-    request.effects[0].mutations.push(CommitMutation::Append {
+    effect.mutations.push(CommitMutation::Append {
         path: path.clone(),
         records,
     });
@@ -189,8 +187,7 @@ where
         retry: [u8; 32],
         event: &ExecutionEvent,
         inputs: (Option<&ModelEvent>, Option<&super::supervision::Inputs<'_>>),
-        bytes: &OwnedBytes,
-        contributions: &[Contribution<'_>],
+        (bytes, contributions): (&OwnedBytes, &[Contribution<'_>]),
         io: Option<&PreparationIo>,
     ) -> Result<Option<(Recovery, acyclic_stream::CommitId, u64)>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
@@ -202,14 +199,16 @@ where
             .transpose()?;
         let pages = self.index_path(operation, "pages", io)?;
         let head = self.index_path(operation, "head", io)?;
-        let execution_hold;
-        let execution = crate::executor::with_history_io(io, |work| {
-            crate::distributed::execution_path(operation, work)
-        })?;
-        execution_hold = io
-            .filter(|io| io.original_native_work().is_none())
-            .map(|io| io.guard_owned(execution.as_str().len() as u64))
-            .transpose()?;
+        let (execution_hold, execution) = {
+            let execution = crate::executor::with_history_io(io, |work| {
+                crate::distributed::execution_path(operation, work)
+            })?;
+            let hold = io
+                .filter(|io| io.original_native_work().is_none())
+                .map(|io| io.guard_owned(execution.as_str().len() as u64))
+                .transpose()?;
+            (hold, execution)
+        };
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history
             .as_mut()
@@ -334,8 +333,7 @@ where
             let policy = self
                 .run_admission
                 .as_ref()
-                .map(|source| &source.value)
-                .unwrap_or(&defaults);
+                .map_or(&defaults, |source| &source.value);
             let admission = crate::supervision::streams::Queries::new(&*self.stream, agent, *run)
                 .admission(policy)
                 .await?;
@@ -364,10 +362,10 @@ where
                         ..Default::default()
                     })?;
                 }
-                records.insert(0, record.clone().into());
+                records.insert(0, record.clone());
             } else {
                 let mut records = Vec::new();
-                crate::executor::stock_vec_push(&mut records, record.clone().into(), io)?;
+                crate::executor::stock_vec_push(&mut records, record.clone(), io)?;
                 crate::executor::stock_vec_push(
                     &mut effect.mutations,
                     CommitMutation::Append {

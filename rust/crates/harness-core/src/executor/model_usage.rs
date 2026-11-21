@@ -27,12 +27,12 @@ impl ModelTokenUsage {
     /// Reads the provider-reported counters from original response metadata.
     #[must_use]
     pub fn reported(metadata: &Value) -> Self {
-        let usage = &metadata["usage"];
+        let usage = metadata.get("usage").unwrap_or(&Value::Null);
         // Every lookup names a fixed provider field. No response/history scan,
         // aggregation, estimate, or default-zero conversion is performed.
-        let counter = |values: &[&Value]| {
+        let counter = |values: &[Option<&Value>]| {
             let mut result = None;
-            for value in values.iter().filter(|value| !value.is_null()) {
+            for value in values.iter().flatten().filter(|value| !value.is_null()) {
                 let observed = value.as_u64()?;
                 if result.is_some_and(|prior| prior != observed) {
                     return None;
@@ -43,34 +43,48 @@ impl ModelTokenUsage {
         };
         Self {
             input: counter(&[
-                &usage["input_tokens"],
-                &usage["prompt_tokens"],
-                &usage["promptTokenCount"],
+                usage.get("input_tokens"),
+                usage.get("prompt_tokens"),
+                usage.get("promptTokenCount"),
             ]),
             cached: counter(&[
-                &usage["cache_read_input_tokens"],
-                &usage["cached_input_tokens"],
-                &usage["input_tokens_details"]["cached_tokens"],
-                &usage["prompt_tokens_details"]["cached_tokens"],
-                &usage["cachedContentTokenCount"],
+                usage.get("cache_read_input_tokens"),
+                usage.get("cached_input_tokens"),
+                usage
+                    .get("input_tokens_details")
+                    .and_then(|detail| detail.get("cached_tokens")),
+                usage
+                    .get("prompt_tokens_details")
+                    .and_then(|detail| detail.get("cached_tokens")),
+                usage.get("cachedContentTokenCount"),
             ]),
             cache_write: counter(&[
-                &usage["cache_creation_input_tokens"],
-                &usage["input_tokens_details"]["cache_write_tokens"],
-                &usage["prompt_tokens_details"]["cache_write_tokens"],
-                &usage["cache_write_input_tokens"],
+                usage.get("cache_creation_input_tokens"),
+                usage
+                    .get("input_tokens_details")
+                    .and_then(|detail| detail.get("cache_write_tokens")),
+                usage
+                    .get("prompt_tokens_details")
+                    .and_then(|detail| detail.get("cache_write_tokens")),
+                usage.get("cache_write_input_tokens"),
             ]),
             output: counter(&[
-                &usage["output_tokens"],
-                &usage["completion_tokens"],
-                &usage["candidatesTokenCount"],
+                usage.get("output_tokens"),
+                usage.get("completion_tokens"),
+                usage.get("candidatesTokenCount"),
             ]),
             reasoning: counter(&[
-                &usage["reasoning_output_tokens"],
-                &usage["output_tokens_details"]["reasoning_tokens"],
-                &usage["output_tokens_details"]["thinking_tokens"],
-                &usage["completion_tokens_details"]["reasoning_tokens"],
-                &usage["thoughtsTokenCount"],
+                usage.get("reasoning_output_tokens"),
+                usage
+                    .get("output_tokens_details")
+                    .and_then(|detail| detail.get("reasoning_tokens")),
+                usage
+                    .get("output_tokens_details")
+                    .and_then(|detail| detail.get("thinking_tokens")),
+                usage
+                    .get("completion_tokens_details")
+                    .and_then(|detail| detail.get("reasoning_tokens")),
+                usage.get("thoughtsTokenCount"),
             ]),
         }
     }

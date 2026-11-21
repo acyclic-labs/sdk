@@ -81,7 +81,8 @@ impl Diagnostic {
                 "diagnostic page is outside its retained prefix",
             ));
         }
-        let count = (self.records() - from).min(u64::from(budget)) as u32;
+        let count = u32::try_from((self.records() - from).min(u64::from(budget)))
+            .map_err(|_| Error::Record("diagnostic page exceeds its record budget"))?;
         let records = provider
             .read(ReadRequest {
                 key: None,
@@ -164,6 +165,7 @@ pub struct DiagnosticRange<'a> {
     first: u64,
     next: u64,
     through: u64,
+    capacity: usize,
 }
 
 impl Diagnostic {
@@ -200,9 +202,10 @@ impl Diagnostic {
     pub fn range(&self, from: u64, maximum_bytes: u64) -> DiagnosticRange<'_> {
         let from = from.min(self.bytes);
         let chunk = acyclic_stream::MAX_RECORD_BYTES as u64;
-        let end = from
-            .saturating_add(maximum_bytes.min(chunk))
-            .min(self.bytes);
+        let capacity = usize::try_from(maximum_bytes.min(self.bytes - from))
+            .unwrap_or(usize::MAX)
+            .min(acyclic_stream::MAX_RECORD_BYTES);
+        let end = from + capacity as u64;
         let first = from / chunk;
         DiagnosticRange {
             diagnostic: self,
@@ -210,6 +213,7 @@ impl Diagnostic {
             end,
             first,
             next: first,
+            capacity,
             through: if from == end {
                 first
             } else {
@@ -250,7 +254,7 @@ impl Diagnostic {
 impl DiagnosticRange<'_> {
     /// Exact maximum payload retained for this page.
     pub fn capacity(&self) -> usize {
-        (self.end - self.start) as usize
+        self.capacity
     }
     /// First original chunk.
     pub fn first(&self) -> u64 {
@@ -258,7 +262,7 @@ impl DiagnosticRange<'_> {
     }
     /// Number of original chunks; at most two.
     pub fn records(&self) -> u32 {
-        (self.through - self.first) as u32
+        u32::from(self.start != self.end) + u32::from(self.through - self.first == 2)
     }
     /// All selected original chunks have been consumed.
     pub fn complete(&self) -> bool {
@@ -293,12 +297,11 @@ impl DiagnosticRange<'_> {
         if value.len() as u64 != expected {
             return Err(Error::Record("diagnostic chunk length differs"));
         }
-        let from = self.start.saturating_sub(offset) as usize;
-        let to = (self.end - offset).min(expected) as usize;
+        let invalid = || Error::Record("invalid diagnostic interval");
+        let from = usize::try_from(self.start.saturating_sub(offset)).map_err(|_| invalid())?;
+        let to = usize::try_from((self.end - offset).min(expected)).map_err(|_| invalid())?;
         self.next += 1;
-        value
-            .get(from..to)
-            .ok_or(Error::Record("invalid diagnostic interval"))
+        value.get(from..to).ok_or_else(invalid)
     }
     /// Preserve complete characters at page edges, so the returned end is the
     /// next exact byte cursor and no Unicode byte is replaced or skipped.

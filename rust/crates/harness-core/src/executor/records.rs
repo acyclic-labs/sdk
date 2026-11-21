@@ -110,8 +110,7 @@ impl StockExecution<'_> {
         self.selected_records(
             journal,
             operation_id,
-            step,
-            Some(call_id),
+            (step, Some(call_id)),
             false,
             Some(3),
             |event| {

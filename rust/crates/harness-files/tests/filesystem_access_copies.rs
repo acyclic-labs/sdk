@@ -96,8 +96,7 @@ async fn copies(
     let result = fixture
         .host
         .fork_volume(
-            &fixture.volume,
-            &source,
+            (&fixture.volume, &source),
             &fixture.generation()?,
             &destination,
             &destination_grant,
@@ -173,8 +172,10 @@ async fn imports_check_both_signed_grants_through_the_policy_compiler() -> Resul
         fixture
             .host
             .fork_volume(
-                &fixture.volume,
-                &legacy(&fixture, &fixture.volume, VolumeOperation::Read)?,
+                (
+                    &fixture.volume,
+                    &legacy(&fixture, &fixture.volume, VolumeOperation::Read)?,
+                ),
                 &fixture.generation()?,
                 &destination,
                 &legacy(&fixture, &destination, VolumeOperation::Write)?,

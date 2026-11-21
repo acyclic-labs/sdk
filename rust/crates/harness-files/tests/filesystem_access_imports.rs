@@ -15,8 +15,7 @@ async fn revoked_import(protected: bool, action: Action) -> Result<(), Box<dyn E
     fixture
         .host
         .fork_volume(
-            &fixture.volume,
-            &source,
+            (&fixture.volume, &source),
             &fixture.generation()?,
             &target,
             &destination,
@@ -126,8 +125,7 @@ async fn imports_reject_expiring_source_authority() -> Result<(), Box<dyn Error>
     fixture
         .host
         .fork_volume(
-            &fixture.volume,
-            &source,
+            (&fixture.volume, &source),
             &fixture.generation()?,
             &target,
             &destination,

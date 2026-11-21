@@ -132,9 +132,9 @@ impl CheckoutTools {
                 return context
                     .record_native_progress(
                         NativeCaptureEvidence::Lazy {
-                            publication,
+                            publication: Box::new(publication),
                             before,
-                            after,
+                            after: Box::new(after),
                         },
                         changed,
                     )

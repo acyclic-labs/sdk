@@ -5,6 +5,9 @@ use super::*;
 /// Exercise both original decoders, their canonical fixed points and source
 /// association refusals. Generated envelope metadata is not a captured receipt;
 /// positive corpus values must come from the original stream producer.
+///
+/// # Panics
+/// Panics if the codec check fails, including a canonical round trip or foreign-target rejection.
 pub fn check(bytes: &[u8]) {
     let result = check_generated(bytes);
     assert!(result.is_ok(), "Machine codec check failed: {result:?}");
@@ -32,6 +35,9 @@ fn check_generated(bytes: &[u8]) -> std::result::Result<(), Box<dyn std::error::
 
 /// Require a positive check with the original producer envelope. Unlike an
 /// arbitrary fuzz input, a captured plan or binding must actually be admitted.
+///
+/// # Panics
+/// Panics if the record fails admission or its canonical round trip, or if a foreign target is accepted.
 pub fn check_record(target: &str, record: &acyclic_stream::Record) {
     let foreign = if target.is_empty() { "foreign" } else { "" };
     let accepted = match record.sequence {

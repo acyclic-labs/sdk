@@ -277,7 +277,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             assert!(during.messages.starts_with(&before.messages));
             assert!(!during.summary);
             release.notify_one();
-            execution.review.completed.notified().await;
+            execution.review_background()?.completed.notified().await;
             if change_source {
                 prior[0].content = ModelContent::Text("Changed page ".repeat(2_000));
             }
@@ -357,7 +357,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 .await?;
             assert!(
                 execution
-                    .review
+                    .review_background()?
                     .requested
                     .notified()
                     .now_or_never()
@@ -401,7 +401,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 .await?;
             assert!(
                 reopened
-                    .review
+                    .review_background()?
                     .requested
                     .notified()
                     .now_or_never()
@@ -513,7 +513,7 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
             execution
                 .request_context_review(journal, &input, 0, &[], original_metadata(&events))
                 .await?;
-            execution.review.completed.notified().await;
+            execution.review_background()?.completed.notified().await;
             assert!(
                 overflowed.load(Ordering::SeqCst) > 0,
                 "the full review does not fit"
@@ -651,9 +651,9 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
                 0 => started.notified().await,
                 1 => {
                     release.notify_one();
-                    execution.review.completed.notified().await;
+                    execution.review_background()?.completed.notified().await;
                 }
-                _ => execution.review.completed.notified().await,
+                _ => execution.review_background()?.completed.notified().await,
             }
         }
         Ok(ExecutionProgress::Ready(()))
@@ -806,7 +806,7 @@ async fn defective_context_decisions_remain_retryable_until_a_valid_reply() -> R
                     )
                     .await?;
                 if step < 3 {
-                    execution.review.completed.notified().await;
+                    execution.review_background()?.completed.notified().await;
                     assert_eq!(provider.request_count(), requests + 1);
                 } else {
                     assert_eq!(

@@ -231,14 +231,15 @@ pub(super) mod codec_fuzz {
             segmented: true,
             ..
         }) = Node::decode(bytes, sequence, None)
+            && let Ok(header) = Header::parse(value, sequence, None)
         {
-            if let Ok(header) = Header::parse(value, sequence, None) {
-                assert_eq!(header.encode().as_slice(), value);
-                for end in 0..HEADER_BYTES {
-                    assert!(Header::parse(&value[..end], sequence, None).is_err());
-                }
-                assert!(Header::parse(value, header.last.sequence, None).is_err());
+            assert_eq!(header.encode().as_slice(), value);
+            let mut truncated = value;
+            while let Some((_, prefix)) = truncated.split_last() {
+                assert!(Header::parse(prefix, sequence, None).is_err());
+                truncated = prefix;
             }
+            assert!(Header::parse(value, header.last.sequence, None).is_err());
         }
     }
 

@@ -9,9 +9,8 @@
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{
-        Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef,
-        MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryPage, ReferencedAttachments, VolumeClass,
-        VolumeOperation, VolumeRef,
+        ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef,
+        MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
@@ -34,7 +33,7 @@ mod content_publisher;
 mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use execution_journal::ExecutionReplayObservation;
 pub use execution_journal::FilesystemExecutionJournal;
 #[cfg(feature = "test-support")]
@@ -104,6 +103,7 @@ mod workspace_access;
 pub use workspace_access::{
     WorkspaceAccess, require_unrestricted_volume_access, require_workspace_subtree_read,
 };
+#[cfg(not(target_arch = "wasm32"))]
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(not(target_arch = "wasm32"))]
@@ -121,6 +121,7 @@ mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
 pub(crate) mod host;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use host::content_path;
 pub(crate) use host::map_error;
 pub use host::reads::media_type::captured as captured_media_type;
@@ -349,14 +350,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
-            let root_authorization = if opened.id() != root.id() {
+            let root_authorization = if opened.id() == root.id() {
+                None
+            } else {
                 let (generation, fence) = self
                     .authorize_content_write(&root, grant, path, prior.is_none(), ceiling, io)?
                     .await?;
                 let hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
                 Some((generation, hold, fence))
-            } else {
-                None
             };
             let root_fence = root_authorization.as_ref().map(|(_, _, fence)| *fence);
             let (authorized_generation, policy_fence) = self
@@ -495,27 +496,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     path: stock_string_copy(parent, io)?,
                 });
             }
-            let staged = match staged {
-                Some((transaction, content)) => Some((transaction, absolute, content)),
-                None => {
-                    mutations.push(WorkspaceMutation::PutFile {
-                        path: absolute,
-                        bytes: input.mutation_bytes(io)?,
-                    });
-                    None
-                }
+            let staged = if let Some((transaction, content)) = staged {
+                Some((transaction, absolute, content))
+            } else {
+                mutations.push(WorkspaceMutation::PutFile {
+                    path: absolute,
+                    bytes: input.mutation_bytes(io)?,
+                });
+                None
             };
             let generation = self
                 .apply_authorized_generation(
                     &opened,
-                    (policy_fence, grant, root_fence),
+                    (&policy_fence, grant, root_fence.as_ref()),
                     root_cut,
-                    &mutations,
-                    IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
-                    active_io,
-                    receipt_bytes,
-                    metadata_key,
-                    staged,
+                    host::workspaces::WorkspacePublicationChanges {
+                        mutations: &mutations,
+                        staged,
+                    },
+                    (
+                        IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
+                        active_io,
+                    ),
+                    (receipt_bytes, metadata_key),
                 )?
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
@@ -601,11 +604,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || {
-                self.read_pinned_unmetered(reference, maximum_bytes, pinned_read::bytes_only)
+                self.read_pinned_unmetered((reference, maximum_bytes), pinned_read::bytes_only)
             })
         } else {
             crate::conversation::BoundedContentFuture::new(io, || {
-                self.read_pinned_metered(reference, maximum_bytes, io)
+                self.read_pinned_metered((reference, maximum_bytes), io)
             })
         })?
         .await
@@ -619,7 +622,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<PinnedRead<A, O>> {
         if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || {
-                self.read_pinned_unmetered(reference, maximum_bytes, PinnedRead::from_read)
+                self.read_pinned_unmetered((reference, maximum_bytes), PinnedRead::from_read)
             })?
             .await
         } else {
@@ -633,8 +636,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     fn read_pinned_unmetered<'a, T, F>(
         &'a self,
-        reference: &'a FileRef,
-        maximum_bytes: u64,
+        request: (&'a FileRef, u64),
         project: F,
     ) -> impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a
     where
@@ -642,6 +644,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             + acyclic_stream::ProviderTask
             + 'a,
     {
+        let (reference, maximum_bytes) = request;
         async move {
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
@@ -690,12 +693,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     fn read_pinned_metered<'a>(
         &'a self,
-        reference: &'a FileRef,
-        maximum_bytes: u64,
+        request: (&'a FileRef, u64),
         io: Option<&'a bounded_io::PreparationIo>,
     ) -> impl std::future::Future<Output = Result<Charged<acyclic_stream::OwnedBytes>>>
     + acyclic_stream::ProviderTask
     + 'a {
+        let (reference, maximum_bytes) = request;
         async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some((caller, original)) =
@@ -780,46 +783,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
                 .transpose()?;
             let path = format!("/{}", reference.path());
-            let bytes = match io {
-                Some(io) => {
-                    let opened = (self).open(&workspace, Some(io)).await?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if self.selects_private_cut(&opened, &generation) {
-                        let (bytes, _) = Box::pin(self.read_pinned_private(
-                            &opened,
-                            &generation,
-                            reference,
-                            maximum_bytes,
-                            true,
-                            io,
-                        ))
-                        .await?;
-                        crate::executor::with_history_io(Some(io), |work| {
-                            reference.descriptor().verify(&bytes, work)
-                        })?;
-                        return Ok(bytes);
-                    }
-                    let pinned = self.generation(&opened, &generation, Some(io)).await?;
-                    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-                    acyclic_differential::record(("read", maximum_bytes));
-                    let bytes = io.receive(
-                        pinned
-                            .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
-                            .await,
-                    )?;
-                    // The charge lives exactly as long as the returned bytes.
-                    let bytes = io.retain_read_bytes(bytes)?;
-                    bounded_io::retain(&pinned, Some(io)).await?;
-                    bytes
+            let bytes = if let Some(io) = io {
+                let opened = (self).open(&workspace, Some(io)).await?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.selects_private_cut(&opened, &generation) {
+                    let (bytes, _) = Box::pin(self.read_pinned_private(
+                        &opened,
+                        &generation,
+                        reference,
+                        maximum_bytes,
+                        true,
+                        io,
+                    ))
+                    .await?;
+                    crate::executor::with_history_io(Some(io), |work| {
+                        reference.descriptor().verify(&bytes, work)
+                    })?;
+                    return Ok(bytes);
                 }
-                None => {
-                    let unmeasured =
-                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    unmeasured.retain_read_bytes(
-                        self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                            .await?,
-                    )?
-                }
+                let pinned = self.generation(&opened, &generation, Some(io)).await?;
+                #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+                acyclic_differential::record(("read", maximum_bytes));
+                let bytes = io.receive(
+                    pinned
+                        .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
+                        .await,
+                )?;
+                // The charge lives exactly as long as the returned bytes.
+                let bytes = io.retain_read_bytes(bytes)?;
+                bounded_io::retain(&pinned, Some(io)).await?;
+                bytes
+            } else {
+                let unmeasured =
+                    PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                unmeasured.retain_read_bytes(
+                    self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
+                        .await?,
+                )?
             };
             crate::executor::with_history_io(io, |work| {
                 reference.descriptor().verify(&bytes, work)

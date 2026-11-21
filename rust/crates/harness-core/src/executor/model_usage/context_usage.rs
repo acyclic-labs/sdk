@@ -66,9 +66,13 @@ impl Header {
         offset: u64,
         length: u64,
     ) -> Result<Option<ContextUsage>> {
+        let start = offset
+            .checked_sub(origin)
+            .and_then(|start| usize::try_from(start).ok())
+            .ok_or_else(malformed)?;
         let fields = &mut self.fields;
         self.cursor.feed(
-            &bytes[(offset - origin) as usize..],
+            bytes.get(start..).ok_or_else(malformed)?,
             JsonBounds {
                 maximum_bytes: Some(length),
                 maximum_items: Some(length),
@@ -81,7 +85,9 @@ impl Header {
                     if end - start > TOKEN_BYTES || start < origin {
                         None
                     } else {
-                        bytes.get((start - origin) as usize..(end - origin) as usize)
+                        let start = usize::try_from(start - origin).ok()?;
+                        let end = usize::try_from(end - origin).ok()?;
+                        bytes.get(start..end)
                     }
                 };
                 match event {

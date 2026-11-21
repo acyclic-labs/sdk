@@ -466,8 +466,7 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
     let mut pending = tool.executor.execute(invocation, Some(context));
     assert!(pending.as_mut().now_or_never().is_none());
     host.put_changes(
-        &volume,
-        &grant,
+        (&volume, &grant),
         &[crate::conversation::ContentChange::DeleteExpected {
             source: &suppressed,
         }],

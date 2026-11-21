@@ -7,7 +7,7 @@ use crate::{
         VolumeOperation, VolumeRef, validate_content_path,
     },
     core::{AuthorityVerifier, Scope},
-    resources::{ArtifactRef, ProviderRef},
+    resources::ProviderRef,
     runtime::ContentBindings,
 };
 use acyclic_objects::{Blobs, ByteRange, Digest};

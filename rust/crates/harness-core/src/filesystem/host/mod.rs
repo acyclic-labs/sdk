@@ -288,7 +288,7 @@ pub use import::VolumeImportPlan;
 mod creation_authority;
 mod journal_policy;
 mod volumes;
-mod workspaces;
+pub(super) mod workspaces;
 pub use keys::content_metadata_key_io;
 pub(crate) use keys::content_path;
 pub use keys::map_error;

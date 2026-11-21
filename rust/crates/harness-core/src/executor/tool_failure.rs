@@ -231,14 +231,15 @@ impl fmt::Write for Sanitizing<'_, '_> {
         for (index, character) in text.char_indices() {
             if character.is_control() {
                 if start != index {
-                    self.0.write_str(&text[start..index])?;
+                    self.0
+                        .write_str(text.get(start..index).ok_or(fmt::Error)?)?;
                 }
                 self.0.write_char(' ')?;
                 start = index + character.len_utf8();
             }
         }
         if start != text.len() {
-            self.0.write_str(&text[start..])?;
+            self.0.write_str(text.get(start..).ok_or(fmt::Error)?)?;
         }
         Ok(())
     }

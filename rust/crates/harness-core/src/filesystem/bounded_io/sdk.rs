@@ -15,10 +15,10 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         result: std::result::Result<(T, acyclic_fs::kernel::KernelOwnedAllocation), E>,
         accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
     ) -> Self::OwnedOutput<T, E> {
+        #[cfg(target_arch = "wasm32")]
+        let result = result.map(|(value, _allocation)| value);
+        #[cfg(not(target_arch = "wasm32"))]
         let result = result.and_then(|(value, allocation)| {
-            #[cfg(target_arch = "wasm32")]
-            let _ = allocation;
-            #[cfg(not(target_arch = "wasm32"))]
             if let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) =
                 allocation
             {

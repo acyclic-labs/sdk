@@ -255,13 +255,15 @@ fn hash(digest: &mut blake3::Hasher, bytes: &[u8], io: Option<&PreparationIo>) -
     })
 }
 
-fn storage_error(error: std::io::Error, io: Option<&PreparationIo>) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return work.runtime_error(error).into();
+fn storage_error(io: Option<&PreparationIo>) -> impl FnOnce(std::io::Error) -> Error + '_ {
+    move |error| {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            return work.runtime_error(error).into();
+        }
+        let _ = io;
+        Error::Storage(error.to_string())
     }
-    let _ = io;
-    Error::Storage(error.to_string())
 }
 
 fn envelope(
@@ -331,9 +333,7 @@ impl Buffer {
 
     fn reserve(&mut self, capacity: usize, io: Option<&PreparationIo>) -> Result<()> {
         match self {
-            Self::Unique(bytes) => bytes
-                .reserve_capacity(capacity)
-                .map_err(|error| storage_error(error, io)),
+            Self::Unique(bytes) => bytes.reserve_capacity(capacity).map_err(storage_error(io)),
             Self::Finite(bytes) => crate::executor::stock_vec_reserve(bytes, capacity, io),
         }
     }
@@ -348,7 +348,7 @@ impl Buffer {
         match self {
             Self::Unique(bytes) => bytes
                 .replace_range(prefix..prefix, &[separator, appended])
-                .map_err(|error| storage_error(error, io)),
+                .map_err(storage_error(io)),
             Self::Finite(bytes) => with_history_io(io, |work| {
                 let copied = bytes.len() - prefix + separator.len() + appended.len();
                 if let Some(work) = work.as_deref_mut() {
@@ -401,7 +401,10 @@ impl EncodingPrefix {
             .ok_or_else(|| invalid(io, "canonical request prefix exceeds messages"))?;
         if suffix.is_empty() {
             let mut complete = prefix.request.clone();
-            hash(&mut complete, &old_bytes[prefix.end..], io)?;
+            let tail = old_bytes
+                .get(prefix.end..)
+                .ok_or_else(|| invalid(io, "canonical request cut exceeds its bytes"))?;
+            hash(&mut complete, tail, io)?;
             return Ok((old_bytes, *complete.finalize().as_bytes(), state));
         }
         prefix.previous = Some((old_count, prefix.messages_digest(io)?));
@@ -499,7 +502,11 @@ impl EncodingPrefix {
         hash(&mut self.messages, separator, io)?;
         hash(&mut self.messages, appended, io)?;
         let mut complete = self.request.clone();
-        hash(&mut complete, &bytes.as_slice()[self.end..], io)?;
+        let tail = bytes
+            .as_slice()
+            .get(self.end..)
+            .ok_or_else(|| invalid(io, "canonical request cut exceeds its bytes"))?;
+        hash(&mut complete, tail, io)?;
         bytes.insert(self.end, separator, appended, io)?;
         self.end = end;
         self.count = count;

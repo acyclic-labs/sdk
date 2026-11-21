@@ -748,7 +748,7 @@ async fn parallel(
     parent: &AgentPath,
     child: &AgentPath,
 ) -> Result {
-    let request = InboxRecord::Spawn(SpawnRequest {
+    let request = InboxRecord::Spawn(Box::new(SpawnRequest {
         by: super::super::user(),
         id: intent("parallel-answer-child"),
         brief: Some(Box::new(answer(&**stream, parent, 0).await?.output)),
@@ -762,7 +762,7 @@ async fn parallel(
             peers: Default::default(),
         },
         history: None,
-    });
+    }));
     let Delivered::Committed { inbox } = host.send(parent, &super::super::user(), &request).await?
     else {
         return Err("parallel child request was not committed".into());

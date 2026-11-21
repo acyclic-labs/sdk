@@ -563,13 +563,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
     );
     assert!(matches!(
         host.reply(&root, &intent("original"), original).await?,
-        Reply::Answered {
-            entry: ConversationEntry {
-                outcome: TurnOutcome::Completed,
-                ..
-            },
-            ..
-        }
+        Reply::Answered { entry, .. } if matches!(entry.outcome, TurnOutcome::Completed)
     ));
 
     let Delivered::Committed { inbox: later } =
@@ -627,13 +621,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
     assert!(drain.await.is_empty());
     assert!(matches!(
         host.reply(&root, &intent("later"), later).await?,
-        Reply::Answered {
-            entry: ConversationEntry {
-                outcome: TurnOutcome::Cancelled,
-                ..
-            },
-            ..
-        }
+        Reply::Answered { entry, .. } if matches!(entry.outcome, TurnOutcome::Cancelled)
     ));
     let tail = inbox_tail(&*provider, &root).await?;
     host.send(&root, &user(), &cancel).await?;
@@ -644,13 +632,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
     );
     assert!(matches!(
         host.reply(&root, &intent("original"), original).await?,
-        Reply::Answered {
-            entry: ConversationEntry {
-                outcome: TurnOutcome::Completed,
-                ..
-            },
-            ..
-        }
+        Reply::Answered { entry, .. } if matches!(entry.outcome, TurnOutcome::Completed)
     ));
     let mut adoption = adopted(id(2));
     adoption.brief = Some(super::driver::file("initial brief")?);
@@ -1634,7 +1616,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
             "spawn wait admitted an absent or non-spawn original input"
         );
     }
-    let request = InboxRecord::Spawn(SpawnRequest {
+    let request = InboxRecord::Spawn(Box::new(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
             question_plugin: false,
             topology: None,
@@ -1648,7 +1630,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
         by: user(),
         id: intent("s"),
         brief: Some(Box::new(super::driver::file("task").expect("file"))),
-    });
+    }));
     let Delivered::Committed { inbox } = host.send(&root, &user(), &request).await? else {
         return Err("spawn request was not committed".into());
     };
@@ -1771,7 +1753,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let request = |n: usize| {
-        InboxRecord::Spawn(SpawnRequest {
+        InboxRecord::Spawn(Box::new(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
                 question_plugin: false,
                 topology: None,
@@ -1785,7 +1767,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
             by: user(),
             id: intent(&format!("s{n}")),
             brief: Some(Box::new(super::driver::file("task").expect("file"))),
-        })
+        }))
     };
     let mut sequences = Vec::new();
     for n in 0..3 {

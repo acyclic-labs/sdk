@@ -592,9 +592,9 @@ impl ModelProvider for ScriptedModelProvider {
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         maximum_bytes: Option<u64>,
-    ) -> Option<Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         self.reads_content.then(|| {
-            Arc::new(Self {
+            acyclic_stream::ProviderOwner::new(Self {
                 state: Arc::clone(&self.state),
                 responder: self.responder.clone(),
                 answered: Arc::clone(&self.answered),
@@ -605,7 +605,7 @@ impl ModelProvider for ScriptedModelProvider {
                 reads_content: true,
                 content: Some((reader, maximum_bytes)),
                 volume: self.volume.clone(),
-            }) as Arc<dyn ModelProvider>
+            }) as acyclic_stream::ProviderOwner<dyn ModelProvider>
         })
     }
 
@@ -733,12 +733,14 @@ impl ModelProvider for ScriptedModelProvider {
         input: &'a crate::model::ModelContent,
         content: &'a crate::runtime::ContentBindings,
         maximum: Option<u64>,
-    ) -> Option<BoxProviderFuture<'a, Result<Arc<dyn ModelProvider>>>> {
+    ) -> Option<BoxProviderFuture<'a, Result<acyclic_stream::ProviderOwner<dyn ModelProvider>>>>
+    {
         let volume = self.volume.as_ref()?;
         Some(Box::pin(async move {
             let mut bound = Self::new([]);
             bound.volume = Some(Arc::new(volume.bind(agent, input, content, maximum).await?));
-            Ok(Arc::new(bound) as Arc<dyn ModelProvider>)
+            Ok(acyclic_stream::ProviderOwner::new(bound)
+                as acyclic_stream::ProviderOwner<dyn ModelProvider>)
         }))
     }
 }

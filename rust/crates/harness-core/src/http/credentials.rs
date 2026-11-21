@@ -27,12 +27,15 @@ pub enum CredentialSource<'a> {
 pub struct CredentialBinding {
     key: Option<Arc<str>>,
     scope: Option<[u8; 32]>,
-    transport: Arc<dyn HttpTransport>,
+    transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
 }
 
 impl CredentialBinding {
     /// Preserve the admitted key and the existing funded header producer.
-    pub fn api_key(key: Arc<str>, transport: Arc<dyn HttpTransport>) -> Self {
+    pub fn api_key(
+        key: Arc<str>,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
+    ) -> Self {
         Self {
             key: Some(key),
             scope: None,
@@ -43,7 +46,10 @@ impl CredentialBinding {
     /// Bind an authenticated credential/account scope and host-protected
     /// exchange. Scope comes from the original admitted host binding, never
     /// a reference hash. Rotation in the same account retains that scope.
-    pub fn protected(scope: [u8; 32], transport: Arc<dyn HttpTransport>) -> Self {
+    pub fn protected(
+        scope: [u8; 32],
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
+    ) -> Self {
         Self {
             key: None,
             scope: Some(scope),
@@ -63,16 +69,23 @@ pub trait CredentialResolver: ProviderPlatform {
         source: CredentialSource<'_>,
         origin: &str,
         scheme: AuthorizationScheme,
-        transport: Arc<dyn HttpTransport>,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     ) -> Result<CredentialBinding>;
 }
+
+/// The key, scope, and transport passed to the model header producer.
+pub type CredentialBindingParts = (
+    Option<Arc<str>>,
+    Option<[u8; 32]>,
+    acyclic_stream::ProviderOwner<dyn HttpTransport>,
+);
 
 impl CredentialBinding {
     /// Constructs a binding for the existing model header producer.
     pub fn from_parts(
         key: Option<Arc<str>>,
         scope: Option<[u8; 32]>,
-        transport: Arc<dyn HttpTransport>,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     ) -> Self {
         Self {
             key,
@@ -81,7 +94,7 @@ impl CredentialBinding {
         }
     }
     /// An unauthenticated exchange.
-    pub fn anonymous(transport: Arc<dyn HttpTransport>) -> Self {
+    pub fn anonymous(transport: acyclic_stream::ProviderOwner<dyn HttpTransport>) -> Self {
         Self {
             key: None,
             scope: None,
@@ -89,11 +102,11 @@ impl CredentialBinding {
         }
     }
     /// Returns the original binding for the model header producer.
-    pub fn into_parts(self) -> (Option<Arc<str>>, Option<[u8; 32]>, Arc<dyn HttpTransport>) {
+    pub fn into_parts(self) -> CredentialBindingParts {
         (self.key, self.scope, self.transport)
     }
     /// Accepts only host-protected authority; never exposes a local key.
-    pub fn protected_transport(self) -> Result<Arc<dyn HttpTransport>> {
+    pub fn protected_transport(self) -> Result<acyclic_stream::ProviderOwner<dyn HttpTransport>> {
         if self.key.is_some() || self.scope.is_none() {
             return Err(crate::Error::Invalid(
                 "credential binding exposed a value; recovery: use a protected host binding".into(),

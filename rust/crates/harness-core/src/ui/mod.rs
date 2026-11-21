@@ -94,12 +94,11 @@ impl UiPath {
         authored: Option<&str>,
         default: impl FnMut() -> Result<String>,
     ) -> Result<String> {
-        match authored {
-            Some(text) => blocks::embed(text, default),
-            None => {
-                let mut default = default;
-                default()
-            }
+        if let Some(text) = authored {
+            blocks::embed(text, default)
+        } else {
+            let mut default = default;
+            default()
         }
     }
 }

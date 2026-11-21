@@ -99,7 +99,7 @@ pub(crate) fn lifecycle_record(event: &Event) -> Result<AppendRecord> {
         keys.push(Bytes::from_static(CURRENT_RUN_KEY).into());
         if matches!(event.event, Lifecycle::Paused { .. }) {
             keys.push(Bytes::from_static(PAUSED_RUN_KEY).into());
-            keys.push(pause_source_key(&event.source).into());
+            keys.push(pause_source_key(&event.source));
         }
         if matches!(
             event.event,
@@ -108,7 +108,7 @@ pub(crate) fn lifecycle_record(event: &Event) -> Result<AppendRecord> {
                 | Lifecycle::Stopped { .. }
                 | Lifecycle::TurnDone { .. }
         ) {
-            keys.push(run_control_key(run).into());
+            keys.push(run_control_key(run));
         }
     }
     keys.sort_unstable();
@@ -419,7 +419,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         if let Some(record) = &record
             && (record.sequence != 0
                 || record.value.len() != 12
-                || record.value[..4] != 1u32.to_be_bytes())
+                || !record.value.starts_with(&1u32.to_be_bytes()))
         {
             return Err(invalid("turn fact differs from its original cut"));
         }
@@ -449,13 +449,14 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
             .await?;
         let value = record
             .map(|record| {
-                if record.value.len() != 12 || record.value[..4] != 1u32.to_be_bytes() {
-                    return Err(invalid(
-                        "native measurement index has an invalid version or length",
-                    ));
-                }
-                Ok(u64::from_be_bytes(
-                    record.value[4..].try_into().map_err(invalid)?,
+                let invalid_record =
+                    || invalid("native measurement index has an invalid version or length");
+                let value = record
+                    .value
+                    .strip_prefix(&1u32.to_be_bytes())
+                    .ok_or_else(invalid_record)?;
+                Ok::<_, Error>(u64::from_be_bytes(
+                    value.try_into().map_err(|_| invalid_record())?,
                 ))
             })
             .transpose()?;

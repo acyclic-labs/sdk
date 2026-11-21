@@ -122,8 +122,7 @@ fn check_selection(parent: &AgentPath, arguments: Value) -> Result<()> {
         assert_eq!(
             actual,
             Err(rejected(format!(
-                "{} names no child of this agent",
-                reference
+                "{reference} names no child of this agent"
             )))
         );
         return Ok(());

@@ -95,12 +95,12 @@ where
             }
             remaining.begin_page()?;
             let page = list(cursor).await?;
-            if let Some(next) = &page.next_cursor {
-                if next.is_empty() || !seen.insert(next.clone()) {
-                    return Err(Error::Invalid(
-                        "MCP discovery repeated an invalid cursor".into(),
-                    ));
-                }
+            if let Some(next) = &page.next_cursor
+                && (next.is_empty() || !seen.insert(next.clone()))
+            {
+                return Err(Error::Invalid(
+                    "MCP discovery repeated an invalid cursor".into(),
+                ));
             }
             remaining.admit_tools(page.tools.len())?;
             remaining.admit_bytes(&page)?;

@@ -4,6 +4,7 @@ use super::*;
 use crate::conversation::{
     ContentAccess, ContentChange, ContentChangeResult, ContentChanges, FileIdentity, PathSelection,
 };
+use crate::filesystem::content_publisher::ContentChangeCheck;
 use acyclic_fs::access::Action;
 use futures::future::Either::{Left, Right};
 
@@ -174,7 +175,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let opened = self.select_current_workspace(&root, io).await?;
             let payload = change_payload(grant.policy_scope(), volume, io)?;
             let now = self.access_now()?;
-            let root_view = if root.id() != opened.id() {
+            let root_view = if root.id() == opened.id() {
+                None
+            } else {
                 Some(
                     access::access_view(
                         &root,
@@ -187,8 +190,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                     .await?,
                 )
-            } else {
-                None
             };
             let view = access::access_view(
                 &opened,
@@ -285,7 +286,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 now,
             )
             .await?;
-            let root_view = if root.id() != opened.id() {
+            let root_view = if root.id() == opened.id() {
+                None
+            } else {
                 Some(
                     access::access_view(
                         &root,
@@ -298,8 +301,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                     .await?,
                 )
-            } else {
-                None
             };
             let mut checked_actions = [false; 2];
             for record in &receipt.1 {
@@ -356,13 +357,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
     pub(in crate::filesystem) fn put_changes<'a>(
         &'a self,
-        volume: &'a VolumeRef,
-        grant: &'a ContentGrant,
+        (volume, grant): (&'a VolumeRef, &'a ContentGrant),
         changes: &'a [ContentChange<'a>],
         key: &'a IdempotencyKey,
         maximum_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
-        check: Option<&'a (dyn Fn(Action, &str) -> Result<()> + Send + Sync)>,
+        check: Option<&'a ContentChangeCheck<'a>>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContentChanges>> {
         let ContentAccess { ceiling, io } = access;
         grant.require(volume, VolumeOperation::Write, io)?;
@@ -397,7 +397,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 items_examined: compared,
                 ..Default::default()
             })?;
-            if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+            if paths.array_windows().any(|[left, right]| left == right) {
                 return Err(io.invalid("conditional publication repeats a destination path"));
             }
             drop(paths);
@@ -752,7 +752,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let publication = Self::commit_contextual_publication(
                     transaction,
                     io,
-                    workspaces::FilePublication::Authorized(fence, grant, root_fence),
+                    workspaces::FilePublication::Authorized(&fence, grant, root_fence.as_ref()),
                     Some(workspaces::publication_context(receipt, io)?),
                     self.clock_handle(),
                 )?;
@@ -913,7 +913,12 @@ fn require_change_ceiling(
     checked_actions: &mut [bool; 2],
     io: &PreparationIo,
 ) -> Result<()> {
-    let checked = &mut checked_actions[usize::from(action == Action::Delete)];
+    let [write_checked, delete_checked] = checked_actions;
+    let checked = if action == Action::Delete {
+        delete_checked
+    } else {
+        write_checked
+    };
     if *checked {
         return Ok(());
     }

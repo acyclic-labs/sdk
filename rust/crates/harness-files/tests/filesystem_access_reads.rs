@@ -881,7 +881,7 @@ async fn hosted_read_refuses_a_capability_expired_on_the_execution_clock()
             },
             scope: fixture.scope.clone(),
         },
-        fixture.host.clone(),
+        &fixture.host,
         acyclic_actors::addressing::ActorReference::new(b"test", b"agents", b"host")?,
         acyclic_harness::hosting::Turns {
             executors: Arc::new(NoTurns),

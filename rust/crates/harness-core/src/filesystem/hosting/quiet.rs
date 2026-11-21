@@ -274,26 +274,26 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
         }
     }
     if !retired {
-        if let Some((source, record)) = output {
-            if state.activity.stream != source || record.sequence > state.activity.sequence {
-                // An exact filesystem change key identifies the output cursor's
-                // original atomic publication, whose time survives replay.
-                let context = acyclic_stream::changes_context(&record.value, &record.headers)
-                    .map_err(Error::Stream)?
-                    .ok_or(Error::Record("quiet output publication"))?;
-                acyclic_fs::PublicationContext::from_bytes(context).map_err(Error::Stream)?;
-                state.at_ms = state.at_ms.max(record.committed_at_micros / 1000);
-                state.activity = Position {
-                    stream: source,
-                    sequence: record.sequence,
-                };
-                state.deadline_ms = Some(
-                    state
-                        .at_ms
-                        .checked_add(state.quiet_ms)
-                        .ok_or(Error::Record("quiet deadline overflow"))?,
-                );
-            }
+        if let Some((source, record)) = output
+            && (state.activity.stream != source || record.sequence > state.activity.sequence)
+        {
+            // An exact filesystem change key identifies the output cursor's
+            // original atomic publication, whose time survives replay.
+            let context = acyclic_stream::changes_context(&record.value, &record.headers)
+                .map_err(Error::Stream)?
+                .ok_or(Error::Record("quiet output publication"))?;
+            acyclic_fs::PublicationContext::from_bytes(context).map_err(Error::Stream)?;
+            state.at_ms = state.at_ms.max(record.committed_at_micros / 1000);
+            state.activity = Position {
+                stream: source,
+                sequence: record.sequence,
+            };
+            state.deadline_ms = Some(
+                state
+                    .at_ms
+                    .checked_add(state.quiet_ms)
+                    .ok_or(Error::Record("quiet deadline overflow"))?,
+            );
         }
         if let Trigger::Alarm { now_unix_ms, .. } = delivery.trigger
             && let Some(deadline_ms) = state

@@ -46,6 +46,7 @@ pub(crate) fn alias(
     if let Some(custody) = &mut custody {
         custody.release(original_revision_bytes)?;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     reserve_shared::<arguments::Arguments>(&mut custody)?;
     let arguments = Arc::new(arguments::Arguments::new(template, Vec::new())?);
     adapted(
@@ -67,6 +68,7 @@ fn adapted(
     definition.output_schema = copy_schema(&original.definition.output_schema, &mut custody)?;
     definition.projection_schema =
         copy_schema(&original.definition.projection_schema, &mut custody)?;
+    #[cfg(not(target_arch = "wasm32"))]
     reserve_shared::<adapter::Adapter>(&mut custody)?;
     let adapter = Arc::new(adapter::Adapter {
         arguments,
@@ -82,8 +84,8 @@ fn adapted(
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn reserve_shared<T>(custody: &mut acyclic_fs::NativeCustody) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(custody) = custody {
         let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<T>().map_err(
             |_| Error::NativeBoundary {
@@ -93,8 +95,6 @@ fn reserve_shared<T>(custody: &mut acyclic_fs::NativeCustody) -> Result<()> {
         )?;
         custody.grow(bytes)?;
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = custody;
     Ok(())
 }
 

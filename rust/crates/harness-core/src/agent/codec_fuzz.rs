@@ -7,6 +7,9 @@ use super::{
 
 type Oracle = Result<(), Box<dyn std::error::Error>>;
 
+/// A named encoded corpus seed.
+pub type AgentCodecSeed = (&'static str, Vec<u8>);
+
 fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) -> Oracle {
     if let Ok(value) = T::decode(bytes) {
         let encoded = value.encode()?;
@@ -65,7 +68,10 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) -> 
     }
     for version in (0..=records::RECORD_VERSION + 1).chain([24, u32::MAX]) {
         let mut changed = encoded.clone();
-        changed[..4].copy_from_slice(&version.to_be_bytes());
+        changed
+            .first_chunk_mut::<4>()
+            .ok_or("record writer omitted its header")?
+            .copy_from_slice(&version.to_be_bytes());
         if version != records::RECORD_VERSION {
             refuses::<T>(&changed, version);
         }
@@ -86,11 +92,14 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) -> 
     }
     for length in 0..4 {
         assert!(matches!(
-            records::decode_record::<T>(&encoded[..length]),
+            records::decode_record::<T>(encoded.get(..length).ok_or("record header is truncated")?),
             Err(super::Error::Record("record is malformed"))
         ));
     }
-    refuses::<T>(&encoded[..encoded.len() - 1], records::RECORD_VERSION);
+    let (_, truncated) = encoded
+        .split_last()
+        .ok_or("record writer returned an empty buffer")?;
+    refuses::<T>(truncated, records::RECORD_VERSION);
     Ok(())
 }
 
@@ -360,17 +369,23 @@ fn history(bytes: &[u8]) -> Oracle {
             assert!(HistoryCheckpoint::decode(&encode(&invalid)?).is_err());
         }
         let mut wrong_class = serde_json::to_value(&value)?;
-        wrong_class["volumes"][0]["binding"]["source"]["volume"]["class"] = "session_shared".into();
+        let class = wrong_class
+            .pointer_mut("/volumes/0/binding/source/volume/class")
+            .ok_or("saved volume writer omitted its class")?;
+        *class = "session_shared".into();
         assert!(HistoryCheckpoint::decode(&serde_json::to_vec(&wrong_class)?).is_err());
     }
     let mut unknown = serde_json::to_value(&value)?;
-    unknown["unknown_history_field"] = true.into();
+    unknown
+        .as_object_mut()
+        .ok_or("checkpoint writer did not emit an object")?
+        .insert("unknown_history_field".into(), true.into());
     assert!(HistoryCheckpoint::decode(&serde_json::to_vec(&unknown)?).is_err());
     Ok(())
 }
 
 /// Seed bytes come from the same writers used by committed actor transitions.
-pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub fn seeds() -> Result<Vec<AgentCodecSeed>, Box<dyn std::error::Error>> {
     futures::executor::block_on(async {
         fn written<T: AgentRecord + PartialEq + std::fmt::Debug>(
             value: &T,
@@ -478,7 +493,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             "brief".into(),
             &mut None,
         )?;
-        let spawn = InboxRecord::Spawn(super::SpawnRequest {
+        let spawn = InboxRecord::Spawn(Box::new(super::SpawnRequest {
             by: Sender::Agent {
                 path: state.path.clone(),
             },
@@ -497,7 +512,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 conversation: 23,
                 checkpoint: Some(17),
             }),
-        });
+        }));
         seeds.push(("spawn-history", written(&spawn)?));
         // Capture every named/positional combination at the two struct boundaries
         // used by the independent history projection. All fields come from the
@@ -519,11 +534,13 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 *history = serde_json::json!([history["conversation"], history["checkpoint"]]);
             }
             if positional_spawn {
-                input["spawn"] = ["by", "id", "brief", "profile", "history"]
+                let positional = ["by", "id", "brief", "profile", "history"]
                     .into_iter()
                     .map(|field| fields.remove(field).ok_or("spawn writer omitted a field"))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into();
+                    .collect::<Result<Vec<_>, _>>()?;
+                *input
+                    .get_mut("spawn")
+                    .ok_or("spawn writer omitted its payload")? = positional.into();
             }
             let bytes = records::seal(&input)?;
             assert_eq!(InboxRecord::decode(&bytes)?, spawn);
@@ -782,7 +799,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     })
 }
 
-fn roster_seeds() -> Result<[(&'static str, Vec<u8>); 2], Box<dyn std::error::Error>> {
+fn roster_seeds() -> Result<[AgentCodecSeed; 2], Box<dyn std::error::Error>> {
     use super::targets::{DeviceKind, PathStyle, TargetClass, TargetRecord, TargetState};
     let owner = format!("{}a", "é".repeat(127));
     let maximum_name = "n".repeat(super::targets::MAX_TARGET_NAME_BYTES);
@@ -820,7 +837,7 @@ fn roster_seeds() -> Result<[(&'static str, Vec<u8>); 2], Box<dyn std::error::Er
 
 /// History uses the same typed JSON writer as filesystem::history. These seeds
 /// qualify descriptor syntax, not the existence or authority of retained roots.
-pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub fn history_seeds() -> Result<Vec<AgentCodecSeed>, Box<dyn std::error::Error>> {
     use super::{ContextCut, SavedVolume, WorkspaceEntry};
     use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
     let mut checkpoint = HistoryCheckpoint {

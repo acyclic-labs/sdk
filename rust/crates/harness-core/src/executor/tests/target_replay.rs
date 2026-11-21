@@ -226,8 +226,7 @@ async fn filesystem_binding_replay(
     StockExecution::ordinary(&committing)
         .settle_tool_call(
             &*journal,
-            commit_operation,
-            0,
+            (commit_operation, 0),
             (commit.clone(), None),
             0,
             &mut vec![call_message(&commit)],
@@ -264,8 +263,7 @@ async fn filesystem_binding_replay(
     StockExecution::ordinary(&bound)
         .settle_tool_call(
             &*journal,
-            operation,
-            0,
+            (operation, 0),
             (invocation.clone(), pinned.clone()),
             0,
             &mut messages,
@@ -297,8 +295,7 @@ async fn filesystem_binding_replay(
         let error = StockExecution::ordinary(&changed)
             .settle_tool_call(
                 &*journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
@@ -315,8 +312,7 @@ async fn filesystem_binding_replay(
         StockExecution::ordinary(&bound)
             .settle_tool_call(
                 &*journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
@@ -344,8 +340,7 @@ async fn filesystem_binding_replay(
         let refused = StockExecution::ordinary(&bound)
             .settle_tool_call(
                 &*journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation.clone(), pinned.clone()),
                 0,
                 &mut replay,
@@ -362,8 +357,7 @@ async fn filesystem_binding_replay(
             StockExecution::ordinary(&bound)
                 .settle_tool_call(
                     &*journal,
-                    operation,
-                    0,
+                    (operation, 0),
                     (invocation.clone(), pinned.clone()),
                     0,
                     &mut replay,
@@ -424,8 +418,7 @@ async fn filesystem_binding_replay(
         let error = StockExecution::ordinary(&bound)
             .settle_tool_call(
                 &*journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
@@ -450,8 +443,7 @@ async fn filesystem_binding_replay(
     let error = StockExecution::ordinary(&recovery)
         .settle_tool_call(
             &*journal,
-            operation,
-            0,
+            (operation, 0),
             (invocation.clone(), pinned.clone()),
             0,
             &mut vec![call_message(&invocation)],
@@ -628,8 +620,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             let error = StockExecution::ordinary(&first)
                 .settle_tool_call(
                     &journal,
-                    operation,
-                    0,
+                    (operation, 0),
                     (invocation.clone(), pinned.clone()),
                     0,
                     &mut messages,
@@ -673,8 +664,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             let replay = StockExecution::ordinary(&second)
                 .settle_tool_call(
                     &journal,
-                    operation,
-                    0,
+                    (operation, 0),
                     (invocation.clone(), pinned.clone()),
                     0,
                     &mut messages,
@@ -691,8 +681,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                 StockExecution::ordinary(&restored)
                     .settle_tool_call(
                         &journal,
-                        operation,
-                        0,
+                        (operation, 0),
                         (invocation, pinned),
                         0,
                         &mut messages,

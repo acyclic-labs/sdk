@@ -53,7 +53,9 @@ pub const NOT_INHERITED: [&str; 7] = [
 const CONVERSATION: &str = "conversation";
 const MEMBERSHIP: &str = "harness/membership";
 
+#[derive(Clone, Copy)]
 pub(crate) enum AgentStream {
+    #[cfg(not(target_arch = "wasm32"))]
     Inbox,
     Status,
     Conversation,
@@ -79,8 +81,9 @@ fn id_bytes(text: &str) -> [u8; 16] {
         }
     };
     let mut bytes = [0; 16];
-    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
-        *byte = (digit(pair[0]) << 4) | digit(pair[1]);
+    let (pairs, _) = text.as_bytes().as_chunks::<2>();
+    for (byte, &[high, low]) in bytes.iter_mut().zip(pairs) {
+        *byte = (digit(high) << 4) | digit(low);
     }
     bytes
 }
@@ -214,7 +217,7 @@ impl AgentPath {
             depth += 1;
         }
         Some(Self {
-            text: format!("{AGENTS}{}", &text[prefix.len()..end]),
+            text: format!("{AGENTS}{}", text.get(prefix.len()..end)?),
             depth,
         })
     }
@@ -286,7 +289,9 @@ impl AgentPath {
     /// allocating a path or id. Uses the same parser as owned construction.
     pub fn parse_id(path: &str) -> Result<&str, Error> {
         Self::parse_depth(path)?;
-        Ok(&path[path.len() - ID_HEX..])
+        path.rsplit('/')
+            .next()
+            .ok_or(Error::Path("agent path has no identity"))
     }
 
     /// This agent's original identity bytes, without allocation or ancestry
@@ -300,11 +305,13 @@ impl AgentPath {
     /// and descendant, without allocation or ancestry traversal.
     #[must_use]
     pub fn root_id_bytes(&self) -> [u8; 16] {
-        id_bytes(&self.text[AGENTS.len() + 1..][..ID_HEX])
+        id_bytes(self.root_id_text())
     }
 
     pub(crate) fn id_text(&self) -> &str {
-        &self.text[self.text.len() - ID_HEX..]
+        self.text
+            .get(self.text.len().saturating_sub(ID_HEX)..)
+            .unwrap_or_default()
     }
 
     /// Nesting depth; zero for a root.
@@ -350,7 +357,7 @@ impl AgentPath {
     pub fn ancestors(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
         (0..self.depth + 1).map(|depth| {
             let end = AGENTS.len() + 1 + ID_HEX + depth * (CHILDREN.len() + 2 + ID_HEX);
-            &self.text[..end]
+            self.text.get(..end).unwrap_or_default()
         })
     }
 
@@ -391,16 +398,17 @@ impl AgentPath {
 
     pub(crate) fn stream_parts(&self, stream: AgentStream) -> [&str; 5] {
         match stream {
+            #[cfg(not(target_arch = "wasm32"))]
             AgentStream::Inbox => [self.as_str(), "", "", "", ""],
-            AgentStream::Status => [STATUSES, &self.text[AGENTS.len()..], "", "", ""],
-            AgentStream::Conversation => [self.as_str(), "/", CONVERSATION, "", ""],
-            AgentStream::Membership => [
-                MEMBERSHIP,
-                "/",
-                &self.text[AGENTS.len() + 1..AGENTS.len() + 1 + ID_HEX],
-                "/",
-                self.id_text(),
+            AgentStream::Status => [
+                STATUSES,
+                self.text.strip_prefix(AGENTS).unwrap_or_default(),
+                "",
+                "",
+                "",
             ],
+            AgentStream::Conversation => [self.as_str(), "/", CONVERSATION, "", ""],
+            AgentStream::Membership => [MEMBERSHIP, "/", self.root_id_text(), "/", self.id_text()],
         }
     }
 
@@ -414,7 +422,15 @@ impl AgentPath {
     }
 
     fn tree_root_text(&self) -> &str {
-        &self.text[..AGENTS.len() + 1 + ID_HEX]
+        // The constructors admit exactly ID_HEX ASCII bytes after AGENTS and its slash.
+        self.text
+            .get(..AGENTS.len() + 1 + ID_HEX)
+            .unwrap_or_default()
+    }
+
+    fn root_id_text(&self) -> &str {
+        let start = AGENTS.len() + 1;
+        self.text.get(start..start + ID_HEX).unwrap_or_default()
     }
 
     /// The status stream of the tree's target `name`, under the tree's root

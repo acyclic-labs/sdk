@@ -100,7 +100,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let view = self
             .receipt_access(&workspace, original.id(), &request, &recorded.0.0, io)
             .await?;
-        let root_view = if workspace.id() != root.id() {
+        let root_view = if workspace.id() == root.id() {
+            None
+        } else {
             Some(
                 self.receipt_access(
                     &root,
@@ -114,8 +116,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await?,
             )
-        } else {
-            None
         };
         if let Some(binding) = binding {
             bounded_io::retain(&binding, Some(io)).await?;

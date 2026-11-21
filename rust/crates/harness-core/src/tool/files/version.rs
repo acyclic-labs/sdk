@@ -83,6 +83,7 @@ impl SelectedVersion {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
             Self::Content(file) => file.logical_owned_bytes(),
@@ -162,6 +163,8 @@ pub(super) fn decode_selection(
     version: &str,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(SelectedVersion, acyclic_fs::NativeCustody)> {
+    #[cfg(target_arch = "wasm32")]
+    let _ = work;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
@@ -245,6 +248,8 @@ pub(super) fn encode_token<T: Serialize>(
     prefix: &str,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(String, acyclic_fs::NativeCustody)> {
+    #[cfg(target_arch = "wasm32")]
+    let _ = work;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;

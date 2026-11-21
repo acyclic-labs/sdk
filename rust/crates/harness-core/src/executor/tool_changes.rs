@@ -247,7 +247,9 @@ impl StockExecution<'_> {
         let mut offset = 0;
         let mut removed_offset = 0;
         while offset < table.len() || removed_offset < removed.len() {
-            let remaining = &table[offset..];
+            let remaining = table
+                .get(offset..)
+                .ok_or_else(|| invalid("tool notice offset is outside its text"))?;
             let removed_start = removed_offset;
             let end = if let Some(maximum) = maximum {
                 let mut bytes = 0;
@@ -284,10 +286,14 @@ impl StockExecution<'_> {
             }
             let notice = content(
                 kind,
-                &remaining[..end],
+                remaining
+                    .get(..end)
+                    .ok_or_else(|| invalid("tool notice extent is outside its text"))?,
                 offset,
                 offset + end == table.len() && removed_offset == removed.len(),
-                &removed[removed_start..removed_offset],
+                removed
+                    .get(removed_start..removed_offset)
+                    .ok_or_else(|| invalid("tool notice removal extent is outside its entries"))?,
             );
             #[cfg(not(target_arch = "wasm32"))]
             let funded = self

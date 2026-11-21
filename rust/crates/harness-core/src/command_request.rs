@@ -235,7 +235,7 @@ impl CommandResolution {
     pub fn from_request(bytes: &[u8]) -> Result<Self> {
         serde_json::from_slice(bytes)
             .or_else(|_| serde_json::from_slice(bytes).map(|request| Self::Submit { request }))
-            .map_err(codec)
+            .map_err(|error| codec(&error))
     }
 }
 
@@ -339,24 +339,27 @@ impl CommandResolution {
             }
             Self::Sdk { .. } | Self::View { .. } => Ok(publish_request(
                 CommandFileRoot::Session,
-                serde_json::to_value(self).map_err(codec)?,
+                serde_json::to_value(self).map_err(|error| codec(&error))?,
             )),
             Self::Tool { .. } | Self::Prompt { .. } => Ok(publish_request(
                 CommandFileRoot::Task,
-                serde_json::to_value(self).map_err(codec)?,
+                serde_json::to_value(self).map_err(|error| codec(&error))?,
             )),
             Self::Confirm { request } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                let mut confirmation = json!({"request":request,"operation":operation});
+                let mut confirmation = Map::from_iter([
+                    ("request".into(), json!(request)),
+                    ("operation".into(), json!(operation)),
+                ]);
                 if matches!(request, CommandRequest::Delete {}) {
                     let task = layout
                         .get("selected_task")
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::Invalid("delete requires a selected task".into()))?;
                     crate::TaskId::parse(task)?;
-                    confirmation["task"] = json!(task);
+                    confirmation.insert("task".into(), json!(task));
                 }
-                layout.insert("confirmation".into(), confirmation);
+                layout.insert("confirmation".into(), Value::Object(confirmation));
                 Ok(config(
                     CommandFileRoot::Session,
                     "layout.json",
@@ -374,42 +377,40 @@ impl CommandResolution {
         let config = |root, path: &str, contents| config_change(operation, root, path, contents);
         let publish_request = |root, contents| request_change(operation, root, contents);
         match request {
-            CommandRequest::Peers { .. } => {
-                return Err(Error::Unauthorized(
-                    "peer membership requires the user's live session connection".into(),
-                ));
-            }
+            CommandRequest::Peers { .. } => Err(Error::Unauthorized(
+                "peer membership requires the user's live session connection".into(),
+            )),
             CommandRequest::Model { model } => {
                 let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 settings.insert("model".into(), json!(model));
-                return Ok(config(
+                Ok(config(
                     CommandFileRoot::Task,
                     "settings.json",
                     settings.into(),
-                ));
+                ))
             }
             CommandRequest::Theme { mode } => {
                 let mut theme = document(snapshot, CommandFileRoot::Config, "theme.json")?;
                 theme.insert("mode".into(), json!(mode));
-                return Ok(config(CommandFileRoot::Config, "theme.json", theme.into()));
+                Ok(config(CommandFileRoot::Config, "theme.json", theme.into()))
             }
             CommandRequest::CycleMode {} => {
                 let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 cycle(&mut settings, "agent_mode", "agent_modes")?;
-                return Ok(config(
+                Ok(config(
                     CommandFileRoot::Task,
                     "settings.json",
                     settings.into(),
-                ));
+                ))
             }
             CommandRequest::Quit {} => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert("exit_requested".into(), json!(true));
-                return Ok(config(
+                Ok(config(
                     CommandFileRoot::Session,
                     "layout.json",
                     layout.into(),
-                ));
+                ))
             }
             request => {
                 let root = if matches!(
@@ -426,10 +427,10 @@ impl CommandResolution {
                 } else {
                     CommandFileRoot::Task
                 };
-                return Ok(publish_request(
+                Ok(publish_request(
                     root,
-                    serde_json::to_value(request).map_err(codec)?,
-                ));
+                    serde_json::to_value(request).map_err(|error| codec(&error))?,
+                ))
             }
         }
     }
@@ -451,11 +452,11 @@ impl CommandResolution {
                         "tool_details"
                     },
                 )?;
-                return Ok(config(
+                Ok(config(
                     CommandFileRoot::Config,
                     "settings.json",
                     settings.into(),
-                ));
+                ))
             }
             query @ (CommandQuery::Tree | CommandQuery::Terminal) => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
@@ -467,11 +468,11 @@ impl CommandResolution {
                         "terminal"
                     },
                 )?;
-                return Ok(config(
+                Ok(config(
                     CommandFileRoot::Session,
                     "layout.json",
                     layout.into(),
-                ));
+                ))
             }
             CommandQuery::Diff => {
                 let mut settings = document(snapshot, CommandFileRoot::Config, "settings.json")?;
@@ -479,7 +480,7 @@ impl CommandResolution {
                 cycle(&mut settings, "diff_mode", "diff_modes")?;
                 let mut changes = config(CommandFileRoot::Config, "settings.json", settings.into());
                 changes.extend(view_changes(snapshot, Some(query), operation)?);
-                return Ok(changes);
+                Ok(changes)
             }
             CommandQuery::Attention => Self::attention_changes(snapshot, operation),
             query => view_changes(snapshot, Some(query), operation),
@@ -503,9 +504,9 @@ impl CommandResolution {
             Some(Value::Array(tasks)) => tasks.as_slice(),
             _ => return Err(Error::Invalid("attention query requires tasks".into())),
         };
-        if candidates.is_empty() {
+        let [first, remaining @ ..] = candidates else {
             return Ok(Vec::new());
-        }
+        };
         for candidate in candidates {
             crate::TaskId::parse(
                 candidate
@@ -516,14 +517,15 @@ impl CommandResolution {
         let current = layout.get("selected_task");
         let next = candidates
             .iter()
-            .position(|task| Some(task) == current)
-            .map_or(0, |index| (index + 1) % candidates.len());
-        layout.insert("selected_task".into(), candidates[next].clone());
-        return Ok(config(
+            .zip(remaining.iter().chain(std::iter::once(first)))
+            .find_map(|(task, next)| (Some(task) == current).then_some(next))
+            .unwrap_or(first);
+        layout.insert("selected_task".into(), next.clone());
+        Ok(config(
             CommandFileRoot::Session,
             "layout.json",
             layout.into(),
-        ));
+        ))
     }
 }
 
@@ -556,7 +558,7 @@ fn request_change(
     }]
 }
 
-fn codec(error: serde_json::Error) -> Error {
+fn codec(error: &serde_json::Error) -> Error {
     Error::Invalid(format!("command file codec: {error}"))
 }
 
@@ -611,9 +613,11 @@ fn cycle(document: &mut Map<String, Value>, key: &str, choices: &str) -> Result<
     }
     let next = values
         .iter()
-        .position(|value| Some(value) == document.get(key))
-        .map_or(0, |index| (index + 1) % values.len());
-    let next = values[next].clone();
+        .zip(values.iter().cycle().skip(1))
+        .find_map(|(value, next)| (Some(value) == document.get(key)).then_some(next))
+        .or_else(|| values.first())
+        .ok_or_else(|| Error::Invalid(format!("{choices} requires nonempty string choices")))?
+        .clone();
     document.insert(key.into(), next);
     Ok(())
 }
@@ -656,7 +660,7 @@ pub fn view_changes(
             query,
             Some(CommandQuery::Find | CommandQuery::Theme | CommandQuery::Feedback)
         ) {
-            serde_json::to_value(query).map_err(codec)?
+            serde_json::to_value(query).map_err(|error| codec(&error))?
         } else {
             Value::Null
         },
@@ -664,7 +668,7 @@ pub fn view_changes(
     layout.insert("view_request".into(), json!(operation));
     layout.insert(
         "open_view".into(),
-        serde_json::to_value(query).map_err(codec)?,
+        serde_json::to_value(query).map_err(|error| codec(&error))?,
     );
     Ok(config_change(
         operation,

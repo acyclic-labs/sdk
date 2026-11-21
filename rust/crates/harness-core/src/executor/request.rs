@@ -369,7 +369,9 @@ impl StockExecution<'_> {
                         request
                             .tools
                             .binary_search_by(|retained| retained.name.cmp(&fixed.name))
-                            .is_ok_and(|index| request.tools[index] == *fixed)
+                            .ok()
+                            .and_then(|index| request.tools.get(index))
+                            == Some(fixed)
                     })
             } else {
                 request.tools == tools

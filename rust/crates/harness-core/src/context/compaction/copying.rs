@@ -20,7 +20,13 @@ pub(crate) fn clone_context_range(
     let current_input_index = context
         .current_input_index
         .filter(|index| range.contains(&(*index as usize)))
-        .map(|index| index - range.start as u32);
+        .map(|index| {
+            let start = u32::try_from(range.start).map_err(|_| {
+                Error::Invalid("summary start exceeds portable message count".into())
+            })?;
+            Ok::<_, Error>(index - start)
+        })
+        .transpose()?;
     if work.is_none() {
         return Ok((
             Context {

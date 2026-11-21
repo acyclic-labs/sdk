@@ -86,25 +86,22 @@ impl StockExecution<'_> {
         let located = journal
             .staged_ref(input.operation_id, &key, self.io)?
             .await?;
-        match located {
-            Some(file) => {
-                let selected =
-                    retain_preparation(load_json::<ManagerWindow>(journal, &file, self.io).await?)?;
-                if selected.version != 1
-                    || selected.source != digest
-                    || selected.start as usize != start
-                    || selected.end as usize > eligible
-                    || (selected.end as usize) < start
-                {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Conflict,
-                        "context manager window differs from its original source",
-                    ));
-                }
-                return Ok(selected.end as usize);
+        if let Some(file) = located {
+            let selected =
+                retain_preparation(load_json::<ManagerWindow>(journal, &file, self.io).await?)?;
+            if selected.version != 1
+                || selected.source != digest
+                || selected.start as usize != start
+                || selected.end as usize > eligible
+                || (selected.end as usize) < start
+            {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Conflict,
+                    "context manager window differs from its original source",
+                ));
             }
-            None => {}
+            return Ok(selected.end as usize);
         }
         let purpose = if part == 0 {
             ModelPurpose::Summary
@@ -187,9 +184,7 @@ impl StockExecution<'_> {
         let (_, text) = session
             .summarize_part(
                 journal,
-                Some(input),
-                input.operation_id,
-                step,
+                (Some(input), input.operation_id, step),
                 (source, instruction),
                 &mut phase,
                 purpose,
@@ -238,7 +233,11 @@ impl StockExecution<'_> {
             .publish_summary(
                 journal,
                 (input.operation_id, step),
-                (through as u32, source_digest),
+                (
+                    u32::try_from(through)
+                        .map_err(|_| invalid("context manager cut exceeds portable count"))?,
+                    source_digest,
+                ),
                 (&key, rewrite.summary.as_bytes()),
             )
             .await?;

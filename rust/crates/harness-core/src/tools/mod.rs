@@ -34,13 +34,14 @@ pub mod git;
 /// result. Input the model must correct never becomes an executor error.
 #[doc(hidden)]
 pub fn rejected_input(error: crate::Error) -> crate::tool::ToolResult {
-    let value = match &error {
+    let message = error.to_string();
+    let value = match error {
         crate::Error::MergeConflict { paths } => serde_json::json!({
-            "error": error.to_string(),
+            "error": message,
             "kind": "merge conflict",
             "paths": paths,
         }),
-        _ => serde_json::json!({"error": error.to_string()}),
+        _ => serde_json::json!({"error": message}),
     };
     crate::tool::ToolResult { value }
 }

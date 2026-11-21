@@ -27,10 +27,13 @@ impl SteeringHistory {
 }
 
 fn steering_at(ranges: &mut &[std::ops::Range<usize>], index: usize) -> bool {
-    while ranges.first().is_some_and(|range| range.end <= index) {
-        *ranges = &ranges[1..];
+    while let [range, remaining @ ..] = *ranges {
+        if range.end > index {
+            return range.contains(&index);
+        }
+        *ranges = remaining;
     }
-    ranges.first().is_some_and(|range| range.contains(&index))
+    false
 }
 
 pub(super) fn retire_prefix(
@@ -57,8 +60,7 @@ pub(super) fn retire_prefix(
     }
     let ranges = steering
         .as_ref()
-        .map(|steering| steering.ranges.as_slice())
-        .unwrap_or(&[]);
+        .map_or(&[][..], |steering| steering.ranges.as_slice());
     let preserved = ranges
         .iter()
         .take_while(|range| range.start < count)
@@ -84,8 +86,7 @@ pub(super) fn retire_prefix(
     let retirement = {
         let mut ranges = steering
             .as_ref()
-            .map(|steering| steering.ranges.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[][..], |steering| steering.ranges.as_slice());
         let bytes = messages
             .get(..count)
             .ok_or_else(invalid)?

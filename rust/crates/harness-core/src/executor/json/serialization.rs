@@ -3,6 +3,8 @@ use serde::ser::Serialize;
 use serde_json::ser::{CompactFormatter, Formatter};
 use std::{cell::RefCell, io::Write};
 
+type DigestSink<'a> = dyn FnMut(&[u8]) -> Result<()> + 'a;
+
 pub(super) struct Scope<'a> {
     bounds: JsonBounds,
     code: Option<crate::wire::ErrorCode>,
@@ -85,7 +87,7 @@ struct Writer<'a, 'b, 'c, 'd, 'e> {
     written: u64,
     maximum: Option<u64>,
     output: Option<&'a mut Vec<u8>>,
-    digest: Option<&'a mut (dyn FnMut(&[u8]) -> Result<()> + 'd)>,
+    digest: Option<&'a mut DigestSink<'d>>,
     compare: Option<&'a mut Compare<'e>>,
 }
 impl Write for Writer<'_, '_, '_, '_, '_> {
@@ -318,19 +320,23 @@ impl Formatter for Format<'_, '_, '_> {
                 buffer.resize(prefix, 0);
                 let mut index = super::arrays::Index::default();
                 let mut lexical = admission::Lexical::default();
+                let invalid_prefix = || boundary("JSON indexed prefix exceeds its buffer", code);
                 for byte in fragment.as_bytes() {
                     if prefix != 0 {
                         let depth = lexical.depth;
                         let string = lexical.string;
                         let item =
                             lexical.byte(*byte, bounds, code, &RefCell::new(&mut |_| Ok(())))?;
-                        index.byte(&mut buffer[..prefix], *byte, depth, string, item)?;
+                        let table = buffer.get_mut(..prefix).ok_or_else(invalid_prefix)?;
+                        index.byte(table, *byte, depth, string, item)?;
                     }
                     buffer.push(*byte);
                 }
-                index.finish(&buffer[..prefix])?;
+                let (table, document) = buffer
+                    .split_at_mut_checked(prefix)
+                    .ok_or_else(invalid_prefix)?;
+                index.finish(table)?;
                 scope.event(JsonCodecCharge::Copy { bytes })?;
-                let (table, document) = buffer.split_at_mut(prefix);
                 let value = super::decode::value(document, table, &mut scope)?;
                 let capacity = buffer.capacity() as u64;
                 drop(buffer);
@@ -363,10 +369,15 @@ fn output_prefix(bytes: &&mut Vec<u8>) -> usize {
 }
 
 fn finish_index(writer: &Writer<'_, '_, '_, '_, '_>, prefix: usize) -> Option<Result<()>> {
-    writer
-        .output
-        .as_ref()
-        .map(|output| writer.index.finish(&output[..prefix]))
+    writer.output.as_ref().map(|output| {
+        let table = output.get(..prefix).ok_or_else(|| {
+            boundary(
+                "JSON indexed prefix exceeds its output",
+                writer.state.borrow().code,
+            )
+        })?;
+        writer.index.finish(table)
+    })
 }
 
 fn scope_error(scope: &mut Scope<'_>, error: serde_json::Error) -> Error {
@@ -377,7 +388,7 @@ fn write<T: Serialize + ?Sized>(
     value: &T,
     scope: &mut Scope<'_>,
     output: Option<&mut Vec<u8>>,
-    digest: Option<&mut dyn FnMut(&[u8]) -> Result<()>>,
+    digest: Option<&mut DigestSink<'_>>,
     compare: Option<&mut Compare<'_>>,
     maximum: Option<u64>,
     canonical: bool,
@@ -390,37 +401,39 @@ fn write<T: Serialize + ?Sized>(
     };
     let admitted_items = scope.lexical.items;
     scope.lexical = admission::Lexical::default();
-    let state = RefCell::new(&mut *scope);
-    let prefix = output.as_ref().map_or(0, output_prefix);
-    let mut writer = Writer {
-        state: &state,
-        admitted_items,
-        index: super::arrays::Index::default(),
-        prefix,
-        written: 0,
-        maximum,
-        output,
-        digest,
-        compare,
-    };
-    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-    super::record_serialization::<T>();
-    let result = value.serialize(&mut serde_json::Serializer::with_formatter(
-        &mut writer,
-        Format {
+    let (result, written, indexed) = {
+        let state = RefCell::new(&mut *scope);
+        let prefix = output.as_ref().map_or(0, output_prefix);
+        let mut writer = Writer {
             state: &state,
-            canonical,
-            key: false,
-        },
-    ));
-    let written = writer.written;
-    // Never construct an index diagnostic after the original typed denial.
-    let indexed = if result.is_ok() && state.borrow().failed.is_none() {
-        finish_index(&writer, prefix)
-    } else {
-        None
+            admitted_items,
+            index: super::arrays::Index::default(),
+            prefix,
+            written: 0,
+            maximum,
+            output,
+            digest,
+            compare,
+        };
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        super::record_serialization::<T>();
+        let result = value.serialize(&mut serde_json::Serializer::with_formatter(
+            &mut writer,
+            Format {
+                state: &state,
+                canonical,
+                key: false,
+            },
+        ));
+        let written = writer.written;
+        // Never construct an index diagnostic after the original typed denial.
+        let indexed = if result.is_ok() && state.borrow().failed.is_none() {
+            finish_index(&writer, prefix)
+        } else {
+            None
+        };
+        (result, written, indexed)
     };
-    drop(writer);
     if let Err(error) = result {
         return Err(scope_error(scope, error));
     }

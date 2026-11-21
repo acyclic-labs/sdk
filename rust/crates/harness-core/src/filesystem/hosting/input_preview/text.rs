@@ -60,8 +60,9 @@ impl Text {
                 if quoted.digits != 0 {
                     let digit = character
                         .to_digit(16)
+                        .and_then(|digit| u16::try_from(digit).ok())
                         .ok_or(Error::Record("invalid input JSON escape"))?;
-                    quoted.unit = (quoted.unit << 4) | digit as u16;
+                    quoted.unit = (quoted.unit << 4) | digit;
                     quoted.digits -= 1;
                     if quoted.digits == 0 {
                         if quoted.high {
@@ -105,8 +106,9 @@ impl Text {
                                     .text = key == "text";
                             }
                         }
-                        Role::Text => output
-                            .push_str(&decode(quoted.raw.ok_or(Error::Record("text chunk"))?)?),
+                        Role::Text => output.push_str(&decode(
+                            quoted.raw.as_deref().ok_or(Error::Record("text chunk"))?,
+                        )?),
                         Role::Other => {}
                     }
                     if self.frames.is_empty() {
@@ -127,7 +129,7 @@ impl Text {
                 {
                     let mut raw = quoted.raw.take().ok_or(Error::Record("text chunk"))?;
                     raw.push('"');
-                    output.push_str(&decode(raw)?);
+                    output.push_str(&decode(&raw)?);
                     quoted.raw = Some("\"".into());
                 }
                 continue;
@@ -142,7 +144,7 @@ impl Text {
                 '{' | '[' => {
                     let part = character == '{'
                         && (self.frames.is_empty()
-                            || (self.frames.len() == 1 && !self.frames[0].object));
+                            || (matches!(self.frames.as_slice(), [frame] if !frame.object)));
                     self.frames.push(Frame {
                         object: character == '{',
                         part,
@@ -212,8 +214,8 @@ impl Text {
     }
 }
 
-fn decode(raw: String) -> Result<String, Error> {
-    serde_json::from_str(&raw).map_err(|_| Error::Record("invalid input JSON text"))
+fn decode(raw: &str) -> Result<String, Error> {
+    serde_json::from_str(raw).map_err(|_| Error::Record("invalid input JSON text"))
 }
 
 #[cfg(test)]

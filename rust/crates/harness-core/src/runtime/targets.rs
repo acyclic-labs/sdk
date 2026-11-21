@@ -147,7 +147,11 @@ impl TargetResolver for InProcessTargets {
         std::borrow::Cow<'a, str>,
     )> {
         let position = self.roster.select_position(None).map_err(Error::Target)?;
-        self.targets[position].executor.read_path(path, kind, work)
+        self.targets
+            .get(position)
+            .ok_or_else(|| Error::Invalid("home target is absent from executor table".into()))?
+            .executor
+            .read_path(path, kind, work)
     }
 
     fn roster(&self) -> Arc<Roster> {
@@ -156,7 +160,10 @@ impl TargetResolver for InProcessTargets {
 
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>> {
         let position = self.roster.select_position(target).map_err(Error::Target)?;
-        Ok(Arc::clone(&self.targets[position]))
+        self.targets
+            .get(position)
+            .cloned()
+            .ok_or_else(|| Error::Invalid("target is absent from executor table".into()))
     }
 }
 

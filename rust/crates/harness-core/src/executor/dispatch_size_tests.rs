@@ -25,8 +25,7 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
     let mut history = request::ModelStepHistory::Selected(&[]);
     let preparation = execution.prepare_dispatch_step(
         &journal,
-        &input,
-        0,
+        (&input, 0),
         (&mut history, None),
         RetainedModelStep {
             #[cfg(feature = "research")]

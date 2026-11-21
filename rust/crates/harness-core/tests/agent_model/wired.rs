@@ -2011,7 +2011,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     assert_eq!(parent_state.phase, Phase::Idle);
     assert_eq!(parent_state.conversation_tail, 1);
     let brief = answer(&*stream, &parent, 0).await?.output;
-    let request = InboxRecord::Spawn(SpawnRequest {
+    let request = InboxRecord::Spawn(Box::new(SpawnRequest {
         by: super::user(),
         id: intent("spawn"),
         brief: Some(Box::new(brief)),
@@ -2025,7 +2025,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
             peers: Default::default(),
         },
         history: None,
-    });
+    }));
     let Delivered::Committed { inbox } = root_host.send(&parent, &super::user(), &request).await?
     else {
         return Err("spawn request was not committed".into());

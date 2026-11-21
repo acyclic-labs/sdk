@@ -76,7 +76,11 @@ impl Decoder<'_, '_, '_> {
         for _ in 0..4 {
             let byte = *self.bytes.get(self.position).ok_or_else(invalid)?;
             self.position += 1;
-            value = (value << 4) | (byte as char).to_digit(16).ok_or_else(invalid)? as u16;
+            let digit = char::from(byte)
+                .to_digit(16)
+                .and_then(|digit| u16::try_from(digit).ok())
+                .ok_or_else(invalid)?;
+            value = (value << 4) | digit;
         }
         Ok(value)
     }
@@ -118,7 +122,10 @@ impl Decoder<'_, '_, '_> {
                         let character = char::from_u32(code).ok_or_else(invalid)?;
                         let mut encoded = [0; 4];
                         let encoded = character.encode_utf8(&mut encoded).as_bytes();
-                        self.bytes[end..end + encoded.len()].copy_from_slice(encoded);
+                        self.bytes
+                            .get_mut(end..end + encoded.len())
+                            .ok_or_else(invalid)?
+                            .copy_from_slice(encoded);
                         end += encoded.len();
                         continue;
                     }
@@ -127,10 +134,11 @@ impl Decoder<'_, '_, '_> {
             } else if byte < 32 {
                 return Err(invalid());
             }
-            self.bytes[end] = byte;
+            *self.bytes.get_mut(end).ok_or_else(invalid)? = byte;
             end += 1;
         }
-        let text = std::str::from_utf8(&self.bytes[start..end]).map_err(|_| invalid())?;
+        let text = std::str::from_utf8(self.bytes.get(start..end).ok_or_else(invalid)?)
+            .map_err(|_| invalid())?;
         let bytes = text.len() as u64;
         self.scope.event(JsonCodecCharge::CopyAdmission { bytes })?;
         if bytes != 0 {
@@ -182,8 +190,8 @@ impl Decoder<'_, '_, '_> {
         entries.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
         let unique = usize::from(!entries.is_empty())
             + entries
-                .windows(2)
-                .filter(|pair| pair[0].0 != pair[1].0)
+                .array_windows()
+                .filter(|[first, second]| first.0 != second.0)
                 .count();
         // Conservative occupancy bound, shared with the retained-byte audit:
         // eleven slots per node, at least five entries in each non-root node,
@@ -255,7 +263,7 @@ impl Decoder<'_, '_, '_> {
                 {
                     self.position += 1;
                 }
-                let scalar = &self.bytes[start..self.position];
+                let scalar = self.bytes.get(start..self.position).ok_or_else(invalid)?;
                 match scalar {
                     b"null" => Ok(Value::Null),
                     b"true" => Ok(Value::Bool(true)),

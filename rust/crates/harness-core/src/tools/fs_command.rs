@@ -44,12 +44,12 @@ pub fn child_branch_operand(args: &[String]) -> Option<(usize, &str, Option<&str
 
 pub(crate) fn agent_diff(args: &[String]) -> Option<(&str, bool)> {
     let (_, branch, _) = child_branch_operand(args)?;
-    (args[0] == "diff").then_some((branch, args.iter().any(|arg| arg == "--stat")))
+    (args.first()?.as_str() == "diff").then_some((branch, args.iter().any(|arg| arg == "--stat")))
 }
 
 pub(crate) fn agent_show(args: &[String]) -> Option<(&str, &str, u64)> {
     let (_, branch, path) = child_branch_operand(args)?;
-    (args[0] == "show").then_some((branch, path?, show_offset(args)?))
+    (args.first()?.as_str() == "show").then_some((branch, path?, show_offset(args)?))
 }
 
 fn show_offset(args: &[String]) -> Option<u64> {
@@ -148,12 +148,9 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
     }
     let mut volume = None;
     let mut index = 0;
-    while index < arguments.len() && arguments[index] != "--" {
+    while let Some(argument) = arguments.get(index).filter(|argument| *argument != "--") {
         let value_option = matches!(
-            (
-                arguments.first().map(String::as_str),
-                arguments[index].as_str()
-            ),
+            (arguments.first().map(String::as_str), argument.as_str()),
             (Some("commit"), "-m" | "--message" | "--author")
                 | (Some("restore"), "--source")
                 | (Some("log"), "-n" | "--max-count")
@@ -163,7 +160,7 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
             index += 2;
             continue;
         }
-        if arguments[index] != "--volume" {
+        if argument != "--volume" {
             index += 1;
             continue;
         }

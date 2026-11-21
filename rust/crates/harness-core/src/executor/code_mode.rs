@@ -609,8 +609,7 @@ impl StockExecution<'_> {
         }];
         let result = match Box::pin(self.settle_tool_call(
             journal,
-            operation,
-            step,
+            (operation, step),
             (invocation, pinned),
             0,
             &mut messages,

@@ -184,6 +184,20 @@ pub struct BoundedContentFuture<'a, T> {
     pub(super) _native: Option<acyclic_fs::NativeAllocation>,
 }
 
+/// A private directory discovery page and the custody of its returned entries.
+pub type PrivateDirectoryFuture<'a, 'io> =
+    BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>;
+
+/// A private file reference, its read payload, and the original read custody.
+pub type PrivatePathFuture<'a, 'io> = BoundedContentFuture<
+    'a,
+    Option<(
+        FileRef,
+        crate::conversation::Custody,
+        Option<ContentHold<'io>>,
+    )>,
+>;
+
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
@@ -442,8 +456,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _maximum_entries: u32,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>>
-    {
+    ) -> Result<PrivateDirectoryFuture<'a, 'io>> {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -552,16 +565,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _expected_generation: Option<&'a GenerationRef>,
         _maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
-    ) -> Result<
-        BoundedContentFuture<
-            'a,
-            Option<(
-                FileRef,
-                crate::conversation::Custody,
-                Option<ContentHold<'io>>,
-            )>,
-        >,
-    >
+    ) -> Result<PrivatePathFuture<'a, 'io>>
     where
         'io: 'a,
     {
@@ -1089,8 +1093,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>>
-    {
+    ) -> Result<PrivateDirectoryFuture<'a, 'io>> {
         self.bound_reader(volume, io)?.list_private_directory(
             volume,
             granted_prefix,

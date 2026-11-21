@@ -51,9 +51,7 @@ where
             let bytes_hold = io.guard_bytes(&bytes)?;
             let result = self
                 .append_conversation_bytes(
-                    envelope.intent(),
-                    expected_tail,
-                    key,
+                    (envelope.intent(), expected_tail, key),
                     step,
                     &bytes,
                     contributions,
@@ -69,9 +67,7 @@ where
 
     pub(super) async fn append_conversation_bytes(
         &self,
-        intent: OperationId,
-        expected_tail: u64,
-        key: &str,
+        (intent, expected_tail, key): (OperationId, u64, &str),
         step: u32,
         bytes: &acyclic_stream::OwnedBytes,
         contributions: &[indexed_publication::Contribution<'_>],
@@ -88,9 +84,7 @@ where
         };
         let result = self
             .append_contributed_if_tail(
-                intent,
-                expected_tail,
-                key,
+                (intent, expected_tail, key),
                 &event,
                 contributions,
                 confirmation,

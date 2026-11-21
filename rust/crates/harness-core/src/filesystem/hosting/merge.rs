@@ -36,15 +36,24 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 "merge selects a session fork or direct child".into(),
             ));
         }
-        self.admit_path(agent).map_err(turn_error)?;
-        self.admit_path(parent).map_err(turn_error)?;
-        let child = self.agents.state(agent).await.map_err(turn_error)?;
+        self.admit_path(agent).map_err(|error| turn_error(&error))?;
+        self.admit_path(parent)
+            .map_err(|error| turn_error(&error))?;
+        let child = self
+            .agents
+            .state(agent)
+            .await
+            .map_err(|error| turn_error(&error))?;
         if child.closed {
             return Err(crate::Error::Refused(
                 "archived fork cannot be merged".into(),
             ));
         }
-        let parent_state = self.agents.state(parent).await.map_err(turn_error)?;
+        let parent_state = self
+            .agents
+            .state(parent)
+            .await
+            .map_err(|error| turn_error(&error))?;
         let project = |state: &crate::agent::AgentState| {
             WorkspaceTable::primary_in(&state.volumes)
                 .filter(|binding| binding.role == WorkspaceRole::User)
@@ -53,8 +62,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         };
         let source_volume = project(&child)?;
         let destination = project(&parent_state)?;
-        let (child_scope, child_verifier) = self.volume_scope(agent).await.map_err(turn_error)?;
-        let (scope, verifier) = self.volume_scope(parent).await.map_err(turn_error)?;
+        let (child_scope, child_verifier) = self
+            .volume_scope(agent)
+            .await
+            .map_err(|error| turn_error(&error))?;
+        let (scope, verifier) = self
+            .volume_scope(parent)
+            .await
+            .map_err(|error| turn_error(&error))?;
         let open = |volume: &VolumeRef| {
             super::super::bounded_io::content_workspace(&self.volumes.provider, volume, None)
         };
@@ -165,15 +180,15 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .register_branch_workspace(branch.clone(), source.id(), None, false)
             .await
             .map_err(crate::tools::git::compat_error::<S>)?;
-        let root_cut = if selected.id() != root.id() {
+        let root_cut = if selected.id() == root.id() {
+            None
+        } else {
             Some(
                 root.capture_policy_cut(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map_err(|failure| crate::Error::from(failure.error))?
                     .value,
             )
-        } else {
-            None
         };
         let output = crate::tools::git::run_volume_with_guard(
             crate::tools::git::Workspace {
@@ -214,6 +229,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     }
 }
 
-fn turn_error(error: Error) -> crate::Error {
+fn turn_error(error: &Error) -> crate::Error {
     crate::Error::Storage(error.to_string())
 }

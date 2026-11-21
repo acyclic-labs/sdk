@@ -35,13 +35,10 @@ impl StockExecution<'_> {
             preparation_format(format_args!("manager:{step}:files"), work)
         })?;
         let staged = journal.staged_ref(input.operation_id, &key, io)?.await?;
-        match staged {
-            Some(file) => {
-                drop(key);
-                scope.finish(file.logical_owned_bytes()?)?;
-                return Ok(Some(file));
-            }
-            None => {}
+        if let Some(file) = staged {
+            drop(key);
+            scope.finish(file.logical_owned_bytes()?)?;
+            return Ok(Some(file));
         }
         let binding = destination.bindings();
         let access = ContentAccess {
@@ -228,14 +225,13 @@ impl StockExecution<'_> {
                 access,
             )?
             .await?;
-        let (receipt, receipt_hold) = match observed {
-            Some(receipt) => (receipt, observed_hold),
-            None => {
-                drop(observed_hold);
-                writer
-                    .stage_changes(&binding.volume, operation, &changes, access)?
-                    .await?
-            }
+        let (receipt, receipt_hold) = if let Some(receipt) = observed {
+            (receipt, observed_hold)
+        } else {
+            drop(observed_hold);
+            writer
+                .stage_changes(&binding.volume, operation, &changes, access)?
+                .await?
         };
         {
             let mut published = receipt.files();

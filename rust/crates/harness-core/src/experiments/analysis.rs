@@ -84,28 +84,25 @@ fn advance_key(
     population: &[u8; 32],
     replicate: u64,
 ) -> Result<bool, Error> {
-    match last {
-        Some((previous_population, previous_replicate)) => {
-            match population.cmp(previous_population) {
-                std::cmp::Ordering::Less => Err(Error::Analysis("population keys decreased")),
-                std::cmp::Ordering::Equal => {
-                    if replicate <= *previous_replicate {
-                        return Err(Error::Analysis("replicate key repeated or decreased"));
-                    }
-                    *previous_replicate = replicate;
-                    Ok(false)
+    if let Some((previous_population, previous_replicate)) = last {
+        match population.cmp(previous_population) {
+            std::cmp::Ordering::Less => Err(Error::Analysis("population keys decreased")),
+            std::cmp::Ordering::Equal => {
+                if replicate <= *previous_replicate {
+                    return Err(Error::Analysis("replicate key repeated or decreased"));
                 }
-                std::cmp::Ordering::Greater => {
-                    *previous_population = *population;
-                    *previous_replicate = replicate;
-                    Ok(true)
-                }
+                *previous_replicate = replicate;
+                Ok(false)
+            }
+            std::cmp::Ordering::Greater => {
+                *previous_population = *population;
+                *previous_replicate = replicate;
+                Ok(true)
             }
         }
-        None => {
-            *last = Some((*population, replicate));
-            Ok(true)
-        }
+    } else {
+        *last = Some((*population, replicate));
+        Ok(true)
     }
 }
 

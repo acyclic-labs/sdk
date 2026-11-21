@@ -379,7 +379,7 @@ impl DeviceRunner {
                 Ok(ExecOutput::Stopped(stop)) if stop.cleanup_completed => {
                     return Ok(Some(DeviceMessage::Exit {
                         op,
-                        result: serde_json::json!({"success": false, "exit_code": null, "stop": crate::machines::MachinesWorkspace::stop_result(stop)}),
+                        result: serde_json::json!({"success": false, "exit_code": null, "stop": crate::machines::MachinesWorkspace::stop_result(&stop)}),
                     }));
                 }
                 Ok(ExecOutput::Stopped(stop)) => {

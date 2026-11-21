@@ -372,11 +372,13 @@ impl WorkspaceAnnouncement {
             .flat_map(|roster| roster.targets())
             .map(|target| (target.name.as_str(), target.path_style))
             .collect::<BTreeMap<_, _>>();
-        for exposure in &exposures {
-            if by_entry.insert(exposure.entry, &exposure.paths).is_some() {
+        for exposure in exposures {
+            let std::collections::btree_map::Entry::Vacant(slot) = by_entry.entry(exposure.entry)
+            else {
                 return Err(Error::Record("workspace exposure repeats"));
-            }
-            for (target, path) in &exposure.paths {
+            };
+            let paths = slot.insert(exposure.paths);
+            for (target, path) in paths {
                 let style = targets
                     .get(target.as_str())
                     .ok_or(Error::Record("workspace target is not in the roster"))?;

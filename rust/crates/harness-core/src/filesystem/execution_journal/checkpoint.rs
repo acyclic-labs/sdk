@@ -14,11 +14,13 @@ impl std::ops::Deref for IndexPath<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct OwnedIndexPath {
     path: acyclic_stream::StreamPath,
     _custody: Option<crate::filesystem::bounded_io::PreparationCustody>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::ops::Deref for OwnedIndexPath {
     type Target = acyclic_stream::StreamPath;
     fn deref(&self) -> &Self::Target {
@@ -311,14 +313,16 @@ where
         let mut work = history
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
-        let _anchor_path_hold;
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::distributed::execution_path(operation, work)
-        })?;
-        _anchor_path_hold = io
-            .filter(|io| io.original_native_work().is_none())
-            .map(|io| io.guard_owned(path.as_str().len() as u64))
-            .transpose()?;
+        let (_anchor_path_hold, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::distributed::execution_path(operation, work)
+            })?;
+            let hold = io
+                .filter(|io| io.original_native_work().is_none())
+                .map(|io| io.guard_owned(path.as_str().len() as u64))
+                .transpose()?;
+            (hold, path)
+        };
         let _anchor_hold;
         #[cfg(feature = "test-support")]
         tracing::trace!(target: "acyclic_harness::journal_work",
@@ -380,6 +384,7 @@ fn missing(io: Option<&PreparationIo>) -> Error {
 mod tests;
 
 impl<'a> IndexPath<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn into_owned(mut self) -> Result<OwnedIndexPath> {
         // Keep the physical path before its guard on every refusal. Native paths
         // already retain their original allocation in the path itself.

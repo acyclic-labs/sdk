@@ -2850,7 +2850,7 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
     else {
         return Err(Error::Conflict("the replay lost its saved answer".into()));
     };
-    assert_eq!(replayed, entry);
+    assert_eq!(*replayed, entry);
     Ok(())
 }
 
@@ -3470,13 +3470,13 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth_world() -> Result<()> {
             .child_profile(&parent, "worker")
             .await
             .map_err(agent)?;
-        let record = InboxRecord::Spawn(SpawnRequest {
+        let record = InboxRecord::Spawn(Box::new(SpawnRequest {
             by: by.clone(),
             id: IntentId::try_from(format!("depth-{depth}").as_str()).map_err(agent)?,
             brief: None,
             profile,
             history: None,
-        });
+        }));
         let Delivered::Committed { inbox } =
             agents.send(&parent, &by, &record).await.map_err(agent)?
         else {
@@ -5687,13 +5687,13 @@ async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> 
     let by = Sender::User {
         principal: "archive-control".into(),
     };
-    let record = InboxRecord::Spawn(SpawnRequest {
+    let record = InboxRecord::Spawn(Box::new(SpawnRequest {
         by: by.clone(),
         id: IntentId::try_from("idle-child").map_err(agent)?,
         brief: None,
         profile,
         history: None,
-    });
+    }));
     let Delivered::Committed { inbox } = agents.send(root, &by, &record).await.map_err(agent)?
     else {
         return Err(Error::Invalid("parent was closed".into()));
@@ -5773,13 +5773,13 @@ async fn file_stop_closes_the_whole_subtree_world() -> Result<()> {
     let by = Sender::User {
         principal: "file-stop-subtree".into(),
     };
-    let record = InboxRecord::Spawn(SpawnRequest {
+    let record = InboxRecord::Spawn(Box::new(SpawnRequest {
         by: by.clone(),
         id: IntentId::try_from("stop-child").map_err(agent)?,
         brief: None,
         profile,
         history: None,
-    });
+    }));
     let Delivered::Committed { inbox } = agents.send(root, &by, &record).await.map_err(agent)?
     else {
         return Err(Error::Invalid("parent was closed".into()));
@@ -5799,13 +5799,13 @@ async fn file_stop_closes_the_whole_subtree_world() -> Result<()> {
         .child_profile(&child, "worker")
         .await
         .map_err(agent)?;
-    let record = InboxRecord::Spawn(SpawnRequest {
+    let record = InboxRecord::Spawn(Box::new(SpawnRequest {
         by: by.clone(),
         id: IntentId::try_from("stop-grandchild").map_err(agent)?,
         brief: None,
         profile: grandchild_profile,
         history: None,
-    });
+    }));
     let Delivered::Committed { inbox } = agents.send(&child, &by, &record).await.map_err(agent)?
     else {
         return Err(Error::Invalid("child was closed".into()));

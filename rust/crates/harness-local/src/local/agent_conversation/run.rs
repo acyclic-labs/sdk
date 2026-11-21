@@ -374,13 +374,13 @@ mod tests {
         let by = Sender::User {
             principal: "inherited-pause-recovery".into(),
         };
-        let spawn = InboxRecord::Spawn(SpawnRequest {
+        let spawn = InboxRecord::Spawn(Box::new(SpawnRequest {
             by: by.clone(),
             id: IntentId::try_from("recovery-child").map_err(failed)?,
             brief: None,
             profile,
             history: None,
-        });
+        }));
         let Delivered::Committed { inbox } =
             agents.send(root, &by, &spawn).await.map_err(failed)?
         else {

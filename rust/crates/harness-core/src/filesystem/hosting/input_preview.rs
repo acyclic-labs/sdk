@@ -89,45 +89,42 @@ where
                     };
                     let message = message.filter(|message| selection != InputSelection::History
                         || matches!(message.from, crate::agent::Sender::User { .. }));
-                    match message {
-                        Some(message) => {
-                            let reader = bound.input_reader(&state, &message.body).await?;
-                            if message.body.descriptor().media_type() == crate::agent::USER_INPUT_MEDIA_TYPE {
-                                let mut ranges = structured_preview(&*reader, &message.body, maximum, selection, end);
-                                while let Some(step) = ranges.next().await {
-                                    yield step?;
-                                }
-                                if selection == InputSelection::Latest { return; }
-                                continue;
+                    if let Some(message) = message {
+                        let reader = bound.input_reader(&state, &message.body).await?;
+                        if message.body.descriptor().media_type() == crate::agent::USER_INPUT_MEDIA_TYPE {
+                            let mut ranges = structured_preview(&*reader, &message.body, maximum, selection, end);
+                            while let Some(step) = ranges.next().await {
+                                yield step?;
                             }
-                            let mut offset = 0;
-                            loop {
-                                let preview = input_prefix(&*reader, &message.body, offset, maximum).await?;
-                                if selection == InputSelection::Latest {
-                                    yield InputPreviewStep::Selected(Some(preview));
-                                    return;
-                                }
-                                let next = offset + preview.text.len() as u64;
-                                let complete = next == preview.bytes;
-                                if !complete && next == offset {
-                                    Err(Error::Record("pending input range made no progress"))?;
-                                }
-                                yield InputPreviewStep::MessageRange { inbox: end, offset, preview };
-                                if complete { break; }
-                                offset = next;
-                            }
+                            if selection == InputSelection::Latest { return; }
+                            continue;
                         }
-                        _ => {
-                            // An ordinary message may have passed an earlier
-                            // turn's steering boundary, before this hook's own
-                            // turn. Keep its one original record until that
-                            // entry's proof arrives; do not replay overlapping
-                            // inbox ranges or silently discard the candidate.
-                            if selection != InputSelection::History && matches!(&input, InboxRecord::Message(_)) {
-                                deferred = Some((end, input));
+                        let mut offset = 0;
+                        loop {
+                            let preview = input_prefix(&*reader, &message.body, offset, maximum).await?;
+                            if selection == InputSelection::Latest {
+                                yield InputPreviewStep::Selected(Some(preview));
+                                return;
                             }
-                            yield InputPreviewStep::Progress;
+                            let next = offset + preview.text.len() as u64;
+                            let complete = next == preview.bytes;
+                            if !complete && next == offset {
+                                Err(Error::Record("pending input range made no progress"))?;
+                            }
+                            yield InputPreviewStep::MessageRange { inbox: end, offset, preview };
+                            if complete { break; }
+                            offset = next;
                         }
+                    } else {
+                        // An ordinary message may have passed an earlier
+                        // turn's steering boundary, before this hook's own
+                        // turn. Keep its one original record until that
+                        // entry's proof arrives; do not replay overlapping
+                        // inbox ranges or silently discard the candidate.
+                        if selection != InputSelection::History && matches!(&input, InboxRecord::Message(_)) {
+                            deferred = Some((end, input));
+                        }
+                        yield InputPreviewStep::Progress;
                     }
                 }
                 if selection != InputSelection::Latest {
@@ -151,7 +148,9 @@ where
                     .ok_or(Error::Record("conversation origin is not an agent stream"))?;
                 let source = AgentPath::try_from(source.to_owned())?;
                 let source_inbox = source.inbox()?;
-                if source_inbox != selected {
+                if source_inbox == selected {
+                    end = end.min(entry.observed_through);
+                } else {
                     if deferred.is_some() {
                         Err(Error::Record("message admission crosses its original inbox"))?;
                     }
@@ -161,8 +160,6 @@ where
                     }
                     selected = source_inbox;
                     end = entry.observed_through;
-                } else {
-                    end = end.min(entry.observed_through);
                 }
                 if entry.observed_through <= entry.inbox {
                     Err(Error::Record("conversation input has no admitted prefix"))?;
@@ -263,9 +260,11 @@ fn structured_preview<'a>(
             let part = part?;
             bytes = bytes.checked_add(part.len() as u64).ok_or(Error::Record("input text length overflows"))?;
             if selection == InputSelection::Latest && (pending.len() as u64) < maximum {
-                let mut end = (part.len() as u64).min(maximum - pending.len() as u64) as usize;
+                let mut end = usize::try_from((part.len() as u64).min(maximum - pending.len() as u64))
+                    .map_err(|_| Error::Record("input preview exceeds addressable length"))?;
                 while !part.is_char_boundary(end) { end += 1; }
-                pending.push_str(&part[..end]);
+                let prefix = part.get(..end).ok_or(Error::Record("invalid input preview boundary"))?;
+                pending.push_str(prefix);
             }
             yield InputPreviewStep::Progress;
         }
@@ -286,7 +285,8 @@ fn structured_preview<'a>(
         while let Some(part) = ranges.next().await {
             pending.push_str(&part?);
             while pending.len() as u64 >= maximum || (offset + pending.len() as u64 == bytes && !pending.is_empty()) {
-                let mut end = (pending.len() as u64).min(maximum) as usize;
+                let mut end = usize::try_from((pending.len() as u64).min(maximum))
+                    .map_err(|_| Error::Record("input preview exceeds addressable length"))?;
                 while !pending.is_char_boundary(end) { end -= 1; }
                 let rest = pending.split_off(end);
                 let preview = InputPreview { text: std::mem::replace(&mut pending, rest), bytes };
@@ -326,8 +326,10 @@ async fn input_prefix(
     let text = match std::str::from_utf8(&prefix) {
         Ok(text) => text,
         Err(error) if error.error_len().is_none() && (prefix.len() as u64) < remaining => {
-            std::str::from_utf8(&prefix[..error.valid_up_to()])
-                .map_err(|_| Error::Record("input prefix is not UTF-8"))?
+            let valid = prefix
+                .get(..error.valid_up_to())
+                .ok_or(Error::Record("invalid input UTF-8 prefix range"))?;
+            std::str::from_utf8(valid).map_err(|_| Error::Record("input prefix is not UTF-8"))?
         }
         Err(_) => return Err(Error::Record("input is not UTF-8")),
     };

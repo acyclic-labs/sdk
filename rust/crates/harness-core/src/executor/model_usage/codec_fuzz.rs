@@ -9,6 +9,9 @@ use std::collections::BTreeSet;
 /// This deliberately uses JSON pointers and a set rather than the decoder's
 /// indexing and early-return fold, so shared chunking or round-trip mistakes
 /// cannot make lost counters, contradictory aliases or default zero agree.
+///
+/// # Panics
+/// Panics if the production decoder disagrees with the independent counter consensus.
 pub fn check_metadata(metadata: &Value) {
     let actual = ModelTokenUsage::reported(metadata);
     let fields: &[(&[&str], Option<u64>)] = &[
@@ -77,6 +80,9 @@ pub fn check_metadata(metadata: &Value) {
 /// Arbitrary metadata and durable row bytes reach their original JSON decoders.
 /// A row round trip checks syntax/value preservation, not terminal authority.
 /// Both operations are synchronous and wait on no external producer.
+///
+/// # Panics
+/// Panics if the decoder disagrees with the metadata oracle or a usage row fails its round trip.
 pub fn check(bytes: &[u8]) {
     if check_metadata_bytes(bytes).is_err() {
         let mut decoder = serde_json::Deserializer::from_slice(bytes);

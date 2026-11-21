@@ -138,16 +138,18 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
     let epoch_record = OwnedBytes::from_static(b"original epoch checkpoint");
     let source_record = OwnedBytes::from_static(b"original publication cursor");
     let contributions = [
-        Contribution::Conditioned {
-            condition: CommitCondition::Absent {
+        Contribution {
+            path: &epoch,
+            condition: Some(CommitCondition::Absent {
                 path: epoch.clone(),
-            },
+            }),
             record: &epoch_record,
         },
-        Contribution::Conditioned {
-            condition: CommitCondition::Absent {
+        Contribution {
+            path: &source,
+            condition: Some(CommitCondition::Absent {
                 path: source.clone(),
-            },
+            }),
             record: &source_record,
         },
     ];
@@ -164,16 +166,18 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
 
     let changed_record = OwnedBytes::from_static(b"substituted epoch checkpoint");
     let substituted = [
-        Contribution::Conditioned {
-            condition: CommitCondition::Absent {
+        Contribution {
+            path: &epoch,
+            condition: Some(CommitCondition::Absent {
                 path: epoch.clone(),
-            },
+            }),
             record: &changed_record,
         },
-        Contribution::Conditioned {
-            condition: CommitCondition::Absent {
+        Contribution {
+            path: &source,
+            condition: Some(CommitCondition::Absent {
                 path: source.clone(),
-            },
+            }),
             record: &source_record,
         },
     ];
@@ -184,17 +188,19 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
             .is_err()
     );
     let changed_fence = [
-        Contribution::Conditioned {
-            condition: CommitCondition::Tail {
+        Contribution {
+            path: &epoch,
+            condition: Some(CommitCondition::Tail {
                 path: epoch.clone(),
                 expected: 0,
-            },
+            }),
             record: &epoch_record,
         },
-        Contribution::Conditioned {
-            condition: CommitCondition::Absent {
+        Contribution {
+            path: &source,
+            condition: Some(CommitCondition::Absent {
                 path: source.clone(),
-            },
+            }),
             record: &source_record,
         },
     ];

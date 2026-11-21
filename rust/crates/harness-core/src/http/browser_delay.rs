@@ -19,9 +19,12 @@ impl Drop for Timeout {
 pub(super) async fn delay(duration: std::time::Duration) -> crate::Result<()> {
     // setTimeout takes signed 32-bit milliseconds. Split longer waits, and round fractional
     // milliseconds up so Retry-After is never shortened by the conversion.
-    let mut remaining = duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0);
+    let mut remaining =
+        duration.as_millis() + u128::from(!duration.subsec_nanos().is_multiple_of(1_000_000));
     while remaining != 0 {
-        let interval = remaining.min(i32::MAX as u128) as u32;
+        let interval = u32::try_from(remaining.min(i32::MAX as u128)).map_err(|_| {
+            super::super::invalid("browser platform timer interval is out of range")
+        })?;
         let global = js_sys::global();
         let function = |name| {
             Reflect::get(&global, &JsValue::from_str(name))
@@ -80,6 +83,11 @@ pub(super) fn monotonic_now() -> Option<std::time::Duration> {
 /// without `performance.now`. Span capture uses `monotonic_now` instead.
 pub(super) fn now() -> std::time::Duration {
     let millis = performance_millis().unwrap_or_else(js_sys::Date::now);
-    // `max` maps NaN to zero and `min` keeps the conversion finite.
-    std::time::Duration::from_secs_f64(millis.max(0.0).min(1e15) / 1000.0)
+    // An invalid clock reading maps to zero; bound infinities before conversion.
+    let millis = if millis.is_nan() {
+        0.0
+    } else {
+        millis.clamp(0.0, 1e15)
+    };
+    std::time::Duration::from_secs_f64(millis / 1000.0)
 }

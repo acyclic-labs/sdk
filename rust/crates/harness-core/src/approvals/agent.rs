@@ -577,8 +577,7 @@ pub async fn decide(
             &view,
             files,
             responder,
-            VERSION,
-            &decision,
+            (VERSION, &decision),
         )
         .await?;
         // This create-once decision arbitrates once/rule/deny races before a

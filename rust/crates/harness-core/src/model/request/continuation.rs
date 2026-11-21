@@ -159,7 +159,11 @@ impl RequestContinuation {
             io,
             &mut projection_nodes,
         )?;
-        let input = input.extend(&request.messages[old_count..], io)?;
+        let added = request
+            .messages
+            .get(old_count..)
+            .ok_or_else(super::super::inventory::overflow)?;
+        let input = input.extend(added, io)?;
         Ok(PreparedModelRequest {
             request,
             bytes,

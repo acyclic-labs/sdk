@@ -211,7 +211,7 @@ impl<T> MountTable<T> {
             .get(&entry)
             .copied()
             .flatten()
-            .map(|index| &self.mounted[index].1)
+            .and_then(|index| self.mounted.get(index).map(|(_, mount)| mount))
     }
 
     /// Actual native projection of this task's admitted slot, if exposed.
@@ -444,7 +444,14 @@ impl<T> MountTable<T> {
                     work,
                 )
             })?;
-        Ok((&self.mounted[index].1, path))
+        let (_, mount) = self.mounted.get(index).ok_or_else(|| {
+            path_error(
+                crate::wire::ErrorCode::NotFound,
+                "volume mount slot is invalid",
+                work,
+            )
+        })?;
+        Ok((mount, path))
     }
 }
 
@@ -461,10 +468,10 @@ pub(crate) fn split_address(address: &str) -> std::result::Result<(&str, &str), 
         return Err("volume address needs a name");
     }
     let length = address.len() - after_owner.len() + name_length;
-    Ok((
-        &address[..length],
-        address[length..].strip_prefix('/').unwrap_or(""),
-    ))
+    let (selector, path) = address
+        .split_at_checked(length)
+        .ok_or("volume address has an invalid selector")?;
+    Ok((selector, path.strip_prefix('/').unwrap_or("")))
 }
 
 fn normalize_path(path: &Path) -> Result<String> {

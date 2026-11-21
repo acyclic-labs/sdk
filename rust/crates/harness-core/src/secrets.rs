@@ -14,6 +14,7 @@ pub trait SecretSource: ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'a, crate::Result<Option<SecretValue>>>;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn component(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')

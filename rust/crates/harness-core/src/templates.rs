@@ -98,8 +98,12 @@ struct Creation {
 
 fn parse(bytes: &[u8]) -> Result<Creation> {
     let (creation, body): (Creation, _) = crate::context::parse_frontmatter_with_body(bytes)?;
-    std::str::from_utf8(&bytes[body..])
-        .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?;
+    std::str::from_utf8(
+        bytes
+            .get(body..)
+            .ok_or_else(|| Error::Invalid("template directive range exceeds its source".into()))?,
+    )
+    .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?;
     if creation.version != 1 {
         return Err(Error::Invalid(
             "unsupported template version; use version 1".into(),
@@ -291,9 +295,13 @@ pub(crate) async fn directive(
         );
     }
     let (_, _, body) = crate::context::frontmatter_end(source)?;
-    let text = std::str::from_utf8(&source[body..])
-        .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
-        .trim();
+    let text = std::str::from_utf8(
+        source
+            .get(body..)
+            .ok_or_else(|| Error::Invalid("template directive range exceeds its source".into()))?,
+    )
+    .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
+    .trim();
     // The delegation policy is the root's: a role template renders only its
     // own directive, so a child never inherits an instruction to re-split.
     let text = if creation.template.is_none()
@@ -314,7 +322,7 @@ pub(crate) async fn directive(
         question: capabilities.question,
         context: Arc::new(Context {
             messages: (!text.is_empty())
-                .then(|| ModelMessage {
+                .then_some(ModelMessage {
                     role: ModelRole::System,
                     content: ModelContent::Text(text),
                 })

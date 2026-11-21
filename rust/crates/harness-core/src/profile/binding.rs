@@ -35,7 +35,6 @@ impl<'a> ToolBinding<'a> {
 /// and immutable registry; indexed use performs no lookup, allocation or I/O.
 pub struct BoundTools<'a> {
     bindings: Vec<ToolBinding<'a>>,
-    profile: [u8; 32],
     prefix: [u8; 32],
     sampling: crate::model::ModelSampling,
     model_key: &'a str,
@@ -94,7 +93,6 @@ impl<'a> AgentProfile<'a> {
             .transpose()?;
         let mut bound = BoundTools {
             bindings,
-            profile: self.digest(),
             prefix: self.prefix_digest(),
             sampling: self.prefix().sampling,
             model_key: self.prefix().key,

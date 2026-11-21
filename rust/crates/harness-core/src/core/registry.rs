@@ -320,21 +320,18 @@ impl SchemaRegistry {
         crate::executor::with_history_io(io, |work| content.descriptor().verify(bytes, work))?;
         let value;
         let decoded;
-        let value = match io {
-            Some(io) => {
-                decoded = io.decode(
-                    std::marker::PhantomData::<Value>,
-                    bytes,
-                    crate::wire::ErrorCode::Storage,
-                )?;
-                &decoded.0
-            }
-            _ => {
-                value = crate::contract::json_from_slice(bytes).map_err(|error| {
-                    Error::Invalid(format!("extension configuration is not JSON: {error}"))
-                })?;
-                &value
-            }
+        let value = if let Some(io) = io {
+            decoded = io.decode(
+                std::marker::PhantomData::<Value>,
+                bytes,
+                crate::wire::ErrorCode::Storage,
+            )?;
+            &decoded.0
+        } else {
+            value = crate::contract::json_from_slice(bytes).map_err(|error| {
+                Error::Invalid(format!("extension configuration is not JSON: {error}"))
+            })?;
+            &value
         };
         let binding = crate::executor::with_history_io(io, |work| {
             self.pinned_binding(&extension.name, extension.version, None, work)

@@ -5,7 +5,6 @@ use super::{
 };
 use crate::Result;
 use js_sys::{Function, Reflect, Uint8Array};
-use std::sync::Arc;
 use wasm_bindgen::{JsCast as _, JsValue};
 
 /// Host-protected resolver shared by model and machine compositions.
@@ -20,7 +19,7 @@ impl CredentialResolver for BrowserCredentialResolver {
         source: CredentialSource<'_>,
         origin: &str,
         scheme: AuthorizationScheme,
-        transport: Arc<dyn HttpTransport>,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     ) -> Result<CredentialBinding> {
         let reference = match source {
             CredentialSource::ApiKey(key) => return Ok(CredentialBinding::api_key(key, transport)),
@@ -31,7 +30,7 @@ impl CredentialResolver for BrowserCredentialResolver {
             AuthorizationScheme::ApiKey => "api_key",
             AuthorizationScheme::GoogleApiKey => "google_api_key",
         };
-        let refused = |cause| super::browser::failure(cause, "protected model binding failed");
+        let refused = |cause| super::browser::failure(&cause, "protected model binding failed");
         let reference = serde_wasm_bindgen::to_value(reference)
             .map_err(|_| invalid("secret reference must encode"))?;
         let binding = self
@@ -61,7 +60,7 @@ impl CredentialResolver for BrowserCredentialResolver {
             .bind0(&binding);
         Ok(CredentialBinding::protected(
             bytes,
-            Arc::new(BrowserTransport::new(fetch)),
+            acyclic_stream::ProviderOwner::new(BrowserTransport::new(fetch)),
         ))
     }
 }

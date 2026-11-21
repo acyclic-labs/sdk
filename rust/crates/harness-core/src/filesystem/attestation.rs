@@ -23,10 +23,11 @@ use super::TurnAdmission;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
-    BoxProviderFuture, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, FollowStream,
-    IdempotencyKey, IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream,
-    StreamError, StreamPath,
+    BoxProviderFuture, CommitId, CommitRequest, CommittedEnvelope, FollowStream, IdempotencyKey,
+    IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream, StreamError,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::{CommitOutcome, StreamPath};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
 use bytes::Bytes;

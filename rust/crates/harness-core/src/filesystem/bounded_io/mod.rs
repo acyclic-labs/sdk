@@ -41,9 +41,11 @@ pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
 use records::decode_allowance_error;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::filesystem) use sdk::PRIVATE_CUT_FORMAT;
 pub(crate) use sdk::generation_ref;
 pub(in crate::filesystem) use sdk::{
-    FileVersion, PRIVATE_CUT_FORMAT, operation_key, parse_file_version, retain, version_generation,
+    FileVersion, operation_key, parse_file_version, retain, version_generation,
 };
 pub use sdk::{content_workspace, file_version};
 use standalone_custody::{StandaloneCustody, StandaloneLedger};

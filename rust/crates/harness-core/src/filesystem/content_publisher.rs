@@ -12,6 +12,9 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use std::sync::Arc;
 
+pub(super) type ContentChangeCheck<'a> =
+    dyn Fn(acyclic_fs::access::Action, &str) -> Result<()> + Send + Sync + 'a;
+
 /// Owner-bound content staging through the existing Filesystem publication path.
 pub struct FilesystemContentPublisher<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
@@ -179,8 +182,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     None,
                     path,
                     bytes,
-                    media,
-                    display,
+                    (media, display),
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
@@ -206,8 +208,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     Some(source),
                     source.path(),
                     bytes,
-                    source.descriptor().media_type(),
-                    source.display_name(),
+                    (source.descriptor().media_type(), source.display_name()),
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
@@ -417,8 +418,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         source: Option<&FileRef>,
         path: &str,
         bytes: &[u8],
-        media: &str,
-        display: &str,
+        (media, display): (&str, &str),
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<FileRef> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
@@ -668,7 +668,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         operation: OperationId,
         changes: &'a [crate::conversation::ContentChange<'a>],
         access: crate::conversation::ContentAccess<'a, 'io>,
-        check: Option<&'a (dyn Fn(acyclic_fs::access::Action, &str) -> Result<()> + Send + Sync)>,
+        check: Option<&'a ContentChangeCheck<'a>>,
     ) -> Result<BoundedContentFuture<'a, (ContentChanges, Option<ContentHold<'io>>)>> {
         if volume != &self.volume {
             return Err(stock_boundary(
@@ -682,8 +682,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let files = self
                 .host
                 .put_changes(
-                    &self.volume,
-                    &self.grant,
+                    (&self.volume, &self.grant),
                     changes,
                     &key,
                     self.maximum_bytes,

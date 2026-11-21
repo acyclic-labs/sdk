@@ -349,9 +349,10 @@ pub(super) async fn retain(
         let mut key = [0; 16];
         key.copy_from_slice(&digest.finalize().as_bytes()[..16]);
         let operation = crate::OperationId::from_bytes(key);
-        let _path_hold;
-        let (path, path_hold) = path(operation, work)?;
-        _path_hold = path_hold;
+        let (_path_hold, path) = {
+            let (path, hold) = path(operation, work)?;
+            (hold, path)
+        };
         let mut file_hold;
         let (cached, owned) = context
             .task()

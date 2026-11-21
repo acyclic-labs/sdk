@@ -440,7 +440,7 @@ pub async fn prompt_settled(
         return Ok(PromptOutcome::Failed(message.clone()));
     }
     let output = conversation.output_at(sequence, &entry).await?;
-    Ok(PromptOutcome::Settled(entry, output))
+    Ok(PromptOutcome::Settled(*entry, output))
 }
 
 /// Drives the accepted native boundaries while running a scoped regression.

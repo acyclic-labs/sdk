@@ -39,10 +39,11 @@ pub(crate) fn add_condition(
     custody: &mut CodecQuota<'_, '_>,
     condition: acyclic_stream::CommitCondition,
 ) -> Result<()> {
-    custody.reserve(
-        request.effects[0].conditions.len() + 1,
-        &mut request.effects[0].conditions,
-    )?;
-    request.effects[0].conditions.push(condition);
+    let effect = request
+        .effects
+        .first_mut()
+        .ok_or_else(|| Error::Invalid("conditional commit is missing its effect".into()))?;
+    custody.reserve(effect.conditions.len() + 1, &mut effect.conditions)?;
+    effect.conditions.push(condition);
     Ok(())
 }

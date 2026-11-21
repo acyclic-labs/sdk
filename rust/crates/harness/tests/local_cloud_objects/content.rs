@@ -141,7 +141,7 @@ pub(super) async fn run(
     let store = async |scope| {
         ObjectContentStore::new(
             objects.clone(),
-            provider.clone(),
+            &provider,
             volume.clone(),
             (issuer.verifier(&mut None)?, owner_scope.clone()),
             scope,

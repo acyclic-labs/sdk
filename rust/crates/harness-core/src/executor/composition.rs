@@ -65,7 +65,7 @@ impl StockExecutor {
             sampling: self.sampling,
             effort: None,
             resolved_sampling: once_cell::sync::OnceCell::new(),
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
             tools: self.tools.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             hooks: self.hooks.clone(),
@@ -130,12 +130,12 @@ impl StockExecutor {
     #[must_use]
     pub fn new(
         model: Model,
-        provider: Arc<dyn ModelProvider>,
+        provider: acyclic_stream::ProviderOwner<dyn ModelProvider>,
         context: ContextPipeline,
         tools: ToolRegistry,
     ) -> Self {
         Self::from_binding(
-            Arc::new(crate::model::ResolvedModel::new((model, provider))),
+            acyclic_stream::ProviderOwner::new(crate::model::ResolvedModel::new((model, provider))),
             context,
             tools,
         )
@@ -146,11 +146,11 @@ impl StockExecutor {
     /// execution's original allowance.
     #[must_use]
     pub fn from_binding(
-        binding: Arc<crate::model::ResolvedModel>,
+        binding: acyclic_stream::ProviderOwner<crate::model::ResolvedModel>,
         context: ContextPipeline,
         tools: ToolRegistry,
     ) -> Self {
-        let provider = Arc::clone(&binding.1);
+        let provider = binding.1.clone();
         Self {
             step_configuration: None,
             intervention: None,
@@ -269,8 +269,7 @@ impl StockExecutor {
             reader.as_ref(),
             publisher.as_deref(),
             self.tools,
-            self.limits,
-            None,
+            (self.limits, None),
             false,
         )
         .await?;
@@ -480,7 +479,7 @@ mod tests {
 
 impl StepBinding {
     /// Original protected selection retained by this turn's canonical template.
-    pub fn model_binding(&self) -> &Arc<crate::model::ResolvedModel> {
+    pub fn model_binding(&self) -> &acyclic_stream::ProviderOwner<crate::model::ResolvedModel> {
         &self.model.0
     }
 
@@ -491,7 +490,7 @@ impl StepBinding {
     pub fn bind_configuration(
         &self,
         (model, sampling, effort): (
-            Arc<crate::model::ResolvedModel>,
+            acyclic_stream::ProviderOwner<crate::model::ResolvedModel>,
             Option<crate::model::ModelSampling>,
             Option<crate::config::Effort>,
         ),

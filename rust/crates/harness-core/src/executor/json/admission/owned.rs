@@ -155,14 +155,17 @@ fn tree<'c>(
             })?;
             let mut selected = super::document(
                 text.as_bytes(),
-                &ROOT,
-                placement.map(Placement::expanded),
-                child_depth,
-                true,
-                resident.bounds.maximum_depth,
                 super::scratch_bound(text.len() as u64)?,
-                charge,
-                &RefCell::new(None),
+                super::Walk {
+                    schema: &ROOT,
+                    layout: placement.map(Placement::expanded),
+                    depth: child_depth,
+                    virtual_value: true,
+                    maximum_depth: resident.bounds.maximum_depth,
+                    raw: None,
+                    charge,
+                    failed: &RefCell::new(None),
+                },
             )?;
             selected.always.bytes = checked(
                 selected.always.bytes.checked_add(text.len() as u64),

@@ -21,7 +21,7 @@ pub(crate) async fn review_model(
     execution: (&dyn ExecutionJournal, Option<&PreparationIo>),
     request: &ApprovalRequest<'_>,
     principal: &str,
-    binding: (&Model, &Arc<dyn ModelProvider>),
+    binding: (&Model, &acyclic_stream::ProviderOwner<dyn ModelProvider>),
     policy: Option<&str>,
     source: Option<&crate::agent::AgentPath>,
     limits: Limits,
@@ -139,7 +139,10 @@ mod tests {
         model::{ModelEvent, ToolCall},
         test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[tokio::test]
     async fn review_uses_original_count_dispatch_terminal_and_replay() -> Result<()> {
@@ -245,7 +248,7 @@ mod tests {
                 } else {
                     None
                 };
-                let bound: Arc<dyn ModelProvider> = provider.clone();
+                let bound: acyclic_stream::ProviderOwner<dyn ModelProvider> = provider.clone();
                 let model = Model::new("test".into(), "review".into(), "1".into())?;
                 let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
                 let limits = Limits {

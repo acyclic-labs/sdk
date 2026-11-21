@@ -367,10 +367,10 @@ impl<'a> RecordIndex<'a> {
                 .flatten();
         }
         // Merge the two ordered cursors without moving or sorting retained records.
-        while let Some((side, (key, record))) = match next {
-            [Some(a), Some(b)] if a.0 > b.0 => Some((1, b)),
-            [Some(a), _] => Some((0, a)),
-            [None, Some(b)] => Some((1, b)),
+        while let Some((advance_started, (key, record))) = match next {
+            [Some(a), Some(b)] if a.0 > b.0 => Some((false, b)),
+            [Some(a), _] => Some((true, a)),
+            [None, Some(b)] => Some((false, b)),
             [None, None] => None,
         } {
             crate::model::charge_items(io, 1)?;
@@ -391,7 +391,14 @@ impl<'a> RecordIndex<'a> {
                 };
                 stock_vec_push(&mut selected, copied, io)?;
             }
-            next[side] = buckets[side]
+            let [next_started, next_selected] = &mut next;
+            let [started, selected_bucket] = buckets;
+            let (slot, bucket) = if advance_started {
+                (next_started, started)
+            } else {
+                (next_selected, selected_bucket)
+            };
+            *slot = bucket
                 .map(|bucket| bucket.seek_after(*key, &mut work))
                 .transpose()?
                 .flatten();
@@ -442,8 +449,7 @@ impl StockExecution<'_> {
         self.selected_records(
             journal,
             operation,
-            step,
-            None,
+            (step, None),
             include_started,
             maximum,
             select,
@@ -455,8 +461,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,
-        step: u32,
-        call_id: Option<&str>,
+        (step, call_id): (u32, Option<&str>),
         include_started: bool,
         maximum: Option<usize>,
         select: impl Fn(&ExecutionEvent) -> bool + Send + Sync,

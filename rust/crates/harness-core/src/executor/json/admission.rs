@@ -164,14 +164,17 @@ impl Walk<'_, '_> {
                 .map_err(|error| self.error::<E>(error))?;
                 let mut nested = document(
                     text.as_bytes(),
-                    &ROOT,
-                    self.layout.map(Placement::expanded),
-                    self.depth,
-                    true,
-                    self.maximum_depth,
                     scratch_bound(text.len() as u64).map_err(|error| self.error::<E>(error))?,
-                    self.charge,
-                    self.failed,
+                    Walk {
+                        schema: &ROOT,
+                        layout: self.layout.map(Placement::expanded),
+                        depth: self.depth,
+                        virtual_value: true,
+                        maximum_depth: self.maximum_depth,
+                        raw: None,
+                        charge: self.charge,
+                        failed: self.failed,
+                    },
                 )
                 .map_err(|error| self.error::<E>(error))?;
                 nested.always.bytes = checked(
@@ -298,32 +301,12 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         Ok(counts)
     }
 }
-fn document(
-    bytes: &[u8],
-    schema: &'static JsonValueSchema,
-    layout: Option<Placement<'_>>,
-    depth: u32,
-    virtual_value: bool,
-    maximum_depth: u32,
-    scratch: u64,
-    charge: &Charge<'_>,
-    failed: &RefCell<Option<Error>>,
-) -> Result<Branches> {
+fn document(bytes: &[u8], scratch: u64, walk: Walk<'_, '_>) -> Result<Branches> {
+    let (charge, failed) = (walk.charge, walk.failed);
     charge.borrow_mut()(JsonCodecCharge::Retain { bytes: scratch })?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
-    let result = Walk {
-        schema,
-        depth,
-        virtual_value,
-        maximum_depth,
-        raw: None,
-        layout,
-        charge,
-        failed,
-    }
-    .deserialize(&mut decoder)
-    .and_then(|counts| {
+    let result = walk.deserialize(&mut decoder).and_then(|counts| {
         decoder.end()?;
         Ok(counts)
     });
@@ -394,14 +377,17 @@ fn laid_out(
     });
     let counts = document(
         bytes,
-        schema.unwrap_or(&UNKNOWN),
-        layout,
-        0,
-        false,
-        lexical.maximum_depth,
         scratch_bound(lexical.scratch_source_bytes(labels))?,
-        &charge,
-        &RefCell::new(None),
+        Walk {
+            schema: schema.unwrap_or(&UNKNOWN),
+            layout,
+            depth: 0,
+            virtual_value: false,
+            maximum_depth: lexical.maximum_depth,
+            raw: None,
+            charge: &charge,
+            failed: &RefCell::new(None),
+        },
     )?
     .always;
     finish(

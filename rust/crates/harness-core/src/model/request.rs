@@ -315,46 +315,48 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let ToolResultContent::Json { value } = content {
-            let _hold;
-            let mut envelope = match io {
-                Some(io) => {
-                    let (envelope, hold) = io.decode(
-                        std::marker::PhantomData::<Value>,
-                        br#"{"kind":"json","value":null}"#,
-                        Storage,
-                    )?;
-                    _hold = Some(hold);
-                    envelope
-                }
-                _ => {
-                    {
-                        _hold = None;
-                    }
-                    serde_json::json!({"kind":"json", "value":null})
-                }
+            let (_hold, mut envelope) = if let Some(io) = io {
+                let (envelope, hold) = io.decode(
+                    std::marker::PhantomData::<Value>,
+                    br#"{"kind":"json","value":null}"#,
+                    Storage,
+                )?;
+                (Some(hold), envelope)
+            } else {
+                (None, serde_json::json!({"kind":"json", "value":null}))
             };
             // Only the fixed envelope is new. The admitted payload moves into
             // it for validation and returns even when its schema refuses it.
-            std::mem::swap(value, &mut envelope["value"]);
+            let invalid_envelope = || {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "tool output JSON envelope lacks its payload",
+                )
+            };
+            std::mem::swap(
+                value,
+                envelope.get_mut("value").ok_or_else(invalid_envelope)?,
+            );
             let result = tool
                 .check_projection_schema(&envelope, io)
                 .and_then(|result| result);
-            std::mem::swap(value, &mut envelope["value"]);
+            std::mem::swap(
+                value,
+                envelope.get_mut("value").ok_or_else(invalid_envelope)?,
+            );
             return result;
         }
-        match io {
-            Some(io) => {
-                let _hold;
-                let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
-                _hold = io.guard_bytes(&bytes)?;
-                let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
-                tool.check_projection_schema(&envelope.0, Some(io))??;
-            }
-            _ => {
-                let envelope = serde_json::to_value(content)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                tool.check_projection_schema(&envelope, None)??;
-            }
+        if let Some(io) = io {
+            let _hold;
+            let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
+            _hold = io.guard_bytes(&bytes)?;
+            let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
+            tool.check_projection_schema(&envelope.0, Some(io))??;
+        } else {
+            let envelope =
+                serde_json::to_value(content).map_err(|error| Error::Invalid(error.to_string()))?;
+            tool.check_projection_schema(&envelope, None)??;
         }
         Ok(())
     }

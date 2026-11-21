@@ -620,8 +620,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         StockExecution::ordinary(&executor)
             .resolve_tool_call(
                 &journal,
-                input.operation_id,
-                0,
+                (input.operation_id, 0),
                 changed_call,
                 0,
                 &mut replay_context,

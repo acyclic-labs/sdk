@@ -1,36 +1,32 @@
 use super::*;
 
-pub(super) fn existing_tracked_paths<
-    'a,
+pub(super) async fn existing_tracked_paths<
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 >(
-    generation: &'a Generation<A, O>,
-    candidates: &'a BTreeSet<String>,
-) -> impl std::future::Future<Output = Result<BTreeSet<String>, Error>> + acyclic_stream::ProviderTask + 'a
-{
-    async move {
-        let mut tracked = BTreeSet::new();
-        for path in candidates {
-            match generation
-                .stat(
-                    &format!("/{path}"),
-                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-            {
-                Ok(stat) if stat.kind != FileKind::Directory => {
-                    tracked.insert(path.clone());
-                }
-                Ok(_) | Err(WorkspaceError::NotFound) => {}
-                Err(error) => return Err(Error::from(error)),
+    generation: &Generation<A, O>,
+    candidates: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, Error> {
+    let mut tracked = BTreeSet::new();
+    for path in candidates {
+        match generation
+            .stat(
+                &format!("/{path}"),
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+        {
+            Ok(stat) if stat.kind != FileKind::Directory => {
+                tracked.insert(path.clone());
             }
+            Ok(_) | Err(WorkspaceError::NotFound) => {}
+            Err(error) => return Err(Error::from(error)),
         }
-        Ok(tracked)
     }
+    Ok(tracked)
 }
 
 // Preparation can await storage and merge drivers. Revalidate after it,

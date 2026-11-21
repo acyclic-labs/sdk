@@ -270,12 +270,14 @@ where
             };
             // Fixed owner-derived order: epoch precedes source in this namespace.
             let contributions = [
-                indexed_publication::Contribution::Conditioned {
-                    condition: epoch_condition.clone(),
+                indexed_publication::Contribution {
+                    path: checkpoint.epoch_path(),
+                    condition: Some(epoch_condition.clone()),
                     record: epoch_record,
                 },
-                indexed_publication::Contribution::Conditioned {
-                    condition: source_condition,
+                indexed_publication::Contribution {
+                    path: &checkpoint.source,
+                    condition: Some(source_condition),
                     record: &source_record,
                 },
             ];
@@ -293,9 +295,7 @@ where
             let mut confirmation = None;
             let committed = self
                 .append_conversation_bytes(
-                    request.operation,
-                    request.expected_tail,
-                    request.key,
+                    (request.operation, request.expected_tail, request.key),
                     request.step,
                     &bytes,
                     &contributions,

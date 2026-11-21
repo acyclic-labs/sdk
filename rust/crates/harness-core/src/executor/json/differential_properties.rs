@@ -52,7 +52,7 @@ impl Charges {
                 differential::record(("decoder admission", maximum_owned_bytes));
                 differential::record(("decoder source bytes", value_shape.input_bytes));
                 differential::record(("decoder items", value_shape.lexical_items));
-                differential::record(("decoder containers", value_shape.containers));
+                differential::record(("decoder containers", value_shape.containers()));
             }
         }
         Ok(())

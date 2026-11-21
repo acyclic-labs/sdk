@@ -73,7 +73,11 @@ pub fn apply_patch() -> Result<Tool> {
         output_schema: schema::output::<PatchResult>()?,
         projection_schema: schema::text_projection_schema()?,
     };
-    definition.input_schema["x-harness-capability"] = Value::String("edit".into());
+    definition
+        .input_schema
+        .as_object_mut()
+        .ok_or_else(|| crate::Error::Invalid("patch input schema must be an object".into()))?
+        .insert("x-harness-capability".into(), Value::String("edit".into()));
     Ok(Tool {
         definition,
         hook_names: &["Write", "Edit"],

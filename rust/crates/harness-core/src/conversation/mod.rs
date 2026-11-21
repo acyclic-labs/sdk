@@ -51,7 +51,7 @@ pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
 pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 
 /// Admission and rendering bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     /// Optional maximum bytes in one referenced file; `None` is unbounded.
@@ -68,20 +68,6 @@ pub struct Limits {
     pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
     /// Optional maximum canonical messages selected into one model request.
     pub context_messages: Option<std::num::NonZeroUsize>,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            file_bytes: None,
-            render_bytes: None,
-            path_bytes: None,
-            attachments: None,
-            model_events_per_step: None,
-            tool_calls_per_step: None,
-            context_messages: None,
-        }
-    }
 }
 
 impl Limits {
@@ -293,7 +279,7 @@ pub use content::{
     BoundedContentFuture, CapturedContent, CompositeContentVerifier, ContentAccess, ContentCapture,
     ContentChange, ContentChangeResult, ContentChanges, ContentHold, ContentIo,
     ContentMountResolver, ContentPath, ContentPublisher, ContentResidencyVerifier, ContentSource,
-    Custody,
+    Custody, PrivateDirectoryFuture, PrivatePathFuture,
 };
 pub use directory::{
     DirectoryEntryKind, DirectoryQuery, DirectoryRead, DirectoryTarget, MAX_PRIVATE_DIRECTORY_PAGE,

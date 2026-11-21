@@ -318,14 +318,15 @@ pub(super) fn rejection(
 ) -> Result<Error> {
     // The returned refusal owns its diagnostic on the same original ledger,
     // independently of the planner's temporary buffers retired on failure.
+    // Retire search custody before retaining the refusal presentation.
     #[cfg(not(target_arch = "wasm32"))]
     let original = work.as_ref().map(|custody| custody.work());
     #[cfg(target_arch = "wasm32")]
     let original = None;
-    let mut scratch = allocation(original, 0)?;
-    let bytes = closest(source, needle, &mut scratch)?;
-    // All search buffers are gone before the refusal retains its presentation.
-    drop(scratch);
+    let bytes = {
+        let mut scratch = allocation(original, 0)?;
+        closest(source, needle, &mut scratch)?
+    };
     charge(work, 0, source.len() as u64 + needle.len() as u64)?;
     let first = text_range(source, ..bytes.start, work)?
         .bytes()

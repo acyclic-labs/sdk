@@ -168,16 +168,20 @@ struct Range<'a, W: ?Sized> {
 }
 impl<W: Write + ?Sized> Write for Range<'_, W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let start = self
-            .offset
-            .saturating_sub(self.position)
-            .min(bytes.len() as u64) as usize;
-        let end = self
-            .offset
-            .saturating_add(self.length)
-            .saturating_sub(self.position)
-            .min(bytes.len() as u64) as usize;
-        self.sink.write_all(&bytes[start..end.max(start)])?;
+        let offset = |coordinate: u64| {
+            usize::try_from(
+                coordinate
+                    .saturating_sub(self.position)
+                    .min(bytes.len() as u64),
+            )
+            .map_err(|_| std::io::Error::other("case range exceeds write buffer"))
+        };
+        let start = offset(self.offset)?;
+        let end = offset(self.offset.saturating_add(self.length))?;
+        let selected = bytes
+            .get(start..end.max(start))
+            .ok_or_else(|| std::io::Error::other("case range exceeds write buffer"))?;
+        self.sink.write_all(selected)?;
         self.position = self
             .position
             .checked_add(bytes.len() as u64)

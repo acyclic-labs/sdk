@@ -54,8 +54,8 @@ impl ExecutionSummary {
             }
             ExecutionEvent::ConversationItem { .. }
             | ExecutionEvent::Progress { .. }
-            | ExecutionEvent::NativeCapture { .. } => self.tail > 0,
-            ExecutionEvent::ModelWait {
+            | ExecutionEvent::NativeCapture { .. }
+            | ExecutionEvent::ModelWait {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
             } => self.tail > 0,
@@ -319,7 +319,13 @@ impl ExecutionSummary {
                     );
                 }
             }
-            ExecutionEvent::ModelWait {
+            ExecutionEvent::Started { .. }
+            | ExecutionEvent::ConversationItem { .. }
+            | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. }
+            | ExecutionEvent::ModelRejected { .. }
+            | ExecutionEvent::ModelInterrupted { .. }
+            | ExecutionEvent::ModelWait {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
             } => {}
@@ -401,7 +407,6 @@ impl ExecutionSummary {
                     })?;
             }
             ExecutionEvent::ModelOutput { .. } => self.latest_response_output = true,
-            ExecutionEvent::ModelRejected { .. } | ExecutionEvent::ModelInterrupted { .. } => {}
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
@@ -447,10 +452,6 @@ impl ExecutionSummary {
                     io,
                 )?;
             }
-            ExecutionEvent::Started { .. }
-            | ExecutionEvent::ConversationItem { .. }
-            | ExecutionEvent::Progress { .. }
-            | ExecutionEvent::NativeCapture { .. } => {}
         }
         self.retries.insert(key, (sequence, digest), io)?;
         if !matches!(

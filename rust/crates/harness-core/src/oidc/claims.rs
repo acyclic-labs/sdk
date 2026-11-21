@@ -98,10 +98,11 @@ pub(super) fn verify(
         .map_err(|_| refused("invalid OIDC signature encoding"))?;
     // The signature covers the original compact header and claims bytes.
     // Parse claims only after authenticating them with the pinned public key.
-    key.verify(
-        &token.as_bytes()[..encoded.len() + 1 + payload.len()],
-        &signature,
-    )?;
+    let signed = token
+        .as_bytes()
+        .get(..encoded.len() + 1 + payload.len())
+        .ok_or_else(|| refused("OIDC signed payload exceeds its token"))?;
+    key.verify(signed, &signature)?;
     let payload = URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|_| refused("invalid OIDC claims encoding"))?;

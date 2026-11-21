@@ -95,9 +95,14 @@ fn next_intent(run: &str, count: &str) -> Result<IntentId, Error> {
     if prefix.is_empty() {
         id.push('1');
     } else {
-        let (rest, digit) = prefix.split_at(prefix.len() - 1);
+        let (rest, digit) = prefix
+            .split_at_checked(prefix.len() - 1)
+            .ok_or(Error::Record("goal intent count has no final ASCII digit"))?;
+        let &[digit] = digit.as_bytes() else {
+            return Err(Error::Record("goal intent count has no final digit"));
+        };
         id.push_str(rest);
-        id.push(char::from(digit.as_bytes()[0] + 1));
+        id.push(char::from(digit + 1));
     }
     id.extend(std::iter::repeat_n('0', count.len() - prefix.len()));
     IntentId::try_from(id)

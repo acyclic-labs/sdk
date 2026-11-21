@@ -77,6 +77,7 @@ pub(crate) use version::{encode_path_version, encode_version};
 
 /// The same opaque version used by file projections, without a second codec in
 /// guest code. Decode only the immutable reference, not the retained text.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn result_version(
     name: &str,
     result: &Value,

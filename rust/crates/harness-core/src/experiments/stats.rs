@@ -25,7 +25,7 @@ impl Cluster {
         finite(difference)?;
         let count = self.count.checked_add(1).ok_or(Error::Overflow)?;
         let delta = difference - self.mean;
-        let mean = self.mean + delta / count as f64;
+        let mean = self.mean + delta / super::count_as_f64(count);
         let m2 = self.m2 + delta * (difference - mean);
         finite(mean)?;
         finite(m2)?;
@@ -87,12 +87,16 @@ impl PairedStats {
         let clusters = next.clusters.checked_add(1).ok_or(Error::Overflow)?;
         let centered_mean = cluster.mean - next.anchor;
         let delta = centered_mean - next.pairs.mean;
-        next.pairs.mean += delta * (cluster.count as f64 / pairs as f64);
+        next.pairs.mean +=
+            delta * (super::count_as_f64(cluster.count) / super::count_as_f64(pairs));
         next.pairs.m2 += cluster.m2
-            + delta * delta * (next.pairs.count as f64 / pairs as f64) * cluster.count as f64;
+            + delta
+                * delta
+                * (super::count_as_f64(next.pairs.count) / super::count_as_f64(pairs))
+                * super::count_as_f64(cluster.count);
         next.pairs.count = pairs;
-        let sum = centered_mean * cluster.count as f64;
-        let size = cluster.count as f64;
+        let sum = centered_mean * super::count_as_f64(cluster.count);
+        let size = super::count_as_f64(cluster.count);
         // Online two-column QR of (cluster size, centered cluster sum).
         // Squared residuals are a sum of squares, avoiding subtraction of
         // nearly equal covariance terms for large common treatment offsets.
@@ -125,8 +129,8 @@ impl PairedStats {
                 "at least two independent clusters are required",
             ));
         }
-        let n = self.pairs.count as f64;
-        let g = self.clusters as f64;
+        let n = super::count_as_f64(self.pairs.count);
+        let g = super::count_as_f64(self.clusters);
         let mean = self.pairs.mean;
         let residual = (self.projected_sum - mean * self.size_norm).hypot(self.residual_norm);
         let paired_se = (self.pairs.m2.max(0.0) / (n - 1.0) / n).sqrt();
@@ -163,10 +167,9 @@ pub fn required_clusters(
         return Err(Error::Statistics("invalid power-planning inputs"));
     }
     let required = (((z_alpha + z_power) * cluster_sd / effect).powi(2)).ceil();
-    if !required.is_finite() || required >= u64::MAX as f64 {
-        return Err(Error::Overflow);
-    }
-    Ok(required.max(2.0) as u64)
+    crate::core::truncated_u64(required)
+        .map(|count| count.max(2))
+        .ok_or(Error::Overflow)
 }
 
 fn finite(value: f64) -> Result<(), Error> {

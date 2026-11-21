@@ -693,8 +693,8 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
         Machines::Indeterminate(_)
         | Machines::OperationIndeterminate(_)
         | Machines::CommandIndeterminate(_)
-        | Machines::FileIndeterminate(_) => ErrorCode::Indeterminate,
-        Machines::DeadlineSourceLost {
+        | Machines::FileIndeterminate(_)
+        | Machines::DeadlineSourceLost {
             machine: Some(_), ..
         } => ErrorCode::Indeterminate,
         Machines::DeadlineSourceLost { machine: None, .. } => ErrorCode::Storage,
@@ -752,9 +752,10 @@ impl Error {
             | WorkspaceError::EmptyContentSet
             | WorkspaceError::NotFork
             | WorkspaceError::ContentLengthOverflow => ErrorCode::Invalid,
-            WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } => ErrorCode::Storage,
+            WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. }
+            | WorkspaceError::Engine(_) => ErrorCode::Storage,
             WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
-            WorkspaceError::Engine(_) => ErrorCode::Storage,
         }
     }
 
@@ -1593,13 +1594,15 @@ impl CleanupFailure {
     /// The original operation failure, including its operation identity/custody.
     #[must_use]
     pub fn primary(&self) -> &Error {
-        &self.causes[0]
+        let [primary, _] = self.causes.as_ref();
+        primary
     }
 
     /// The independently completed cleanup failure, including its custody.
     #[must_use]
     pub fn cleanup(&self) -> &Error {
-        &self.causes[1]
+        let [_, cleanup] = self.causes.as_ref();
+        cleanup
     }
 }
 

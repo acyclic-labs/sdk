@@ -135,7 +135,7 @@ pub fn file(path: &str) -> Option<&'static [u8]> {
     let tree = tree();
     tree.binary_search_by_key(&path, |(name, _)| *name)
         .ok()
-        .map(|index| tree[index].1)
+        .and_then(|index| tree.get(index).map(|(_, bytes)| *bytes))
 }
 
 /// This build's seed generation: a hash of every path and its bytes.
@@ -160,7 +160,12 @@ pub fn volume(provider: &ProviderRef) -> Result<VolumeRef> {
     let name = blake3::Hash::from_bytes(*digest()).to_hex();
     VolumeRef::new(
         provider.clone(),
-        format!("seed-{}", &name[..32]),
+        format!(
+            "seed-{}",
+            name.get(..32).ok_or_else(|| crate::Error::Invalid(
+                "seed digest is shorter than its name".into()
+            ))?
+        ),
         VolumeClass::Project,
         VolumeOwner::Project("seed".into()),
         &mut None,

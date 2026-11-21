@@ -218,14 +218,17 @@ impl ContextEpoch {
                 continue;
             }
             let length = file.descriptor().byte_length();
-            let mut body = serde_json::json!({"version": 1, "document": file});
+            let mut body = serde_json::Map::from_iter([
+                ("version".into(), serde_json::json!(1)),
+                ("document".into(), serde_json::json!(file)),
+            ]);
             if length <= INLINE_TEXT_BYTES {
                 let bytes = reader.read(file, length, None, None)?.await?;
                 if let Ok(text) = std::str::from_utf8(&bytes) {
-                    body["text"] = Value::String(text.to_owned());
+                    body.insert("text".into(), Value::String(text.to_owned()));
                 }
             }
-            change(&key, now.get(&key).copied(), body);
+            change(&key, now.get(&key).copied(), Value::Object(body));
         }
         if told.get("conventions") != now.get("conventions") {
             change(

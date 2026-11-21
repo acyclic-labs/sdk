@@ -834,7 +834,7 @@ pub struct StepBinding {
     sampling: Option<crate::model::ModelSampling>,
     effort: Option<crate::config::Effort>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
-    provider: Arc<dyn ModelProvider>,
+    provider: acyclic_stream::ProviderOwner<dyn ModelProvider>,
     tools: ToolRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
@@ -856,7 +856,7 @@ pub struct StockExecutor {
     model: ExecutorModel,
     sampling: Option<crate::model::ModelSampling>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
-    provider: Arc<dyn ModelProvider>,
+    provider: acyclic_stream::ProviderOwner<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
     epoch_tools: Option<Arc<Vec<crate::tool::ToolDefinition>>>,
@@ -887,7 +887,7 @@ pub struct StockExecutor {
 }
 
 #[derive(Clone)]
-struct ExecutorModel(Arc<crate::model::ResolvedModel>);
+struct ExecutorModel(acyclic_stream::ProviderOwner<crate::model::ResolvedModel>);
 
 impl std::ops::Deref for ExecutorModel {
     type Target = Model;

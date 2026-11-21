@@ -27,6 +27,7 @@ enum ModelSelection {
     },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ModelSelection {
     fn owned_bytes(&self) -> u64 {
         match self {
@@ -109,6 +110,7 @@ impl ToolRegistry {
     fn sources(&self) -> &[Arc<dyn ToolSource>] {
         self.sources.as_deref().map_or(&[], Vec::as_slice)
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_lazy_tools(&self) -> bool {
         self.sources().iter().any(|source| source.has_lazy_tools())
     }
@@ -238,6 +240,7 @@ impl ToolRegistry {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retain_sources(&mut self, mut keep: impl FnMut(&dyn ToolSource) -> bool) {
         if let Some(sources) = &mut self.sources {
             Arc::make_mut(sources).retain(|source| keep(source.as_ref()));

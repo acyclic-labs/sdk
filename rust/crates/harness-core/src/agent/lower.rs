@@ -73,8 +73,9 @@ impl Builder {
     /// A hard append to a path that also has soft records keeps their order
     /// and makes them hard: the hard append decides the path in one mutation.
     fn append(&mut self, path: StreamPath, record: impl Into<AppendRecord>) {
-        let records = self.appends.entry(path.clone()).or_default();
-        if let Some((soft, _)) = self.soft.remove(&path) {
+        let soft = self.soft.remove(&path);
+        let records = self.appends.entry(path).or_default();
+        if let Some((soft, _)) = soft {
             records.extend(soft);
         }
         records.push(record.into());
@@ -149,7 +150,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         {
             let mut adopted = adoption(state, volumes, cursor, prior_conversation);
             adopted.brief.clone_from(brief);
-            adopted.profile.clone_from(profile);
+            adopted.profile = profile.as_deref().cloned();
             // The root pins a run policy. A client-selected child role or
             // context cannot replace it with an unrestricted subtree.
             if let Some(topology) = state
@@ -201,7 +202,6 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     expected: diagnostic.records(),
                 })?;
             }
-            Out::Commit(_) => {}
             Out::Supervised { run, control } => {
                 let event = match control.action {
                     crate::supervision::Action::Pause => crate::supervision::Lifecycle::Paused {
@@ -269,7 +269,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             | Out::Notices(_)
             | Out::PendingSpawns(_)
             | Out::AwaitReplies(_)
-            | Out::PeerGuard { .. } => {}
+            | Out::PeerGuard { .. }
+            | Out::Commit(_)
+            | Out::Spawn { .. } => {}
             Out::Send { to, record } => {
                 if let InboxRecord::Cancel(cancel) = record {
                     let (path, record) =
@@ -331,7 +333,6 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     .encode()?,
                 );
             }
-            Out::Spawn { .. } => {}
         }
     }
     if conversation_count > 0 {

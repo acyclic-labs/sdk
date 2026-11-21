@@ -7,9 +7,11 @@ use acyclic_stream::{
 use std::{ops::Deref, sync::Arc};
 
 /// Instrument a concrete model provider before erasing its type.
-/// The Arc also lets bind_content preserve this ledger on its returned provider.
-pub fn counted<P: ModelProvider + 'static>(provider: P) -> Counted<Arc<P>> {
-    Counted::new(Arc::new(provider))
+/// The shared owner also lets bind_content preserve this ledger on its returned provider.
+pub fn counted<P: ModelProvider + 'static>(
+    provider: P,
+) -> Counted<acyclic_stream::ProviderOwner<P>> {
+    Counted::new(acyclic_stream::ProviderOwner::new(provider))
 }
 
 impl<P> ModelProvider for Counted<P>
@@ -20,20 +22,22 @@ where
     fn bind_conversation(
         &self,
         conversation: crate::OperationId,
-    ) -> Option<Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         self.inner().bind_conversation(conversation).map(|bound| {
-            Arc::new(Counted::with_ledger(bound, self.ledger())) as Arc<dyn ModelProvider>
+            acyclic_stream::ProviderOwner::new(Counted::with_ledger(bound, self.ledger()))
+                as acyclic_stream::ProviderOwner<dyn ModelProvider>
         })
     }
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         max_file_bytes: Option<u64>,
-    ) -> Option<Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         self.inner()
             .bind_content(reader, max_file_bytes)
             .map(|bound| {
-                Arc::new(Counted::with_ledger(bound, self.ledger())) as Arc<dyn ModelProvider>
+                acyclic_stream::ProviderOwner::new(Counted::with_ledger(bound, self.ledger()))
+                    as acyclic_stream::ProviderOwner<dyn ModelProvider>
             })
     }
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
@@ -43,11 +47,11 @@ where
         &self,
         model: &Model,
         profile: &crate::profile::AgentProfile<'_>,
-    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+    ) -> Result<(Model, acyclic_stream::ProviderOwner<dyn ModelProvider>)> {
         let (model, provider) = self.inner().admit_profile(model, profile)?;
         Ok((
             model,
-            Arc::new(Counted::with_ledger(provider, self.ledger())),
+            acyclic_stream::ProviderOwner::new(Counted::with_ledger(provider, self.ledger())),
         ))
     }
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {

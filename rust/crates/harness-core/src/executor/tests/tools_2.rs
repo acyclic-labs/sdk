@@ -44,8 +44,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
         StockExecution::ordinary(&executor)
             .settle_tool_call(
                 &journal,
-                OperationId::new(),
-                0,
+                (OperationId::new(), 0),
                 (invocation, None),
                 0,
                 &mut messages,
@@ -521,8 +520,7 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
         let result = StockExecution::ordinary(&executor)
             .settle_tool_call(
                 &journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation.clone(), None),
                 0,
                 &mut messages,
@@ -533,8 +531,7 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
         let replay = StockExecution::ordinary(&executor)
             .settle_tool_call(
                 &journal,
-                operation,
-                0,
+                (operation, 0),
                 (invocation.clone(), None),
                 0,
                 &mut replayed,

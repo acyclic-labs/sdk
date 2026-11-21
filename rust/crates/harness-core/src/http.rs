@@ -84,7 +84,7 @@ pub trait HttpTransport: ProviderPlatform {
             if !time.is_finite() || time < 0.0 {
                 return Err(crate::Error::Invalid("HTTP wall clock unavailable".into()));
             }
-            Ok(time as u64)
+            Ok(crate::core::truncated_u64(time).unwrap_or(u64::MAX))
         }
     }
     /// Monotonic time on the platform clock that `delay` waits on, from a fixed origin.
@@ -125,6 +125,7 @@ pub trait HttpTransport: ProviderPlatform {
 }
 
 mod credentials;
+pub use credentials::CredentialBindingParts;
 pub use credentials::{
     AuthorizationScheme, CredentialBinding, CredentialResolver, CredentialSource,
 };

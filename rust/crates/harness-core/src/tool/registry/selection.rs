@@ -4,6 +4,7 @@ impl ToolRegistry {
     /// The selected canonical executor, including when presented through native
     /// declarations. Hidden capabilities remain unavailable. Native adapters all
     /// retain the same originally selected capability and revision.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn capability(
         &self,
         name: &str,

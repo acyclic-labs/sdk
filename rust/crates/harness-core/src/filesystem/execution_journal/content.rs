@@ -99,33 +99,32 @@ where
                     work,
                 );
             }
-            if let Some(text) = kind_key.strip_prefix("model-live:") {
-                if let Some((dispatch, rest)) = text.split_once(':')
-                    && let Some((rest, kind)) = rest.rsplit_once(':')
-                    && let Some((rest, item)) = rest.rsplit_once(':')
-                    && let Some((_, step)) = rest.rsplit_once(':')
-                    && matches!(kind, "reply" | "reasoning" | "restart")
-                {
-                    let invalid = || {
-                        stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "model text identity is invalid",
-                        )
-                    };
-                    let dispatch = uuid::Uuid::parse_str(dispatch).map_err(|_| invalid())?;
-                    let step: u32 = step.parse().map_err(|_| invalid())?;
-                    let item: u64 = item.parse().map_err(|_| invalid())?;
-                    return crate::executor::preparation_format(
-                        format_args!(
-                            "{}{}/{step:010}-{dispatch}/{kind}/{item:020}-{}.txt",
-                            InternalContentClass::ModelText.prefix(),
-                            self.turn_operation(operation_id),
-                            digest.to_hex()
-                        ),
-                        work,
-                    );
-                }
+            if let Some(text) = kind_key.strip_prefix("model-live:")
+                && let Some((dispatch, rest)) = text.split_once(':')
+                && let Some((rest, kind)) = rest.rsplit_once(':')
+                && let Some((rest, item)) = rest.rsplit_once(':')
+                && let Some((_, step)) = rest.rsplit_once(':')
+                && matches!(kind, "reply" | "reasoning" | "restart")
+            {
+                let invalid = || {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "model text identity is invalid",
+                    )
+                };
+                let dispatch = uuid::Uuid::parse_str(dispatch).map_err(|_| invalid())?;
+                let step: u32 = step.parse().map_err(|_| invalid())?;
+                let item: u64 = item.parse().map_err(|_| invalid())?;
+                return crate::executor::preparation_format(
+                    format_args!(
+                        "{}{}/{step:010}-{dispatch}/{kind}/{item:020}-{}.txt",
+                        InternalContentClass::ModelText.prefix(),
+                        self.turn_operation(operation_id),
+                        digest.to_hex()
+                    ),
+                    work,
+                );
             }
             if kind_key.starts_with("tool:") && kind_key.ends_with(":result") {
                 return crate::executor::preparation_format(

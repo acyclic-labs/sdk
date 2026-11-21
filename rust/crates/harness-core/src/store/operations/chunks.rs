@@ -79,6 +79,7 @@ where
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn read_chunks<'a, P: crate::store::JournalProvider + ?Sized>(
     client: &P,
     path: &StreamPath,

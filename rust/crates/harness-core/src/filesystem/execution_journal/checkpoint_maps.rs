@@ -262,6 +262,9 @@ where
         };
         let roots = recovery.state.roots;
         load(&mut summary.retries, &reader, roots[0], retry).await?;
+        if is_count_observation(event) {
+            return Ok(());
+        }
         match event {
             ExecutionEvent::ContextPrepared { step, .. }
             | ExecutionEvent::ContextCompacted { step, .. } => {
@@ -273,18 +276,6 @@ where
                     load(&mut summary.models, &reader, roots[2], (*step, purpose)).await?;
                 }
             }
-            ExecutionEvent::ModelWait {
-                purpose: crate::executor::ModelPurpose::Count,
-                ..
-            }
-            | ExecutionEvent::Model {
-                purpose: crate::executor::ModelPurpose::Count,
-                ..
-            }
-            | ExecutionEvent::ModelInline {
-                purpose: crate::executor::ModelPurpose::Count,
-                ..
-            } => {}
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
@@ -355,24 +346,15 @@ where
             .get(&retry, io)?
             .ok_or_else(|| corrupt(io))?;
         roots[0] = Some(store(writer, roots[0], retry, value, io).await?);
+        if is_count_observation(event) {
+            return Ok(roots);
+        }
         match event {
             ExecutionEvent::ContextPrepared { step, .. }
             | ExecutionEvent::ContextCompacted { step, .. } => {
                 let value = summary.contexts.get(step, io)?.ok_or_else(|| corrupt(io))?;
                 roots[1] = Some(store(writer, roots[1], step.digest(io)?, value, io).await?);
             }
-            ExecutionEvent::ModelWait {
-                purpose: crate::executor::ModelPurpose::Count,
-                ..
-            }
-            | ExecutionEvent::Model {
-                purpose: crate::executor::ModelPurpose::Count,
-                ..
-            }
-            | ExecutionEvent::ModelInline {
-                purpose: crate::executor::ModelPurpose::Count,
-                ..
-            } => {}
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
@@ -395,6 +377,22 @@ where
         }
         Ok(roots)
     }
+}
+
+fn is_count_observation(event: &ExecutionEvent) -> bool {
+    matches!(
+        event,
+        ExecutionEvent::ModelWait {
+            purpose: crate::executor::ModelPurpose::Count,
+            ..
+        } | ExecutionEvent::Model {
+            purpose: crate::executor::ModelPurpose::Count,
+            ..
+        } | ExecutionEvent::ModelInline {
+            purpose: crate::executor::ModelPurpose::Count,
+            ..
+        }
+    )
 }
 
 async fn retry_entry<P: crate::store::JournalProvider + ?Sized>(

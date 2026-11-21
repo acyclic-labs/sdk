@@ -161,7 +161,6 @@ where
             actor_admissions: Vec::new(),
             run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
-            history_read_limits: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,
         })

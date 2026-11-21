@@ -148,10 +148,7 @@ impl GoalContinuationPolicy {
             return None;
         }
         // This fixed ASCII reason, even at u32::MAX, fits GOAL_REASON_BYTES.
-        let reason = format!(
-            "\"Maximum goal continuations reached (limit {}).\"",
-            maximum,
-        );
+        let reason = format!("\"Maximum goal continuations reached (limit {maximum}).\"");
         Some(status_contents(
             GoalStatus::Blocked,
             Some(&reason),

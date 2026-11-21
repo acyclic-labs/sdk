@@ -54,7 +54,7 @@ pub enum NativeVolumeNamespace {
     /// Actual existing demand-backed mount.
     LazyMount {
         /// Original exact lazy overlay/shadow and source commitments.
-        snapshot: acyclic_fs::LazySnapshotRef,
+        snapshot: Box<acyclic_fs::LazySnapshotRef>,
     },
 }
 

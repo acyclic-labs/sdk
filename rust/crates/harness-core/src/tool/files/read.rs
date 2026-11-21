@@ -99,9 +99,10 @@ impl FileTool {
             )?;
             return Ok((ToolResult { value: encoded.0 }, encoded.1));
         }
-        let custody;
-        let (result, retained) = self.read_body(context, &input.0, source, work, io).await?;
-        custody = retained;
+        let (custody, result) = {
+            let (result, retained) = self.read_body(context, &input.0, source, work, io).await?;
+            (retained, result)
+        };
         if !self_projection {
             return Ok((result, custody));
         }
@@ -287,9 +288,10 @@ fn text_result(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let (start, end) = interval;
-    let _version_hold;
-    let (version, version_hold) = super::version::encode_source(&file, work)?;
-    _version_hold = version_hold;
+    let (_version_hold, version) = {
+        let (version, hold) = super::version::encode_source(&file, work)?;
+        (hold, version)
+    };
     let total = file.byte_length();
     let page = |end| ReadPage {
         start,

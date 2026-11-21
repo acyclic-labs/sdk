@@ -23,31 +23,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &'a self,
         workspace: &'a Workspace<A, O>,
         authorization: (
-            acyclic_fs::access::PolicyFence,
+            &'a acyclic_fs::access::PolicyFence,
             &'a ContentGrant,
-            Option<acyclic_fs::access::PolicyFence>,
+            Option<&'a acyclic_fs::access::PolicyFence>,
         ),
         root_cut: Option<acyclic_fs::PolicyCut>,
-        mutations: &'a [WorkspaceMutation],
-        key: IdempotencyKey,
-        io: &'a PreparationIo,
-        evidence: acyclic_stream::OwnedBytes,
-        metadata_key: AttributeName,
-        staged: Option<(
-            acyclic_fs::Transaction<A, O>,
-            String,
-            acyclic_fs::StagedContent,
-        )>,
+        changes: WorkspacePublicationChanges<'a, A, O>,
+        (key, io): (IdempotencyKey, &'a PreparationIo),
+        evidence: (acyclic_stream::OwnedBytes, AttributeName),
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         self.publish_selected_operation(
             workspace,
-            mutations,
+            changes,
             move || bounded_io::operation_key(&key, Some(io)),
             io,
-            FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
-            root_cut,
-            Some((evidence, metadata_key)),
-            staged,
+            (
+                FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
+                root_cut,
+            ),
+            Some(evidence),
         )
     }
 
@@ -82,12 +76,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let operation = bounded_io::operation_key(&key, Some(io))?;
             self.publish_selected_operation(
                 &workspace,
-                mutations,
+                WorkspacePublicationChanges {
+                    mutations,
+                    staged: None,
+                },
                 move || Ok(operation),
                 io,
-                publication,
-                None,
-                None,
+                (publication, None),
                 None,
             )?
             .await
@@ -97,18 +92,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem::host) fn publish_selected_operation<'a>(
         &'a self,
         workspace: &'a Workspace<A, O>,
-        mutations: &'a [WorkspaceMutation],
+        changes: WorkspacePublicationChanges<'a, A, O>,
         operation: impl FnOnce() -> Result<FilesystemKey> + acyclic_stream::ProviderTask + 'a,
         io: &'a PreparationIo,
-        publication: FilePublication<'a>,
-        root_cut: Option<acyclic_fs::PolicyCut>,
+        (publication, root_cut): (FilePublication<'a>, Option<acyclic_fs::PolicyCut>),
         evidence: Option<(acyclic_stream::OwnedBytes, AttributeName)>,
-        staged: Option<(
-            acyclic_fs::Transaction<A, O>,
-            String,
-            acyclic_fs::StagedContent,
-        )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        let WorkspacePublicationChanges { mutations, staged } = changes;
         let clock = self.clock_handle();
         crate::conversation::BoundedContentFuture::new(Some(io), || {
             let operation = async move {
@@ -127,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     transaction
                 } else if matches!(publication, FilePublication::Replace(_)) {
                     let pinned = match expected {
-                        Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                        Some(reference) => self.generation(workspace, reference, Some(io)).await?,
                         None => io.sdk(workspace.head(io, io.cancellation()).await)?,
                     };
                     io.sdk(
@@ -289,7 +279,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     if let Some(work) = io.original_native_work() {
                         let fence = publication.fence();
                         let root_fence = match publication {
-                            FilePublication::Authorized(_, _, root) => root,
+                            FilePublication::Authorized(_, _, root) => root.copied(),
                             FilePublication::Replace(_) => None,
                         };
                         let authority = if let FilePublication::Authorized(_, grant, _) =
@@ -346,7 +336,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                             .await?;
                     }
-                    break 'commit io.receive(
+                    let committed = io.receive(
                         transaction
                             .commit(
                                 context,
@@ -374,6 +364,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                             .await,
                     )?;
+                    break 'commit committed;
                 };
                 // Concurrent publications to one volume are optimistic; a
                 // candidate whose exact observations and mutations still hold

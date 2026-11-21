@@ -281,18 +281,14 @@ where
 
     pub(super) fn append_contributed_if_tail<'a>(
         &'a self,
-        operation: OperationId,
-        expected_tail: u64,
-        key: &'a str,
+        (operation, expected_tail, key): (OperationId, u64, &'a str),
         event: &'a ExecutionEvent,
         contributions: &'a [indexed_publication::Contribution<'a>],
         confirmation: Option<&'a mut Option<acyclic_stream::CommitId>>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         self.append_projected(
-            operation,
-            Some(expected_tail),
-            key,
+            (operation, Some(expected_tail), key),
             event,
             contributions,
             confirmation,
@@ -303,9 +299,7 @@ where
 
     pub(super) fn append_projected<'a, T: acyclic_stream::ProviderTask + 'a>(
         &'a self,
-        operation: OperationId,
-        expected_tail: Option<u64>,
-        key: &'a str,
+        (operation, expected_tail, key): (OperationId, Option<u64>, &'a str),
         event: &'a ExecutionEvent,
         contributions: &'a [indexed_publication::Contribution<'a>],
         confirmation: Option<&'a mut Option<acyclic_stream::CommitId>>,
@@ -331,9 +325,7 @@ where
                         let local = PreparationIo::from_native_work(work)?;
                         let result = self
                             .append_contributed(
-                                operation,
-                                expected_tail,
-                                key,
+                                (operation, expected_tail, key),
                                 event,
                                 contributions,
                                 confirmation,
@@ -345,9 +337,7 @@ where
                         return result.and_then(project);
                     }
                     self.append_contributed(
-                        operation,
-                        expected_tail,
-                        key,
+                        (operation, expected_tail, key),
                         event,
                         contributions,
                         confirmation,
@@ -406,9 +396,7 @@ where
 
     pub(super) async fn append_contributed(
         &self,
-        operation_id: OperationId,
-        expected_tail: Option<u64>,
-        claim_id: &str,
+        (operation_id, expected_tail, claim_id): (OperationId, Option<u64>, &str),
         event: &ExecutionEvent,
         contributions: &[indexed_publication::Contribution<'_>],
         confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
@@ -569,8 +557,7 @@ where
                     retry_key,
                     event,
                     (model.as_ref(), supervision.as_ref()),
-                    &bytes,
-                    contributions,
+                    (&bytes, contributions),
                     retained_io,
                 )
                 .await?;

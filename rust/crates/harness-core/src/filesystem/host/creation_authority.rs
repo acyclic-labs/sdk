@@ -75,7 +75,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             kind: PrincipalKind::Agent,
             id: scope
                 .agent()
-                .map_or_else(|| scope.issuer().to_string(), |agent| agent.to_string()),
+                .map_or_else(|| scope.issuer().to_owned(), |agent| agent.to_string()),
             lineage: Vec::new(),
             groups: Default::default(),
             roles: Default::default(),

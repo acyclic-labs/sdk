@@ -52,7 +52,7 @@ pub enum Scenario {
 /// One fresh provider session, through the public model seam.
 pub struct Session {
     /// Configured production provider.
-    pub provider: Arc<dyn ModelProvider>,
+    pub provider: acyclic_stream::ProviderOwner<dyn ModelProvider>,
     /// Actual dispatch ledger shared with the counted provider.
     pub requests: RequestLedger,
     /// Prepared public request.

@@ -363,8 +363,11 @@ impl Roster {
     /// # Errors
     /// The refusal the call settles with.
     pub fn select(&self, target: Option<&str>) -> Result<&TargetRecord, TargetRefusal> {
-        self.select_position(target)
-            .map(|position| &self.admitted.targets[position])
+        let position = self.select_position(target)?;
+        self.admitted
+            .targets
+            .get(position)
+            .ok_or_else(|| self.refusal(target.unwrap_or(&self.admitted.home), Refused::Unknown))
     }
 
     /// The position in this admitted roster, shared with its executor table.
@@ -378,10 +381,13 @@ impl Roster {
                 .find(named, &mut crate::NativeIndexWork(None))
                 .map_err(|error| self.refusal(named, Refused::Declined(error.to_string())))?
         };
-        let refused = match found {
-            Some(position) if self.admitted.targets[position].state == TargetState::Online => {
-                return Ok(position);
-            }
+        let refused = match found.and_then(|position| {
+            self.admitted
+                .targets
+                .get(position)
+                .map(|target| (position, target))
+        }) {
+            Some((position, target)) if target.state == TargetState::Online => return Ok(position),
             Some(_) => Refused::Offline,
             None => Refused::Unknown,
         };

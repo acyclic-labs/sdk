@@ -44,7 +44,7 @@ pub enum Reply {
         /// Conversation sequence of the entry.
         sequence: u64,
         /// The settled entry; its output is read through the agent's scoped reader.
-        entry: ConversationEntry,
+        entry: Box<ConversationEntry>,
         /// Original request when `entry` is its goal run's terminal turn.
         /// Ordinary prompts answer with their own entry and no origin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,7 +256,7 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     let Some(run) = request.goal else {
         return Ok(Reply::Answered {
             sequence,
-            entry: request,
+            entry: Box::new(request),
             origin: None,
             steering,
         });
@@ -302,7 +302,7 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     }
     Ok(Reply::Answered {
         sequence: completed.sequence,
-        entry,
+        entry: Box::new(entry),
         origin: Some(Box::new(request)),
         steering,
     })

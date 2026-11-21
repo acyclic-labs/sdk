@@ -107,12 +107,15 @@ pub fn call_key(step: u32, operation: OperationId) -> String {
 /// Whether `call` is the key [`call_key`] gives `operation`.
 #[must_use]
 pub fn is_call_of(call: &str, operation: OperationId) -> bool {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let hex = |digit| match digit {
+        0..=9 => b'0' + digit,
+        _ => b'a' + (digit - 10),
+    };
     call.rsplit_once('-').is_some_and(|(_, key)| {
         key.bytes().eq(operation
             .into_bytes()
             .into_iter()
-            .flat_map(|byte| [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 15)]]))
+            .flat_map(|byte| [hex(byte >> 4), hex(byte & 15)]))
     })
 }
 
@@ -143,7 +146,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                     outs.push(Out::Spawn {
                         intent: intent.into(),
                         brief: Some(*brief),
-                        profile: Some(profile),
+                        profile: Some(Box::new(profile)),
                         volumes: Vec::new(),
                         history: None,
                     });

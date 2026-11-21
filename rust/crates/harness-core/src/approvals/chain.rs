@@ -22,7 +22,7 @@ pub enum NextStage<'a> {
         /// traversal. Waiting status publication retains it without another read.
         binding: ApprovalBinding,
         /// Exact action eligible for a standing human decision; absent for guards.
-        standing_rule: Option<super::ApprovalRule>,
+        standing_rule: Option<Box<super::ApprovalRule>>,
     },
     /// First decisive automatic review, or denial when escalation is exhausted.
     Decided(ApprovalReviewFile),
@@ -160,7 +160,7 @@ pub async fn next_stage<'a>(
             retained,
             binding,
             standing_rule: if matches!(approver, Approver::Human { .. }) {
-                rule
+                rule.map(Box::new)
             } else {
                 None
             },
@@ -204,8 +204,7 @@ pub async fn validate_agent_decision(
     request: &ApprovalRequest<'_>,
     files: &dyn ApprovalFiles,
     responder: ApprovalResponder<'_>,
-    expected_version: u64,
-    decision: &ApprovalDecisionFile,
+    (expected_version, decision): (u64, &ApprovalDecisionFile),
 ) -> Result<()> {
     decision.validate()?;
     if decision.verdict == ApprovalVerdict::ApproveRule

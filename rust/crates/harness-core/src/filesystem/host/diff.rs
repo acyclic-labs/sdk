@@ -48,7 +48,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let mut paths = vec![Vec::new(); roots.len()];
         while let Some(step) = steps.try_next().await? {
             for (index, path) in step {
-                paths[index].push(path);
+                paths
+                    .get_mut(index)
+                    .ok_or_else(|| io.invalid("comparison returned an unknown root"))?
+                    .push(path);
             }
         }
         Ok(paths

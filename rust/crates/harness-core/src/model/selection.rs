@@ -4,7 +4,7 @@ use crate::Result;
 use std::sync::Arc;
 
 /// A model selection's bound provider.
-pub type ModelBinding = (Model, Arc<dyn ModelProvider>);
+pub type ModelBinding = (Model, acyclic_stream::ProviderOwner<dyn ModelProvider>);
 
 /// One immutable protected selection and its lazily admitted native declarations.
 /// Retaining this owner preserves the exact provider and declarations across
@@ -43,8 +43,10 @@ impl std::ops::Deref for ResolvedModel {
 /// or a new resolver over a changed catalog, resolves anew.
 pub struct ModelResolver {
     default: String,
-    resolve: Arc<Resolve>,
-    resolved: std::sync::Mutex<std::collections::BTreeMap<String, Arc<ResolvedModel>>>,
+    resolve: acyclic_stream::ProviderOwner<Resolve>,
+    resolved: std::sync::Mutex<
+        std::collections::BTreeMap<String, acyclic_stream::ProviderOwner<ResolvedModel>>,
+    >,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,7 +67,7 @@ impl ModelResolver {
     ) -> Self {
         Self {
             default: default.into(),
-            resolve: Arc::new(resolve),
+            resolve: acyclic_stream::ProviderOwner::new(resolve),
             resolved: Default::default(),
         }
     }
@@ -81,7 +83,7 @@ impl ModelResolver {
             .clone();
         resolved.insert(
             format!("{}/{}", binding.0.provider, binding.0.name),
-            Arc::new(ResolvedModel::new(binding)),
+            acyclic_stream::ProviderOwner::new(ResolvedModel::new(binding)),
         );
         Ok(Self {
             default: self.default.clone(),
@@ -98,16 +100,20 @@ impl ModelResolver {
     /// Retains the exact immutable model/provider pair without copying model
     /// metadata. Consumers can retain this owner across calls and catalog
     /// replacements; a later catalog cannot change an admitted binding.
-    pub fn resolve_shared(&self, selection: &str) -> Result<Arc<ResolvedModel>> {
+    pub fn resolve_shared(
+        &self,
+        selection: &str,
+    ) -> Result<acyclic_stream::ProviderOwner<ResolvedModel>> {
         let mut resolved = self
             .resolved
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(model) = resolved.get(selection) {
-            return Ok(Arc::clone(model));
+            return Ok(model.clone());
         }
-        let model = Arc::new(ResolvedModel::new((self.resolve)(selection)?));
-        resolved.insert(selection.into(), Arc::clone(&model));
+        let model =
+            acyclic_stream::ProviderOwner::new(ResolvedModel::new((self.resolve)(selection)?));
+        resolved.insert(selection.into(), model.clone());
         Ok(model)
     }
 }

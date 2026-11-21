@@ -190,10 +190,6 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             id,
             notice: super::NoticePayload::Waking(notice),
         } => Some(TurnInput::Notice { id, notice }),
-        InboxRecord::Notice {
-            notice: super::NoticePayload::Quiet(_),
-            ..
-        } => None,
         InboxRecord::Message(message) | InboxRecord::FollowUp(message) => {
             Some(TurnInput::Message {
                 from: message.from,
@@ -203,16 +199,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
                 attachments: message.attachments,
             })
         }
-        // An archived child settles an archive its parent (or an ancestor's
-        // cascade) asked for; it reports nothing the parent did not already
-        // decide, so it starts no turn. A `wait` observes it on the child's status.
-        InboxRecord::ChildDone(ChildDone {
-            outcome: AgentOutcome::Archived,
-            ..
-        }) => None,
-        InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
-        InboxRecord::ApprovalRequested(_) => None,
         InboxRecord::Hook(hook) => Some(TurnInput::Hook {
             host: hook.host,
             id: hook.id,
@@ -227,11 +214,24 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
         // Awaiting is control between a parent's turn and its child; neither
         // record is turn input (see [`super::machine`]).
         InboxRecord::WorkspaceChanged(_)
+        // An archived child settles an archive its parent (or an ancestor's
+        // cascade) asked for; it reports nothing the parent did not already
+        // decide, so it starts no turn. A `wait` observes it on the child's status.
+        | InboxRecord::ChildDone(ChildDone {
+            outcome: AgentOutcome::Archived,
+            ..
+        })
+        | InboxRecord::Notice {
+            notice: super::NoticePayload::Quiet(_),
+            ..
+        }
+        | InboxRecord::ApprovalRequested(_)
         | InboxRecord::Awaited
         | InboxRecord::ChildSettled(_)
         | InboxRecord::Cancel(_)
         | InboxRecord::Archive(_)
         | InboxRecord::Spawn(_) => None,
+        InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
     };
     input.map(|input| Queued {
         inbox: sequence,

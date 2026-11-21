@@ -94,8 +94,10 @@ fn consume_off(
     bytes: &[u8],
     work: &impl MarkerWork,
 ) -> crate::Result<bool> {
-    let admitted = work.remaining()?.min(bytes.len() as u64) as usize;
-    let examined = marker.consume(&bytes[..admitted]);
+    let invalid = || crate::Error::Storage("marker range exceeds source buffer".into());
+    let admitted =
+        usize::try_from(work.remaining()?.min(bytes.len() as u64)).map_err(|_| invalid())?;
+    let examined = marker.consume(bytes.get(..admitted).ok_or_else(invalid)?);
     work.charge(examined as u64)?;
     if !marker.rejected && admitted < bytes.len() {
         // The original ledger supplies the typed budget refusal before another

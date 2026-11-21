@@ -3,6 +3,12 @@ use super::*;
 use crate::conversation::PrivateDirectoryEntry;
 use acyclic_stream::BoxProviderFuture;
 
+/// Future for the next page of a discovery source.
+pub type DiscoveryPageFuture<'a, R, C> = BoxProviderFuture<'a, Result<Option<DiscoveryPage<R, C>>>>;
+
+/// Future for a discovery source revision and its initial cursor.
+pub type DiscoveryRevisionFuture<'a, R> = BoxProviderFuture<'a, Result<Option<(R, u32)>>>;
+
 /// Storage preserves unsupported node kinds so discovery cannot treat links as files.
 #[doc(hidden)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,7 +60,7 @@ pub trait DiscoverySource {
         revision: Option<&'a Self::Revision>,
         cursor: Option<Self::Cursor>,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<Self::Revision, Self::Cursor>>>>;
+    ) -> DiscoveryPageFuture<'a, Self::Revision, Self::Cursor>;
 }
 
 #[doc(hidden)]
@@ -65,7 +71,7 @@ pub trait InstructionReader: DiscoverySource {
         &'a mut self,
         directory: &'a str,
         revision: Option<&'a Self::Revision>,
-    ) -> BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
+    ) -> DiscoveryRevisionFuture<'a, Self::Revision> {
         let page = self.page(directory, revision, None, 1);
         Box::pin(async move {
             let Some(page) = page.await? else {

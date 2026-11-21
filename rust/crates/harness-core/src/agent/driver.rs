@@ -26,7 +26,7 @@ use std::{ops::ControlFlow, sync::Arc};
 /// One opened turn: the executor and journal bound to the agent.
 pub struct OpenTurn {
     /// Executor bound to the agent's tools, volumes and policy.
-    pub executor: Arc<dyn Executor>,
+    pub executor: acyclic_stream::ProviderOwner<dyn Executor>,
     /// Journal of this agent's turns, outside its workspace table.
     pub journal: Arc<dyn ExecutionJournal>,
     /// Signing custody of the journal's authority; the journal holds only a
@@ -827,8 +827,15 @@ pub fn model_input_at(
     {
         for notice in notices {
             notice.kind = "parent.message".into();
-            notice.body["authority"] = serde_json::json!(
-                "Instruction from your parent, the principal of this delegated task. Subject to your existing policy and approval requirements."
+            let body = notice
+                .body
+                .as_object_mut()
+                .ok_or(Error::Record("parent message notice must be an object"))?;
+            body.insert(
+                "authority".into(),
+                serde_json::json!(
+                    "Instruction from your parent, the principal of this delegated task. Subject to your existing policy and approval requirements."
+                ),
             );
         }
     }
@@ -914,7 +921,13 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
             let mut metadata = serde_json::to_value(done)
                 .map_err(|_| Error::Record("child completion does not encode"))?;
             if let AgentOutcome::FailedDiagnostic { diagnostic } = &done.outcome {
-                metadata["diagnostic_file"] = serde_json::Value::String(diagnostic.query_path());
+                let object = metadata
+                    .as_object_mut()
+                    .ok_or(Error::Record("child completion must encode as an object"))?;
+                object.insert(
+                    "diagnostic_file".into(),
+                    serde_json::Value::String(diagnostic.query_path()),
+                );
             }
             let event = notice(done.child.as_str().to_owned(), "child.finished", metadata);
             match &done.outcome {
@@ -1009,8 +1022,7 @@ async fn stage_output(
     turn: OperationId,
     output: &TurnOutput,
 ) -> Result<FileRef, Error> {
-    let bytes =
-        crate::contract::canonical_json_bytes(output).map_err(|error| host_error(error.into()))?;
+    let bytes = crate::contract::canonical_json_bytes(output).map_err(host_error)?;
     outputs.stage(turn, &bytes).await.map_err(host_error)
 }
 
@@ -1137,8 +1149,7 @@ async fn settlement_notice(
         wake: true,
         coalesce_key: None,
     };
-    let bytes =
-        crate::contract::canonical_json_bytes(&notice).map_err(|error| host_error(error.into()))?;
+    let bytes = crate::contract::canonical_json_bytes(&notice).map_err(host_error)?;
     let notice = outputs
         .stage_notice(turn, &bytes)
         .await
@@ -1592,8 +1603,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }
                         _ => super::goal::Settlement::default(),
                     };
-                    let bytes = crate::contract::canonical_json_bytes(&output)
-                        .map_err(|error| host_error(error.into()))?;
+                    let bytes =
+                        crate::contract::canonical_json_bytes(&output).map_err(host_error)?;
                     let output = acyclic_stream::trace::observe(
                         &acyclic_stream::trace::Request {
                             name: "output-commit",

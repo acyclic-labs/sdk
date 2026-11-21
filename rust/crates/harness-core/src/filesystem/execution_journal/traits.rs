@@ -15,12 +15,19 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>> {
-        self.append_projected(operation, None, key, event, &[], None, io, move |receipt| {
-            receipt
-                .sequence
-                .filter(|sequence| *sequence > 0)
-                .ok_or(Error::Indeterminate(operation))
-        })
+        self.append_projected(
+            (operation, None, key),
+            event,
+            &[],
+            None,
+            io,
+            move |receipt| {
+                receipt
+                    .sequence
+                    .filter(|sequence| *sequence > 0)
+                    .ok_or(Error::Indeterminate(operation))
+            },
+        )
     }
 }
 
@@ -530,7 +537,7 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        self.append_projected(operation, None, key, event, &[], None, io, |_| Ok(()))
+        self.append_projected((operation, None, key), event, &[], None, io, |_| Ok(()))
     }
 
     #[cfg(feature = "research")]
@@ -546,7 +553,7 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        self.append_contributed_if_tail(operation, expected_tail, key, event, &[], None, io)
+        self.append_contributed_if_tail((operation, expected_tail, key), event, &[], None, io)
     }
 
     fn claim_if_tail<'a>(
@@ -558,9 +565,7 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
         self.append_projected(
-            operation,
-            Some(expected_tail),
-            key,
+            (operation, Some(expected_tail), key),
             event,
             &[],
             None,
@@ -581,12 +586,14 @@ where
         crate::conversation::BoundedContentFuture::new(io, || async move {
             use indexed_publication::Contribution;
             let mut contributions = [
-                Contribution::Append {
+                Contribution {
                     path: &dispatch.delivery.0,
+                    condition: None,
                     record: &dispatch.delivery.1,
                 },
-                Contribution::Append {
+                Contribution {
                     path: &dispatch.activation.0,
+                    condition: None,
                     record: &dispatch.activation.1,
                 },
             ];
@@ -610,9 +617,7 @@ where
             }
             *publication = identity;
             self.append_contributed_if_tail(
-                operation,
-                expected_tail,
-                key,
+                (operation, expected_tail, key),
                 event,
                 &contributions,
                 None,

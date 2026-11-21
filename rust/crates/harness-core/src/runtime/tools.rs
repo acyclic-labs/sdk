@@ -22,7 +22,13 @@ impl TaskContext {
             .stage_private_file_once(
                 self.private_summaries(io)?,
                 operation,
-                &path[HOME_PATH.len()..],
+                path.strip_prefix(HOME_PATH).ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "tool output path lacks its home prefix",
+                    )
+                })?,
                 bytes,
                 ("application/json", "tool-output.json"),
                 io,
@@ -531,14 +537,14 @@ impl ToolContext {
                 return Ok((None, retained));
             };
             let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-            if receipt.members.len() != 1 {
+            let [member] = receipt.members.as_slice() else {
                 return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Storage,
                     "replacement receipt is not one original update",
                 ));
-            }
-            if receipt.members[0].path() != path.as_ref() {
+            };
+            if member.path() != path.as_ref() {
                 drop(receipt);
                 drop(hold);
                 return Ok((None, 0));

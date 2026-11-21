@@ -323,7 +323,9 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         volumes: vec![NativeVolumeMapping {
             volume: volume.copy(&mut None)?,
             generation,
-            namespace: NativeVolumeNamespace::LazyMount { snapshot },
+            namespace: NativeVolumeNamespace::LazyMount {
+                snapshot: Box::new(snapshot),
+            },
             path: root.join("selected"),
             writable: false,
             authority_revision: [23; 32],

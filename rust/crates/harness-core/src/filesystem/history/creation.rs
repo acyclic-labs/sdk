@@ -61,7 +61,9 @@ where
         commit
             .request_mut()
             .ok_or_else(|| guest("creation commit is sealed"))?
-            .effects[0]
+            .effects
+            .first_mut()
+            .ok_or_else(|| guest("creation commit has no effect"))?
             .require(CommitCondition::Present { path: source })
             .map_err(guest)?;
         return Ok(());
@@ -156,13 +158,17 @@ fn append(
     let request = commit
         .request_mut()
         .ok_or_else(|| guest("creation commit is sealed"))?;
-    request.effects[0]
+    let effect = request
+        .effects
+        .first_mut()
+        .ok_or_else(|| guest("creation commit has no effect"))?;
+    effect
         .require(CommitCondition::Tail {
             path: history.clone(),
             expected: 0,
         })
         .map_err(guest)?;
-    request.effects[0].mutations.push(CommitMutation::Append {
+    effect.mutations.push(CommitMutation::Append {
         path: history,
         records: vec![serde_json::to_vec(&baseline).map_err(guest)?.into()],
     });

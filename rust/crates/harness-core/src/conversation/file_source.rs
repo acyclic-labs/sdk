@@ -172,12 +172,16 @@ pub(crate) fn names_generation(
     generation: &crate::resources::GenerationRef,
 ) -> bool {
     let key = generation.as_resource().key();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let hex = |digit| match digit {
+        0..=9 => b'0' + digit,
+        _ => b'a' + (digit - 10),
+    };
     generation.as_resource().version().is_none()
         && Some(file.version().len()) == key.len().checked_mul(2)
-        && file.version().bytes().eq(key
-            .iter()
-            .flat_map(|byte| [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]]))
+        && file
+            .version()
+            .bytes()
+            .eq(key.iter().flat_map(|byte| [hex(byte >> 4), hex(byte & 15)]))
 }
 
 impl FilePathSelection {

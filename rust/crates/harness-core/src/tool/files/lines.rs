@@ -104,9 +104,10 @@ pub(super) async fn read(
         io,
     )
     .await?;
-    let _version_hold;
-    let (version, version_hold) = super::version::encode_source(&window.source, work)?;
-    _version_hold = version_hold;
+    let (_version_hold, version) = {
+        let (version, hold) = super::version::encode_source(&window.source, work)?;
+        (hold, version)
+    };
     let mut index = destination
         .filter(|destination| destination.volume() != window.source.volume())
         .map(|destination| {

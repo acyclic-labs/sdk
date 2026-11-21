@@ -565,6 +565,7 @@ impl AuthorityRoot {
     /// no longer than `parent` and is revoked with it. Callers first check
     /// that `parent` may reach everything `grants` names. Returns it with
     /// the principal it authenticates.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn resource_credential(
         &self,
         parent: &Scope,

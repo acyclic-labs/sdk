@@ -101,10 +101,10 @@ impl HttpTransport for BrowserTransport {
                     &JsValue::from_str(&request.url),
                     init.as_ref(),
                 )
-                .map_err(|cause| failure(cause, "browser model dispatch failed"))?;
+                .map_err(|cause| failure(&cause, "browser model dispatch failed"))?;
             let response = JsFuture::from(Promise::resolve(&response))
                 .await
-                .map_err(|cause| failure(cause, "browser model exchange failed"))?
+                .map_err(|cause| failure(&cause, "browser model exchange failed"))?
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
             let status = response.status();
@@ -147,7 +147,7 @@ impl HttpTransport for BrowserTransport {
                 |body| async move {
                     let chunk = JsFuture::from(body.reader.read())
                         .await
-                        .map_err(|cause| failure(cause, "browser model body interrupted"))?;
+                        .map_err(|cause| failure(&cause, "browser model body interrupted"))?;
                     let done = Reflect::get(&chunk, &JsValue::from_str("done"))
                         .map_err(|_| invalid("invalid browser stream result"))?;
                     if done.as_bool() == Some(true) {
@@ -179,9 +179,9 @@ impl HttpTransport for BrowserTransport {
 }
 
 /// Retains a host refusal code without exposing arbitrary JavaScript error data.
-pub fn failure(cause: JsValue, message: &'static str) -> crate::Error {
+pub fn failure(cause: &JsValue, message: &'static str) -> crate::Error {
     use crate::{Error, wire::ErrorCode};
-    let received = Reflect::get(&cause, &JsValue::from_str("code"))
+    let received = Reflect::get(cause, &JsValue::from_str("code"))
         .ok()
         .and_then(|value| value.as_f64());
     let code = [

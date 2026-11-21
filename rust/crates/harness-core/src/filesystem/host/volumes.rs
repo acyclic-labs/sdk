@@ -30,8 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Forks selected volume paths at an exact generation.
     pub async fn fork_volume(
         &self,
-        source: &VolumeRef,
-        source_grant: &ContentGrant,
+        (source, source_grant): (&VolumeRef, &ContentGrant),
         source_generation: &GenerationRef,
         destination: &VolumeRef,
         destination_grant: &ContentGrant,
@@ -54,8 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         self.fork_volume_pinned(
-            source,
-            source_grant,
+            (source, source_grant),
             source_generation,
             destination,
             paths,
@@ -67,8 +65,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     pub(in crate::filesystem) async fn fork_volume_pinned(
         &self,
-        source: &VolumeRef,
-        grant: &ContentGrant,
+        (source, grant): (&VolumeRef, &ContentGrant),
         selected: &GenerationRef,
         child: &VolumeRef,
         paths: Option<Vec<String>>,

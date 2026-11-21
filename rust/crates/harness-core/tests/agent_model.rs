@@ -1186,7 +1186,7 @@ async fn populated_parent(count: usize) -> Result<(AgentPath, AgentState)> {
 fn spawn_request(sequence: u64) -> Wake {
     Wake::Inbox {
         sequence,
-        record: InboxRecord::Spawn(SpawnRequest {
+        record: InboxRecord::Spawn(Box::new(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
                 question_plugin: false,
                 topology: None,
@@ -1200,7 +1200,7 @@ fn spawn_request(sequence: u64) -> Wake {
             by: user(),
             id: intent(&format!("s{sequence}")),
             brief: Some(Box::new(driver::file("task").expect("file"))),
-        }),
+        })),
     }
 }
 

@@ -4,8 +4,6 @@ use crate::{
     Error, Result, wire,
     wire_codec::{COMPILED_PROTOCOL, protocol_identity, validate_protocol},
 };
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-use prost::Message as _;
 
 /// Returns the protocol identity compiled into this crate.
 #[must_use]

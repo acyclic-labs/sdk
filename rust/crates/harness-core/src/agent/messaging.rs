@@ -220,12 +220,11 @@ pub async fn sibling_send_allowed(
         return Ok(false);
     }
     for grant in grants.iter() {
-        if let Some(name) = grant.strip_prefix("agent.send-sibling:") {
-            if super::spawn_names::spawn_intent(name, 0).is_ok()
-                && resolver.resolve(parent, name).await?.live().as_ref() == Some(recipient)
-            {
-                return Ok(true);
-            }
+        if let Some(name) = grant.strip_prefix("agent.send-sibling:")
+            && super::spawn_names::spawn_intent(name, 0).is_ok()
+            && resolver.resolve(parent, name).await?.live().as_ref() == Some(recipient)
+        {
+            return Ok(true);
         }
     }
     Ok(false)

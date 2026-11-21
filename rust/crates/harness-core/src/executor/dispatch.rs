@@ -128,12 +128,11 @@ impl StockExecution<'_> {
             }
             if let request::ModelStepHistory::Turn(history, _) = &mut prior_messages {
                 let live;
-                let tools = match retained.request.as_ref() {
-                    Some(recorded) => &recorded.request().tools,
-                    None => {
-                        live = self.request_tools()?;
-                        &live
-                    }
+                let tools = if let Some(recorded) = retained.request.as_ref() {
+                    &recorded.request().tools
+                } else {
+                    live = self.request_tools()?;
+                    &live
                 };
                 {
                     let mut context = crate::context::Context {
@@ -158,8 +157,7 @@ impl StockExecution<'_> {
             } = self
                 .prepare_dispatch_step(
                     journal,
-                    input,
-                    step,
+                    (input, step),
                     (&mut prior_messages, prepared),
                     retained,
                     scope,
@@ -317,8 +315,7 @@ impl StockExecution<'_> {
     async fn prepare_dispatch_step(
         &self,
         journal: &dyn ExecutionJournal,
-        input: &TurnInput,
-        step: u32,
+        (input, step): (&TurnInput, u32),
         material: (
             &mut request::ModelStepHistory<'_>,
             Option<crate::model::PreparedModelRequest>,
@@ -582,7 +579,7 @@ impl StockExecution<'_> {
         #[cfg(target_arch = "wasm32")]
         let continuation = self
             .selected_provider()
-            .reconcile(dispatch, &replayed)
+            .reconcile(dispatch, replayed)
             .await?;
         Ok(continuation)
     }

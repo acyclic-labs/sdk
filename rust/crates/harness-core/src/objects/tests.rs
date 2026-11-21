@@ -408,9 +408,10 @@ fn upload_binding(
         Some(owner),
         &mut None,
     )?;
+    let provider = volume.provider().clone();
     ObjectContentStore::new(
         objects,
-        volume.provider().clone(),
+        &provider,
         volume,
         (
             issuer.verifier(&mut None).expect("verifier copy"),
@@ -471,7 +472,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
     )?;
     let owner_store_a = ObjectContentStore::new(
         objects.clone(),
-        provider.clone(),
+        &provider,
         volume_a.clone(),
         (
             issuer.verifier(&mut None).expect("verifier copy"),
@@ -482,7 +483,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
     )?;
     let owner_store_b = ObjectContentStore::new(
         objects.clone(),
-        provider.clone(),
+        &provider,
         volume_b.clone(),
         (
             issuer.verifier(&mut None).expect("verifier copy"),
@@ -519,7 +520,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
         issuer.delegate_private_file_read(&owner_scope_b, attached, "attached-b", &file_b)?;
     let attached_a = ObjectContentStore::new(
         objects.clone(),
-        provider.clone(),
+        &provider,
         volume_a.clone(),
         (
             issuer.verifier(&mut None).expect("verifier copy"),
@@ -530,7 +531,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
     )?;
     let attached_b = ObjectContentStore::new(
         objects.clone(),
-        provider.clone(),
+        &provider,
         volume_b.clone(),
         (
             issuer.verifier(&mut None).expect("verifier copy"),
@@ -600,7 +601,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
     )?;
     let denied_store = ObjectContentStore::new(
         objects,
-        provider,
+        &provider,
         volume_a,
         (
             issuer.verifier(&mut None).expect("verifier copy"),

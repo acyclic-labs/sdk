@@ -402,7 +402,12 @@ impl McpCatalog {
         tools
             .into_sorted_vec()
             .into_iter()
-            .map(|(_, index)| self.definition(&self.tools[index]))
+            .map(|(_, index)| {
+                let tool = self.tools.get(index).ok_or_else(|| {
+                    Error::Invalid("MCP search returned an invalid tool index".into())
+                })?;
+                self.definition(tool)
+            })
             .collect()
     }
 }

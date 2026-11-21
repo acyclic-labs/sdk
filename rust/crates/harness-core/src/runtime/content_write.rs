@@ -41,9 +41,15 @@ impl futures::io::AsyncRead for PublicationSource<'_> {
                     .saturating_add(1),
             )
         });
-        let read = std::task::ready!(
-            std::pin::Pin::new(&mut *self.inner).poll_read(cx, &mut buffer[..length])
-        )?;
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "content read exceeds its supplied buffer",
+            )
+        };
+        let destination = buffer.get_mut(..length).ok_or_else(invalid)?;
+        let read =
+            std::task::ready!(std::pin::Pin::new(&mut *self.inner).poll_read(cx, destination))?;
         if self
             .maximum
             .is_some_and(|maximum| read as u64 > maximum - self.bytes)
@@ -55,7 +61,7 @@ impl futures::io::AsyncRead for PublicationSource<'_> {
         }
         self.bytes += read as u64;
         self.eof |= read == 0 && !buffer.is_empty();
-        self.hash.update(&buffer[..read]);
+        self.hash.update(buffer.get(..read).ok_or_else(invalid)?);
         std::task::Poll::Ready(Ok(read))
     }
 }
@@ -575,6 +581,7 @@ async fn finish_publication<'io>(
 }
 
 impl ContentBindings {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_retained(
         &self,
         publisher: &dyn ContentPublisher,
@@ -608,6 +615,7 @@ impl ContentBindings {
 
     /// Publishes host-retained bytes through existing custody, without
     /// borrowing or extending a task's workspace publication grants.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn retain_once(
         &self,
         publisher: &dyn ContentPublisher,

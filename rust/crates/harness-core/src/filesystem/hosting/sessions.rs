@@ -58,11 +58,12 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> crate::client_files::FileView<P
     {
         Box::pin(async move {
             use futures::TryStreamExt as _;
-            if source != &self.path || paths != ["status/session-directory.json"] {
+            let (true, &[path @ "status/session-directory.json"]) = (source == &self.path, paths)
+            else {
                 return Err(crate::Error::Invalid(
                     "session directory file source differs".into(),
                 ));
-            }
+            };
             if through == 0 {
                 return Ok(Vec::new());
             }
@@ -94,7 +95,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> crate::client_files::FileView<P
                 ));
             }
             Ok(vec![crate::client_files::QueryFile {
-                path: paths[0].to_owned(),
+                path: path.to_owned(),
                 input: crate::supervision::Position {
                     stream: source.clone(),
                     sequence: 0,

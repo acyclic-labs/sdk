@@ -20,11 +20,11 @@ pub enum NativeCaptureEvidence {
     /// Both exact source-backed cuts retained by the original DATA receipt.
     Lazy {
         /// Original sealed receipt, not a later head.
-        publication: acyclic_fs::NativePublicationSnapshot,
+        publication: Box<acyclic_fs::NativePublicationSnapshot>,
         /// Complete original logical predecessor.
         before: acyclic_fs::LazySnapshotRef,
         /// Complete original logical result.
-        after: acyclic_fs::LazySnapshotRef,
+        after: Box<acyclic_fs::LazySnapshotRef>,
     },
     /// The physical owner is still running after a background start.
     Pending {
@@ -94,14 +94,12 @@ impl NativeCaptureProgress {
             before,
             after,
         } = &self.evidence
-        {
-            if publication.operation().is_none()
+            && (publication.operation().is_none()
                 || publication.workspace_id() != before.workspace_id
                 || before.workspace_id != after.workspace_id
-                || publication.generation() != after.authored_generation
-            {
-                return Err(Error::Invalid("native capture logical cuts differ".into()));
-            }
+                || publication.generation() != after.authored_generation)
+        {
+            return Err(Error::Invalid("native capture logical cuts differ".into()));
         }
         Ok(())
     }

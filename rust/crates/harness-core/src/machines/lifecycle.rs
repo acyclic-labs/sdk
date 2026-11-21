@@ -171,15 +171,17 @@ pub trait MachineExecutors: acyclic_stream::ProviderPlatform {
     ) -> Result<Arc<dyn ToolExecutor>>;
 }
 
+type ProvisionedTargetIndex = acyclic_collections::CompiledPrefixIndex<
+    ProvisionedTarget,
+    acyclic_fs::NativeCustody,
+    fn(&ProvisionedTarget) -> &[u8],
+>;
+
 /// Every agent's Machines on the provisioned targets, over the stream
 /// provider that holds the agents' subtrees.
 pub struct AgentMachines<P: ?Sized> {
     stream: Arc<P>,
-    targets: acyclic_collections::CompiledPrefixIndex<
-        ProvisionedTarget,
-        acyclic_fs::NativeCustody,
-        fn(&ProvisionedTarget) -> &[u8],
-    >,
+    targets: ProvisionedTargetIndex,
 }
 
 fn target_index_error(error: acyclic_collections::CompiledPrefixError<Error>) -> Error {
@@ -808,19 +810,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
         context: Option<crate::runtime::ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
-            let executor = match self.bound.get() {
-                Some(bound) => Arc::clone(bound),
-                None => {
-                    // Recovery observes the original binding; it cannot create
-                    // a replacement Machine for an interrupted command.
-                    let target = self.machines.target_at(self.target)?;
-                    let binding = self
-                        .machines
-                        .binding(&self.agent, &target.name)
-                        .await?
-                        .ok_or(Error::Indeterminate(invocation.operation_id))?;
-                    self.bind(target, sandbox(target, binding)?).await?
-                }
+            let executor = if let Some(bound) = self.bound.get() {
+                Arc::clone(bound)
+            } else {
+                // Recovery observes the original binding; it cannot create
+                // a replacement Machine for an interrupted command.
+                let target = self.machines.target_at(self.target)?;
+                let binding = self
+                    .machines
+                    .binding(&self.agent, &target.name)
+                    .await?
+                    .ok_or(Error::Indeterminate(invocation.operation_id))?;
+                self.bind(target, sandbox(target, binding)?).await?
             };
             executor.authorize(None, context.as_ref(), &invocation, None)?;
             executor.reconcile(invocation, context).await

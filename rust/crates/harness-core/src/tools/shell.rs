@@ -34,13 +34,13 @@ impl From<&str> for ShellCommand {
         Self::Source(source.into())
     }
 }
+/// Executable override, argument vector, and optional standard input.
+pub type PreparedShellCommand = (Option<String>, Vec<String>, Option<Vec<u8>>);
+
 impl ShellCommand {
     /// Prepares one process invocation. Literal arguments never pass through a
     /// command language, including on Windows PowerShell 5.1.
-    pub fn prepare(
-        self,
-        shell: &ShellSpec,
-    ) -> Result<(Option<String>, Vec<String>, Option<Vec<u8>>)> {
+    pub fn prepare(self, shell: &ShellSpec) -> Result<PreparedShellCommand> {
         self.validate()?;
         let (mut argv, stdin) = match self {
             Self::Source(source) => {

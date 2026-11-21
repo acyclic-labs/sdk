@@ -228,7 +228,7 @@ async fn settle(
             sequence, entry, ..
         }) => {
             let output = conversation.output_at(sequence, &entry).await?;
-            Ok(PromptOutcome::Settled(entry, output))
+            Ok(PromptOutcome::Settled(*entry, output))
         }
         Settlement::Reply(acyclic_harness::agent::Reply::Dropped) => {
             Ok(PromptOutcome::Failed("dropped".into()))

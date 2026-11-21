@@ -152,7 +152,7 @@ mod traits;
 use summary::*;
 use summary_cache::SummaryCache;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExecutionReplayObservation {
     Requested,
@@ -197,7 +197,6 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     actor_admissions: Vec<acyclic_stream::StreamPath>,
     run_admission: Option<crate::supervision::RunAdmissionSource>,
     verified: tokio::sync::Mutex<SummaryCache>,
-    history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }

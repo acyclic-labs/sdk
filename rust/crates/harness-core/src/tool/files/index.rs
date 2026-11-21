@@ -277,23 +277,27 @@ impl<'a> OrdinalIndex<'a> {
         maximum: u64,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<crate::conversation::Custody>> {
-        let _file_hold;
-        let (file, retained) = match self
-            .task
-            .observe_private_file_once(self.destination, operation, io)
-            .await
-        {
-            Ok(found) => found,
-            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(None),
-            Err(error) => return Err(error),
+        let (_file_hold, file) = {
+            let (file, retained) = match self
+                .task
+                .observe_private_file_once(self.destination, operation, io)
+                .await
+            {
+                Ok(found) => found,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            (super::window::custody(io, retained)?, file)
         };
-        _file_hold = super::window::custody(io, retained)?;
         let Some(file) = file else {
             return Ok(None);
         };
-        let _path_hold;
-        let (path, hold) = self.path(operation)?;
-        _path_hold = hold;
+        let (_path_hold, path) = {
+            let (path, hold) = self.path(operation)?;
+            (hold, path)
+        };
         if file.path() != path
             || file.descriptor().media_type() != "application/octet-stream"
             || file.display_name() != "ordinal-index.bin"
@@ -449,27 +453,29 @@ impl<'a> OrdinalIndex<'a> {
         bytes: &[u8],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        let _path_hold;
-        let (path, hold) = self.path(operation)?;
-        _path_hold = hold;
-        let _file_hold;
-        let (file, retained) = match self
-            .task
-            .stage_private_file_once(
-                self.destination,
-                operation,
-                &path,
-                bytes,
-                ("application/octet-stream", "ordinal-index.bin"),
-                io,
-            )
-            .await
-        {
-            Ok(published) => published,
-            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(()),
-            Err(error) => return Err(error),
+        let (_path_hold, path) = {
+            let (path, hold) = self.path(operation)?;
+            (hold, path)
         };
-        _file_hold = super::window::custody(io, retained)?;
+        let (_file_hold, file) = {
+            let (file, retained) = match self
+                .task
+                .stage_private_file_once(
+                    self.destination,
+                    operation,
+                    &path,
+                    bytes,
+                    ("application/octet-stream", "ordinal-index.bin"),
+                    io,
+                )
+                .await
+            {
+                Ok(published) => published,
+                Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            (super::window::custody(io, retained)?, file)
+        };
         drop(file);
         Ok(())
     }

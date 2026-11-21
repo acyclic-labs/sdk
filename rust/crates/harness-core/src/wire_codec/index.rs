@@ -46,7 +46,7 @@ impl<'a, 'b> BorrowedIndexWork<'a, 'b> {
         &self,
         run: impl FnOnce(&mut Option<&'b mut dyn HistoryIo>) -> Result<T>,
     ) -> Result<T> {
-        run(&mut **self.original.borrow_mut())
+        run(&mut self.original.borrow_mut())
     }
 }
 
@@ -101,7 +101,7 @@ impl<'a, 'b, 'c> IndexWork for &'a BorrowedIndexWork<'b, 'c> {
             Ok(())
         })?;
         Ok(BorrowedIndexAllocation {
-            original: *self,
+            original: self,
             bytes,
         })
     }

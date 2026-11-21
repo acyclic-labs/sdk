@@ -284,28 +284,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             incoming.1.substitute(incoming.1.bytes() - removed)?;
             if incoming.0.entries.is_empty()
                 && let Some(credit) = credit.as_mut()
+                && !credit(&selected.0.generation, None, incoming.0.next.as_deref())?
             {
-                if !credit(&selected.0.generation, None, incoming.0.next.as_deref())? {
-                    break;
-                }
+                break;
             }
             let mut entries = std::mem::take(&mut incoming.0.entries).into_iter();
             while let Some(entry) = entries.next() {
-                let entry = crate::conversation::PrivateDirectoryEntry::from_filesystem(entry, io)?;
-                let offered = (entry, io.guard_owned(0)?);
+                let projected =
+                    crate::conversation::PrivateDirectoryEntry::from_filesystem(&entry, io)?;
+                drop(entry);
+                let offered = (projected, io.guard_owned(0)?);
                 let mut offered = offered;
                 offered.1.adopt(offered.0.name.capacity() as u64)?;
-                if let Some(credit) = credit.as_mut() {
-                    if !credit(
+                if let Some(credit) = credit.as_mut()
+                    && !credit(
                         &selected.0.generation,
                         Some(&offered.0),
                         incoming.0.next.as_deref(),
-                    )? {
-                        drop(offered);
-                        drop(entries);
-                        drop(incoming);
-                        break 'pages;
-                    }
+                    )?
+                {
+                    drop(offered);
+                    drop(entries);
+                    drop(incoming);
+                    break 'pages;
                 }
                 let before = selected.0.entries.capacity();
                 crate::store::history::reserve_for_push(

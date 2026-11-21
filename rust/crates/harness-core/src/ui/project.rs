@@ -189,8 +189,8 @@ impl View {
     /// Stable algorithm/configuration identity for content-addressed projections.
     pub fn identity(&self) -> [u8; 32] {
         let mut identity = [0; 32];
-        let domain = b"acyclic:harness:ui:v1";
-        identity[..domain.len()].copy_from_slice(domain);
+        const DOMAIN: &[u8; 21] = b"acyclic:harness:ui:v1";
+        identity[..21].copy_from_slice(DOMAIN);
         identity[28..].copy_from_slice(&self.page_size.to_le_bytes());
         identity
     }
@@ -353,7 +353,8 @@ impl View {
             "children" => {
                 let page =
                     u32::try_from(cursor >> 32).map_err(|_| Error::Invalid("child cursor"))?;
-                let offset = (cursor & u64::from(u32::MAX)) as usize;
+                let offset = usize::try_from(cursor & u64::from(u32::MAX))
+                    .map_err(|_| Error::Invalid("child cursor"))?;
                 let listing = cut
                     .children(page, self.page_size)?
                     .ok_or(Error::Invalid("unknown child page"))?;
@@ -393,8 +394,10 @@ impl View {
                 let mut buffer = [0; 23];
                 let mut name = std::io::Cursor::new(buffer.as_mut_slice());
                 write!(name, "{page}.md").map_err(Error::from)?;
-                let length = name.position() as usize;
-                let name = std::str::from_utf8(&buffer[..length])
+                let invalid_name = || Error::Invalid("generated page name");
+                let length = usize::try_from(name.position()).map_err(|_| invalid_name())?;
+                let bytes = buffer.get(..length).ok_or_else(invalid_name)?;
+                let name = std::str::from_utf8(bytes)
                     .map_err(|_| Error::Invalid("generated page name"))?;
                 emit(NodeRef {
                     name,
@@ -412,8 +415,10 @@ impl View {
                     let mut buffer = [0; 23];
                     let mut name = std::io::Cursor::new(buffer.as_mut_slice());
                     write!(name, "{n}.md").map_err(Error::from)?;
-                    let length = name.position() as usize;
-                    let name = std::str::from_utf8(&buffer[..length])
+                    let invalid_name = || Error::Invalid("generated page name");
+                    let length = usize::try_from(name.position()).map_err(|_| invalid_name())?;
+                    let bytes = buffer.get(..length).ok_or_else(invalid_name)?;
+                    let name = std::str::from_utf8(bytes)
                         .map_err(|_| Error::Invalid("generated page name"))?;
                     emit(NodeRef {
                         name,
@@ -686,7 +691,10 @@ impl<W: Write> Write for ByteRange<'_, W> {
             .saturating_sub(self.position)
             .min(bytes.len())
             .max(from);
-        self.sink.write_all(&bytes[from..to])?;
+        let selected = bytes
+            .get(from..to)
+            .ok_or_else(|| std::io::Error::other("UI projection range exceeds its source"))?;
+        self.sink.write_all(selected)?;
         self.position = end;
         Ok(bytes.len())
     }

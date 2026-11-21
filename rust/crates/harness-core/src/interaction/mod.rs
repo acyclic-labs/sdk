@@ -1,5 +1,6 @@
 //! Typed, durable, executor-neutral open interactions.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::contract::capability;
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use crate::{

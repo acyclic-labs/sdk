@@ -16,6 +16,25 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// Truncate a finite nonnegative float to a count, returning None on overflow.
+pub(crate) fn truncated_u64(value: f64) -> Option<u64> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    let bits = value.to_bits();
+    let exponent = (bits >> 52) & 0x7ff;
+    let Some(power) = exponent.checked_sub(1023) else {
+        return Some(0);
+    };
+    // The encoded fraction omits the leading bit of a normal number.
+    let significand = (1 << 52) | (bits & ((1 << 52) - 1));
+    match power {
+        0..=52 => Some(significand >> (52 - power)),
+        53..=63 => Some(significand << (power - 52)),
+        _ => None,
+    }
+}
+
 mod authority;
 mod copying;
 #[cfg(test)]

@@ -14,8 +14,7 @@ impl ContextManifest {
         reader: &dyn ContentResidencyVerifier,
         publisher: Option<&dyn crate::conversation::ContentPublisher>,
         mut tools: ToolRegistry,
-        limits: Limits,
-        io: Option<&PreparationIo>,
+        (limits, io): (Limits, Option<&PreparationIo>),
         pin_tools: bool,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>, Vec<ToolDefinition>)> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;

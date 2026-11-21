@@ -200,8 +200,7 @@ impl StockExecution<'_> {
     pub(super) async fn resolve_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
+        (operation_id, step): (OperationId, u32),
         invocation: ToolInvocation,
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
@@ -210,8 +209,7 @@ impl StockExecution<'_> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
         let call = self.settle_tool_call(
             journal,
-            operation_id,
-            step,
+            (operation_id, step),
             (invocation, None),
             invocation_index,
             prior_messages,

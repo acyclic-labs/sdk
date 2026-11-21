@@ -108,7 +108,11 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceNode>, DemandError> {
         let text = path.unicode_text(ctx)?;
-        self.node(cut, &text[1..], ctx)
+        self.node(
+            cut,
+            text.strip_prefix('/').ok_or(DemandError::InvalidRequest)?,
+            ctx,
+        )
     }
     fn nodes(
         &self,
@@ -120,7 +124,7 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceDirectoryPage, DemandError> {
         let text = directory.unicode_text(ctx)?;
-        let dir = &text[1..];
+        let dir = text.strip_prefix('/').ok_or(DemandError::InvalidRequest)?;
         let mut page = SourceDirectoryPageBuilder::new(ctx)?;
         let next = self.view.visit_nodes::<DemandError>(
             cut,
@@ -139,7 +143,11 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
                 let text = std::str::from_utf8(text.bytes.as_slice())
                     .map_err(|_| DemandError::InvalidRequest)?;
                 let node = self
-                    .node(cut, &text[1..], ctx)?
+                    .node(
+                        cut,
+                        text.strip_prefix('/').ok_or(DemandError::InvalidRequest)?,
+                        ctx,
+                    )?
                     .ok_or(DemandError::StaleSource)?;
                 page.push_utf8(entry.name, node, ctx)
             },
@@ -160,14 +168,15 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, DemandError> {
         let text = path.unicode_text(ctx)?;
-        if directory(&text[1..]) || child_id(&text[1..]).is_some() {
+        let relative = text.strip_prefix('/').ok_or(DemandError::InvalidRequest)?;
+        if directory(relative) || child_id(relative).is_some() {
             return Err(DemandError::NotRegularFile);
         }
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
         let end = usize::try_from(offset.saturating_add(length)).unwrap_or(usize::MAX);
         OwnedSourceChunk::produce(ctx, |mut sink| {
             self.view
-                .write_range(cut, &&text[1..], start..end, &mut sink)
+                .write_range(cut, &relative, start..end, &mut sink)
                 .map_err(error)
         })
     }
@@ -180,7 +189,8 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, DemandError> {
         let text = path.unicode_text(ctx)?;
-        let id = child_id(&text[1..]).ok_or(DemandError::InvalidRequest)?;
+        let id = child_id(text.strip_prefix('/').ok_or(DemandError::InvalidRequest)?)
+            .ok_or(DemandError::InvalidRequest)?;
         let target = cut
             .child_ui(id)
             .map_err(error)?

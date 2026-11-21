@@ -301,8 +301,18 @@ fn tool_key(
 }
 
 impl Recording {
-    fn tool(&self, coordinate: ToolCoordinate) -> &(String, RecordedToolOutcome) {
-        &self.calls[&coordinate.key][coordinate.index].tools[coordinate.ordinal]
+    fn call(&self, key: &[u8; 32], index: usize) -> Result<&RecordedCall> {
+        self.calls
+            .get(key)
+            .and_then(|calls| calls.get(index))
+            .ok_or_else(|| Error::Conflict("recorded call coordinate is invalid".into()))
+    }
+
+    fn tool(&self, coordinate: ToolCoordinate) -> Result<&(String, RecordedToolOutcome)> {
+        self.call(&coordinate.key, coordinate.index)?
+            .tools
+            .get(coordinate.ordinal)
+            .ok_or_else(|| Error::Conflict("recorded tool coordinate is invalid".into()))
     }
 
     fn verify_tool(
@@ -313,7 +323,7 @@ impl Recording {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         NativeIndexWork(work).charge_items(call_id.len() as u64)?;
-        if self.tool(coordinate).0 != call_id {
+        if self.tool(coordinate)?.0 != call_id {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
@@ -411,7 +421,7 @@ enum ReplayPreparation<'a, T> {
 /// identity. Index work per tool is independent of retained replay history;
 /// hashing and comparing a newly admitted ID are proportional to that ID.
 pub struct RecordedModel {
-    live: Arc<dyn ModelProvider>,
+    live: acyclic_stream::ProviderOwner<dyn ModelProvider>,
     recording: Arc<Recording>,
     replay: Arc<Mutex<Replay>>,
     sink: Arc<dyn DivergenceSink>,
@@ -423,7 +433,7 @@ impl RecordedModel {
     /// this adapter shares consumption; construct another for another trial.
     #[must_use]
     pub fn new(
-        live: Arc<dyn ModelProvider>,
+        live: acyclic_stream::ProviderOwner<dyn ModelProvider>,
         recording: Arc<Recording>,
         sink: Arc<dyn DivergenceSink>,
     ) -> Self {
@@ -447,7 +457,7 @@ impl RecordedModel {
         self.recording.len() - self.lock().cursor.used
     }
 
-    fn with_live(&self, live: Arc<dyn ModelProvider>) -> Self {
+    fn with_live(&self, live: acyclic_stream::ProviderOwner<dyn ModelProvider>) -> Self {
         Self {
             live,
             recording: Arc::clone(&self.recording),
@@ -485,8 +495,7 @@ impl RecordedModel {
         )?;
         match selection {
             Some(ReplaySelection::Recorded { key, index }) => {
-                return build(&self.recording.calls[&*key][*index])
-                    .map(ReplayPreparation::Recorded);
+                return build(self.recording.call(key, *index)?).map(ReplayPreparation::Recorded);
             }
             Some(ReplaySelection::Live) => {
                 return Err(Error::Conflict(
@@ -593,34 +602,33 @@ impl RecordedModel {
             } else {
                 Ok(None)
             };
-            match output? {
-                Some(output) => Ok(ReplayPreparation::Recorded(output)),
-                None => {
-                    // Fund the permanent live-turn slot before invoking the live
-                    // provider. Acceptance only publishes into retained storage;
-                    // a refused builder leaves the original turn non-live.
-                    let turn = live.get_or_try_insert_with(
-                        dispatch.operation_id.into_bytes(),
-                        &mut NativeIndexWork(work),
-                        |_| Ok(LiveTurn::default()),
-                    )?;
-                    let Some(pending) = turn.pending.checked_add(1) else {
-                        let io = NativeIndexWork(work).preparation()?;
-                        return Err(crate::executor::stock_boundary(
-                            io.as_ref(),
-                            crate::wire::ErrorCode::Conflict,
-                            "replay pending admission count overflows",
-                        ));
-                    };
-                    turn.pending = pending;
-                    *selection = Some(ReplaySelection::Pending);
-                    Ok(ReplayPreparation::Live(ReplayAdmission {
-                        owner: self,
-                        dispatch,
-                        key,
-                        accepted: false,
-                    }))
-                }
+            if let Some(output) = output? {
+                Ok(ReplayPreparation::Recorded(output))
+            } else {
+                // Fund the permanent live-turn slot before invoking the live
+                // provider. Acceptance only publishes into retained storage;
+                // a refused builder leaves the original turn non-live.
+                let turn = live.get_or_try_insert_with(
+                    dispatch.operation_id.into_bytes(),
+                    &mut NativeIndexWork(work),
+                    |_| Ok(LiveTurn::default()),
+                )?;
+                let Some(pending) = turn.pending.checked_add(1) else {
+                    let io = NativeIndexWork(work).preparation()?;
+                    return Err(crate::executor::stock_boundary(
+                        io.as_ref(),
+                        crate::wire::ErrorCode::Conflict,
+                        "replay pending admission count overflows",
+                    ));
+                };
+                turn.pending = pending;
+                *selection = Some(ReplaySelection::Pending);
+                Ok(ReplayPreparation::Live(ReplayAdmission {
+                    owner: self,
+                    dispatch,
+                    key,
+                    accepted: false,
+                }))
             }
         })();
         if result.is_err() {
@@ -643,7 +651,7 @@ impl RecordedModel {
             .flatten()
         {
             Some(ReplaySelection::Recorded { key, index }) => {
-                Ok(Some(&self.recording.calls[&key][index]))
+                self.recording.call(&key, index).map(Some)
             }
             Some(ReplaySelection::Pending) => Err(Error::Conflict(
                 "replay dispatch admission is pending".into(),
@@ -788,7 +796,7 @@ mod tests {
 
     #[test]
     fn trial_admission_shares_source_without_copying_its_population() {
-        let live: Arc<dyn ModelProvider> =
+        let live: acyclic_stream::ProviderOwner<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
         let sink: Arc<dyn DivergenceSink> = Arc::new(IgnoreDivergence);
         for size in [1u64, 2048] {
@@ -1637,7 +1645,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
-        let live: Arc<dyn ModelProvider> =
+        let live: acyclic_stream::ProviderOwner<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
         let sink: Arc<dyn DivergenceSink> = Arc::new(IgnoreDivergence);
         let operation = OperationId::new();
@@ -1840,17 +1848,20 @@ mod tests {
 }
 
 impl ModelProvider for RecordedModel {
-    fn bind_conversation(&self, conversation: OperationId) -> Option<Arc<dyn ModelProvider>> {
+    fn bind_conversation(
+        &self,
+        conversation: OperationId,
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         let live = self.live.bind_conversation(conversation)?;
-        Some(Arc::new(self.with_live(live)))
+        Some(acyclic_stream::ProviderOwner::new(self.with_live(live)))
     }
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         maximum_bytes: Option<u64>,
-    ) -> Option<Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         let live = self.live.bind_content(reader, maximum_bytes)?;
-        Some(Arc::new(self.with_live(live)))
+        Some(acyclic_stream::ProviderOwner::new(self.with_live(live)))
     }
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.live.model_profile(model)
@@ -1859,9 +1870,12 @@ impl ModelProvider for RecordedModel {
         &self,
         model: &Model,
         profile: &crate::profile::AgentProfile<'_>,
-    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+    ) -> Result<(Model, acyclic_stream::ProviderOwner<dyn ModelProvider>)> {
         let (model, live) = self.live.admit_profile(model, profile)?;
-        Ok((model, Arc::new(self.with_live(live))))
+        Ok((
+            model,
+            acyclic_stream::ProviderOwner::new(self.with_live(live)),
+        ))
     }
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.live.native_tool_profile(model)
@@ -1940,26 +1954,27 @@ impl ModelProvider for RecordedModel {
     ) -> Result<Option<(RecordedToolOutcome, acyclic_fs::NativeCustody)>> {
         let io = NativeIndexWork(work).preparation()?;
         let lookup = tool_key(operation, call_id, io.as_ref())?;
-        let mut replay = self.lock();
-        let Some(slot) = replay.tools.get(lookup, &mut NativeIndexWork(work))? else {
-            return Ok(None);
+        let (copied, _removed) = {
+            let mut replay = self.lock();
+            let Some(slot) = replay.tools.get(lookup, &mut NativeIndexWork(work))? else {
+                return Ok(None);
+            };
+            self.recording
+                .verify_tool(slot.identity, call_id, work, io.as_ref())?;
+            let Some(coordinate) = slot.selected else {
+                return Ok(None);
+            };
+            let original = &self.recording.tool(coordinate)?.1;
+            #[cfg(not(target_arch = "wasm32"))]
+            let copied = match io.as_ref() {
+                Some(io) => original.copy_with_custody(io)?,
+                None => (original.clone(), None),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let copied = (original.clone(), None);
+            let removed = replay.tools.remove(lookup, &mut NativeIndexWork(work))?;
+            (copied, removed)
         };
-        self.recording
-            .verify_tool(slot.identity, call_id, work, io.as_ref())?;
-        let Some(coordinate) = slot.selected else {
-            return Ok(None);
-        };
-        let original = &self.recording.tool(coordinate).1;
-        #[cfg(not(target_arch = "wasm32"))]
-        let copied = match io.as_ref() {
-            Some(io) => original.copy_with_custody(io)?,
-            None => (original.clone(), None),
-        };
-        #[cfg(target_arch = "wasm32")]
-        let copied = (original.clone(), None);
-        let removed = replay.tools.remove(lookup, &mut NativeIndexWork(work))?;
-        drop(replay);
-        drop(removed);
         Ok(Some(copied))
     }
     #[cfg(not(target_arch = "wasm32"))]

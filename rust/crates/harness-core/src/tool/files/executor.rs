@@ -61,9 +61,10 @@ impl Source {
         generation: Option<&crate::resources::GenerationRef>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        let custody;
-        let (file, bytes, retained) = context.read_tool_path(path, generation, io).await?;
-        custody = super::window::custody(io, retained)?;
+        let (custody, file, bytes) = {
+            let (file, bytes, retained) = context.read_tool_path(path, generation, io).await?;
+            (super::window::custody(io, retained)?, file, bytes)
+        };
         Ok(Self {
             file,
             bytes: Some(bytes),
@@ -337,13 +338,13 @@ impl FileTool {
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        let _notebook_hold;
-        let _notebook_facts;
-        let (edited, notebook_hold, notebook_facts) = if let Some(operation) = &input.0.notebook {
+        let (_notebook_hold, _notebook_facts, edited) = if let Some(operation) = &input.0.notebook {
             let (edited, hold, facts) = super::notebook::edit(source, operation, work)?;
-            (edited, hold, Some(facts))
+            (hold, Some(facts), edited)
         } else {
             (
+                None,
+                None,
                 super::edit::replace(
                     source,
                     &input.0.old_text,
@@ -352,12 +353,8 @@ impl FileTool {
                     maximum,
                     &mut allocation,
                 )?,
-                None,
-                None,
             )
         };
-        _notebook_hold = notebook_hold;
-        _notebook_facts = notebook_facts;
         if maximum.is_some_and(|maximum| edited.len() as u64 > maximum) {
             return Err(invalid("edited file exceeds admitted file credit"));
         }

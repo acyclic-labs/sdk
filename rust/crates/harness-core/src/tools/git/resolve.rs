@@ -21,7 +21,7 @@ where
                 )
                 .await
                 .map(|receipt| receipt.value)
-                .map_err(|failure| Error::from(failure.error).into()),
+                .map_err(|failure| Error::from(failure.error)),
             #[cfg(not(target_arch = "wasm32"))]
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;

@@ -9,10 +9,10 @@ pub(in crate::filesystem) struct RootPolicySeed {
 
 impl RootPolicySeed {
     pub(in crate::filesystem) fn new(
-        policy: crate::approvals::ApprovalPolicy,
+        policy: &crate::approvals::ApprovalPolicy,
     ) -> crate::Result<Self> {
         policy.bind()?;
-        let bytes = crate::contract::canonical_json_bytes(&policy)
+        let bytes = crate::contract::canonical_json_bytes(policy)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let descriptor = FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?;
         Ok(Self {

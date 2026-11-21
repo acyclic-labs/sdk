@@ -53,15 +53,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Ok(None);
         };
         let bytes = super::publication::publication_evidence(binding.evidence(), Some(io))?;
-        if bytes.len() != SELECTION_BYTES || bytes[0] != 1 {
+        let Ok(&[1, owner @ ..]) = <&[u8; SELECTION_BYTES]>::try_from(bytes) else {
             return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
                 "invalid content workspace binding",
             ));
-        }
-        let mut owner = [0; 16];
-        owner.copy_from_slice(&bytes[1..]);
+        };
         let workspace = family
             .workspace(self, root, acyclic_fs::WorkspaceId::from_bytes(owner), io)?
             .await?;
@@ -79,7 +77,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let operation = selection_key(operation, io)?;
             let mut encoded = [1; SELECTION_BYTES];
-            encoded[1..].copy_from_slice(&selected.into_bytes());
+            let [_, owner @ ..] = &mut encoded;
+            *owner = selected.into_bytes();
             let evidence = encoded.as_slice().mutation_bytes(Some(io))?;
             let work = WorkCounters {
                 bytes_hashed: SELECTION_BYTES as u64,
@@ -109,7 +108,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 transaction,
                 io,
                 super::workspaces::FilePublication::Authorized(
-                    authorization.0,
+                    &authorization.0,
                     authorization.1,
                     None,
                 ),

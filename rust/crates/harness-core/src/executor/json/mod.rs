@@ -85,8 +85,10 @@ pub(crate) use admission::layout_reservation;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admission::lexical_json_diagnostic_bytes;
 pub use records::json_value_logical_owned_bytes;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use records::object_slot_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
-pub(crate) use records::{json_object_insert, json_value_retained_owned_bytes, object_slot_bytes};
+pub(crate) use records::{json_object_insert, json_value_retained_owned_bytes};
 pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
 };
@@ -165,6 +167,10 @@ impl JsonValueShape {
     /// Original values and map keys.
     pub const fn lexical_items(self) -> u64 {
         self.lexical_items
+    }
+    /// Arrays and objects in the original source.
+    pub const fn containers(self) -> u64 {
+        self.containers
     }
     /// Nodes in decoded `RawValue` sources.
     pub const fn virtual_items(self) -> u64 {

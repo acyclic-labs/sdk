@@ -4,6 +4,7 @@ use crate::store::{guarded_boundary, history::HistoryIo, operations};
 use crate::wire_codec::CodecQuota;
 use crate::{Error, OperationId, Result, wire};
 use acyclic_stream::{IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, StreamError};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 mod authority;

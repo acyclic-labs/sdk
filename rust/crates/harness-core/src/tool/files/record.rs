@@ -76,11 +76,11 @@ pub(super) async fn run(
             .read_tool_path_bounded(feedback::PATH, None, None, io.as_ref())
             .await
         {
-            Ok((_, custody, retained)) => {
+            Ok((_, custody, _retained)) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 let _read_custody = io
                     .as_ref()
-                    .map(|io| io.take_native_custody(retained))
+                    .map(|io| io.take_native_custody(_retained))
                     .transpose()?;
                 custody.as_ref().to_vec()
             }
@@ -95,7 +95,7 @@ pub(super) async fn run(
             bytes.extend_from_slice(&crate::contract::canonical_json_bytes(report)?);
             bytes.push(b'\n');
         }
-        let staged = context
+        let _staged = context
             .stage_tool_file_once(
                 invocation.operation_id,
                 feedback::PATH,
@@ -108,7 +108,7 @@ pub(super) async fn run(
         #[cfg(not(target_arch = "wasm32"))]
         let _file_custody = io
             .as_ref()
-            .map(|io| io.take_native_custody(staged.1))
+            .map(|io| io.take_native_custody(_staged.1))
             .transpose()?;
         let result = super::value(
             &records.result,
@@ -130,34 +130,28 @@ pub(super) async fn run(
     Ok((ToolResult { value: result.0 }, result.1))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn reconcile(
     context: &ToolContext,
     invocation: &ToolInvocation,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(Option<ToolResult>, acyclic_fs::NativeCustody)> {
     let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
-    #[cfg(not(target_arch = "wasm32"))]
     let io = work
         .map(crate::executor::PreparationIo::from_native_work)
         .transpose()?;
-    #[cfg(target_arch = "wasm32")]
-    let io: Option<crate::executor::PreparationIo> = None;
     let records = decode_reports(&input.0.content, work, io.as_ref())?;
     let receipt = context
         .observe_tool_path_once(invocation.operation_id, feedback::PATH, io.as_ref())
         .await?;
     if receipt.0.is_none() {
-        #[cfg(not(target_arch = "wasm32"))]
         return Ok((
             None,
             io.as_ref()
                 .map(|io| io.take_native_custody(receipt.1))
                 .transpose()?,
         ));
-        #[cfg(target_arch = "wasm32")]
-        return Ok((None, None));
     }
-    #[cfg(not(target_arch = "wasm32"))]
     let _observed_custody = io
         .as_ref()
         .map(|io| io.take_native_custody(receipt.1))

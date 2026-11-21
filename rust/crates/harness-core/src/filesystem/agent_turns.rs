@@ -675,11 +675,18 @@ pub(crate) fn ceiling_grants(
         ));
     }
     let whole = Capability::whole_volume(None, &[]);
+    let resource = &whole
+        .layers
+        .iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| Error::Invalid("whole-volume ceiling lacks a resource".into()))?
+        .resource;
     if capability
         .layers
         .iter()
         .flatten()
-        .any(|grant| grant.resource != whole.layers[0][0].resource)
+        .any(|grant| &grant.resource != resource)
     {
         return Err(Error::Unauthorized(
             "a workload derives only from an exact-volume or whole-volume filesystem ceiling"
@@ -966,7 +973,7 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         turn: OperationId,
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
-    ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
+    ) -> BoxFuture<'a, Result<acyclic_stream::ProviderOwner<dyn Executor>>>;
 
     /// Admitted workspace exposures and instructions not yet present in this
     /// selected conversation. `seen` binds each slot to its latest discovered
@@ -1011,6 +1018,9 @@ pub struct TurnLimits {
     pub history_turns: u32,
 }
 
+#[cfg(feature = "test-support")]
+type BindingFault = Arc<dyn Fn(&AgentState) -> Result<()> + Send + Sync>;
+
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
@@ -1024,7 +1034,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     agent_views: bool,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
-    executors: Arc<dyn TurnExecutors>,
+    executors: acyclic_stream::ProviderOwner<dyn TurnExecutors>,
     workspace_tools: Option<WorkspaceToolsFactory>,
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
@@ -1032,7 +1042,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     policy: crate::approvals::ApprovalPolicy,
     templates: Arc<dyn crate::agent::SpawnTemplates>,
     #[cfg(feature = "test-support")]
-    binding_fault: Option<Arc<dyn Fn(&AgentState) -> Result<()> + Send + Sync>>,
+    binding_fault: Option<BindingFault>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1111,7 +1121,7 @@ where
         host: Arc<FilesystemHost<A, O>>,
         issuer: impl Into<RuntimeAuthority>,
         admission: TurnAdmission,
-        executors: Arc<dyn TurnExecutors>,
+        executors: acyclic_stream::ProviderOwner<dyn TurnExecutors>,
         (limits, policy): (TurnLimits, crate::approvals::ApprovalPolicy),
     ) -> Self {
         let issuer = issuer.into();
@@ -1327,7 +1337,7 @@ where
                 "review policy is not private to the parent".into(),
             ));
         }
-        let retained = policy.map(std::slice::from_ref).unwrap_or(&[]);
+        let retained = policy.map_or(&[][..], std::slice::from_ref);
         let (journal, bindings, _) = self
             .journal(self.admit(parent)?, &[], retained, None, None)
             .await?;
@@ -1826,7 +1836,8 @@ where
             .ok_or_else(|| Error::Invalid("conversation range overflows".into()))?;
         let mut entries = Vec::new();
         while from < end {
-            let limit = (end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
+            let limit = u32::try_from((end - from).min(acyclic_stream::MAX_ITEMS as u64))
+                .map_err(|_| Error::Invalid("stream page exceeds portable count".into()))?;
             let through = from + u64::from(limit);
             let records = self
                 .stream
@@ -1914,7 +1925,9 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
         selected.validate(agent).map_err(Error::from)?;
         let mut from = selected.range.start;
         while from < selected.range.end {
-            let limit = (selected.range.end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
+            let limit =
+                u32::try_from((selected.range.end - from).min(acyclic_stream::MAX_ITEMS as u64))
+                    .map_err(|_| Error::Invalid("stream page exceeds portable count".into()))?;
             let records = stream
                 .read(ReadRequest {
                     key: None,
@@ -3354,10 +3367,10 @@ where
             bytes
                 .try_reserve_exact(capacity)
                 .map_err(|_| Error::Storage("diagnostic page allocation failed".into()))?;
-            if let (Some(io), Some(hold)) = (io, hold.as_mut()) {
-                if bytes.capacity() > capacity {
-                    hold.absorb(io.reserve_decode((bytes.capacity() - capacity) as u64)?)?;
-                }
+            if let (Some(io), Some(hold)) = (io, hold.as_mut())
+                && bytes.capacity() > capacity
+            {
+                hold.absorb(io.reserve_decode((bytes.capacity() - capacity) as u64)?)?;
             }
             if range.records() != 0 {
                 let request = range.request().map_err(Error::from)?;

@@ -69,9 +69,10 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     let mut end = until;
     loop {
         let room = super::MAX_QUEUED - selection.inputs.len();
-        let limit = end.map_or(room as u64, |until| {
+        let limit = u32::try_from(end.map_or(room as u64, |until| {
             (until - selection.through).min(room as u64)
-        }) as u32;
+        }))
+        .map_err(|_| Error::Record("steering page exceeds its record budget"))?;
         if limit == 0 {
             break;
         }

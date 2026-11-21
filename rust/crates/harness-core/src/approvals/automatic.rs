@@ -6,7 +6,7 @@ use crate::{
     interaction::Interaction,
     model::{Model, ModelProvider},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 mod llm;
 pub(crate) use llm::review_model;
@@ -19,20 +19,17 @@ pub async fn automatic_review(
         &dyn crate::executor::ExecutionJournal,
         Option<&crate::executor::PreparationIo>,
     ),
-    models: &BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
+    models: &BTreeMap<String, (Model, acyclic_stream::ProviderOwner<dyn ModelProvider>)>,
     files: &dyn ApprovalFiles,
     request: &ApprovalRequest<'_>,
     approver: &Approver,
     expected: ApprovalReviewFile,
     limits: Limits,
 ) -> Result<ApprovalReviewFile> {
-    let principal = match approver {
-        Approver::Rules { principal, .. } | Approver::Llm { principal, .. } => principal,
-        _ => {
-            return Err(Error::Invalid(
-                "external approver requires a signed decision".into(),
-            ));
-        }
+    let (Approver::Rules { principal, .. } | Approver::Llm { principal, .. }) = approver else {
+        return Err(Error::Invalid(
+            "external approver requires a signed decision".into(),
+        ));
     };
     if expected.principal != *principal
         || expected.request_sha256 != super::chain::fingerprint(request.bytes())?

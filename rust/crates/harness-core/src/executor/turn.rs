@@ -131,8 +131,8 @@ impl StockExecution<'_> {
             let review = context_review::Background::shared(self.io)?;
             let mut service = self.preparing(self.io);
             let mut worker = self.preparing(self.io);
-            service.review = context_review::Review::Shared(Arc::clone(&review));
-            worker.review = context_review::Review::Shared(review);
+            service.review = once_cell::sync::OnceCell::from(Arc::clone(&review));
+            worker.review = once_cell::sync::OnceCell::from(review);
             // Keep the worker in one slot while the review service borrows it.
             let worker = std::pin::pin!(worker.execute_turn(input, journal, &mut phase));
             service.with_context_review(journal, input, worker).await
@@ -289,7 +289,14 @@ impl StockExecution<'_> {
                 unsettled = Some(source_messages);
                 let collected =
                     self.collect_step_events(input, step, model_events, &mut prior_messages)?;
-                output.include(&collected, &prior_messages[source_messages..], self.io)?;
+                let appended = prior_messages.get(source_messages..).ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "model step lost source messages",
+                    )
+                })?;
+                output.include(&collected, appended, self.io)?;
                 let CollectedStep {
                     calls,
                     text,
@@ -309,7 +316,13 @@ impl StockExecution<'_> {
                             journal,
                             input,
                             step,
-                            &prior_messages[..source_messages],
+                            prior_messages.get(..source_messages).ok_or_else(|| {
+                                stock_boundary(
+                                    self.io,
+                                    crate::wire::ErrorCode::Invalid,
+                                    "model step lost source messages",
+                                )
+                            })?,
                             &metadata,
                         )
                         .await?;
@@ -375,7 +388,13 @@ impl StockExecution<'_> {
                                 journal,
                                 input,
                                 step,
-                                &prior_messages[..source_messages],
+                                prior_messages.get(..source_messages).ok_or_else(|| {
+                                    stock_boundary(
+                                        self.io,
+                                        crate::wire::ErrorCode::Invalid,
+                                        "model step lost source messages",
+                                    )
+                                })?,
                                 &metadata,
                             )
                             .await?;
@@ -423,7 +442,13 @@ impl StockExecution<'_> {
                         journal,
                         input,
                         step,
-                        &prior_messages[..source_messages],
+                        prior_messages.get(..source_messages).ok_or_else(|| {
+                            stock_boundary(
+                                self.io,
+                                crate::wire::ErrorCode::Invalid,
+                                "model step lost source messages",
+                            )
+                        })?,
                         &metadata,
                     )
                     .await?;
@@ -434,13 +459,11 @@ impl StockExecution<'_> {
                 for (_, index) in &calls {
                     stock_vec_push(&mut unanswered, *index, self.io)?;
                 }
-                let mut calls = stock_into_iter(calls, self.io)?;
-                while let Some((invocation, invocation_index)) = calls.next() {
+                for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
                     match self
                         .resolve_tool_call(
                             journal,
-                            input.operation_id,
-                            step,
+                            (input.operation_id, step),
                             invocation,
                             invocation_index,
                             &mut prior_messages,
@@ -612,9 +635,9 @@ impl StockExecution<'_> {
                 .transpose()?
                 .unwrap_or(0),
         )?;
-        let io = scope.io();
         // Inputs and all unpublished outputs die before their shared custody.
-        let model_events = model_events;
+        let (scope, model_events) = (scope, model_events);
+        let io = scope.io();
         let completed_message = self.has_completed_message(&model_events)?;
         let completion = if model_events.iter().any(|event| {
             matches!(event, ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")

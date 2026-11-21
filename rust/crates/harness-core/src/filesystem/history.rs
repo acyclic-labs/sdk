@@ -85,7 +85,11 @@ where
     O: AsyncObjectStore + 'static,
 {
     let path = parent.path.conversation().map_err(guest)?;
-    let entries = commit.request().effects[0]
+    let entries = commit
+        .request()
+        .effects
+        .first()
+        .ok_or_else(|| guest("history commit has no effect"))?
         .mutations
         .iter()
         .find_map(|mutation| match mutation {
@@ -205,17 +209,16 @@ where
             Some(ContextAction::Restore { at, mode, .. })
                 if mode.context() && entry.outcome.is_completed() =>
             {
-                Some(match restored_context.take() {
-                    Some(context) => context,
-                    None => {
-                        if *at >= parent.conversation_tail {
-                            return Err(guest("restore cut is not a prior settled turn"));
-                        }
-                        read(fs.stream_provider().as_ref(), &parent.path, *at)
-                            .await
-                            .map_err(crate::Error::guest)?
-                            .context
+                Some(if let Some(context) = restored_context.take() {
+                    context
+                } else {
+                    if *at >= parent.conversation_tail {
+                        return Err(guest("restore cut is not a prior settled turn"));
                     }
+                    read(fs.stream_provider().as_ref(), &parent.path, *at)
+                        .await
+                        .map_err(crate::Error::guest)?
+                        .context
                 })
             }
             _ => None,
@@ -229,7 +232,11 @@ where
             let request = commit
                 .request_mut()
                 .ok_or_else(|| guest("history commit is sealed"))?;
-            match segment.and_then(|index| request.effects[0].mutations.get_mut(index)) {
+            let effect = request
+                .effects
+                .first_mut()
+                .ok_or_else(|| guest("history commit has no effect"))?;
+            match segment.and_then(|index| effect.mutations.get_mut(index)) {
                 Some(
                     CommitMutation::Fork { records, .. } | CommitMutation::Append { records, .. },
                 ) => {
@@ -241,13 +248,13 @@ where
                         parent.path
                     ))
                     .map_err(guest)?;
-                    request.effects[0]
+                    effect
                         .require(CommitCondition::Absent {
                             path: destination.clone(),
                         })
                         .map_err(guest)?;
-                    segment = Some(request.effects[0].mutations.len());
-                    request.effects[0].mutations.push(if context.tail != 0 {
+                    segment = Some(effect.mutations.len());
+                    effect.mutations.push(if context.tail != 0 {
                         CommitMutation::Fork {
                             source: context.path,
                             destination: destination.clone(),
@@ -324,7 +331,11 @@ where
     let request = commit
         .request_mut()
         .ok_or_else(|| guest("history commit is sealed"))?;
-    request.effects[0]
+    let effect = request
+        .effects
+        .first_mut()
+        .ok_or_else(|| guest("history commit has no effect"))?;
+    effect
         .require(CommitCondition::Tail {
             path: history.clone(),
             expected: parent
@@ -333,7 +344,7 @@ where
                 .ok_or_else(|| guest("history boundary overflows"))?,
         })
         .map_err(guest)?;
-    request.effects[0].mutations.push(CommitMutation::Append {
+    effect.mutations.push(CommitMutation::Append {
         path: history,
         records,
     });

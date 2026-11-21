@@ -4,6 +4,9 @@ use crate::{OperationId, mcp::rpc, test_support::error_observation};
 use bytes::Bytes;
 use serde_json::Value;
 
+/// A named encoded MCP HTTP corpus seed.
+pub type McpHttpSeed = (&'static str, Vec<u8>);
+
 fn parse(
     input: &[u8],
     width: usize,
@@ -92,7 +95,7 @@ fn check_replay(value: &Value) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Capture the actual client request writer. Server response seeds require
 /// retained output from a running server.
-pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub fn seeds() -> Result<Vec<McpHttpSeed>, Box<dyn std::error::Error>> {
     let operation = OperationId::from_bytes([7; 16]);
     Ok(vec![(
         "mcp-request",

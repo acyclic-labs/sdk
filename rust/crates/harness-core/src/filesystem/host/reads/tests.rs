@@ -87,8 +87,7 @@ async fn concurrent_publication() -> Result<()> {
     let cut = host.file_generation(&original, None)?;
     let fork = host
         .fork_volume(
-            &parent,
-            &parent_grants.whole,
+            (&parent, &parent_grants.whole),
             &cut,
             &child,
             &child_grants.write,

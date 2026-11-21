@@ -139,6 +139,7 @@ impl Prepared {
         let journal = crate::conversation::journal_volume(host.provider.clone(), &child.id())
             .map_err(turn)?;
         let policy = policy
+            .as_ref()
             .map(policy::RootPolicySeed::new)
             .transpose()
             .map_err(turn)?;
@@ -295,7 +296,7 @@ pub struct Placement<P: ?Sized + 'static, O: 'static> {
 /// How hosted agents run their turns.
 pub struct Turns {
     /// Each turn's executor.
-    pub executors: Arc<dyn TurnExecutors>,
+    pub executors: acyclic_stream::ProviderOwner<dyn TurnExecutors>,
     /// Bounds of every turn.
     pub limits: TurnLimits,
     /// Bounds of every agent actor.
@@ -319,7 +320,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: Arc<Host<P, O>>,
     spawns: Arc<FilesystemSpawnVolumes<P, O>>,
     clock: Arc<dyn Clock>,
-    handler: Arc<dyn acyclic_actors::guest::Handler>,
+    handler: acyclic_stream::ProviderOwner<dyn acyclic_actors::guest::Handler>,
     controls: Arc<dyn crate::agent::Companions>,
     composer: Arc<crate::agent::AgentComposer<P>>,
     file_views: Vec<Arc<dyn crate::client_files::FileView<P>>>,
@@ -413,7 +414,7 @@ where
     pub fn admitted_host(
         issuer: AuthorityRoot,
         caller: VerifiedCaller,
-        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
+        volumes: &FilesystemHost<StreamAuthorityStore<P>, O>,
         within: ActorReference,
         turns: Turns,
         cuts: Option<Arc<dyn super::VolumeResources>>,
@@ -522,7 +523,7 @@ where
             Some(cuts) => spawns.with_volume_resources(cuts),
             None => spawns,
         });
-        let handler = Arc::new(
+        let handler = acyclic_stream::ProviderOwner::new(
             AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
                 .map_err(|_| Error::Record("agent handler manifest"))?
                 .with_spawn_volumes(spawns.clone())
@@ -590,14 +591,15 @@ where
     pub fn hosting(
         mut self,
         requests: acyclic_actors::guest::Requests,
-        handler: Arc<dyn acyclic_actors::guest::Handler>,
+        handler: acyclic_stream::ProviderOwner<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
         let controls = self.controls.clone();
-        let handler = Arc::new(acyclic_actors::guest::HostedHandler::new(
-            self.handler.clone(),
-            handler,
-            move |actor: &ActorReference| controls.handles(actor),
-        ));
+        let handler =
+            acyclic_stream::ProviderOwner::new(acyclic_actors::guest::HostedHandler::new(
+                self.handler.clone(),
+                handler,
+                move |actor: &ActorReference| controls.handles(actor),
+            ));
         // The guest composes the same spawns as this binding's own handler,
         // and roots keep the creation reader its turns use.
         self.agents = Arc::new(self.agents.rehosted(
@@ -613,7 +615,7 @@ where
     /// The handler composed from this binding's preset and exact admission.
     /// A guest boundary may wrap it before passing it to [`Self::hosting`].
     #[must_use]
-    pub fn handler(&self) -> Arc<dyn acyclic_actors::guest::Handler> {
+    pub fn handler(&self) -> acyclic_stream::ProviderOwner<dyn acyclic_actors::guest::Handler> {
         self.handler.clone()
     }
 
@@ -1191,18 +1193,17 @@ where
             .pending_approval(agent)
             .await?
             .and_then(|(pending, _, shown)| (&pending == id).then_some(shown));
-        let shown = match pending {
-            Some(shown) => &shown == binding,
-            None => {
-                self.admit_path(agent)?;
-                let state = self.agents.state(agent).await?;
-                binds(
-                    self.turns
-                        .decided_approval(&state, id, principal)
-                        .await
-                        .map_err(turn)?,
-                )
-            }
+        let shown = if let Some(shown) = pending {
+            &shown == binding
+        } else {
+            self.admit_path(agent)?;
+            let state = self.agents.state(agent).await?;
+            binds(
+                self.turns
+                    .decided_approval(&state, id, principal)
+                    .await
+                    .map_err(turn)?,
+            )
         };
         if !shown {
             return Err(Error::Record("approval is not pending with this binding"));

@@ -443,7 +443,7 @@ mod tests {
                 re: None,
                 attachments: Some(Box::new(file())),
             }));
-            records.push(InboxRecord::Spawn(SpawnRequest {
+            records.push(InboxRecord::Spawn(Box::new(SpawnRequest {
                 profile: crate::agent::CreationConfig {
                     question_plugin: false,
                     topology: None,
@@ -460,7 +460,7 @@ mod tests {
                 by: from.clone(),
                 id: intent(),
                 brief: Some(Box::new(file())),
-            }));
+            })));
             for action in [
                 crate::agent::ContextAction::Compact {
                     instructions: Some(Box::new(file())),

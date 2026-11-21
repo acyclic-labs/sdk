@@ -25,8 +25,7 @@ impl LocalHarness {
             &primary.view.volume,
             &primary.view.root,
             cut.authored_generation,
-            authority.0,
-            authority.1,
+            authority,
             io,
             "checkout context",
         )
