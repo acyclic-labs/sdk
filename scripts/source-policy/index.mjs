@@ -27,6 +27,11 @@ const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || embedde
 const deadlineWord = /^timeout(?:_at)?$/i;
 const embeddedDeadlines = /\btimeout(?:_at)?\b/gi;
 const embeddedTimer = spelling => embeddedCandidate(spelling.replace(embeddedDeadlines, ''));
+// An embedded script (a literal another program runs) is known by its timer lines, never its whole text: an edit to any
+// other line of it adds no timer (2026-11-21: one changed awk line in slow-disk.stress.sh's proof heredoc made its
+// unchanged timer new). A literal with no timer line of its own is its whole text.
+const timerLines = value => value.split(/\r?\n/).map(line => line.trim())
+ .filter(line => embeddedTimer(line) || embeddedTimer(escapedSpelling(line))).join('\n') || value;
 const loop = new Set(['for', 'while', 'loop', 'do']);
 // A clock read makes a loop around it a deadline or recheck loop; alone it is a measurement.
 // A loop that subscribes (a watch, follow or subscription, list-then-watch resync included) waits on events: a clock
@@ -735,7 +740,8 @@ export function pollingUnit(file, source, parser = undefined) {
   }
   own(statement, stream.length - 1);
  }
- const origin = i => file + ':' + within[i] + ':' + (stream[i].kind === 'word' ? '' : stream[i].kind + ':') + stream[i].value;
+ const spelling = t => t.kind === 'literal' ? timerLines(t.value) : t.value;
+ const origin = i => file + ':' + within[i] + ':' + (stream[i].kind === 'word' ? '' : stream[i].kind + ':') + spelling(stream[i]);
  const aliases = new Map();
  const name = lexicalNames(stream, rust);
  // Names resolve before they match. A local binding (`const select = selector => ...`, `const elapsed = field(...)`)
@@ -900,7 +906,7 @@ export function pollingUnit(file, source, parser = undefined) {
   const copy = copies.get(text) ?? 0;
   copies.set(text, copy + 1);
   const fingerprint = createHash('sha256').update(JSON.stringify([text, copy])).digest('hex');
-  const site = {file, line: t.line, kind, fingerprint, start: t.start, token: t.value};
+  const site = {file, line: t.line, kind, fingerprint, start: t.start, token: spelling(t)};
   const origins = new Set(), own = new Set();
   if (kind === 'loop') {
    const by = reasons.get(i);

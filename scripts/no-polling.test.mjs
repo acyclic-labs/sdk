@@ -405,6 +405,23 @@ test('aliases cannot use an unchanged timer import to conceal a new call', () =>
 // A disposition pins its site's own function, signature to closing brace, and nothing wider: an edit to another
 // function of the file keeps it, an edit to the disposed function reopens it (2026-11-21: Cloud's svc-batch edit to
 // transport.rs register reopened the Endpoint::backoff disposition and 17 sites behind it).
+test('an edit to another line of an embedded script is no new poll; a timer line added to it is', () => {
+ const file = 'test/stress.sh';
+ const script = body => "cat > proof.sh <<'PROOF'\nset -e\nsleep 1\n" + body + "\nPROOF\nbash proof.sh\n";
+ const before = script("test \"$(cat io.max)\" = 'rbps=1'"), after = script("test \"$(cat io.max)\" = 'rbps=max'");
+ assert.deepEqual(newPollingSites(file, before, after), []);
+ assert.equal(newPollingSites(file, before, script("sleep 2\ntest \"$(cat io.max)\" = 'rbps=1'")).length, 1);
+});
+
+test('an import of a file the consumer leaves out on purpose is no unresolved helper; a missing one still is', () => {
+ const file = 'test/coverage.mjs';
+ const source = name => `import {walk} from '../${name}/walk.mjs';\nexport function check(tree) { return walk(tree); }\n`;
+ const outside = path => path.startsWith('tools/');
+ assert.deepEqual(newProjectPollingSites(new Map(), new Map([[file, source('tools')]]), [], {outside}), []);
+ assert.deepEqual(newProjectPollingSites(new Map(), new Map([[file, source('lib')]]), [], {outside})
+  .map(site => site.kind), ['unresolved-local-helper', 'unresolved-local-helper']);
+});
+
 test('a disposition holds across an edit to another function and reopens on an edit to its own', () => {
  const file = 'src/cell/transport.rs';
  const source = (register, backoff) => `impl Endpoint {\n fn register(&self, id: u64) {${register} self.peers.insert(id); }\n`

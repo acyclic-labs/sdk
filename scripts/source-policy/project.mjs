@@ -239,7 +239,11 @@ function awaitedExportNames(call) {
 }
 
 /** @param {Map<string, string>} sources */
-export function projectPollingSites(sources, {historical = false, dispositions = []} = {}) {
+// OUTSIDE names the files the consumer leaves out of its analysis on purpose (its policy tooling, say): their code is
+// by that decision no poll, so a relative import of one is no unresolved helper. A file it should have supplied and did
+// not is still one: an input closure that lost a module hides nothing (2026-11-21: every call from Cloud's
+// test/local-cell/coverage.mjs into ops/ci, which Cloud's scope leaves out, read as a new timer).
+export function projectPollingSites(sources, {historical = false, dispositions = [], outside = () => false} = {}) {
  /** @type {Map<string, ReturnType<typeof pollingUnit>>} */
  const units = new Map();
  /** @type {ReturnType<typeof pollingUnit>['sites']} */
@@ -310,6 +314,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
  const {program, resolveModule} = scriptProgram(files, units);
  const checker = program.getTypeChecker();
  const localModule = name => name.startsWith('.') || workspaceNames.has(name.split('/').slice(0, name.startsWith('@') ? 2 : 1).join('/'));
+ const unresolved = (from, name) => localModule(name) && !(name.startsWith('.') && outside(posix.normalize(posix.join(posix.dirname(from), name))));
  /** @type {Map<string, Dependency>} */
  const dependencies = new Map();
  /** @type {import('typescript-parser').Symbol[]} */
@@ -524,7 +529,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
    if (specifier) {
     const resolved = resolveModule(specifier.text, source.fileName);
     if (resolved) initializers.push({node: specifier, owner, target: required(roots, resolved.resolvedFileName)});
-    else if (localModule(specifier.text)) references.push({node: specifier, unresolved: specifier.text});
+    else if (unresolved(file, specifier.text)) references.push({node: specifier, unresolved: specifier.text});
     const namespace = moduleLoads.get(file)?.get(node.getStart(source));
     if (namespace) {
      // A returned namespace can escape. Only a direct selection proves which
@@ -594,7 +599,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
      else if (!target && symbol && (symbol.flags & ts.SymbolFlags.Alias)) {
 
       const original = aliasModule(symbol);
-      if (original && localModule(original)) references.push({node, unresolved: original});
+      if (original && unresolved(node.getSourceFile().fileName.slice(1), original)) references.push({node, unresolved: original});
      }
     }
    }
@@ -651,8 +656,8 @@ function disposedCallers(file, name, sources) {
 /** @param {Map<string, string>} before @param {Map<string, string>} after */
 export function newProjectPollingSites(before, after, dispositions = [], policy = {}) {
  validateDispositions(dispositions, policy);
- const candidates = projectPollingSites(after, {dispositions});
+ const candidates = projectPollingSites(after, {dispositions, outside: policy.outside});
  if (!candidates.length) return candidates;
  const text = sources => site => sources.get(site.file).split('\n')[site.line - 1]?.trim();
- return newSites(projectPollingSites(before, {historical: true, dispositions}), candidates, text(before), text(after));
+ return newSites(projectPollingSites(before, {historical: true, dispositions, outside: policy.outside}), candidates, text(before), text(after));
 }
