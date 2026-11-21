@@ -1286,8 +1286,9 @@ ${platformSources.map(([platform, sources]) =>
         "//conditions:default": [],
     })`;
   const testOnlySources = bazel?.["unit-test-only-sources"] ?? [];
+  const compilerNegativeFeatures = new Set(toml(root, manifest).package?.metadata?.acyclic?.["compiler-negative-features"] ?? []);
   const features = (graph?.nodes ?? nodes).map(byId =>
-    [...(byId.get(p.id)?.features ?? [])].sort());
+    [...(byId.get(p.id)?.features ?? [])].filter(feature => !compilerNegativeFeatures.has(feature)).sort());
   const wasmFeatures = !graph && wasmNodes.has(p.id) && p.name.endsWith("-wasm") ? [[...wasmNodes.get(p.id).features].sort()] : undefined;
   const suffix = graph?.suffix ?? "";
   const configured = graph ? (values, render) => render(values[0]) : perTriple;
@@ -1344,7 +1345,9 @@ ${platformSources.map(([platform, sources]) =>
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
-  const clippyConfig = fs.existsSync(path.join(path.dirname(p.manifest_path), "clippy.toml")) ? q("clippy.toml") : undefined;
+  const clippyConfig = p.name === "hermetic-environment-ui"
+    ? q("//rust/crates/harness-core:clippy.toml")
+    : fs.existsSync(path.join(path.dirname(p.manifest_path), "clippy.toml")) ? q("clippy.toml") : undefined;
   const common = (target, features = graph ? "WASM_FEATURES" : "FEATURES", extraFlags = []) => [
     ["clippy_config", clippyConfig],
     ["edition", q(target.edition)],

@@ -2,7 +2,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
 FEATURES = [
-        "negative",
         "test-support",
     ]
 
@@ -17,6 +16,7 @@ rust_library(
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     tags = ["resources:memory:256"],
+    clippy_config = "//rust/crates/harness-core:clippy.toml",
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
