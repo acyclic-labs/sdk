@@ -197,16 +197,18 @@ pub mod codec_fuzz {
     /// including the complete ID. An opaque origin alone grants no path authority.
     pub fn check(bytes: &[u8]) -> bool {
         let decoded = StateRecord::decode(&bytes::Bytes::copy_from_slice(bytes).into());
-        if bytes
-            .strip_prefix(b"acyclic-fs-state-v")
-            .is_some_and(|body| !body.starts_with(b"2\0"))
-        {
-            return matches!(
-                decoded,
-                Err(crate::AuthorityStoreError::NativeStream(
-                    acyclic_stream::StreamError::Unsupported
-                ))
-            );
+        if let Some(body) = bytes.strip_prefix(b"acyclic-fs-state-v") {
+            if body.len() < b"2\0".len() {
+                return matches!(decoded, Err(crate::AuthorityStoreError::CorruptStatic(_)));
+            }
+            if !body.starts_with(b"2\0") {
+                return matches!(
+                    decoded,
+                    Err(crate::AuthorityStoreError::NativeStream(
+                        acyclic_stream::StreamError::Unsupported
+                    ))
+                );
+            }
         }
         let Ok(value) = decoded else {
             return true;
