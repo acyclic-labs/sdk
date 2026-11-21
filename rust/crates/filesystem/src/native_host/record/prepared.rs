@@ -32,6 +32,14 @@ impl PreparedMaterializationRecord {
             return Err(E::InvalidLayout);
         }
         let names = prepare_names(current, temporary, work)?;
+        #[cfg(windows)]
+        let [temporary_name, current_name] = [(&names[0], temporary), (&names[1], current)]
+            .map(|(name, path)| name.get(..path.as_os_str().as_encoded_bytes().len()));
+        #[cfg(windows)]
+        let (temporary_name, current_name) = (
+            temporary_name.ok_or(E::InvalidLayout)?,
+            current_name.ok_or(E::InvalidLayout)?,
+        );
         let (parent, _) = open_root_directory(parent_path, &mut &*work)?;
         if entry_identity(&parent, current, &mut &*work)?.is_none() {
             return Err(io::Error::from(io::ErrorKind::NotFound).into());
@@ -54,22 +62,23 @@ impl PreparedMaterializationRecord {
         let packet = {
             use std::os::windows::io::AsRawHandle as _;
             let mut packet = [0u64; RECORD_PACKET_WORDS];
-            let units = current.as_os_str().as_encoded_bytes().len();
-            work.charge(copy_work((units * 2) as u64))?;
+            let name_bytes = std::mem::size_of_val(current_name);
+            let name_length = u32::try_from(name_bytes).map_err(|_| E::InvalidLayout)?;
+            work.charge(copy_work(name_bytes as u64))?;
             // SAFETY: aligned fixed storage covers the header and bounded native name.
             unsafe {
                 let header = packet.as_mut_ptr().cast::<nt::FILE_RENAME_INFORMATION>();
                 (*header).Anonymous.ReplaceIfExists = true;
                 (*header).RootDirectory = win::HANDLE(parent.as_raw_handle());
-                (*header).FileNameLength = (units * 2) as u32;
+                (*header).FileNameLength = name_length;
                 std::slice::from_raw_parts_mut(
                     header
                         .cast::<u8>()
                         .add(std::mem::offset_of!(nt::FILE_RENAME_INFORMATION, FileName))
                         .cast::<u16>(),
-                    units,
+                    current_name.len(),
                 )
-                .copy_from_slice(&names[1][..units]);
+                .copy_from_slice(current_name);
             }
             packet
         };
@@ -97,7 +106,7 @@ impl PreparedMaterializationRecord {
         #[cfg(windows)]
         let file = open_windows_at(
             &parent,
-            &names[0][..temporary.as_os_str().as_encoded_bytes().len()],
+            temporary_name,
             fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE | fs::DELETE,
             nt::FILE_CREATE,
             nt::FILE_NON_DIRECTORY_FILE

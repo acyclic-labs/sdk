@@ -1,5 +1,11 @@
 use super::*;
 
+struct DetachedHandle {
+    file: Arc<dyn MountOpenFile>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    file_id: FileId,
+}
+
 impl<A, O> CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -28,7 +34,14 @@ where
         let file =
             wrap(self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?);
         let file = self.disclose_result(permissions.policy_view(), file, work)?;
-        self.authorize_file(file, permissions, created.node.file_id, true, work)
+        self.authorize_file(
+            file,
+            permissions,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            created.node.file_id,
+            true,
+            work,
+        )
     }
 
     pub(super) fn seek_extent(
@@ -134,8 +147,14 @@ where
                 })
                 .await?;
             let raw = self.attached_file(lookup.node.file_id, inputs.carrier)?;
-            let (file, bytes) =
-                self.authorize_file(raw, permissions, lookup.node.file_id, false, work)?;
+            let (file, bytes) = self.authorize_file(
+                raw,
+                permissions,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                lookup.node.file_id,
+                false,
+                work,
+            )?;
             Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
         })
     }
@@ -187,7 +206,7 @@ where
             let path = self.namespace_inputs(path, &mut inputs)?;
             let permissions = self.pin_access(&path, work).await?;
             access::require_open(&permissions, None, &self.runtime.clock)?;
-            let (file, file_id) = self
+            let detached = self
                 .disclose(permissions.policy_view(), work, async {
                     let observation = self
                         .checkout
@@ -222,10 +241,21 @@ where
                         lookup.metadata,
                         work,
                     )?;
-                    Ok((file, lookup.record.file_id))
+                    Ok(DetachedHandle {
+                        file,
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        file_id: lookup.record.file_id,
+                    })
                 })
                 .await?;
-            self.authorize_file(wrap((file, 0))?, permissions, file_id, false, work)
+            self.authorize_file(
+                wrap((detached.file, 0))?,
+                permissions,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                detached.file_id,
+                false,
+                work,
+            )
         })
     }
 }

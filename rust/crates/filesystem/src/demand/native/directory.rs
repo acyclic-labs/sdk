@@ -219,7 +219,11 @@ impl NativeDemandSource {
         work: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
         let stat = if let Some(stat) = &entry.stat {
-            stat.clone()
+            #[cfg(unix)]
+            let stat = stat.clone();
+            #[cfg(windows)]
+            let stat = *stat;
+            stat
         } else {
             #[cfg(unix)]
             let result = self

@@ -259,11 +259,14 @@ fn fill_windows_ranges<W: SourceDemandReadWork>(
             NativeControlCompletion::Complete(bytes) => (bytes, false),
             NativeControlCompletion::MoreData(bytes) => (bytes, true),
         };
-        if returned > std::mem::size_of_val(&page) || !returned.is_multiple_of(element) {
+        if !returned.is_multiple_of(element) {
             return Err(DemandError::InvalidRequest);
         }
+        let returned = page
+            .get(..returned / element)
+            .ok_or(DemandError::InvalidRequest)?;
         let mut prior_end = next_offset;
-        for range in &page[..returned / element] {
+        for range in returned {
             i64::try_from(range.offset).map_err(|_| DemandError::InvalidRequest)?;
             i64::try_from(range.length).map_err(|_| DemandError::InvalidRequest)?;
             let range_end = range

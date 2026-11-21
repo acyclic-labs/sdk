@@ -72,7 +72,7 @@ where
         &self,
         file: (Arc<dyn MountOpenFile>, u64),
         permissions: crate::access::PinnedPath,
-        file_id: FileId,
+        #[cfg(any(target_os = "linux", target_os = "macos"))] file_id: FileId,
         created: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
@@ -92,6 +92,14 @@ where
             runtime: self.runtime.clone(),
             _allocation: allocation,
         });
-        authorized_file::authorize_file(file, permissions, policy, file_id, created, work)
+        authorized_file::authorize_file(
+            file,
+            permissions,
+            policy,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            file_id,
+            created,
+            work,
+        )
     }
 }

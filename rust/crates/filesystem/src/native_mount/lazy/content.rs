@@ -1,5 +1,12 @@
 use super::*;
 
+struct ProvenOpen {
+    file: crate::native_mount::MountOpenClaim,
+    lookup: Option<MountLookup>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    file_id: FileId,
+}
+
 struct SourceOpen {
     text: String,
     allocation: crate::NativeAllocation,
@@ -38,30 +45,29 @@ where
     ) -> Result<(crate::native_mount::MountOpenClaim, Option<MountLookup>), MountSourceError> {
         let permissions = self.authored.permissions_for_path(path, work)?;
         adapter::access::require_open(&permissions, access, &self.runtime.clock)?;
-        let (file, lookup, file_id) = self.authored.disclose_result(
+        let opened = self.authored.disclose_result(
             permissions.policy_view(),
             (|| {
-                let (file, lookup, file_id) = self.open_proven(path, work)?;
-                let lookup = if access.is_some() {
-                    Some(match lookup {
-                        Some(lookup) => lookup,
-                        None => file.file.lookup_with_meter(work)?,
-                    })
-                } else {
-                    lookup
-                };
-                Ok((file, lookup, file_id))
+                let mut opened = self.open_proven(path, work)?;
+                if access.is_some() && opened.lookup.is_none() {
+                    opened.lookup = Some(opened.file.file.lookup_with_meter(work)?);
+                }
+                Ok(opened)
             })(),
             work,
         )?;
         let (file, bytes) = self.authored.authorize_file(
-            (file.file, file.bytes),
+            (opened.file.file, opened.file.bytes),
             permissions,
-            file_id,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            opened.file_id,
             false,
             work,
         )?;
-        Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
+        Ok((
+            crate::native_mount::MountOpenClaim { file, bytes },
+            opened.lookup,
+        ))
     }
 
     /// Records that another handle on the workspace changed each of
@@ -145,18 +151,11 @@ where
         })
     }
 
-    pub(super) fn open_proven(
+    fn open_proven(
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<
-        (
-            crate::native_mount::MountOpenClaim,
-            Option<MountLookup>,
-            FileId,
-        ),
-        MountSourceError,
-    > {
+    ) -> Result<ProvenOpen, MountSourceError> {
         let (text, allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -190,12 +189,11 @@ where
                 };
                 return self
                     .bind_open_file(file, Some(lookup.node.file_id), generation, work)
-                    .map(|(file, bytes)| {
-                        (
-                            crate::native_mount::MountOpenClaim { file, bytes },
-                            None,
-                            lookup.node.file_id,
-                        )
+                    .map(|(file, bytes)| ProvenOpen {
+                        file: crate::native_mount::MountOpenClaim { file, bytes },
+                        lookup: None,
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        file_id: lookup.node.file_id,
                     });
             }
             Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
@@ -206,12 +204,11 @@ where
         if let Some(file) = self.detached_by_id(id)? {
             return self
                 .bind_open_file((file, 0), Some(id), generation, work)
-                .map(|(file, bytes)| {
-                    (
-                        crate::native_mount::MountOpenClaim { file, bytes },
-                        None,
-                        id,
-                    )
+                .map(|(file, bytes)| ProvenOpen {
+                    file: crate::native_mount::MountOpenClaim { file, bytes },
+                    lookup: None,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    file_id: id,
                 });
         }
         if let LazyLookup::Source { node, source } = lookup {
@@ -238,12 +235,11 @@ where
             generation,
             work,
         )
-        .map(|(file, bytes)| {
-            (
-                crate::native_mount::MountOpenClaim { file, bytes },
-                None,
-                id,
-            )
+        .map(|(file, bytes)| ProvenOpen {
+            file: crate::native_mount::MountOpenClaim { file, bytes },
+            lookup: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            file_id: id,
         })
     }
 
@@ -251,14 +247,7 @@ where
         &self,
         opened: SourceOpen,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<
-        (
-            crate::native_mount::MountOpenClaim,
-            Option<MountLookup>,
-            FileId,
-        ),
-        MountSourceError,
-    > {
+    ) -> Result<ProvenOpen, MountSourceError> {
         let SourceOpen {
             text,
             mut allocation,
@@ -305,11 +294,12 @@ where
             .entry(id)
             .or_default()
             .push(Arc::downgrade(&file));
-        Ok((
-            crate::native_mount::MountOpenClaim { file, bytes: 0 },
-            Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
-            id,
-        ))
+        Ok(ProvenOpen {
+            file: crate::native_mount::MountOpenClaim { file, bytes: 0 },
+            lookup: Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            file_id: id,
+        })
     }
 
     pub(super) fn bind_open_file(

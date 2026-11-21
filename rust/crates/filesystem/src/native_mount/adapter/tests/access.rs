@@ -779,6 +779,7 @@ fn native_access_open_checks_requested_content_rights() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn native_access_retarget_preserves_grants_and_checks_identity()
 -> Result<(), Box<dyn std::error::Error>> {

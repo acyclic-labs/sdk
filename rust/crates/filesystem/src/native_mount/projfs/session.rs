@@ -12,7 +12,6 @@ use super::{
     c_void, callbacks, capture_missing_host_ancestors, delete_through, driver_error,
     flush_callback_gate, guid_from_key, host_relative_path, lock_recover, open_notifications,
     path_from, projfs_path_suffix, reject_nested_projection, reject_stale_projection, size_of,
-    staging_path,
 };
 use super::{HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION};
 use crate::native_mount::retirement::SourceRetirementWait;

@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Read};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::Path;
 use std::time::{Duration, SystemTime};

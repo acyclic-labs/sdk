@@ -145,7 +145,6 @@ pub(super) struct Projection<'a> {
 }
 
 pub(super) struct Projector {
-    pub(super) clock: super::super::clock::Clock,
     pub(super) state: Mutex<ProjectorState>,
     pub(super) tree: Mutex<()>,
     pub(super) progress: tokio::sync::Notify,

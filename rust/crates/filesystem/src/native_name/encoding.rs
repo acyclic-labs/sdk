@@ -167,13 +167,17 @@ pub(crate) fn host_name_bytes_with_native_work(
     ))
 }
 
+/// An encoded name with the native allocation that holds it on an original request.
+#[cfg(not(target_arch = "wasm32"))]
+type EncodedSourceName = ((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>);
+
 /// Same name producer with its original source request's private stop fence.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn host_name_bytes_with_source_work<W: SourceDemandReadWork>(
     name: &OsStr,
     profile: FilesystemProfile,
     work: &mut W,
-) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
+) -> Result<EncodedSourceName, DemandError> {
     with_source_name_work(work, |accounting| {
         host_name_bytes_with_accounting(name, profile, accounting)
     })
@@ -184,7 +188,7 @@ pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
     name: &[u16],
     profile: FilesystemProfile,
     work: &mut W,
-) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
+) -> Result<EncodedSourceName, DemandError> {
     with_source_name_work(work, |accounting| {
         host_wide_name_bytes_with_accounting(name, profile, accounting)
     })
@@ -194,7 +198,7 @@ pub(crate) fn host_wide_name_bytes_with_source_work<W: SourceDemandReadWork>(
 fn with_source_name_work<W: SourceDemandReadWork>(
     work: &mut W,
     encode: impl FnOnce(&mut NameWork<'_, W>) -> Result<(NameEncoding, Vec<u8>), DemandError>,
-) -> Result<((NameEncoding, Vec<u8>), Option<crate::NativeAllocation>), DemandError> {
+) -> Result<EncodedSourceName, DemandError> {
     if !work.is_native_original() {
         return encode(&mut NameWork::Source(work)).map(|name| (name, None));
     }

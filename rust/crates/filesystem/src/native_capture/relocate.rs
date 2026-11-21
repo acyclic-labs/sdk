@@ -116,11 +116,15 @@ pub(super) async fn observed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     configuration.maximum_extent_spans,
                     meter,
                 );
+                #[cfg(unix)]
+                let parent_metadata = metadata.clone();
+                #[cfg(windows)]
+                let parent_metadata = *metadata;
                 parent
                     .prepare(
                         checkout,
                         (
-                            Some(metadata.clone()),
+                            Some(parent_metadata),
                             clone_capture_path(destination, meter)?,
                             None,
                         ),

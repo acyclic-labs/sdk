@@ -134,15 +134,14 @@ impl ProviderFiber {
             DeleteFiber(fiber);
             drop(Box::from_raw(exchange.cast_mut()));
         };
-        let recorded = if let Some(owned) = delete {
+        if let Some(owned) = delete {
             let (_, recorded) = owned.delete.attempt(operation);
             drop(owned.allocation);
             recorded.map_err(|error| materialization_failure(&error))
         } else {
             operation();
             Ok(())
-        };
-        recorded
+        }
     }
 }
 

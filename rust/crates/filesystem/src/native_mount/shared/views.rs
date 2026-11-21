@@ -65,8 +65,8 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
     }
 
     /// Admits a callback to the live view with `serial`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn enter(&self, serial: u64) -> Option<ViewLease<C>> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self
             .names
             .read()

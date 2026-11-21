@@ -243,7 +243,7 @@ impl NativeMountAllocationCustody {
         })
     }
     /// Retain already-funded backing, or drop it before returning its credit.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), any(unix, test)))]
     pub(crate) fn adopt<T>(
         value: T,
         bytes: u64,

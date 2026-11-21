@@ -212,11 +212,14 @@ impl Shared {
                     break;
                 };
                 let paired = if action == 4 && next != 0 {
-                    notification(
-                        &bytes[reads.cursor + next..],
-                        self.extended.load(Ordering::Acquire),
-                    )
-                    .filter(|(_, action, _, identity)| *action == 5 && *identity == file)
+                    reads
+                        .cursor
+                        .checked_add(next)
+                        .and_then(|start| bytes.get(start..))
+                        .and_then(|record| {
+                            notification(record, self.extended.load(Ordering::Acquire))
+                        })
+                        .filter(|(_, action, _, identity)| *action == 5 && *identity == file)
                 } else {
                     None
                 };

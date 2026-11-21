@@ -105,6 +105,8 @@ impl NativeSourceWatch {
 
     /// Whether this producer already observes the entire held subtree. This is
     /// registration coverage, not a delivery or restart-continuity guarantee.
+    /// The Windows watch reads its own recursion flag instead.
+    #[cfg(any(not(windows), test))]
     pub(crate) fn has_subtree_registration(&self) -> bool {
         #[cfg(target_os = "macos")]
         {

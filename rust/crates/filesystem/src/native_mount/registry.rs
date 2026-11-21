@@ -388,9 +388,13 @@ fn process_base() -> Option<PathBuf> {
         let identity = identity.finalize().to_hex();
         let base =
             std::env::temp_dir().join(format!("acyclic-native-mount-{}", identity.get(..32)?));
-        let mut builder = std::fs::DirBuilder::new();
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        let builder = {
+            let mut builder = builder;
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+        };
         match builder.create(&base) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

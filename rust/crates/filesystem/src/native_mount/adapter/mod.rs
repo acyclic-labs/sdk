@@ -175,6 +175,7 @@ pub(in crate::native_mount) mod access;
 mod authorized_file;
 mod handle_policy;
 mod source_factory;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::native_mount) use authorized_file::retarget_file;
 include!("work.rs");
 include!("locks.rs");

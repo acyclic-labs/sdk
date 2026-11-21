@@ -4,8 +4,11 @@
 //! installed callback guard both report access denied, but only the latter
 //! invalidates the session. Post-effect notification custody is separate: an
 //! acknowledged physical mutation must never be discarded as a reply refusal.
-use super::{CallbackFailure, MountSourceError, NativeMountError};
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+use super::NativeMountError;
+use super::{CallbackFailure, MountSourceError};
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 pub(crate) fn callback_is_terminal(error: &NativeMountError) -> bool {
     match error {
         NativeMountError::Source(error) => source_is_terminal(error),

@@ -83,10 +83,9 @@ unsafe fn split<'a>(name: PCWSTR) -> Option<(&'a [u16], PCWSTR, bool)> {
     if wide.is_empty() {
         return None;
     }
-    let (view, offset) = match wide.iter().position(|unit| *unit == SEPARATOR) {
-        Some(index) => (&wide[..index], index + 1),
-        None => (wide, wide.len()),
-    };
+    let view = wide.split(|unit| *unit == SEPARATOR).next()?;
+    // Past the separator, or at the terminator when the name has none.
+    let offset = view.len() + usize::from(view.len() < wide.len());
     // SAFETY: `offset` is within the name or at its terminator.
     let rest = PCWSTR::from_raw(unsafe { name.as_ptr().add(offset) });
     Some((view, rest, offset >= wide.len()))
@@ -359,28 +358,32 @@ impl Drop for SharedProjFsInstance {
         if let Some(context) = self.context.take() {
             // SAFETY: no view remains; stopping drains every callback.
             unsafe { PrjStopVirtualizing(context) };
-            if let Err(error) = super::cleanup::detach_root_by_path(&self.root) {
-                tracing::warn!(%error, root = %self.root.display(), "shared ProjFS root detach failed");
-            }
-            // ProjFS keeps a stopped root's directory bound to the instance
-            // even once detached: a lookup of any name in it, such as a
-            // retired view's, fails as if its provider were away. A fresh
-            // directory in its place answers every lookup itself.
-            match std::fs::remove_dir(&self.root) {
-                Ok(()) => {
-                    if let Err(error) = std::fs::create_dir(&self.root) {
-                        tracing::warn!(%error, root = %self.root.display(), "shared ProjFS root was not recreated");
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, root = %self.root.display(), "shared ProjFS root was not replaced");
-                }
-            }
+            replace_stopped_root(&self.root);
         }
         if let Err(error) = std::fs::remove_dir(&self.staging)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(%error, staging = %self.staging.display(), "shared ProjFS staging removal failed");
+        }
+    }
+}
+
+/// Detaches a stopped root and puts a fresh directory in its place. ProjFS
+/// keeps a stopped root's directory bound to the instance even once
+/// detached: a lookup of any name in it, such as a retired view's, fails as
+/// if its provider were away. A fresh directory answers every lookup itself.
+fn replace_stopped_root(root: &Path) {
+    if let Err(error) = super::cleanup::detach_root_by_path(root) {
+        tracing::warn!(%error, root = %root.display(), "shared ProjFS root detach failed");
+    }
+    match std::fs::remove_dir(root) {
+        Ok(()) => {
+            if let Err(error) = std::fs::create_dir(root) {
+                tracing::warn!(%error, root = %root.display(), "shared ProjFS root was not recreated");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, root = %root.display(), "shared ProjFS root was not replaced");
         }
     }
 }
@@ -442,7 +445,7 @@ impl SharedProjFsView {
     pub(super) fn staging_anchor(&self) -> PathBuf {
         self.instance
             .staging
-            .join(&self.directory.file_name().unwrap_or_default())
+            .join(self.directory.file_name().unwrap_or_default())
     }
 
     pub(super) fn context(&self) -> Result<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, NativeMountError> {

@@ -143,10 +143,13 @@ fn detach_root_handle(handle: &std::fs::File) -> std::io::Result<()> {
     match delete_root_tag(handle) {
         // Already detached; the control reports the Win32 code as an HRESULT.
         Err(error)
-            if error.raw_os_error().is_some_and(|code| {
-                code as u32 == ERROR_NOT_A_REPARSE_POINT
-                    || code as u32 == 0x8007_0000 | ERROR_NOT_A_REPARSE_POINT
-            }) =>
+            if error
+                .raw_os_error()
+                .map(i32::cast_unsigned)
+                .is_some_and(|code| {
+                    code == ERROR_NOT_A_REPARSE_POINT
+                        || code == 0x8007_0000 | ERROR_NOT_A_REPARSE_POINT
+                }) =>
         {
             Ok(())
         }

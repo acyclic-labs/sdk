@@ -37,15 +37,18 @@ impl MountDestinationGuard {
         }
         .encode();
         original.record_admitted(encoded)?;
-        let mut offset = 0;
-        while offset != bytes.len() {
+        let mut unwritten = bytes.as_slice();
+        while !unwritten.is_empty() {
+            let offset = bytes.len() - unwritten.len();
             let written = (&mut &*original).attempt_io(WriteOperations.delta(1), || {
-                file.seek_write(&bytes[offset..], offset as u64)
+                file.seek_write(unwritten, offset as u64)
             })?;
             if written == 0 {
                 return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
             }
-            offset += written;
+            unwritten = unwritten
+                .get(written..)
+                .ok_or(std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         }
         (&mut &*original).attempt_io(WriteOperations.delta(1), || {
             file.set_len(RECEIPT_BYTES as u64)
@@ -78,22 +81,28 @@ impl MountDestinationGuard {
             usize::try_from(length.min(16)).map_err(|_| crate::WorkError::Overflow)?
         };
         let mut bytes = [0; RECEIPT_BYTES];
-        let mut offset = 0;
-        while offset != read_length {
+        let read_bytes = bytes
+            .get_mut(..read_length)
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut unread = &mut *read_bytes;
+        while !unread.is_empty() {
+            let offset = read_length - unread.len();
             let read = (&mut &*original).attempt_io(
                 crate::WorkCounters {
                     backend_read_operations: 1,
-                    source_bytes_read: (read_length - offset) as u64,
+                    source_bytes_read: unread.len() as u64,
                     ..crate::WorkCounters::UNCHARGED
                 },
-                || file.seek_read(&mut bytes[offset..read_length], offset as u64),
+                || file.seek_read(unread, offset as u64),
             )?;
             if read == 0 {
                 return Ok(None);
             }
-            offset += read;
+            unread = std::mem::take(&mut unread)
+                .get_mut(read..)
+                .ok_or(std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         }
-        let receipt = match NativeOwnershipReceipt::decode(&bytes[..read_length], || {
+        let receipt = match NativeOwnershipReceipt::decode(read_bytes, || {
             original.charge(crate::WorkCounters {
                 bytes_hashed: HASHED_BYTES as u64,
                 ..crate::WorkCounters::UNCHARGED

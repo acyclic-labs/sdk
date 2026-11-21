@@ -278,6 +278,7 @@ impl Shared {
     }
 }
 impl NativeSourceWatch {
+    #[cfg(test)]
     pub(super) fn registration_is_recursive(&self) -> bool {
         self.shared.recursive
     }

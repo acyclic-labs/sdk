@@ -220,14 +220,13 @@ impl NativeMountSession {
     > {
         #[cfg(windows)]
         {
-            match self.driver.as_ref() {
-                Some(session) => session.start_control(work, control).map(Some),
-                None => {
-                    if matches!(control, NativeSessionControl::Revalidate) {
-                        self.revalidate(work)?;
-                    }
-                    Ok(None)
+            if let Some(session) = self.driver.as_ref() {
+                session.start_control(work, control).map(Some)
+            } else {
+                if matches!(control, NativeSessionControl::Revalidate) {
+                    self.revalidate(work)?;
                 }
+                Ok(None)
             }
         }
         #[cfg(not(windows))]

@@ -31,7 +31,7 @@ pub(super) fn regular_data_ranges(
     let dense = dense_attributes(metadata.raw.FileAttributes);
     #[cfg(test)]
     let dense = dense && !super::windows_dense_tests::force_query();
-    if !dense || metadata.len() == 0 {
+    if !dense || metadata.is_empty() {
         return allocated_data_ranges(file, 0, metadata.len(), maximum_ranges, &mut meter.clone())
             .map(Some)
             .map_err(capture_demand_error);

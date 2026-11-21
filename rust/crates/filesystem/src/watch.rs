@@ -503,7 +503,7 @@ impl Drop for NativeWatchRescan {
 
 struct NativeEventContext {
     root: PathBuf,
-    #[cfg(any(test, not(windows)))]
+    #[cfg(not(windows))]
     root_identity: NativeRootIdentity,
     profile: FilesystemProfile,
     limits: VolumeLimits,
@@ -1047,6 +1047,7 @@ fn host_hint_name(component: Component<'_>) -> Result<HintName<'_>, crate::deman
     }
 }
 
+#[cfg(unix)]
 fn namespace_hint_with_work<W: crate::demand::SourceDemandReadWork>(
     relative: &Path,
     profile: FilesystemProfile,
@@ -1534,7 +1535,7 @@ impl WindowsRootSink {
                 state.pending_rename = Some(PendingRename {
                     tracker: cookie,
                     from: path,
-                    allocation: allocation,
+                    allocation,
                 });
             }
             return Ok(());
@@ -2116,8 +2117,6 @@ impl NativeWatch {
         #[cfg(windows)]
         let context = NativeEventContext {
             root: context_root,
-            #[cfg(test)]
-            root_identity,
             profile,
             limits: options.limits,
             _root_allocation: context_allocation,
@@ -3800,7 +3799,7 @@ impl NativeWatch {
         })
     }
 
-    #[cfg(any(test, target_os = "macos"))]
+    #[cfg(any(all(test, unix), target_os = "macos"))]
     fn await_cookie_cancellable(
         &self,
         cancellation: &CancellationToken,
@@ -4398,7 +4397,7 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
     }
 }
 
-#[cfg(any(test, not(windows)))]
+#[cfg(not(windows))]
 fn accept_native_event(
     event: &notify::Result<Event>,
     context: &NativeEventContext,
@@ -4529,7 +4528,7 @@ fn accept_native_event(
     }
 }
 
-#[cfg(any(test, not(windows)))]
+#[cfg(not(windows))]
 fn validate_replayed_root_creation(
     event: &Event,
     root: &Path,

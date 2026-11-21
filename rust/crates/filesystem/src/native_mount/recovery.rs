@@ -630,14 +630,11 @@ impl NativeRecoveryState {
                 })
                 .ok_or(NativeMountError::ControlPending)
                 .and_then(|(pending, origin)| pending.settle(origin));
-            match result {
-                Ok(()) => {
-                    self.preservation.take();
-                }
-                Err(_) => {
-                    self.measured_cleanup_failed = true;
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
+            if result.is_ok() {
+                self.preservation.take();
+            } else {
+                self.measured_cleanup_failed = true;
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
         if let Some(guard) = self.guard.as_mut() {

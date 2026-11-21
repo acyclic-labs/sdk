@@ -64,29 +64,35 @@ fn live_ids(
         let mut reader = reader;
         loop {
             check(work, cxl)?;
-            let next = reader.next(&mut &*work)?;
-            let Some((entry, entry_allocation)) = next else {
+            // Bind the allocation first so it drops after the entry on every exit.
+            let Some((entry_allocation, entry)) = reader
+                .next(&mut &*work)?
+                .map(|(entry, allocation)| (allocation, entry))
+            else {
                 break;
             };
-            // Retire the entry before its allocation on every exit.
-            let entry = entry;
             #[cfg(unix)]
             let id = decode_filename(entry.name.as_encoded_bytes());
             #[cfg(windows)]
-            let id = {
+            let id = 'ascii: {
                 let mut ascii = [0_u8; 37];
-                if entry.name.len() > ascii.len() || entry.name.iter().any(|unit| *unit > 127) {
-                    None
-                } else {
-                    work.charge(crate::WorkCounters {
-                        bytes_copied: entry.name.len() as u64,
-                        ..Default::default()
-                    })?;
-                    for (target, unit) in ascii.iter_mut().zip(&entry.name) {
-                        *target = *unit as u8;
-                    }
-                    decode_filename(&ascii[..entry.name.len()])
+                let Some(name) = ascii.get_mut(..entry.name.len()) else {
+                    break 'ascii None;
+                };
+                if entry.name.iter().any(|unit| *unit > 127) {
+                    break 'ascii None;
                 }
+                work.charge(crate::WorkCounters {
+                    bytes_copied: entry.name.len() as u64,
+                    ..Default::default()
+                })?;
+                for (target, unit) in name.iter_mut().zip(&entry.name) {
+                    let Ok(byte) = u8::try_from(*unit) else {
+                        break 'ascii None;
+                    };
+                    *target = byte;
+                }
+                decode_filename(name)
             };
             drop(entry);
             drop(entry_allocation);

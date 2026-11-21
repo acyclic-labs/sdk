@@ -53,7 +53,7 @@ impl CallbackGate {
     }
 
     /// Admits no callback from now on; admitted ones run to completion.
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     pub(crate) fn close(&self) {
         self.state
             .lock()
@@ -105,5 +105,21 @@ impl Drop for CallbackPass<'_> {
         if emptied {
             self.gate.drained.notify_all();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CallbackGate;
+
+    /// A closed gate admits no callback, and one admitted before the close still drains.
+    #[test]
+    fn a_closed_gate_admits_nothing_and_drains_earlier_callbacks() {
+        let gate = CallbackGate::new();
+        let earlier = gate.enter().expect("open");
+        gate.close();
+        assert!(gate.enter().is_none(), "a closed gate admitted a callback");
+        drop(earlier);
+        assert_eq!(gate.drain(|| Err("waited")), Ok(()));
     }
 }

@@ -14,6 +14,7 @@ pub(super) const ITEM: WorkCounters = WorkCounters {
 };
 
 /// Examining `count` items is one ledger charge, not one lock per item.
+#[cfg(any(unix, all(test, not(loom))))]
 pub(super) fn items(count: u64) -> WorkCounters {
     WorkCounters {
         items_examined: count,
@@ -90,12 +91,12 @@ pub(crate) trait NativeHostWork {
         self.started_io(delta)?;
         operation().map_err(Into::into)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
     #[cfg(any(target_os = "linux", all(test, unix)))]
     #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,
@@ -187,7 +188,7 @@ impl<W: DemandWorkContext> NativeHostWork for W {
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> {
         self.with_demand_work(|work| work.release(bytes))
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
         self.with_demand_work(DemandWork::reserve_cleanup_write)
     }
@@ -203,7 +204,7 @@ impl<W: DemandWorkContext> NativeHostWork for W {
             }
         });
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: u64,
@@ -278,7 +279,7 @@ impl NativeHostWork for &NativeMaterializationWork {
         drop(allocation);
         Ok(())
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         NativeMaterializationWork::reserve_cleanup_write(self)
     }
@@ -287,7 +288,7 @@ impl NativeHostWork for &NativeMaterializationWork {
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,

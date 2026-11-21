@@ -67,7 +67,7 @@ pub struct PinnedPath {
 }
 
 impl PinnedPath {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn volume(&self) -> &str {
         self.view.volume()
     }

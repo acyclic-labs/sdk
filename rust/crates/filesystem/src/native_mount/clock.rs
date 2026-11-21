@@ -30,13 +30,10 @@ impl Clock {
         SystemTime::now()
     }
 
-    #[cfg(windows)]
-    pub(super) fn instant(&self) -> std::time::Instant {
-        #[cfg(feature = "test-support")]
-        if let Some(clock) = &self.seeded {
-            return clock.instant();
-        }
-        std::time::Instant::now()
+    #[cfg(test)]
+    #[cfg(all(target_os = "macos", feature = "test-support"))]
+    pub(super) fn elapsed(&self) -> Option<Duration> {
+        self.seeded.as_ref().map(|clock| clock.elapsed())
     }
 }
 

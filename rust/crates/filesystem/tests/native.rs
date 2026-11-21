@@ -66,7 +66,7 @@ mod native_source_watch_custody;
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 #[cfg(not(loom))]
 use {
-    acyclic_fs::{PublicationPermit, WorkspaceError, kernel},
+    acyclic_fs::{PublicationPermit, WorkspaceError},
     acyclic_fs_work::performance::{OperationReceipt, WorkCounters},
 };
 

@@ -5,6 +5,7 @@ struct AuthorizedFile {
     file: Arc<dyn MountOpenFile>,
     permissions: PinnedPath,
     policy: Arc<dyn super::handle_policy::HandlePolicy>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     file_id: FileId,
     created: bool,
     _allocation: crate::NativeAllocation,
@@ -14,7 +15,7 @@ pub(super) fn authorize_file(
     (file, bytes): (Arc<dyn MountOpenFile>, u64),
     permissions: PinnedPath,
     policy: Arc<dyn super::handle_policy::HandlePolicy>,
-    file_id: FileId,
+    #[cfg(any(target_os = "linux", target_os = "macos"))] file_id: FileId,
     created: bool,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
@@ -28,6 +29,7 @@ pub(super) fn authorize_file(
             file,
             permissions,
             policy,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             file_id,
             created,
             _allocation: allocation,
@@ -36,6 +38,8 @@ pub(super) fn authorize_file(
     ))
 }
 
+/// Rebinds a Unix handle detached from its path; Windows never retargets a handle.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::native_mount) fn retarget_file(
     old: &dyn MountOpenFile,
     replacement: &dyn MountOpenFile,
