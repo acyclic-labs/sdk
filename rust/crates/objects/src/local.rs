@@ -27,13 +27,13 @@ use crate::{
     Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
 };
 use acyclic_log_frame::LogFrame;
-use acyclic_native_runtime::{PersistenceKey, spawn_persistence};
+use acyclic_native_runtime::{LogFlush, PersistenceKey, spawn_persistence};
 use acyclic_stream_contract::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::ops::{Bound, Range};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[cfg(feature = "test-support")]
@@ -247,7 +247,7 @@ struct Log {
     end: u64,
     /// Frame bytes of live puts; the rest of the log is dead.
     live: u64,
-    /// Writes appended so far, compared against [`Shared::synced`].
+    /// Writes appended so far, compared against [`Shared::flush`].
     written: u64,
 }
 
@@ -261,8 +261,8 @@ struct Shared {
     /// Each key's slot in the current log. Changed only under `log`, after
     /// it; never held over disk work, callbacks or awaits.
     index: Mutex<BTreeMap<String, Entry>>,
-    /// Writes made durable so far.
-    synced: AtomicU64,
+    /// Coordinates physical flushes of the log's accepted prefixes.
+    flush: LogFlush,
     /// Whether the root opened unclean and its repair has not settled.
     recovered: AtomicBool,
     /// Whether a write or flush failed after touching the log. The log may
@@ -378,17 +378,14 @@ impl Shared {
     /// Makes every write appended before it durable with one data flush; a
     /// flush with nothing new is free.
     fn sync(&self) -> std::io::Result<()> {
-        self.usable()?;
-        let (file, written) = {
-            let log = self.log();
-            (Arc::clone(&log.file), log.written)
-        };
-        if self.synced.load(Ordering::Acquire) >= written {
-            return Ok(());
-        }
-        self.stop_on_error(self.sync_file(&file))?;
-        self.synced.fetch_max(written, Ordering::AcqRel);
-        Ok(())
+        self.flush.flush(
+            || {
+                self.usable()?;
+                let log = self.log();
+                Ok((log.written, Arc::clone(&log.file)))
+            },
+            |file| self.stop_on_error(self.sync_file(&file)),
+        )
     }
 
     /// Appends one frame, returning where it lies.
@@ -564,7 +561,7 @@ impl Shared {
         // The replaced index is dropped after its lock is released.
         let replaced = std::mem::replace(&mut *self.index(), index);
         drop(replaced);
-        self.synced.fetch_max(log.written, Ordering::AcqRel);
+        self.flush.publish(log.written);
         Ok(())
     }
 }
@@ -897,7 +894,7 @@ fn open_root(
             written: 0,
         }),
         index: Mutex::new(index),
-        synced: AtomicU64::new(0),
+        flush: LogFlush::default(),
         recovered: AtomicBool::new(recovered),
         stopped: AtomicBool::new(false),
         #[cfg(test)]
