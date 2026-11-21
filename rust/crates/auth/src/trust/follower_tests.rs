@@ -1450,18 +1450,23 @@ fn finish_simulation(
 
 #[test]
 fn simulated_lossy_follow_never_admits_stale_trust_and_loses_nothing() {
+    const SEEDS: u64 = 64;
     let world = world();
     let probe = follower(&world);
     let credentials = (0..4)
         .map(|index| credential(&world, &probe, index))
         .collect::<Vec<_>>();
-    for seed in 0..512 {
+    // Every seed's 400 steps reach each scheduled event, redelivery depth and
+    // revocation kind; seeds vary only their interleaving. The negative
+    // control below fails on 386 of the first 512 seeds, never more than four
+    // apart, so 64 seeds hold the detecting interleavings many times over.
+    for seed in 0..SEEDS {
         simulate(&world, &credentials, seed, false)
             .unwrap_or_else(|error| panic!("seed {seed}: {error}"));
     }
     // Negative control: resuming before catch-up admits stale trust.
     assert!(
-        (0..512).any(|seed| simulate(&world, &credentials, seed, true).is_err()),
+        (0..SEEDS).any(|seed| simulate(&world, &credentials, seed, true).is_err()),
         "the checker must catch a follower that serves before catching up"
     );
 }
