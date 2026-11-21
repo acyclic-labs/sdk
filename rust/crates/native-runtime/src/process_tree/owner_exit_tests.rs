@@ -149,6 +149,73 @@ fn a_plain_child_outlives_its_killed_owner() {
     assert!(!warded, "a plain child claimed tree membership");
 }
 
+const ACTION_MARKER: &str = "ACYCLIC_EXIT_ACTION_MARKER";
+const ACTION_HELPER: &str = "process_tree::owner_exit_tests::exit_action_owner";
+
+fn marker_action(path: &std::path::Path) -> super::ProcessExitAction {
+    let mut command = ProcessCommand::new("/usr/bin/touch");
+    command
+        .arg(path)
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
+    let meter: std::sync::Arc<dyn crate::NativeReadMeter> = std::sync::Arc::new(
+        crate::test_fixtures::ReadBudgetMeter::new(u64::MAX, u64::MAX),
+    );
+    super::ProcessExitAction::spawn(&command, &meter).expect("admit marker action")
+}
+
+#[test]
+fn exit_action_owner() {
+    let Some(marker) = std::env::var_os(ACTION_MARKER) else {
+        return;
+    };
+    let action = marker_action(std::path::Path::new(&marker));
+    println!(
+        "\nACYCLIC_EXIT_ACTION={} {}",
+        std::process::id(),
+        action.id()
+    );
+    loop {
+        thread::park();
+    }
+}
+
+#[test]
+fn exit_action_completes_after_owner_sigkill() {
+    let temp = tempfile::tempdir().expect("marker directory");
+    let marker = temp.path().join("completed");
+    let mut command = ProcessCommand::new(std::env::current_exe().expect("test executable"));
+    command
+        .args(["--exact", ACTION_HELPER, "--nocapture"])
+        .env(ACTION_MARKER, &marker)
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::null());
+    let mut tree = ProcessTree::spawn(&mut command).expect("start action owner in custody");
+    let stdout = tree.take_stdout().expect("owner output");
+    let publication = BufReader::new(stdout)
+        .lines()
+        .map(|line| line.expect("read owner output"))
+        .find_map(|line| line.strip_prefix("ACYCLIC_EXIT_ACTION=").map(str::to_owned))
+        .expect("owner published admitted action");
+    let (owner, action) = publication.split_once(' ').expect("owner and action PIDs");
+    let owner = Watch::new(owner.parse().expect("owner PID")).expect("owner exit watch");
+    let action = Watch::new(action.parse().expect("action PID")).expect("action exit watch");
+    owner.kill();
+    action.wait();
+    assert!(marker.is_file());
+}
+
+#[test]
+fn exit_action_cancel_waits_without_running_command() {
+    let temp = tempfile::tempdir().expect("marker directory");
+    let marker = temp.path().join("cancelled");
+    let mut action = marker_action(&marker);
+    action.cancel().expect("cancel and await action");
+    assert!(!marker.exists());
+}
+
 /// An exit watch on one process, independent of its parentage.
 struct Watch {
     fd: std::os::fd::OwnedFd,

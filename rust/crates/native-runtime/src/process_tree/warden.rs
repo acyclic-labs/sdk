@@ -624,6 +624,81 @@ fn owner_watch(owner: Pid) -> Result<Fd, Errno> {
     }
 }
 
+/// A committed cancellation byte wins even after the owner's exit.
+pub(super) fn release_decision(release: Fd, owner_exited: bool) -> Result<bool, Errno> {
+    loop {
+        match sys::read(release, &mut [0]) {
+            Ok(count) => return Ok(count == 0),
+            Err(Errno(sys::EINTR)) => {}
+            Err(Errno(sys::EAGAIN)) if owner_exited => return Ok(true),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// EOF proves that every admitted producer has closed its activity endpoint.
+pub(super) fn await_activity(activity: Fd) -> Result<(), Errno> {
+    loop {
+        match sys::read(activity, &mut [0; 256]) {
+            Ok(0) => return Ok(()),
+            Ok(_) | Err(Errno(sys::EINTR)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Arms the action warden, then returns only when it should exec.
+#[cfg(target_os = "macos")]
+pub(super) fn await_release(
+    owner: Pid,
+    release: Fd,
+    activity: Fd,
+    admission: Fd,
+) -> Result<(), Errno> {
+    if sys::getppid() != owner {
+        return Err(Errno(libc::ESRCH));
+    }
+    // SAFETY: release is a live pipe read end owned by the action.
+    if unsafe { libc::fcntl(release, libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+        return Err(last_error());
+    }
+    let queue = owner_watch(owner)?;
+    if sys::getppid() != owner {
+        return Err(Errno(libc::ESRCH));
+    }
+    apply(
+        queue,
+        &[libc::kevent {
+            ident: usize::try_from(release).map_err(|_| Errno(sys::EINVAL))?,
+            filter: libc::EVFILT_READ,
+            flags: libc::EV_ADD,
+            fflags: 0,
+            data: 0,
+            udata: core::ptr::null_mut(),
+        }],
+    )?;
+    close_except(
+        [0, 1, 2, queue, release, activity, admission],
+        sys::getpid(),
+    );
+    let result = (|| {
+        write_full(admission, &[1])?;
+        sys::close(admission);
+        let event = next_event(queue)?;
+        sys::close(queue);
+        let execute = release_decision(release, matches!(event, Event::Exit(_)))?;
+        sys::close(release);
+        await_activity(activity)?;
+        sys::close(activity);
+        Ok(execute)
+    })();
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => sys::exit(0),
+        Err(Errno(_)) => sys::exit(127),
+    }
+}
+
 #[cfg(target_vendor = "apple")]
 fn last_error() -> Errno {
     Errno(

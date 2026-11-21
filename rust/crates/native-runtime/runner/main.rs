@@ -361,13 +361,7 @@ fn released(spec: &Spec, activity: Fd) -> ! {
         let execute = await_release(spec.directory, owner);
         sys::close(owner);
         let execute = execute?;
-        loop {
-            match sys::read(activity, &mut [0; 256]) {
-                Ok(0) => break,
-                Ok(_) | Err(Errno(sys::EINTR)) => {}
-                Err(error) => return Err(error),
-            }
-        }
+        warden::await_activity(activity)?;
         sys::close(spec.directory);
         sys::close(activity);
         if execute {
@@ -406,12 +400,7 @@ fn await_release(release: Fd, owner: Fd) -> Result<bool, Errno> {
             Err(Errno(sys::EINTR)) => continue,
             Err(error) => return Err(error),
         }
-        match sys::read(release, &mut [0]) {
-            Ok(count) => return Ok(count == 0),
-            Err(Errno(sys::EAGAIN)) if ready[1].ready() => return Ok(true),
-            Err(Errno(sys::EINTR)) => {}
-            Err(error) => return Err(error),
-        }
+        return warden::release_decision(release, ready[1].ready());
     }
 }
 

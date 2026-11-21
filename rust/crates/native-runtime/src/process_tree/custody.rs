@@ -247,7 +247,7 @@ impl ProcessCustody {
     /// Names `action`, an owner-exit action this process started, to the
     /// nearest tree's warden, which spares and awaits it even when the tree
     /// is cancelled: the loss of its owner is what it runs for.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn admit_action(action: u32) -> io::Result<()> {
         Self::admit_as(super::record::ACTION, action)
     }

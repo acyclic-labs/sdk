@@ -92,7 +92,7 @@ mod packet_device;
 mod packet_device_receipt;
 #[cfg(unix)]
 mod record;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod release;
 #[cfg(target_os = "linux")]
 mod runner;
@@ -104,7 +104,7 @@ mod packet_device_reply;
 pub use packet_device_reply::receive_packet_device_reply_for_test;
 #[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 mod runner_fuzz;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use release::ProcessExitAction;
 #[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 pub use runner_fuzz::fuzz_runner_request;

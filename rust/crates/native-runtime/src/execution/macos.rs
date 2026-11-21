@@ -388,7 +388,7 @@ impl SealedExec {
     }
 
     /// In the forked child: replaces it with the program; returns only on failure.
-    fn enter(&self) -> io::Result<()> {
+    pub(crate) fn enter(&self) -> io::Result<()> {
         // The exec refuses to inherit a close-on-exec descriptor (EBADF), so
         // the fork child clears the flag on its own copy only.
         if let Some(descriptor) = self.inherited {

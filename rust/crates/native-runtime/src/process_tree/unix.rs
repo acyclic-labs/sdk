@@ -36,7 +36,7 @@ impl Child {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn from_std(mut child: std::process::Child) -> Self {
+    pub(super) fn from_std(mut child: std::process::Child) -> Self {
         // A Unix Child ID originated as pid_t at this same SDK boundary.
         let pid = child.id() as libc::pid_t;
         Self::new(

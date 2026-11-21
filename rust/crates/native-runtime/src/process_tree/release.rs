@@ -1,7 +1,6 @@
-//! An admitted host action survives loss of its owner, using the original
-//! static process runner rather than forking a multithreaded host.
+//! Common admission, ownership and completion for owner-exit actions.
 
-use super::{ProcessCommand, command::Stdio, platform::Child, runner};
+use super::{ProcessCommand, command::Stdio, platform::Child};
 use crate::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
 };
@@ -12,7 +11,7 @@ use std::sync::Arc;
 type Control = NativeOperationReservation<Arc<dyn NativeReadMeter>>;
 
 /// A command admitted before an external effect, executed after explicit
-/// release or a pidfd notification of owner exit. Its activity descriptors
+/// release or a kernel notification of owner exit. Its activity descriptors
 /// delay execution until every admitted producer has closed its descriptor.
 /// All owner endpoints are close-on-exec.
 ///
@@ -59,28 +58,22 @@ impl ProcessExitAction {
         let (released, release) = super::process_control_attempt(
             Some(meter.as_ref()),
             NativeOperationKind::Write,
-            runner::pipe,
+            adapter::pipe,
         )?;
         let (producers, activity) = super::process_control_attempt(
             Some(meter.as_ref()),
             NativeOperationKind::Write,
-            runner::pipe,
+            adapter::pipe,
         )?;
         let (started, recorded) = super::pipe_operation_attempt(
             Some(meter.as_ref()),
             NativeOperationKind::Write,
-            || {
-                runner::start_with_release(
-                    command,
-                    &File::from(released),
-                    Some(&File::from(producers)),
-                )
-            },
+            || adapter::start(command, &released, &producers),
         )?;
         let (child, admitted) = started?;
-        let action = Self {
-            release: Some(release.into()),
-            activity: Some(activity.into()),
+        let mut action = Self {
+            release: Some(release),
+            activity: Some(activity),
             child,
             cancel: Some(cancel),
             cancel_byte: Some(cancel_byte),
@@ -88,12 +81,10 @@ impl ProcessExitAction {
             terminal: None,
             meter: original,
         };
-        admitted?;
-        recorded?;
-        // The enclosing tree spares the action its drain, even a cancelling
-        // one, and awaits it.
-        let mut action = action;
-        if let Err(error) = super::ProcessCustody::admit_action(action.id()) {
+        let admission = admitted
+            .and(recorded)
+            .and_then(|()| super::ProcessCustody::admit_action(action.id()));
+        if let Err(error) = admission {
             let _ = action.cancel();
             return Err(error);
         }
@@ -175,5 +166,97 @@ impl Drop for ProcessExitAction {
         if let Err(error) = self.finish() {
             tracing::error!(%error, "owner-exit action did not complete");
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod adapter {
+    use super::{Child, File, ProcessCommand, io};
+    use crate::process_tree::runner;
+
+    pub(super) fn pipe() -> io::Result<(File, File)> {
+        runner::pipe().map(|(read, write)| (read.into(), write.into()))
+    }
+
+    pub(super) fn start(
+        command: &ProcessCommand,
+        release: &File,
+        activity: &File,
+    ) -> io::Result<(Child, io::Result<()>)> {
+        runner::start_with_release(command, release, Some(activity))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod adapter {
+    use super::{Child, File, ProcessCommand, io};
+    use std::io::Read as _;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::process::CommandExt as _;
+
+    pub(super) fn pipe() -> io::Result<(File, File)> {
+        let (read, write) = io::pipe()?;
+        Ok((above_stdio(read.into())?, above_stdio(write.into())?))
+    }
+
+    fn above_stdio(fd: OwnedFd) -> io::Result<File> {
+        if fd.as_raw_fd() >= 3 {
+            return Ok(fd.into());
+        }
+        // SAFETY: duplicate a live descriptor away from std's stream remapping.
+        let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if copy < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fcntl returned a new owned descriptor.
+        Ok(unsafe { File::from_raw_fd(copy) })
+    }
+
+    pub(super) fn start(
+        command: &ProcessCommand,
+        release: &File,
+        activity: &File,
+    ) -> io::Result<(Child, io::Result<()>)> {
+        if command.unix.process_group.is_some_and(|group| group != 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "an owner-exit action leads its own process group",
+            ));
+        }
+        let mut native = command.to_std()?;
+        native.process_group(0);
+        native.env_remove(crate::process_tree::custody::CHANNEL);
+        let environment = command
+            .env
+            .resolved()
+            .into_iter()
+            .map(|(key, value)| (key.name, value))
+            .filter(|(key, _)| key != crate::process_tree::custody::CHANNEL);
+        let exec =
+            crate::execution::SealedExec::new(&native, command.unix.arg0.as_deref(), environment)?;
+        let (mut admitted, admission) = pipe()?;
+        let owner =
+            libc::pid_t::try_from(std::process::id()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        let (release, activity, admission_fd) = (
+            release.as_raw_fd(),
+            activity.as_raw_fd(),
+            admission.as_raw_fd(),
+        );
+        // SAFETY: the descriptors remain live through spawn and the hook
+        // only uses native calls until it returns for sealed exec.
+        unsafe {
+            native.pre_exec(move || {
+                crate::process_tree::warden::await_release(owner, release, activity, admission_fd)
+                    .map_err(io::Error::from)?;
+                let _ = exec.enter();
+                libc::_exit(127);
+            });
+        }
+        let child = Child::from_std(native.spawn()?);
+        drop(admission);
+        // The warden closes std's exec-status pipe before waiting. This
+        // separate acknowledgement proves its owner watch was armed.
+        let result = admitted.read_exact(&mut [0]);
+        Ok((child, result))
     }
 }
