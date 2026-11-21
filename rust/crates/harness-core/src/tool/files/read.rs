@@ -404,7 +404,10 @@ mod checks {
             let mut cursor = 0;
             let mut assembled = String::new();
             loop {
-                let page = TextPage { file: FileReadSource::Content(file.clone()), source: &source[cursor..],
+                let remaining = source.get(cursor..).ok_or_else(|| {
+                    TestCaseError::fail(format!("invalid UTF-8 page offset {cursor}"))
+                })?;
+                let page = TextPage { file: FileReadSource::Content(file.clone()), source: remaining,
                     interval: (cursor as u64, source.len() as u64) };
                 let (result, _hold) = text_result(page, file.path(), false, Some(maximum), None, None).unwrap();
                 let invocation = ToolInvocation {
@@ -416,7 +419,7 @@ mod checks {
                 prop_assert!(serde_json::to_vec(&value).unwrap().len() as u64 <= maximum);
                 tool.definition.validate_projection(&value, crate::conversation::Limits::default(), None).unwrap();
                 let shown = value["value"]["text"].as_str().unwrap();
-                prop_assert!(source[cursor..].starts_with(shown));
+                prop_assert!(remaining.starts_with(shown));
                 assembled.push_str(shown);
                 prop_assert_eq!(result.value["page"]["total"].as_u64(), Some(source.len() as u64));
                 if result.value["page"]["eof"] == true {

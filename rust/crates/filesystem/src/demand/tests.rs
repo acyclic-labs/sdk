@@ -1631,16 +1631,13 @@ proptest::proptest! {
     ]) {
         let old = serde_json::to_vec(&Some(nanos)).unwrap();
         let decoded = serde_json::from_slice::<Option<SourceTimestamp>>(&old);
-        match SourceTimestamp::from_nanos(nanos) {
-            Some(timestamp) => {
-                proptest::prop_assert_eq!(timestamp.nanos(), nanos);
-                proptest::prop_assert_eq!(serde_json::to_vec(&Some(timestamp)).unwrap(), old);
-                proptest::prop_assert_eq!(decoded.unwrap(), Some(timestamp));
-            }
-            None => {
-                proptest::prop_assert!(i64::try_from(nanos.div_euclid(1_000_000_000)).is_err());
-                proptest::prop_assert!(decoded.is_err());
-            }
+        if let Some(timestamp) = SourceTimestamp::from_nanos(nanos) {
+            proptest::prop_assert_eq!(timestamp.nanos(), nanos);
+            proptest::prop_assert_eq!(serde_json::to_vec(&Some(timestamp)).unwrap(), old);
+            proptest::prop_assert_eq!(decoded.unwrap(), Some(timestamp));
+        } else {
+            proptest::prop_assert!(i64::try_from(nanos.div_euclid(1_000_000_000)).is_err());
+            proptest::prop_assert!(decoded.is_err());
         }
     }
 }

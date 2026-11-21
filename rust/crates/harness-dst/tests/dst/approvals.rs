@@ -339,7 +339,11 @@ async fn run_variant(
 /// open twelve harnesses and outlast the per-case limit. The outcome varies
 /// fastest, then the cut, then the archive.
 fn variant(seed: u64) -> (&'static str, Cut, bool) {
-    let outcome = if seed % 2 == 0 { "approve" } else { "deny" };
+    let outcome = if seed.is_multiple_of(2) {
+        "approve"
+    } else {
+        "deny"
+    };
     let cut = match (seed / 2) % 3 {
         0 => Cut::None,
         1 => Cut::BeforeDecision,
