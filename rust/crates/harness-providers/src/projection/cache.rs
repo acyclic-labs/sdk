@@ -25,11 +25,13 @@ const _: () = assert!(PREFIX_KEY.len() + 2 * KEY_BYTES <= MAX_KEY);
 /// The one `prompt_cache_key` formatter: a versioned tag and a digest prefix,
 /// within the provider's length limit, in one allocation.
 pub(super) fn key(tag: &str, digest: [u8; 32]) -> String {
-    let hex = blake3::Hash::from(digest).to_hex();
-    let hex = &hex.as_str()[..2 * KEY_BYTES];
-    let mut key = String::with_capacity(tag.len() + hex.len());
+    let [prefix @ .., _, _, _, _, _, _, _, _]: [u8; 32] = digest;
+    let mut key = String::with_capacity(tag.len() + 2 * KEY_BYTES);
     key.push_str(tag);
-    key.push_str(hex);
+    for byte in prefix {
+        key.extend(char::from_digit(u32::from(byte >> 4), 16));
+        key.extend(char::from_digit(u32::from(byte & 0xf), 16));
+    }
     key
 }
 

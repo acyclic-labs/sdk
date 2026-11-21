@@ -32,18 +32,28 @@ fn ids(
         .flat_map(|message| message.content.parts())
         .filter_map(move |part| match part {
             ModelContentPart::ToolCall(call) => {
-                let binding = &call.metadata["provider_call"];
-                let native = (binding["provider"].as_str() == Some(family(adapter)))
-                    .then(|| binding["id"].as_str())
-                    .flatten();
+                let binding = call
+                    .metadata
+                    .get("provider_call")
+                    .unwrap_or(&serde_json::Value::Null);
+                let native = (binding.get("provider").and_then(serde_json::Value::as_str)
+                    == Some(family(adapter)))
+                .then(|| binding.get("id").and_then(serde_json::Value::as_str))
+                .flatten();
                 Some((
                     call.call_id.as_str(),
                     native,
                     adapter == Adapter::Responses
-                        && binding["provider"].as_str() == Some(family(adapter))
-                        && call.metadata["freeform"] == true,
+                        && binding.get("provider").and_then(serde_json::Value::as_str)
+                            == Some(family(adapter))
+                        && call
+                            .metadata
+                            .get("freeform")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true),
                     adapter == Adapter::Gemini
-                        && binding["provider"].as_str() == Some(family(adapter))
+                        && binding.get("provider").and_then(serde_json::Value::as_str)
+                            == Some(family(adapter))
                         && binding.get("id").is_some_and(serde_json::Value::is_null),
                 ))
             }
@@ -94,17 +104,17 @@ impl<'a> CallIds<'a> {
         bindings
             .sort_unstable_by(|(a_key, a), (b_key, b)| a.wire.cmp(&b.wire).then(a_key.cmp(b_key)));
         let mut start = 0;
-        while start < bindings.len() {
-            let mut end = start + 1;
-            while end < bindings.len() && bindings[start].1.wire == bindings[end].1.wire {
-                end += 1;
-            }
-            if bindings[start].1.wire.is_empty() || end - start > 1 {
-                for (offset, (_, binding)) in bindings[start..end].iter_mut().enumerate() {
+        for group in bindings.chunk_by_mut(|(_, left), (_, right)| left.wire == right.wire) {
+            if group.len() > 1
+                || group
+                    .first()
+                    .is_some_and(|(_, first)| first.wire.is_empty())
+            {
+                for (offset, (_, binding)) in group.iter_mut().enumerate() {
                     binding.wire = Cow::Owned(format!("{PREFIX}{}", start + offset));
                 }
             }
-            start = end;
+            start += group.len();
         }
         Ok(Self(bindings.into_iter().collect()))
     }

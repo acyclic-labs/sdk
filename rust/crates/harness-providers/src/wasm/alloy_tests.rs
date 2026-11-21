@@ -88,7 +88,7 @@ fn parity(
         ordinal,
         role,
     };
-    let expected = native.select(turn);
+    let expected = native.select(turn).unwrap();
     let selected = browser
         .select(
             &operation_id.to_string(),

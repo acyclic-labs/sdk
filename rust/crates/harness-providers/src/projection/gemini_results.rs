@@ -7,15 +7,15 @@ pub(super) fn order(messages: &mut [Message<'_>]) {
     for index in 1..messages.len() {
         let (previous, next) = messages.split_at_mut(index);
         if let (
-            Message::Gemini {
+            Some(Message::Gemini {
                 role: "model",
                 parts: calls,
-            },
-            Message::Gemini {
+            }),
+            Some(Message::Gemini {
                 role: "user",
                 parts: results,
-            },
-        ) = (&previous[index - 1], &mut next[0])
+            }),
+        ) = (previous.last(), next.first_mut())
         {
             order_results(calls, results);
         }
@@ -49,7 +49,10 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
     // Already answered: the raw leading parts are exactly the responses in
     // call order, so text never interrupts the exchange. This path borrows
     // both sequences and allocates nothing.
-    if answered(calls.clone(), results[..count].iter().map_while(response)) {
+    if answered(
+        calls.clone(),
+        results.iter().take(count).map_while(response),
+    ) {
         return;
     }
     let positions: HashMap<_, _> = calls
@@ -65,7 +68,10 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
     for result in results.iter() {
         let position = response(result).and_then(|key| positions.get(&key).copied());
         ranks.push(if let Some(position) = position {
-            if std::mem::replace(&mut seen[position], true) {
+            let Some(seen) = seen.get_mut(position) else {
+                return;
+            };
+            if std::mem::replace(seen, true) {
                 return;
             }
             position
@@ -81,8 +87,9 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
         return;
     }
     for index in 0..ranks.len() {
-        while ranks[index] != index {
-            let destination = ranks[index];
+        while let Some(&destination) = ranks.get(index)
+            && destination != index
+        {
             ranks.swap(index, destination);
             results.swap(index, destination);
         }

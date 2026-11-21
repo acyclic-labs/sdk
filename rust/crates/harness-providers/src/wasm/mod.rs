@@ -23,7 +23,7 @@ fn error(error: impl std::fmt::Display) -> JsValue {
     js_sys::Error::new(&error.to_string()).into()
 }
 
-fn model_error(cause: acyclic_harness_core::Error) -> JsValue {
+fn model_error(cause: &acyclic_harness_core::Error) -> JsValue {
     let error = js_sys::Error::new(&cause.to_string());
     let _ = Reflect::set(&error, &"code".into(), &(cause.code() as i32).into());
     error.into()
@@ -113,8 +113,10 @@ impl WasmProviderRegistry {
         let limits: Limits = from_js(limits)?;
         limits.validate(&mut None).map_err(error)?;
         let transport = fetch.map_or_else(BrowserTransport::lazy_global, BrowserTransport::new);
-        let mut registry =
-            Registry::with_transport(Credentials::explicit(keys), Arc::new(transport));
+        let mut registry = Registry::with_transport(
+            Credentials::explicit(keys),
+            acyclic_stream::ProviderOwner::new(transport),
+        );
         if let Some(reader) = reader {
             registry = registry.with_content(
                 Arc::new(acyclic_harness::BrowserContentReader(reader)),
@@ -143,18 +145,20 @@ impl WasmProviderRegistry {
     ) -> Result<(), JsValue> {
         self.registry
             .register_config(provider, from_js::<ProviderConfig>(config)?)
-            .map_err(model_error)
+            .map_err(|cause| model_error(&cause))
     }
 
     pub fn resolve(&self, selection: &str) -> Result<WasmModelProvider, JsValue> {
         let provider = match self
             .registry
             .scripted_binding(selection)
-            .map_err(model_error)?
+            .map_err(|cause| model_error(&cause))?
         {
             Some(binding) => ConfiguredModel::Workspace(binding),
-            None => ConfiguredModel::Endpoint(Arc::new(
-                self.registry.resolve(selection).map_err(model_error)?,
+            None => ConfiguredModel::Endpoint(acyclic_stream::ProviderOwner::new(
+                self.registry
+                    .resolve(selection)
+                    .map_err(|cause| model_error(&cause))?,
             )),
         };
         Ok(WasmModelProvider {
@@ -177,7 +181,7 @@ impl WasmProviderRegistry {
                     from_js::<AlloySpec>(spec)?,
                     from_js::<ModelFeatures>(required)?,
                 )
-                .map_err(model_error)?,
+                .map_err(|cause| model_error(&cause))?,
             limits: self.limits,
         })
     }
@@ -216,6 +220,7 @@ impl WasmModelAlloy {
                         ordinal,
                         role,
                     })
+                    .map_err(|cause| model_error(&cause))?
                     .clone(),
             ),
             limits: self.limits,
@@ -231,7 +236,7 @@ pub struct WasmModelProvider {
 }
 
 enum ConfiguredModel {
-    Endpoint(Arc<ResolvedModel>),
+    Endpoint(acyclic_stream::ProviderOwner<ResolvedModel>),
     Workspace(ModelBinding),
 }
 
@@ -314,7 +319,7 @@ impl WasmModelProvider {
             async {
                 crate::prepared::PreparedInput::new(provider.clone(), admitted)
                     .await
-                    .map_err(model_error)
+                    .map_err(|cause| model_error(&cause))
             },
             signal.clone(),
         )

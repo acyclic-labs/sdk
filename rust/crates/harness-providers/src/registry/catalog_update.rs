@@ -69,7 +69,7 @@ impl Registry {
                 } else {
                     self.selected_credential(provider, entry)?
                 };
-                let counted = selection::counts_input(entry, name, credential);
+                let counted = selection::counts_input(entry, name, &credential);
                 #[cfg(all(test, not(target_arch = "wasm32")))]
                 let counted = if tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get) {
                     Ok(())

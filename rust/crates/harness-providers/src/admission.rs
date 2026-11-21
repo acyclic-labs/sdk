@@ -265,7 +265,10 @@ impl Gate {
                         let Some(index) = state.position(ticket) else {
                             return Poll::Ready(Err(crate::invalid("admission waiter disappeared")));
                         };
-                        if state.waiters[index].1.admitted {
+                        let Some((_, waiter)) = state.waiters.get(index) else {
+                            return Poll::Ready(Err(crate::invalid("admission waiter disappeared")));
+                        };
+                        if waiter.admitted {
                             state.remove(ticket);
                             return Poll::Ready(Ok((None, transport.now())));
                         }
@@ -276,7 +279,10 @@ impl Gate {
                         if current != cause {
                             return Poll::Ready(Ok((Some(current), transport.now())));
                         }
-                        state.waiters[index].1.waker = Some(context.waker().clone());
+                        let Some((_, waiter)) = state.waiters.get_mut(index) else {
+                            return Poll::Ready(Err(crate::invalid("admission waiter disappeared")));
+                        };
+                        waiter.waker = Some(context.waker().clone());
                         let Some(until) = state.closed_until else {
                             timer = None;
                             return Poll::Pending;

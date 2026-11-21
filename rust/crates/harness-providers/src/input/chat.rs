@@ -47,7 +47,11 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         check(tools.len() <= 128, "OAC-TOOL-03", errors);
         for tool in tools {
             check(
-                tool["type"] == "function" && name(&tool["function"]["name"], 64, false, b"_-"),
+                tool["type"] == "function"
+                    && tool
+                        .get("function")
+                        .and_then(|function| function.get("name"))
+                        .is_some_and(|value| name(value, 64, false, b"_-")),
                 "OAC-TOOL-03",
                 errors,
             );

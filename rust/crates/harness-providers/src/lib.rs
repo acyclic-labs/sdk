@@ -69,7 +69,8 @@ pub use reasoning::{ProjectedReasoning, project_native, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_core::{Error, Result};
-use acyclic_harness_provider_core::{
-    EXCERPT_BYTES, boundary, http_failure, invalid, recovery_failure,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_provider_core::{EXCERPT_BYTES, http_failure};
+use acyclic_harness_provider_core::{boundary, invalid, recovery_failure};

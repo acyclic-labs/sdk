@@ -9,9 +9,9 @@ pub(crate) fn part(
     adapter: Adapter,
     media: &str,
     policy: &NativeMediaPolicy,
-    data: String,
+    data: &str,
 ) -> Result<Value> {
-    if matches!(policy.intent, NativeMediaIntent::Document { .. }) {
+    if matches!(policy.intent, NativeMediaIntent::Document) {
         if media != "application/pdf" {
             return Err(invalid("native document must be PDF"));
         }

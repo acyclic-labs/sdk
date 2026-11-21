@@ -89,7 +89,8 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
             ErrorCode::Indeterminate as i32,
         );
         let resolver = Resolver(field(&owner, "bind").dyn_into().unwrap());
-        let transport: Arc<dyn HttpTransport> = Arc::new(BrowserTransport::global().unwrap());
+        let transport: acyclic_stream::ProviderOwner<dyn HttpTransport> =
+            acyclic_stream::ProviderOwner::new(BrowserTransport::global().unwrap());
         assert!(
             resolver
                 .bind(
@@ -171,7 +172,7 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
                 assert_eq!(cause.code(), ErrorCode::Unavailable);
                 assert!(!cause.to_string().contains("private diagnostic"));
                 assert_eq!(field(&owner, "aborted").as_bool(), Some(true));
-                let js = super::super::model_error(cause);
+                let js = super::super::model_error(&cause);
                 assert_eq!(
                     field(&js, "code").as_f64(),
                     Some(f64::from(ErrorCode::Unavailable as i32))

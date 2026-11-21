@@ -26,10 +26,8 @@ impl Registry {
 pub(super) fn counts_input(
     config: &ProviderSpec,
     model: &str,
-    credential: Credential,
+    credential: &Credential,
 ) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let credential = credential.for_config(config);
     #[cfg(not(target_arch = "wasm32"))]
     if matches!(credential, Credential::Codex(_)) && !codex_route(config) {
         return Err(invalid(

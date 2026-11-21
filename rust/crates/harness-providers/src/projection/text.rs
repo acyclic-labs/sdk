@@ -11,41 +11,38 @@ pub(super) fn join(mut parts: Vec<String>, separator: &str) -> String {
     }
 }
 
+fn ordinary_text<'a>(item: &'a Item<'_>) -> Option<&'a str> {
+    match item {
+        Item::Json(value) => value.get("text").and_then(Value::as_str),
+        Item::Native(_) | Item::Call(_) | Item::Result(_) => None,
+    }
+}
+
+fn is_blank(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
 pub(super) fn normalize(adapter: Adapter, parts: &mut Vec<Item<'_>>) {
     if !matches!(adapter, Adapter::Anthropic | Adapter::Gemini) {
         return;
     }
-    let mut written = 0;
-    let mut previous: Option<(usize, bool)> = None;
-    for read in 0..parts.len() {
-        let item = std::mem::replace(&mut parts[read], Item::Json(Value::Null));
-        let blank = match &item {
-            Item::Json(value) => value
-                .get("text")
-                .and_then(Value::as_str)
-                .map(|text| text.trim().is_empty()),
-            Item::Native(_) | Item::Call(_) | Item::Result(_) => None,
-        };
-        if let (Some(blank), Some((index, previous_blank))) = (blank, previous) {
-            if blank || previous_blank {
-                if let (Item::Json(previous), Item::Json(mut next)) = (&mut parts[index], item) {
-                    let Value::String(text) = next["text"].take() else {
-                        unreachable!()
-                    };
-                    let Some(Value::String(previous)) = previous.get_mut("text") else {
-                        unreachable!()
-                    };
-                    previous.push_str(&text);
-                }
-                previous = Some((index, previous_blank && blank));
-                continue;
-            }
+    let mut previous_blank = parts.first().and_then(ordinary_text).map(is_blank);
+    parts.dedup_by(|next, previous| {
+        let next_text = ordinary_text(next);
+        let blank = next_text.map(is_blank);
+        if let (Some(text), Some(blank), Some(was_blank), Item::Json(previous)) =
+            (next_text, blank, previous_blank, previous)
+            && (blank || was_blank)
+            && let Some(Value::String(previous)) = previous.get_mut("text")
+        {
+            previous.push_str(text);
+            previous_blank = Some(blank && was_blank);
+            true
+        } else {
+            previous_blank = blank;
+            false
         }
-        parts[written] = item;
-        previous = blank.map(|blank| (written, blank));
-        written += 1;
-    }
-    parts.truncate(written);
+    });
     if adapter == Adapter::Anthropic {
         parts.retain(|item| match item {
             Item::Json(value) => value

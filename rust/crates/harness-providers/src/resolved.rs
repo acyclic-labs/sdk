@@ -29,7 +29,7 @@ pub struct ResolvedModel {
     // A selected model can use the registry's host, but cannot extend its lifetime.
     pub(crate) resolver: Option<Weak<dyn crate::CredentialResolver>>,
     // Retain a separate original only when binding changed its identity.
-    pub(crate) unbound_transport: Option<Arc<dyn HttpTransport>>,
+    pub(crate) unbound_transport: Option<acyclic_stream::ProviderOwner<dyn HttpTransport>>,
     pub(crate) inputs: Option<Arc<crate::credentials::CredentialInputs>>,
     // The active config is its own credential source unless the route changed.
     pub(crate) credential_config: Option<Arc<ProviderSpec>>,
@@ -50,7 +50,7 @@ pub struct ResolvedModel {
     pub(crate) key: Option<Arc<str>>,
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
-    pub(crate) transport: Arc<dyn HttpTransport>,
+    pub(crate) transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     /// The registry's endpoint admissions, shared by every selection it resolves.
     pub(crate) admission: Arc<crate::admission::Endpoints>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -179,7 +179,8 @@ impl ResolvedModel {
         current.credential_config = (!Arc::ptr_eq(&current.config, config)).then(|| config.clone());
         let original = self.unbound_transport.as_ref().unwrap_or(&self.transport);
         current.unbound_transport =
-            (!Arc::ptr_eq(&current.transport, original)).then(|| original.clone());
+            (!acyclic_stream::ProviderOwner::ptr_eq(&current.transport, original))
+                .then(|| original.clone());
         Ok(current)
     }
 
@@ -265,8 +266,6 @@ impl ResolvedModel {
             estimator: &self.accounting.estimator,
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: self.codex_login.is_some(),
-            #[cfg(target_arch = "wasm32")]
-            codex_login: false,
             credential_scope: self.credential_scope,
         }
     }
@@ -308,17 +307,17 @@ impl ModelProvider for ResolvedModel {
     fn bind_conversation(
         &self,
         conversation: acyclic_harness_core::OperationId,
-    ) -> Option<Arc<dyn ModelProvider>> {
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
         let mut bound = self.derived(self.model.clone(), self.profile, self.files.clone());
         bound.conversation = conversation;
-        Some(Arc::new(bound))
+        Some(acyclic_stream::ProviderOwner::new(bound))
     }
     #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
     fn admit_profile(
         &self,
         model: &Model,
         profile: &acyclic_harness_core::profile::AgentProfile<'_>,
-    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+    ) -> Result<(Model, acyclic_stream::ProviderOwner<dyn ModelProvider>)> {
         self.validate(model)?;
         let binding = self.admit_binding(profile)?;
         let model = Model {
@@ -327,15 +326,18 @@ impl ModelProvider for ResolvedModel {
             revision: self.profile_revision(&binding),
         };
         let admitted = self.derived(model, Some(binding), self.files.clone());
-        Ok((admitted.model.clone(), Arc::new(admitted)))
+        Ok((
+            admitted.model.clone(),
+            acyclic_stream::ProviderOwner::new(admitted),
+        ))
     }
 
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
         maximum_bytes: Option<u64>,
-    ) -> Option<Arc<dyn ModelProvider>> {
-        Some(Arc::new(
+    ) -> Option<acyclic_stream::ProviderOwner<dyn ModelProvider>> {
+        Some(acyclic_stream::ProviderOwner::new(
             self.derived(
                 self.model.clone(),
                 self.profile,

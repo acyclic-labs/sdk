@@ -39,6 +39,7 @@ pub(crate) struct ProjectionInput<'a> {
     pub(crate) capacity: acyclic_harness_core::context::ModelContextCapacity,
     pub(crate) files_maximum_bytes: Option<u64>,
     pub(crate) estimator: &'a crate::accounting::TokenEstimator,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: bool,
     pub(crate) credential_scope: Option<[u8; 32]>,
 }
@@ -549,7 +550,7 @@ fn project_message<'a>(
                         adapter,
                         file.descriptor().media_type(),
                         policy,
-                        files.native()?,
+                        &files.native()?,
                     )?;
                     if adapter == Adapter::Chat {
                         ordered.extend(
@@ -713,12 +714,13 @@ fn project_text(
     }
     match adapter {
         Adapter::Chat if ordered.is_empty() => texts.push(text),
-        Adapter::Chat => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Responses => ordered.push(Item::Json(json!({
             "type":"message", "role":if role == "tool" { "user" } else { role },
             "content":[{"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}],
         }))),
-        Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
+        Adapter::Chat | Adapter::Anthropic => {
+            ordered.push(Item::Json(json!({"type":"text","text":text})));
+        }
         Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),
     }
 }
@@ -743,7 +745,7 @@ fn result_text<'a>(
                         adapter,
                         file.descriptor().media_type(),
                         policy,
-                        files.native()?,
+                        &files.native()?,
                     )?);
                     files.project(
                         file,

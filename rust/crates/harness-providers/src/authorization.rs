@@ -20,7 +20,7 @@ impl CredentialResolver for NativeCredentials {
         source: CredentialSource<'_>,
         _: &str,
         _: AuthorizationScheme,
-        transport: Arc<dyn HttpTransport>,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     ) -> Result<CredentialBinding> {
         match source {
             CredentialSource::ApiKey(key) => Ok(CredentialBinding::api_key(key, transport)),
@@ -35,7 +35,7 @@ pub(crate) fn bind(
     config: &crate::ProviderSpec,
     key: Option<Arc<str>>,
     resolver: Option<&dyn CredentialResolver>,
-    transport: Arc<dyn HttpTransport>,
+    transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
 ) -> Result<CredentialBinding> {
     let reference = config.authentication.secret_reference();
     let source = reference

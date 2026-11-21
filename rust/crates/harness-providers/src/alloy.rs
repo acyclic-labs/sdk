@@ -1,11 +1,10 @@
 use crate::{AlloySpec, AlloyTurn, ModelFeatures, Registry, ResolvedModel, invalid};
 use acyclic_harness_core::{Result, context::ModelContextCapacity};
-use std::sync::Arc;
 
 /// A validated immutable policy and providers. Configuration files remain authoritative.
 pub struct ResolvedAlloy {
     spec: AlloySpec,
-    models: Vec<Arc<ResolvedModel>>,
+    models: Vec<acyclic_stream::ProviderOwner<ResolvedModel>>,
     capacity: ModelContextCapacity,
 }
 
@@ -52,7 +51,7 @@ impl Registry {
             .into_iter()
             .map(|mut model| {
                 model.capacity = capacity;
-                Arc::new(model)
+                acyclic_stream::ProviderOwner::new(model)
             })
             .collect();
         Ok(ResolvedAlloy {
@@ -71,7 +70,12 @@ impl ResolvedAlloy {
 
     /// Selects without I/O or mutation. Bind this provider and its real model
     /// identity into the turn; preserve the same key for retries/tool follow-ups.
-    pub fn select(&self, turn: AlloyTurn<'_>) -> &Arc<ResolvedModel> {
-        &self.models[self.spec.index(turn)]
+    pub fn select(
+        &self,
+        turn: AlloyTurn<'_>,
+    ) -> Result<&acyclic_stream::ProviderOwner<ResolvedModel>> {
+        self.models
+            .get(self.spec.index(turn))
+            .ok_or_else(|| invalid("selected alloy member is missing"))
     }
 }

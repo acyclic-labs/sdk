@@ -121,7 +121,7 @@ impl WasmModelStream {
                 }
                 Some(Err(cause)) => {
                     state.stream.borrow_mut().take();
-                    return Err(model_error(cause));
+                    return Err(model_error(&cause));
                 }
                 None => {
                     state.stream.borrow_mut().take();

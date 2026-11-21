@@ -38,7 +38,9 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                             .as_object()
                             .is_some_and(|reasoning| reasoning.len() == 1)
                         && matches!(
-                            item["reasoning"]["effort"].as_str(),
+                            item.get("reasoning")
+                                .and_then(|reasoning| reasoning.get("effort"))
+                                .and_then(Value::as_str),
                             Some("low" | "medium" | "high")
                         ),
                     "OAR-CFG-01",
@@ -50,10 +52,10 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                 let role = item["role"].as_str().unwrap_or("");
                 let position = content::position(content::RESPONSES, role);
                 check(position.is_some(), "OAR-SEQ-01", errors);
-                if let Some(position) = position {
-                    if let Some(rule) = position.violation(&item["content"], false) {
-                        check(false, rule, errors);
-                    }
+                if let Some(position) = position
+                    && let Some(rule) = position.violation(&item["content"], false)
+                {
+                    check(false, rule, errors);
                 }
             }
             "function_call" | "custom_tool_call" => {

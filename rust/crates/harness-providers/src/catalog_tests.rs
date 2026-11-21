@@ -413,7 +413,7 @@ proptest! {
         prop_assert_eq!(alloy.capacity(), expected);
         let selected = alloy.select(AlloyTurn {
             operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]), ordinal, role: "worker",
-        });
+        }).unwrap();
         prop_assert_eq!(selected.context_capacity(selected.model()).unwrap(), expected);
         prop_assert!(models.contains(&format!("{}/{}", selected.model().provider, selected.model().name)), "selected model belongs to the stock subset");
         prop_assert!(generation_requests(&transport.requests().unwrap()).is_empty());

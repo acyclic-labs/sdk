@@ -5,12 +5,11 @@ use acyclic_harness_core::{
 };
 use bytes::Bytes;
 use futures::StreamExt as _;
-use std::sync::Arc;
 
 /// Request-local immutable HTTP inputs. Canonical admission, file verification
 /// and provider projection happen once, bound to their original selection.
 pub(crate) struct PreparedInput {
-    provider: Arc<ResolvedModel>,
+    provider: acyclic_stream::ProviderOwner<ResolvedModel>,
     pub request: PreparedModelRequest,
     pub generation: Bytes,
     cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
@@ -18,10 +17,13 @@ pub(crate) struct PreparedInput {
 }
 
 impl PreparedInput {
-    pub async fn new(provider: Arc<ResolvedModel>, request: PreparedModelRequest) -> Result<Self> {
+    pub async fn new(
+        provider: acyclic_stream::ProviderOwner<ResolvedModel>,
+        request: PreparedModelRequest,
+    ) -> Result<Self> {
         // The encoded bodies and their credentials are one immutable selection.
         // Protected transports still resolve current authority on every send.
-        let provider = Arc::new(provider.current_credentials()?);
+        let provider = acyclic_stream::ProviderOwner::new(provider.current_credentials()?);
         provider.validate(&request.request().model)?;
         let counter = match counting::specification(&provider.config, None) {
             Ok(spec) => Some(spec),

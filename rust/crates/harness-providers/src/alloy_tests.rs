@@ -127,7 +127,7 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         ),
     ] {
         let alloy = registry.resolve_alloy(spec(select), required())?;
-        let selected = alloy.select(turn(2));
+        let selected = alloy.select(turn(2))?;
         assert_eq!(selected.model().provider, expected);
         assert_eq!(
             selected.native_tool_profile(),
@@ -167,7 +167,7 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
     assert_eq!(
         registry
             .resolve_alloy(spec(AlloySelection::RoundRobin), required())?
-            .select(turn(2))
+            .select(turn(2))?
             .native_tool_profile(),
         None
     );
@@ -241,7 +241,7 @@ fn invalid_and_undeclared_policies_fail_before_dispatch() -> Result<()> {
             required(),
         )
         .unwrap();
-    assert_eq!(fallback.select(turn(u64::MAX)).model().provider, "chat");
+    assert_eq!(fallback.select(turn(u64::MAX))?.model().provider, "chat");
     assert!(transport.requests()?.is_empty());
     Ok(())
 }
@@ -259,7 +259,7 @@ proptest! {
         let resumed=registry.resolve_alloy(serde_json::from_slice(&json).unwrap(),required()).unwrap();
         let expected=*capacities.iter().min().unwrap();
         for ordinal in ordinals.into_iter().rev() {
-            let a=first.select(turn(ordinal)); let b=resumed.select(turn(ordinal));
+            let a=first.select(turn(ordinal)).unwrap(); let b=resumed.select(turn(ordinal)).unwrap();
             prop_assert_eq!(a.model(),b.model());
             prop_assert_eq!(&a.model().provider,MEMBERS[(ordinal%4) as usize].0);
             let capacity=a.context_capacity(a.model()).unwrap();
@@ -318,7 +318,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
     }];
     let mut ids = std::collections::BTreeSet::new();
     for ordinal in 0..5 {
-        let provider = alloy.select(turn(ordinal));
+        let provider = alloy.select(turn(ordinal))?;
         assert_eq!(provider.model().provider, MEMBERS[(ordinal % 4) as usize].0);
         let request = ModelRequest {
             summary: false,

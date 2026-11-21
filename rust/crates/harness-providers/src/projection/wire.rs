@@ -97,7 +97,7 @@ impl Request<'_> {
             &self.fields,
             None,
         )
-        .map_err(rendered)
+        .map_err(|error| rendered(&error))
     }
 
     pub(crate) fn tail(&self) -> acyclic_harness_core::Result<acyclic_model_render::Tail> {
@@ -105,7 +105,7 @@ impl Request<'_> {
             Some(_) => acyclic_model_render::Tail::summary(&self.fields, self.target.family),
             None => acyclic_model_render::Tail::new(&self.fields),
         }
-        .map_err(rendered)
+        .map_err(|error| rendered(&error))
     }
 
     pub(crate) fn render(
@@ -129,7 +129,7 @@ impl Request<'_> {
             }
             None => acyclic_model_render::render(&header, messages, &tail, writer),
         }
-        .map_err(rendered)
+        .map_err(|error| rendered(&error))
     }
 
     pub(crate) fn encode(&self) -> acyclic_harness_core::Result<Vec<u8>> {
@@ -146,14 +146,13 @@ impl Request<'_> {
                 .insert(Field::Model, Value::String(format!("models/{model}")));
         } else {
             let include = crate::counting::wire::fields(adapter);
-            self.fields
-                .retain(|name| include.iter().any(|field| *field == name));
+            self.fields.retain(|name| include.contains(&name));
         }
         self
     }
 }
 
-fn rendered(error: acyclic_model_render::RenderError) -> acyclic_harness_core::Error {
+fn rendered(error: &acyclic_model_render::RenderError) -> acyclic_harness_core::Error {
     crate::invalid(error.to_string())
 }
 

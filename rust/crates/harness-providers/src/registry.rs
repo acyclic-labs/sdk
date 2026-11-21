@@ -16,10 +16,10 @@ use catalog_update::Changes;
 #[derive(Clone)]
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
-    scripted: BTreeMap<String, (String, Arc<ScriptedModelProvider>)>,
+    scripted: BTreeMap<String, (String, acyclic_stream::ProviderOwner<ScriptedModelProvider>)>,
     default_model: Option<String>,
     inputs: Arc<CredentialInputs>,
-    transport: Arc<dyn HttpTransport>,
+    transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     admission: Arc<crate::admission::Endpoints>,
     resolver: Option<Arc<dyn crate::CredentialResolver>>,
     files: crate::files::Files,
@@ -34,7 +34,10 @@ impl Registry {
     }
 
     /// Uses the same adapters with a caller-owned transport.
-    pub fn with_transport(credentials: Credentials, transport: Arc<dyn HttpTransport>) -> Self {
+    pub fn with_transport(
+        credentials: Credentials,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
+    ) -> Self {
         let providers = crate::catalog::default_catalog()
             .into_iter()
             .map(|(id, spec)| (id, Arc::new(spec)))
@@ -173,8 +176,10 @@ impl Registry {
                 let revision = format!("script-v1:{}", spec.script.sha256);
                 Model::new(provider.clone(), "default".into(), revision.clone())?;
                 let scripted = ScriptedModelProvider::from_volume(spec.script)?;
-                self.scripted
-                    .insert(provider, (revision, Arc::new(scripted)));
+                self.scripted.insert(
+                    provider,
+                    (revision, acyclic_stream::ProviderOwner::new(scripted)),
+                );
                 Ok(())
             }
         }
@@ -185,7 +190,7 @@ impl Registry {
         if let Some(scripted) = self.scripted_binding(selection)? {
             return Ok(scripted);
         }
-        let provider = Arc::new(self.resolve(selection)?);
+        let provider = acyclic_stream::ProviderOwner::new(self.resolve(selection)?);
         Ok((provider.model().clone(), provider))
     }
 
@@ -289,8 +294,11 @@ impl Registry {
         Ok(ResolvedModel {
             conversation: acyclic_harness_core::OperationId::new(),
             resolver: self.resolver.as_ref().map(Arc::downgrade),
-            unbound_transport: (!Arc::ptr_eq(&transport, &self.transport))
-                .then(|| self.transport.clone()),
+            unbound_transport: (!acyclic_stream::ProviderOwner::ptr_eq(
+                &transport,
+                &self.transport,
+            ))
+            .then(|| self.transport.clone()),
             #[cfg(not(target_arch = "wasm32"))]
             account_pin: codex_login
                 .as_ref()

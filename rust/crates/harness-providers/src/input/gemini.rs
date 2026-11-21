@@ -79,7 +79,11 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         previous = role;
     }
     check(pending.is_empty(), "GEM-TOOL-05", errors);
-    if let Some(parts) = body["systemInstruction"]["parts"].as_array() {
+    if let Some(parts) = body
+        .get("systemInstruction")
+        .and_then(|instruction| instruction.get("parts"))
+        .and_then(Value::as_array)
+    {
         check(!parts.is_empty(), "GEM-SEQ-03", errors);
         for part in parts {
             check(text(&part["text"]), "GEM-SEQ-02", errors);
