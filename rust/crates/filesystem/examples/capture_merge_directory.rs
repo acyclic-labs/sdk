@@ -69,64 +69,8 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         .create_workspace("merge-main", work, &cancellation)
         .await?
         .value;
-    for path in ["/binary", "/deleted"] {
-        main.write_text(path, "base\0").await?;
-    }
-    main.write_text("/text", "base\n").await?;
-    let mut transaction = main
-        .begin_transaction(IdempotencyKey::new(), work, &cancellation)
-        .await?
-        .value;
-    transaction
-        .create_directory("/mode", work, &cancellation)
-        .await?;
-    commit(&mut transaction, &cancellation).await?;
-    let mut source = main.clone();
-    for name in ["merge-child", "merge-grandchild"] {
-        let generation = source.head(work, &cancellation).await?.value;
-        source = source
-            .fork::<_, _, WorkspaceError>(
-                name,
-                ForkOptions::from_generation(generation, IdempotencyKey::new()),
-                PublicationPermit::Unrestricted,
-                work,
-                &cancellation,
-                (),
-            )
-            .await?
-            .value;
-    }
-    main.write_text("/binary", "ours\0").await?;
-    source.write_text("/binary", "theirs\0").await?;
-    main.write_text("/text", "ours\n").await?;
-    source.write_text("/text", "theirs\n").await?;
-    main.write_text("/deleted", "changed\0").await?;
-    source.remove("/deleted").await?;
-    source.write_text("/clean", "retained clean body").await?;
-    main.write_text("/kind", "ours").await?;
-    for (workspace, mode, create_kind) in [(&main, 0o700, false), (&source, 0o770, true)] {
-        let mut transaction = workspace
-            .begin_transaction(IdempotencyKey::new(), work, &cancellation)
-            .await?
-            .value;
-        transaction
-            .set_metadata(
-                "/mode",
-                FileMetadata {
-                    posix_mode: MetadataField::Value(mode),
-                    ..FileMetadata::default()
-                },
-                work,
-                &cancellation,
-            )
-            .await?;
-        if create_kind {
-            transaction
-                .create_directory("/kind", work, &cancellation)
-                .await?;
-        }
-        commit(&mut transaction, &cancellation).await?;
-    }
+    let source = fork_fixture(&main, &cancellation).await?;
+    write_divergence(&main, &source, &cancellation).await?;
     let plan = source
         .join_into(&main)
         .git_metadata()
@@ -196,6 +140,92 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         .await?
         .value;
     emit("plan-v1", &bytes)?;
+    capture_sections(&generation, &mut directory, &staging, &cancellation).await
+}
+
+async fn fork_fixture<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    main: &acyclic_fs::Workspace<A, O>,
+    cancellation: &CancellationToken,
+) -> Result<acyclic_fs::Workspace<A, O>, Box<dyn Error>> {
+    let work = WorkBudget::UNBOUNDED;
+    for path in ["/binary", "/deleted"] {
+        main.write_text(path, "base\0").await?;
+    }
+    main.write_text("/text", "base\n").await?;
+    let mut transaction = main
+        .begin_transaction(IdempotencyKey::new(), work, cancellation)
+        .await?
+        .value;
+    transaction
+        .create_directory("/mode", work, cancellation)
+        .await?;
+    commit(&mut transaction, cancellation).await?;
+    let mut source = main.clone();
+    for name in ["merge-child", "merge-grandchild"] {
+        let generation = source.head(work, cancellation).await?.value;
+        source = source
+            .fork::<_, _, WorkspaceError>(
+                name,
+                ForkOptions::from_generation(generation, IdempotencyKey::new()),
+                PublicationPermit::Unrestricted,
+                work,
+                cancellation,
+                (),
+            )
+            .await?
+            .value;
+    }
+    Ok(source)
+}
+
+async fn write_divergence<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    main: &acyclic_fs::Workspace<A, O>,
+    source: &acyclic_fs::Workspace<A, O>,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
+    let work = WorkBudget::UNBOUNDED;
+    main.write_text("/binary", "ours\0").await?;
+    source.write_text("/binary", "theirs\0").await?;
+    main.write_text("/text", "ours\n").await?;
+    source.write_text("/text", "theirs\n").await?;
+    main.write_text("/deleted", "changed\0").await?;
+    source.remove("/deleted").await?;
+    source.write_text("/clean", "retained clean body").await?;
+    main.write_text("/kind", "ours").await?;
+    for (workspace, mode, create_kind) in [(main, 0o700, false), (source, 0o770, true)] {
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::new(), work, cancellation)
+            .await?
+            .value;
+        transaction
+            .set_metadata(
+                "/mode",
+                FileMetadata {
+                    posix_mode: MetadataField::Value(mode),
+                    ..FileMetadata::default()
+                },
+                work,
+                cancellation,
+            )
+            .await?;
+        if create_kind {
+            transaction
+                .create_directory("/kind", work, cancellation)
+                .await?;
+        }
+        commit(&mut transaction, cancellation).await?;
+    }
+    Ok(())
+}
+
+async fn capture_sections<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    generation: &acyclic_fs::workspace::Generation<A, O>,
+    directory: &mut acyclic_fs::workspace::MergeDirectory<A, O>,
+    staging: &acyclic_fs::Workspace<A, O>,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
+    let work = WorkBudget::UNBOUNDED;
+    let path = directory.path().to_owned();
     for section in ["clean", "conflicts"] {
         let mut after = None;
         let mut index = 0;
@@ -206,54 +236,24 @@ async fn capture() -> Result<(), Box<dyn Error>> {
                     after.as_ref(),
                     1,
                     work,
-                    &cancellation,
+                    cancellation,
                 )
                 .await?
                 .value;
             for entry in &page.entries {
-                let name = entry.name.unicode_text(work, &cancellation)?.value;
+                let name = entry.name.unicode_text(work, cancellation)?.value;
                 let bytes = generation
                     .read(
                         &format!("{path}/{section}/{name}"),
                         16384,
                         work,
-                        &cancellation,
+                        cancellation,
                     )
                     .await?
                     .value;
                 emit(&format!("{section}-{index}-v1"), &bytes)?;
                 if section == "conflicts" && name.ends_with(".conflict.json") {
-                    let descriptor: MergeConflictFile = serde_json::from_slice(&bytes)?;
-                    let proposals: &[(&str, &str)] = match descriptor.kind {
-                        MergeConflictFileKind::Binary => &[
-                            ("take-ours", r#"{"take":"ours"}"#),
-                            ("take-theirs", r#"{"take":"theirs"}"#),
-                        ],
-                        MergeConflictFileKind::Deleted => &[("remove", r#"{"remove":true}"#)],
-                        _ => &[],
-                    };
-                    for (label, document) in proposals {
-                        let proposal_path = format!(
-                            "{}.resolve.json",
-                            directory.conflict_file_path(&descriptor.conflict.key)?
-                        );
-                        staging.write_text(&proposal_path, document).await?;
-                        let proposed = staging.head(work, &cancellation).await?.value;
-                        let accepted = directory
-                            .resolution(&proposed, &descriptor.conflict.key)
-                            .await?;
-                        let original = proposed
-                            .read(&proposal_path, 16384, work, &cancellation)
-                            .await?
-                            .value;
-                        // The expected resolution is real public admission output.
-                        let trace = serde_json::to_vec(&(
-                            &descriptor.conflict,
-                            original.as_ref(),
-                            accepted,
-                        ))?;
-                        emit(&format!("resolution-{label}-v1"), &trace)?;
-                    }
+                    capture_proposals(&bytes, directory, staging, cancellation).await?;
                 }
                 index += 1;
             }
@@ -268,6 +268,43 @@ async fn capture() -> Result<(), Box<dyn Error>> {
                     .clone(),
             );
         }
+    }
+    Ok(())
+}
+
+async fn capture_proposals<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    bytes: &[u8],
+    directory: &mut acyclic_fs::workspace::MergeDirectory<A, O>,
+    staging: &acyclic_fs::Workspace<A, O>,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<dyn Error>> {
+    let work = WorkBudget::UNBOUNDED;
+    let descriptor: MergeConflictFile = serde_json::from_slice(bytes)?;
+    let proposals: &[(&str, &str)] = match descriptor.kind {
+        MergeConflictFileKind::Binary => &[
+            ("take-ours", r#"{"take":"ours"}"#),
+            ("take-theirs", r#"{"take":"theirs"}"#),
+        ],
+        MergeConflictFileKind::Deleted => &[("remove", r#"{"remove":true}"#)],
+        _ => &[],
+    };
+    for (label, document) in proposals {
+        let proposal_path = format!(
+            "{}.resolve.json",
+            directory.conflict_file_path(&descriptor.conflict.key)?
+        );
+        staging.write_text(&proposal_path, document).await?;
+        let proposed = staging.head(work, cancellation).await?.value;
+        let accepted = directory
+            .resolution(&proposed, &descriptor.conflict.key)
+            .await?;
+        let original = proposed
+            .read(&proposal_path, 16384, work, cancellation)
+            .await?
+            .value;
+        // The expected resolution is real public admission output.
+        let trace = serde_json::to_vec(&(&descriptor.conflict, original.as_ref(), accepted))?;
+        emit(&format!("resolution-{label}-v1"), &trace)?;
     }
     Ok(())
 }

@@ -121,6 +121,45 @@ enum RangeMutation {
     Bytes,
 }
 
+async fn change_range_metadata<
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
+    workspace: &acyclic_fs::Workspace<A, O>,
+    original: &acyclic_fs::workspace::Generation<A, O>,
+    body: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+    let before = unbounded!(original, stat("/entry"))?;
+    let mode = before.metadata.posix_mode.unwrap_or(0o100_644) ^ 0o111;
+    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        transaction,
+        set_metadata(
+            "/entry",
+            FileMetadata {
+                posix_mode: MetadataField::Value(mode),
+                ..FileMetadata::default()
+            }
+        )
+    )?;
+    assert!(matches!(
+        commit(&mut transaction).await?,
+        TransactionCommit::Committed(_)
+    ));
+    let after = unbounded!(workspace, stat("/entry"))?;
+    assert_eq!(after.metadata.posix_mode, Some(mode));
+    assert_ne!(before.metadata, after.metadata);
+    assert_eq!(before.file_id, after.file_id);
+    assert_eq!(before.kind, after.kind);
+    assert_eq!(before.logical_bytes, after.logical_bytes);
+    assert_eq!(
+        unbounded!(workspace, read("/entry", body.len() as u64))?.as_ref(),
+        body
+    );
+    Ok(())
+}
+
 async fn unchanged_range_case(
     body: Vec<u8>,
     left: u16,
@@ -139,36 +178,7 @@ async fn unchanged_range_case(
                 .write_text("/unrelated", "later generation")
                 .await?;
         }
-        RangeMutation::Metadata => {
-            use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
-            let before = unbounded!(original, stat("/entry"))?;
-            let mode = before.metadata.posix_mode.unwrap_or(0o100_644) ^ 0o111;
-            let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-            unbounded!(
-                transaction,
-                set_metadata(
-                    "/entry",
-                    FileMetadata {
-                        posix_mode: MetadataField::Value(mode),
-                        ..FileMetadata::default()
-                    }
-                )
-            )?;
-            assert!(matches!(
-                commit(&mut transaction).await?,
-                TransactionCommit::Committed(_)
-            ));
-            let after = unbounded!(workspace, stat("/entry"))?;
-            assert_eq!(after.metadata.posix_mode, Some(mode));
-            assert_ne!(before.metadata, after.metadata);
-            assert_eq!(before.file_id, after.file_id);
-            assert_eq!(before.kind, after.kind);
-            assert_eq!(before.logical_bytes, after.logical_bytes);
-            assert_eq!(
-                unbounded!(workspace, read("/entry", body.len() as u64))?.as_ref(),
-                body.as_slice()
-            );
-        }
+        RangeMutation::Metadata => change_range_metadata(&workspace, &original, &body).await?,
         RangeMutation::Bytes => {
             let mut changed = body.clone();
             if let Some(first) = changed.first_mut() {

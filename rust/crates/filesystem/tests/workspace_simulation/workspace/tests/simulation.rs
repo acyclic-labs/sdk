@@ -63,6 +63,88 @@ async fn join<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     .await
 }
 
+async fn race_publications<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    parent: &Workspace<A, O>,
+    expected: &mut Image,
+    action: &Action,
+    path: String,
+    bytes: Vec<u8>,
+) -> Result<(), Box<dyn Error>> {
+    // Both candidates capture the same head before either commits.
+    let mut first = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
+    let mut second = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(first, write(&path, bytes.clone()))?;
+    let second_bytes = vec![action.other; 33];
+    unbounded!(second, write(&path, second_bytes.clone()))?;
+    let (first, second) = if action.reverse {
+        let (second, first) = tokio::join!(commit(&mut second), commit(&mut first));
+        (first?, second?)
+    } else {
+        let (first, second) = tokio::join!(commit(&mut first), commit(&mut second));
+        (first?, second?)
+    };
+    let (generation, winning) = match (first, second) {
+        (TransactionCommit::Committed(generation), TransactionCommit::Conflict { .. }) => {
+            (generation, bytes)
+        }
+        (TransactionCommit::Conflict { .. }, TransactionCommit::Committed(generation)) => {
+            (generation, second_bytes)
+        }
+        _ => return Err("racing publications did not elect exactly one winner".into()),
+    };
+    assert_eq!(unbounded!(generation, read(&path, 256))?.as_ref(), winning);
+    expected.insert(path, winning);
+    Ok(())
+}
+
+async fn join_child_changes<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    parent: &Workspace<A, O>,
+    expected: &mut Image,
+    action: &Action,
+    path: String,
+    bytes: Vec<u8>,
+) -> Result<(), Box<dyn Error>> {
+    let step = action.ordinal;
+    let base = unbounded!(parent, head())?;
+    let child = fork_workspace(
+        parent,
+        &format!("child-{step}"),
+        ForkOptions::from_generation(base, IdempotencyKey::new()),
+    )
+    .await?;
+    check(&child, expected).await?;
+    let child_path = format!("/child-{step}");
+    child.write(&child_path, bytes.clone().into()).await?;
+    let parent_bytes = vec![action.other; 7];
+    parent.write(&path, parent_bytes.clone().into()).await?;
+    expected.insert(path.clone(), parent_bytes);
+    assert!(matches!(
+        join(&child, parent).await?,
+        JoinOutcome::Applied(_)
+    ));
+    expected.insert(child_path, bytes);
+    check(parent, expected).await?;
+    // A subsequent child delta must preserve a parent resolution of
+    // a previously imported child file (incremental merge base).
+    let resolved = vec![action.other; 9];
+    let child_path = format!("/child-{step}");
+    parent.write(&child_path, resolved.clone().into()).await?;
+    expected.insert(child_path, resolved);
+    let next = format!("/next-{step}");
+    let value = vec![action.other; 3];
+    child.write(&next, value.clone().into()).await?;
+    assert!(matches!(
+        join(&child, parent).await?,
+        JoinOutcome::Applied(_)
+    ));
+    expected.insert(next, value);
+    assert!(matches!(
+        join(&child, parent).await?,
+        JoinOutcome::NoChanges(_)
+    ));
+    Ok(())
+}
+
 async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let mut parent = unbounded!(fs, create_workspace("parent"))?;
@@ -84,73 +166,8 @@ async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
                 assert!(matches!(commit(&mut transaction).await?,
                     TransactionCommit::AlreadyCommitted(replayed) if replayed.id() == generation.id()));
             }
-            1 => {
-                // Both candidates capture the same head before either commits.
-                let mut first = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
-                let mut second = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
-                unbounded!(first, write(&path, bytes.clone()))?;
-                let second_bytes = vec![action.other; 33];
-                unbounded!(second, write(&path, second_bytes.clone()))?;
-                let (first, second) = if action.reverse {
-                    let (second, first) = tokio::join!(commit(&mut second), commit(&mut first));
-                    (first?, second?)
-                } else {
-                    let (first, second) = tokio::join!(commit(&mut first), commit(&mut second));
-                    (first?, second?)
-                };
-                let (generation, winning) = match (first, second) {
-                    (
-                        TransactionCommit::Committed(generation),
-                        TransactionCommit::Conflict { .. },
-                    ) => (generation, bytes),
-                    (
-                        TransactionCommit::Conflict { .. },
-                        TransactionCommit::Committed(generation),
-                    ) => (generation, second_bytes),
-                    _ => return Err("racing publications did not elect exactly one winner".into()),
-                };
-                assert_eq!(unbounded!(generation, read(&path, 256))?.as_ref(), winning);
-                expected.insert(path, winning);
-            }
-            2 => {
-                let base = unbounded!(parent, head())?;
-                let child = fork_workspace(
-                    &parent,
-                    &format!("child-{step}"),
-                    ForkOptions::from_generation(base, IdempotencyKey::new()),
-                )
-                .await?;
-                check(&child, &expected).await?;
-                let child_path = format!("/child-{step}");
-                child.write(&child_path, bytes.clone().into()).await?;
-                let parent_bytes = vec![action.other; 7];
-                parent.write(&path, parent_bytes.clone().into()).await?;
-                expected.insert(path.clone(), parent_bytes);
-                assert!(matches!(
-                    join(&child, &parent).await?,
-                    JoinOutcome::Applied(_)
-                ));
-                expected.insert(child_path, bytes);
-                check(&parent, &expected).await?;
-                // A subsequent child delta must preserve a parent resolution of
-                // a previously imported child file (incremental merge base).
-                let resolved = vec![action.other; 9];
-                let child_path = format!("/child-{step}");
-                parent.write(&child_path, resolved.clone().into()).await?;
-                expected.insert(child_path, resolved);
-                let next = format!("/next-{step}");
-                let value = vec![action.other; 3];
-                child.write(&next, value.clone().into()).await?;
-                assert!(matches!(
-                    join(&child, &parent).await?,
-                    JoinOutcome::Applied(_)
-                ));
-                expected.insert(next, value);
-                assert!(matches!(
-                    join(&child, &parent).await?,
-                    JoinOutcome::NoChanges(_)
-                ));
-            }
+            1 => race_publications(&parent, &mut expected, action, path, bytes).await?,
+            2 => join_child_changes(&parent, &mut expected, action, path, bytes).await?,
             3 => {
                 // Divergent edits are an atomic conflict, never a partial join.
                 let base = unbounded!(parent, head())?;
