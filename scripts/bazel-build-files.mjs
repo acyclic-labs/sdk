@@ -1234,13 +1234,16 @@ ${platformSources.map(([platform, sources]) =>
     // (test-runner privileged.sh) that grants only those. It is never
     // manual: a run that cannot grant them fails the cases, so leaving them is never a hidden skip.
     renderedTests.add(`${p.name}#${wanted}`);
-    const privileged = (p.metadata?.bazel?.privileged?.[wanted] ?? []).map(({ requires = [], cases = [] }, i) => {
+    const privileged = (p.metadata?.bazel?.privileged?.[wanted] ?? []).map(({ requires = [], cases = [], "exclusive-cpus": exclusiveCpus, env = {} }, i) => {
       const unknown = requires.filter(privilege => !PRIVILEGES.includes(privilege));
       if (!requires.length || !cases.length || unknown.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} privileged.${wanted} group ${i + 1} needs requires (of ${PRIVILEGES.join(", ")}) and cases${unknown.length ? `; unknown ${unknown.join(", ")}` : ""}`);
       const target = `${name}_privileged${i ? `_${i + 1}` : ""}`;
       if (names.has(target)) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} has two targets named ${target}`);
       names.add(target);
-      return { requires, cases, target };
+      if (exclusiveCpus !== undefined && (!Number.isSafeInteger(exclusiveCpus) || exclusiveCpus < 1 || !requires.includes("machines-native"))) {
+        throw new Error(`STEP_FAILED bazel-build-files: ${p.name} privileged.${wanted} group ${i + 1} needs positive exclusive-cpus with machines-native`);
+      }
+      return { requires, cases, target, exclusiveCpus, env };
     });
     const left = [...profiles.map(({ pattern }) => pattern), ...privileged.flatMap(({ cases }) => cases)];
     // Run-time tags (no-sandbox, requires-disk-tmp) go on the test actions alone: on `_cases` they would also
@@ -1260,7 +1263,7 @@ ${platformSources.map(([platform, sources]) =>
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs.filter(([key]) => key !== "tags"), ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads), list(binaryLabels))], ["env", Object.keys(binaryEnv).length ? q(binaryEnv) : undefined], ["args", profiles.length ? list(profiles.flatMap(({ pattern }) => ["--skip", pattern])) : undefined], ["tags", q(["manual", ...tags])]]],
       isolated(name, [["exclude", left.length ? q(left) : undefined], ["shard_count", q(shards)]], [], {}, selectLinux(testDataLinux(p, wanted)), selectLinuxEnv(testEnvLinux(p, wanted))),
-      ...privileged.map(({ requires, cases, target }) => isolated(target, [["only", q(cases.join("\n"))], ["privileges", q(requires)]], [], {}, selectLinux(testDataLinux(p, wanted)), selectLinuxEnv(testEnvLinux(p, wanted)))),
+      ...privileged.map(({ requires, cases, target, exclusiveCpus, env }) => isolated(target, [["only", q(cases.join("\n"))], ["privileges", q(requires)], ["exclusive_cpus", q(exclusiveCpus)]], [], {}, selectLinux(testDataLinux(p, wanted)), selectLinuxEnv({ ...testEnvLinux(p, wanted), ...env }))),
       ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => {
         const profileName = `${name}_${profile}`;
         const linux = profile === "linux-guest";

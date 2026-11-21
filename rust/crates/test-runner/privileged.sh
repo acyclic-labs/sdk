@@ -21,12 +21,19 @@
 #                   case runs as the leg's own host user with no namespace and no capability: it gains nothing a plain
 #                   process of that user lacks, and loses net isolation (the host's network namespace, not a private
 #                   loopback) and mount isolation (it sees and can write whatever that user can).
-#   machines-native real host root, through the leg user's sudo: the build box's jobs already hold passwordless root,
-#                   and nothing sensitive is on it. The case runs as uid 0 of the initial user namespace, in its own
+#   machines-native starts as host root, through the leg user's sudo: the build box's jobs already hold passwordless root,
+#                   and nothing sensitive is on it. The case runs in the initial user namespace, in its own
 #                   network namespace (loopback up) and mount namespace, in a leaf of a delegated system scope
 #                   (ACYCLIC_TEST_CGROUP, as for cgroup), with exactly CAP_SETUID, CAP_SETGID and CAP_NET_ADMIN
 #                   effective. Its securebits are noroot, so an executable's file capabilities still apply. Its TMPDIR, TMP
-#                   and TEMP name a fresh root-owned case directory under /dev/shm/acyclic-root. Each line
+#                   and TEMP name a fresh case directory under /dev/shm/acyclic-root.
+#                   The default case uid and gid are 0. ACYCLIC_TEST_NATIVE_USER selects a host account
+#                   (or "caller" for the invoking account), ACYCLIC_TEST_NATIVE_GROUP selects its primary group,
+#                   and ACYCLIC_TEST_NATIVE_GROUPS lists supplementary groups, comma-separated. The case owns
+#                   its temporary directory and can manage processes in its delegated cgroup.
+#                   ACYCLIC_TEST_EXCLUSIVE_CPUS reserves that many physical cores for work, plus one for the
+#                   harness, through the build host's CPU admission allocator.
+#                   Each line
 #                   `<variable> <binary> [<uid>:<gid> <mode> [<file capabilities>]]` of ACYCLIC_TEST_SEALED (by default
 #                   0:0 0555, no capabilities) names one of the target's CARGO_BIN_EXE_<binary>: the case's <variable>
 #                   is a root-owned fs-verity-sealed copy of it in a fresh case directory under
@@ -53,6 +60,27 @@ claim() {
   { claimed=$(mktemp -d "$1/case-XXXXXXXX") && exec {lock}<"$claimed" && flock -n "$lock"; } || fail "cannot claim a case directory in $1"
   exec 8>&-
 }
+# The host allocator reads both kernel partitions and admission leases. Hold
+# its pin lock until the kernel records the reservation. The transient scope
+# owns the reservation and returns it when systemd removes the cgroup.
+reserve_cpus() {
+  local scope=$1 count=$2 pin=/run/lock/cloud-cpu-pin.lock fd selected mask
+  if [ ! -e "$pin" ]; then
+    (umask 022; set -C; : >"$pin") 2>/dev/null || [ -f "$pin" ]
+  fi
+  exec {fd}<"$pin"
+  flock "$fd"
+  selected=$(printf '{"own":"%s","size":%s}\n' "${scope##*/}" "$((count + 1))" |
+    /opt/buildbox/bin/bb-admit.py cpu-choose) || fail "exclusive CPU admission refused $count work CPUs"
+  IFS=', ' read -r -a cpus <<<"${selected:1:-1}"
+  [ "${#cpus[@]}" -eq "$((count + 1))" ] || fail "exclusive CPU admission returned the wrong core count"
+  mask=$(IFS=,; echo "${cpus[*]}")
+  echo "$mask" >"$scope/cpuset.cpus"
+  echo "$mask" >"$scope/cpuset.cpus.exclusive"
+  echo root >"$scope/cpuset.cpus.partition"
+  [ "$(cat "$scope/cpuset.cpus.partition")" = root ] || fail "kernel refused the exclusive CPU partition"
+  exec {fd}<&-
+}
 stage=${ACYCLIC_TEST_PRIVILEGE_STAGE:-}
 unset ACYCLIC_TEST_PRIVILEGE_STAGE
 # The wrapper runs its own tools from the system's directories, whatever PATH its caller gives (a test action's has no
@@ -75,6 +103,28 @@ if [ -z "$stage" ]; then
     claim "$ACYCLIC_TEST_VERITY_DIR"
     case_path
     ACYCLIC_TEST_VERITY_DIR=$claimed exec "$@"
+  fi
+  if [ -n "${ACYCLIC_TEST_EXCLUSIVE_CPUS:-}" ]; then
+    has machines-native || fail "exclusive CPU reservation requires machines-native"
+    online=$(getconf _NPROCESSORS_ONLN)
+    count=$ACYCLIC_TEST_EXCLUSIVE_CPUS
+    [[ $count =~ ^[1-9][0-9]*$ && ${#count} -le ${#online} && $count -lt $online ]] ||
+      fail "exclusive work CPU count must be positive and leave room for the harness"
+  fi
+  if [ -n "${ACYCLIC_TEST_NATIVE_USER:-}${ACYCLIC_TEST_NATIVE_GROUP:-}${ACYCLIC_TEST_NATIVE_GROUPS:-}" ]; then
+    has machines-native || fail "a native case identity requires machines-native"
+    [ -n "${ACYCLIC_TEST_NATIVE_USER:-}" ] || fail "a native case group requires ACYCLIC_TEST_NATIVE_USER"
+    user=$ACYCLIC_TEST_NATIVE_USER
+    if [ "$user" = caller ]; then user=$(id -un); fi
+    uid=$(id -u -- "$user") || fail "unknown native case account $user"
+    [ "$uid" != 0 ] || fail "the selected native case account must be non-root"
+    if [ -n "${ACYCLIC_TEST_NATIVE_GROUP:-}" ]; then
+      group=$(getent group "$ACYCLIC_TEST_NATIVE_GROUP") || fail "unknown native case group $ACYCLIC_TEST_NATIVE_GROUP"
+      IFS=: read -r _ _ gid _ <<<"$group"
+    else
+      gid=$(id -g -- "$user") || fail "cannot find the primary group of $user"
+    fi
+    export ACYCLIC_TEST_NATIVE_USER=$uid ACYCLIC_TEST_NATIVE_GROUP=$gid
   fi
   if native; then
     [ -d "${ACYCLIC_TEST_VERITY_FIXTURES:-}" ] || fail "$ACYCLIC_TEST_PRIVILEGES: the leg provisions no ACYCLIC_TEST_VERITY_FIXTURES"
@@ -104,20 +154,42 @@ if [ "$stage" = root ]; then
   done <<<"${ACYCLIC_TEST_SEALED:-}"
   unset ACYCLIC_TEST_SEALED
   # The runner's temporary directory is the leg user's (0700), which uid 0 without CAP_DAC_OVERRIDE cannot enter: the
-  # case's is root's own, on the same memory filesystem, so whoever creates it is whoever uses it.
+  # case owns fresh scratch on the same memory filesystem.
   claim /dev/shm/acyclic-root
+  if [ -n "${ACYCLIC_TEST_NATIVE_USER:-}" ]; then
+    chown -- "$ACYCLIC_TEST_NATIVE_USER:$ACYCLIC_TEST_NATIVE_GROUP" "$claimed"
+  fi
   export TMPDIR=$claimed TMP=$claimed TEMP=$claimed
-  ACYCLIC_TEST_PRIVILEGE_STAGE=scope exec systemd-run --scope --quiet --collect -p Delegate=yes -- /bin/bash "$0" "$@"
+  placement=()
+  if [ -n "${ACYCLIC_TEST_EXCLUSIVE_CPUS:-}" ]; then
+    placement=(--slice=-.slice)
+  fi
+  ACYCLIC_TEST_PRIVILEGE_STAGE=scope exec systemd-run --scope --quiet --collect -p Delegate=yes "${placement[@]}" -- /bin/bash "$0" "$@"
 fi
 if [ "$stage" = scope ]; then
   if has cgroup || native; then
     scope=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)
+    cpus=()
+    if [ -n "${ACYCLIC_TEST_EXCLUSIVE_CPUS:-}" ]; then
+      reserve_cpus "$scope" "$ACYCLIC_TEST_EXCLUSIVE_CPUS"
+    fi
+    unset ACYCLIC_TEST_EXCLUSIVE_CPUS
     # A cgroup that enables controllers for its children holds no process itself: the case runs in the `case` leaf,
     # and its delegated parent is the sibling `work`, with every delegated controller enabled for its children.
     controllers=$(sed 's/[^ ][^ ]*/+&/g' "$scope/cgroup.controllers")
     { mkdir "$scope/case" && echo $$ >"$scope/case/cgroup.procs" && echo "$controllers" >"$scope/cgroup.subtree_control" &&
       mkdir "$scope/work" && echo "$controllers" >"$scope/work/cgroup.subtree_control"; } ||
       fail "cgroup: the delegated scope $scope refused its case leaf or work parent"
+    if [ "${#cpus[@]}" -ne 0 ]; then
+      echo "${cpus[0]}" >"$scope/case/cpuset.cpus"
+      (IFS=,; echo "${cpus[*]:1}") >"$scope/work/cpuset.cpus"
+    fi
+    if [ -n "${ACYCLIC_TEST_NATIVE_USER:-}" ]; then
+      owner=$ACYCLIC_TEST_NATIVE_USER:$ACYCLIC_TEST_NATIVE_GROUP
+      # Migration checks write access to the common ancestor's cgroup.procs.
+      chown -- "$owner" "$scope/cgroup.procs" "$scope/case/cgroup.procs"
+      chown -R -- "$owner" "$scope/work"
+    fi
     export ACYCLIC_TEST_CGROUP="$scope/work"
   fi
   if native; then
@@ -136,7 +208,17 @@ case_path
 if has root || has host-root; then exec "$@"; fi
 if has machines-native; then
   caps=-all,+setuid,+setgid,+net_admin
-  exec "$setpriv" --securebits=+noroot,+noroot_locked --inh-caps="$caps" --ambient-caps="$caps" -- "$@"
+  identity=()
+  if [ -n "${ACYCLIC_TEST_NATIVE_USER:-}" ]; then
+    identity=(--reuid "$ACYCLIC_TEST_NATIVE_USER" --regid "$ACYCLIC_TEST_NATIVE_GROUP")
+    if [ -n "${ACYCLIC_TEST_NATIVE_GROUPS:-}" ]; then
+      identity+=(--groups "$ACYCLIC_TEST_NATIVE_GROUPS")
+    else
+      identity+=(--clear-groups)
+    fi
+  fi
+  unset ACYCLIC_TEST_NATIVE_USER ACYCLIC_TEST_NATIVE_GROUP ACYCLIC_TEST_NATIVE_GROUPS
+  exec "$setpriv" "${identity[@]}" --securebits=+noroot,+noroot_locked --inh-caps="$caps" --ambient-caps="$caps" -- "$@"
 fi
 caps=-all
 if has net-admin || has nft; then caps=$caps,+net_admin; fi

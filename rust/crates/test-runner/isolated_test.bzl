@@ -28,7 +28,10 @@ def _isolated_test_impl(ctx):
     runfiles = runfiles.merge(ctx.runfiles(files = ctx.files.data))
     if ctx.attr.only:
         environment["ACYCLIC_TEST_ONLY"] = ctx.attr.only
-    if ctx.attr.workers:
+    if ctx.attr.exclusive_cpus:
+        environment["ACYCLIC_TEST_EXCLUSIVE_CPUS"] = str(ctx.attr.exclusive_cpus)
+        environment["ACYCLIC_TEST_WORKERS"] = "1"
+    elif ctx.attr.workers:
         environment["ACYCLIC_TEST_WORKERS"] = str(ctx.attr.workers)
     if ctx.attr.exclude:
         environment["ACYCLIC_TEST_EXCLUDE"] = "\n".join(ctx.attr.exclude)
@@ -100,6 +103,7 @@ _isolated_test = rule(
         # runs this many cases at once and never more, so tests Bazel runs together never
         # oversubscribe the host. Set only through `isolated_test`, which writes the tag.
         "cpus": attr.int(mandatory = True),
+        "exclusive_cpus": attr.int(),
         "binary": attr.label(executable = True, cfg = "target", mandatory = True),
         "binaries": attr.label_keyed_string_dict(cfg = "target"),
         # The executable's nextest binary id, which names each of its cases in the report.
@@ -135,7 +139,7 @@ _isolated_test = rule(
     },
 )
 
-def isolated_test(name, cpus = 2, tags = [], privileges = [], **kwargs):
+def isolated_test(name, cpus = 2, tags = [], privileges = [], exclusive_cpus = 0, **kwargs):
     """Runs each case of `binary` in its own process, at most `cpus` cases at once.
 
     The test reserves `cpus` of Bazel's local CPU resources through its `cpu:N` tag, and the
@@ -146,8 +150,14 @@ def isolated_test(name, cpus = 2, tags = [], privileges = [], **kwargs):
       cpus: The CPUs the test reserves, and so the cases it runs at once.
       tags: The test's other tags; a `cpu:` or `privileged` tag of its own is refused.
       privileges: The host privileges its cases need (privileged.sh names them), which tag it for the privileged leg.
+      exclusive_cpus: Physical work cores per machines-native case. Cases run serially and reserve
+        one additional harness CPU in both Bazel and host admission.
       **kwargs: The rule's other attributes.
     """
+    if exclusive_cpus < 0 or (exclusive_cpus and "machines-native" not in privileges):
+        fail("isolated_test %s: exclusive_cpus must be positive and requires machines-native" % name)
+    if exclusive_cpus:
+        cpus = exclusive_cpus + 1
     if cpus < 1:
         fail("isolated_test %s: cpus must be at least 1, not %d" % (name, cpus))
     if [tag for tag in tags if tag.startswith("cpu:")]:
@@ -162,4 +172,4 @@ def isolated_test(name, cpus = 2, tags = [], privileges = [], **kwargs):
                 fail("isolated_test %s: %s is a target's only privilege, not with %s" % (name, alone, privileges))
             if "no-sandbox" not in tags:
                 privileged.append("no-sandbox")
-    _isolated_test(name = name, cpus = cpus, tags = tags + privileged + ["cpu:%d" % cpus], privileges = privileges, **kwargs)
+    _isolated_test(name = name, cpus = cpus, exclusive_cpus = exclusive_cpus, tags = tags + privileged + ["cpu:%d" % cpus], privileges = privileges, **kwargs)
