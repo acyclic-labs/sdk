@@ -16,8 +16,9 @@ function copyModule(root, file, seen = new Set()) {
  seen.add(absolute);
  const target = join(root, 'scripts', relative(resolve('scripts'), absolute));
  mkdirSync(dirname(target), {recursive: true});
- copyFileSync(absolute, target);
  const source = readFileSync(absolute, 'utf8');
+ // A fixture rewrites its isolated entry point even when runfiles are read-only.
+ writeFileSync(target, source);
  for (const match of source.matchAll(/\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g)) {
   if (match[1].startsWith('.')) copyModule(root, resolve(dirname(absolute), match[1]), seen);
  }
