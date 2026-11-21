@@ -39,12 +39,14 @@ pub struct DaytonaConfig {
     pub block_all_network_policy: [u8; 32],
 }
 
+type MutationAttempts = BTreeMap<IdempotencyKey, ([u8; 32], Option<MutationOutcome>)>;
+
 /// One adapter over the same resolver and HTTP transport as model providers.
 pub struct DaytonaProvider {
     config: DaytonaConfig,
     resolver: Arc<dyn CredentialResolver>,
-    transport: Arc<dyn HttpTransport>,
-    attempts: futures::lock::Mutex<BTreeMap<IdempotencyKey, ([u8; 32], Option<MutationOutcome>)>>,
+    transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
+    attempts: futures::lock::Mutex<MutationAttempts>,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +92,7 @@ impl DaytonaProvider {
     pub fn new(
         config: DaytonaConfig,
         resolver: Arc<dyn CredentialResolver>,
-        transport: Arc<dyn HttpTransport>,
+        transport: acyclic_stream::ProviderOwner<dyn HttpTransport>,
     ) -> Result<Self, ProviderError> {
         let provider = Self {
             config,
@@ -102,7 +104,10 @@ impl DaytonaProvider {
         Ok(provider)
     }
 
-    fn bound(&self, endpoint: &str) -> Result<Arc<dyn HttpTransport>, ProviderError> {
+    fn bound(
+        &self,
+        endpoint: &str,
+    ) -> Result<acyclic_stream::ProviderOwner<dyn HttpTransport>, ProviderError> {
         let url = Url::parse(endpoint).map_err(|_| invalid("invalid Daytona URL"))?;
         if url.scheme() != "https"
             || !url.username().is_empty()
