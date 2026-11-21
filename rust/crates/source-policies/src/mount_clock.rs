@@ -39,7 +39,7 @@ fn host_clock_reads(text: &str) -> usize {
 
 // Only the captured seam contains host fallbacks. Callback and lifecycle
 // helpers must use it, including helpers added after this check was written.
-const MOUNT_CLOCK_ALLOWED: [(&str, usize); 1] = [("filesystem/src/native_mount/clock.rs", 4)];
+const MOUNT_CLOCK_ALLOWED: [(&str, usize); 1] = [("filesystem/src/native_mount/clock.rs", 3)];
 
 fn mount_clock_violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<String> {
     let mut found: BTreeMap<&str, usize> = files

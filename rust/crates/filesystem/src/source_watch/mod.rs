@@ -131,17 +131,6 @@ pub(crate) enum HostChange {
     Unconfirmed,
 }
 
-impl HostChange {
-    /// Whether the change may bind its name to another entry, or to none.
-    pub(crate) fn rebinds_name(&self) -> bool {
-        #[cfg(not(target_os = "macos"))]
-        if matches!(self, Self::Departed(_)) {
-            return true;
-        }
-        matches!(self, Self::Rebound(_))
-    }
-}
-
 #[cfg(windows)]
 pub(crate) enum HostChangeWide<'a> {
     /// The file ID belongs to this same native record, never another mutation.

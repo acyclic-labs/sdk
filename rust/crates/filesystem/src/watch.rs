@@ -630,7 +630,10 @@ impl RootHints {
                 && !state.excluded.iter().any(|excluded| beneath(excluded))
             {
                 if let Some((relative, build_change)) = hint {
-                    if relative.as_os_str().is_empty() && change.rebinds_name() {
+                    let rebinds_name = matches!(change, HostChange::Rebound(_));
+                    #[cfg(not(target_os = "macos"))]
+                    let rebinds_name = rebinds_name || matches!(change, HostChange::Departed(_));
+                    if relative.as_os_str().is_empty() && rebinds_name {
                         state.invalidation = Some(WatchInvalidationReason::RootChanged);
                     } else {
                         self.enqueue(relative, build_change, &mut state, work)?;
