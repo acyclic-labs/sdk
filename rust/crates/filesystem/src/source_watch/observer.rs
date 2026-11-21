@@ -20,6 +20,14 @@ struct Observer<F> {
 }
 
 impl HeldRootWatch {
+    /// Whether a callback error reports lost exactness rather than a failed
+    /// producer: the host may have changed anything beneath the root, a move
+    /// of the root or an ancestor included. Nothing further is delivered on
+    /// this watch; holding the root again observes it from now on.
+    pub fn is_delivery_lost(error: &notify::Error) -> bool {
+        matches!(&error.kind, notify::ErrorKind::Io(cause) if cause.kind() == LOST)
+    }
+
     pub(crate) fn open(
         root: &crate::native_host::HostRoot,
         changed: impl Fn(notify::Result<notify::Event>) + Send + Sync + 'static,
@@ -95,6 +103,9 @@ fn windows_kind(action: u32) -> EventKind {
         _ => EventKind::Any,
     }
 }
+
+/// The one encoding of lost delivery; a failed producer reports its cause.
+const LOST: std::io::ErrorKind = std::io::ErrorKind::BrokenPipe;
 
 impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> Observer<F> {
     fn report(&self, event: notify::Result<notify::Event>) {
@@ -190,7 +201,7 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
     }
 
     fn delivery_lost(&self) {
-        self.fail(notify::Error::io(std::io::ErrorKind::BrokenPipe.into()));
+        self.fail(notify::Error::io(LOST.into()));
     }
 
     #[cfg(windows)]
@@ -330,4 +341,32 @@ fn windows_held_root_watch_tells_names_from_in_place_changes()
         "{kind:?}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn lost_delivery_is_told_apart_from_a_failed_producer() {
+    for lost in [true, false] {
+        let (send, receive) = std::sync::mpsc::channel();
+        let observer = Observer {
+            changed: move |event| {
+                let _ = send.send(event);
+            },
+            retired: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+        };
+        for _ in 0..2 {
+            if lost {
+                observer.delivery_lost();
+            } else {
+                observer.delivery_failed(&DemandError::InvalidRequest);
+            }
+        }
+        let error = receive
+            .try_recv()
+            .expect("one terminal cause")
+            .expect_err("terminal causes are errors");
+        assert_eq!(HeldRootWatch::is_delivery_lost(&error), lost, "{error}");
+        assert!(receive.try_recv().is_err(), "a repeated cause reports once");
+    }
 }

@@ -15,7 +15,8 @@ struct InputRevision {
 
 /// A source set's revision. Registrations share native roots across consumers;
 /// readers subscribe before observing and reread only after an event.
-/// Replacing an input or any watched ancestor invalidates it. On Windows a
+/// Replacing an input or any watched ancestor invalidates it, also when the
+/// host reports the move only as lost delivery on a held root. On Windows a
 /// directory is watched through a handle inside it, so renaming a watched
 /// ancestor is refused while the watch is held: no replacement goes unseen.
 pub struct InputWatch {
@@ -217,6 +218,9 @@ impl InputWatch {
                         }),
                     None,
                 ),
+                // Lost exactness, a moved root included, invalidates: arming
+                // again holds every root afresh. Only a failed producer is terminal.
+                Err(error) if acyclic_fs::HeldRootWatch::is_delivery_lost(&error) => (true, None),
                 Err(error) => (true, Some(Arc::new(error))),
             };
             if relevant {
