@@ -2,10 +2,12 @@
 /// supplies its own seeded source, so a replay owns the identity it draws.
 pub type SourceEntropy = Arc<dyn Fn() -> [u8; 16] + Send + Sync>;
 
-/// The production entropy capability: one fresh OS-random identity.
+/// The production entropy capability: one fresh OS-random identity, drawn
+/// through the crate's one fresh-identity boundary, so a seeded world draws it
+/// from its own schedule.
 #[must_use]
 pub fn os_source_entropy() -> SourceEntropy {
-    Arc::new(|| *uuid::Uuid::new_v4().as_bytes())
+    Arc::new(|| *crate::identity::fresh_uuid().as_bytes())
 }
 
 /// One native root. Opening it does not enumerate any descendants.
