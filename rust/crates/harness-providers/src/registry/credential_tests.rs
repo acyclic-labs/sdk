@@ -24,7 +24,7 @@ proptest::proptest! {
         let (events, _) = tokio::sync::watch::channel(0);
         let mut credentials = if environment_only { Credentials::environment() } else { Credentials::default() }
             .with_watch(watched(events.clone()));
-        credentials.source = Some(Arc::new(move |provider, source| {
+        credentials.set_source(move |provider, source| {
             assert!(!environment_only || source == Source::Environment,
                 "environment-only credentials consulted another source");
             let mut state = observed.lock().unwrap();
@@ -37,7 +37,7 @@ proptest::proptest! {
                 Source::CodexHome => return Ok(None),
             };
             Ok(state.0[index].map(|key| format!("watched-key-{key}")))
-        }));
+        });
         let inputs = crate::credentials::CredentialInputs::new(credentials);
         let selected = || inputs.select("openai").map(|credential| match credential {
             crate::credentials::Credential::Key(key) => Some(key.to_string()),
@@ -105,14 +105,14 @@ async fn credential_watch_login_creation_refresh_and_account_pin() -> Result<()>
     let keys = state.clone();
     let observed = reads.clone();
     let home = root.path().to_string_lossy().into_owned();
-    credentials.source = Some(Arc::new(move |_, source| {
+    credentials.set_source(move |_, source| {
         observed.fetch_add(1, Ordering::SeqCst);
         Ok(match source {
             Source::Environment => keys.lock().unwrap().clone(),
             Source::CodexHome => Some(home.clone()),
             _ => None,
         })
-    }));
+    });
     let server = Arc::new(ScriptedHttp::respond(|_| {
         ScriptedHttp::reply(200, bytes::Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"done\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"))
     }));

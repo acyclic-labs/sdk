@@ -408,12 +408,12 @@ mod tests {
                 },
             )
         });
-        credentials.source = Some(Arc::new(move |provider, origin| {
+        credentials.set_source(move |provider, origin| {
             Ok(
                 (provider == "fixture" && origin == crate::credentials::Source::Environment)
                     .then(|| format!("fixture-{}", source.load(Ordering::SeqCst))),
             )
-        }));
+        });
         let (mut provider, transport) = crate::tests::provider(Family::Chat, 200);
         provider.inputs = Some(Arc::new(crate::credentials::CredentialInputs::new(
             credentials,

@@ -142,7 +142,6 @@ impl Credentials {
     fn paths(&self) -> Vec<std::path::PathBuf> {
         let mut paths: Vec<_> = self.path.iter().cloned().collect();
         if self.native_sources {
-            #[cfg(any(test, feature = "test-support"))]
             if let Some(source) = &self.source {
                 if let Some(root) = source("", Source::CodexHome).ok().flatten() {
                     paths.push(std::path::Path::new(&root).join("auth.json"));

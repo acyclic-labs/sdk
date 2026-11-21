@@ -20,12 +20,12 @@ async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reaso
     let generation = Arc::new(AtomicUsize::new(0));
     let source = generation.clone();
     let mut credentials = Credentials::default();
-    credentials.source = Some(Arc::new(move |provider, origin| {
+    credentials.set_source(move |provider, origin| {
         Ok(
             (provider == "openai" && origin == crate::credentials::Source::Environment)
                 .then(|| format!("fixture-{}", source.load(Ordering::SeqCst))),
         )
-    }));
+    });
     let (_, transport) = provider(Adapter::Responses, 200);
     let registry = Registry::with_transport(credentials, transport.clone());
     let provider = Arc::new(registry.resolve("openai/gpt-5")?);

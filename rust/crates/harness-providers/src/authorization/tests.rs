@@ -218,13 +218,13 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     let mut credentials = Credentials::default()
         .with_watch(crate::registry::credential_tests::watched(changes.clone()));
     let observed = late_key.clone();
-    credentials.source = Some(Arc::new(move |_, source| {
+    credentials.set_source(move |_, source| {
         Ok(if source == crate::credentials::Source::Environment {
             observed.lock().unwrap().clone()
         } else {
             None
         })
-    }));
+    });
     let mut late = Registry::with_transport(credentials, Arc::new(ReqwestTransport::new()?))
         .with_credential_resolver(host.clone());
     late.register("openai".into(), native_spec)?;
