@@ -330,3 +330,26 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[path = "ownership_tests.rs"]
 mod ownership_tests;
+
+/// The admission proof a prepared request carries never covers content added
+/// after it: continuing consumes the request, and only the new suffixs own
+
+/// The admission proof a prepared request carries never covers content added
+/// after it: continuing consumes the request, and only the new suffix's own
+/// bounds can produce the next admitted request.
+#[test]
+fn content_added_after_admission_is_bounded_again() -> Result<()> {
+    let limits = Limits {
+        render_bytes: Some(64),
+        ..Limits::default()
+    };
+    let continued = |length: usize| {
+        let mut continued =
+            PreparedModelRequest::prepare(request(2)?, limits, None)?.into_continuation();
+        continued.messages().push(text(&"x".repeat(length)));
+        continued.finish(limits, None)
+    };
+    assert_eq!(continued(64)?.request().messages.len(), 3);
+    assert!(matches!(continued(65), Err(Error::Invalid(_))));
+    Ok(())
+}

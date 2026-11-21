@@ -8,8 +8,30 @@ pub(crate) async fn verify_model_contents_scoped<'a>(
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
-    verify_model_contents_with_summary_authorization::<true, true>(
-        journal, contents, limits, scope, io, context,
+    verify_model_contents_proven::<true, true>(journal, contents, limits, None, scope, io, context)
+        .await
+}
+
+/// [`verify_model_contents_scoped`] for the messages of one prepared request.
+/// Its admission already bounded every message under `admitted`, and the
+/// request is immutable, so limits that `admitted` implies are not walked again.
+pub(crate) async fn verify_admitted_model_contents<'a>(
+    journal: &dyn ExecutionJournal,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
+    limits: Limits,
+    admitted: Limits,
+    scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+    context: Option<&crate::runtime::TaskContext>,
+) -> Result<()> {
+    verify_model_contents_proven::<true, true>(
+        journal,
+        contents,
+        limits,
+        Some(admitted),
+        scope,
+        io,
+        context,
     )
     .await
 }
@@ -28,8 +50,23 @@ pub async fn verify_model_contents_with_summary_authorization<
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
+    verify_model_contents_proven::<SUMMARIES, RELEASE>(
+        journal, contents, limits, None, scope, io, context,
+    )
+    .await
+}
+
+async fn verify_model_contents_proven<'a, const SUMMARIES: bool, const RELEASE: bool>(
+    journal: &dyn ExecutionJournal,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
+    limits: Limits,
+    proven: Option<Limits>,
+    scope: Option<&RuntimeScope>,
+    io: Option<&PreparationIo>,
+    context: Option<&crate::runtime::TaskContext>,
+) -> Result<()> {
     for content in contents.clone() {
-        validate_model_content_limits(content, limits, scope, io)?;
+        validate_model_content_limits(content, limits, scope, proven, io)?;
     }
     let mut summaries = Vec::new();
     let result = async {
@@ -74,7 +111,7 @@ pub(super) fn validate_model_content_scope(
     scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    validate_model_content_limits(content, limits, scope, io)?;
+    validate_model_content_limits(content, limits, scope, None, io)?;
     for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
             && !with_history_io(io, |work| {
@@ -106,14 +143,24 @@ fn ungranted_model_content(file: &crate::conversation::FileRef) -> &'static str 
     }
 }
 
+/// Bounds `content` by the stock and task-scope limits, skipping each one an
+/// earlier admission under `proven` already implies.
 fn validate_model_content_limits(
     content: &ModelContent,
     limits: Limits,
     scope: Option<&RuntimeScope>,
+    proven: Option<Limits>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    with_history_io(io, |work| content.validate_limits(limits, work))?;
-    if let Some(scope) = scope {
+    let implied = |limits: Limits| {
+        proven.is_some_and(|proven| super::transcript::limits_admit(proven, limits))
+    };
+    if !implied(limits) {
+        with_history_io(io, |work| content.validate_limits(limits, work))?;
+    }
+    if let Some(scope) = scope
+        && !implied(scope.limits())
+    {
         with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
     }
     Ok(())
@@ -148,6 +195,8 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         request: &mut crate::model::PreparedModelRequest,
     ) -> Result<()> {
+        // Every message of this immutable request was bounded at its admission.
+        let admitted = request.admitted_limits();
         if journal.has_file_bound_model_verification()
             && let Some(identity) = journal.cache_identity()
         {
@@ -166,10 +215,11 @@ impl StockExecution<'_> {
             let contents = admission
                 .previous_files(request, self.io)?
                 .chain(suffix.iter().map(|message| &message.content));
-            verify_model_contents_scoped(
+            verify_admitted_model_contents(
                 journal,
                 contents,
                 self.stock.limits,
+                admitted,
                 self.original_context()
                     .map(crate::runtime::TaskContext::scope),
                 self.io,
@@ -180,7 +230,7 @@ impl StockExecution<'_> {
             request.retain_content_admission(admission);
             return Ok(());
         }
-        verify_model_contents_scoped(
+        verify_admitted_model_contents(
             journal,
             request
                 .request()
@@ -188,6 +238,7 @@ impl StockExecution<'_> {
                 .iter()
                 .map(|message| &message.content),
             self.stock.limits,
+            admitted,
             self.original_context()
                 .map(crate::runtime::TaskContext::scope),
             self.io,
