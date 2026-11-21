@@ -697,25 +697,20 @@ const platformRules = [...scriptPlatforms].sort().map(platform => {
   const [os, cpu] = platform.split("-");
   return `\n${rule("config_setting", [["name", q(platform)], ["constraint_values", list([`@platforms//os:${os}`, `@platforms//cpu:${cpu}`])]])}\n`;
 }).join("");
-// A package with [package.metadata.bazel] repository-rust-sources = true compiles and builds
-// from every Rust source in the repository; each package then exports its own as `rust_sources`.
+// Every package exports its Rust sources as `rust_sources` and all its files as `sources`: all but
+// those under a directory [workspace.metadata.bazel] sources-skip-directories names (build output, tool
+// caches), at any depth. Both exist whatever any manifest sets, so a target naming one never loses it.
+// A package with [package.metadata.bazel] repository-rust-sources = true compiles and builds from every
+// Rust source in the repository; one with repository-sources = true runs its build script over every
+// file of itself and each first-party package it links (a source stamp, say).
 const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === true;
-const repositorySources = [...members].some(id => readsRepository(packages.get(id)))
-  ? ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()]
-  : [];
-// A package with [package.metadata.bazel] repository-sources = true runs its build script over every
-// file of itself and each first-party package it links (a source stamp, say); each package then exports
-// them as `sources`: all its files but those under a directory [workspace.metadata.bazel]
-// sources-skip-directories names (build output, tool caches), at any depth.
+const repositorySources = ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()];
 const readsLinkedSources = p => p.metadata?.bazel?.["repository-sources"] === true;
 const linkedSources = p => [p.id, ...normalLibraries([p.id], { procMacros: true })]
   .map(id => `//${dir(packages.get(id))}:sources`).sort();
 const skippedDirectories = bazelWorkspace?.["sources-skip-directories"] ?? [];
-const sourcesRule = (repositorySources.length
-  ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
-  : "") + ([...members].some(id => readsLinkedSources(packages.get(id)))
-  ? `\n${rule("filegroup", [["name", q("sources")], ["srcs", glob(["**"], skippedDirectories.flatMap(name => [`${name}/**`, `**/${name}/**`]))], ["visibility", q(["//visibility:public"])]])}\n`
-  : "");
+const sourcesRule = `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
+  + `\n${rule("filegroup", [["name", q("sources")], ["srcs", glob(["**"], skippedDirectories.flatMap(name => [`${name}/**`, `**/${name}/**`]))], ["visibility", q(["//visibility:public"])]])}\n`;
 // Build script paths name tracked files or directories relative to the package.
 // build-script-inputs replaces the package-wide defaults. build-script-data adds inputs.
 function scriptData(p, key) {

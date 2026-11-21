@@ -458,10 +458,17 @@ test("a library and a binary of the same name get distinct rule names", () => {
   }
 });
 
-test("repository-sources gives a build script every file of each package it links, but the skipped directories", () => {
+test("every package exports its sources whatever any manifest sets, and repository-sources gives a build script those of each package it links, but the skipped directories", () => {
   const { root, run } = fixture();
   try {
     writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["member", "local"]\nresolver = "3"\n\n[workspace.metadata.bazel]\nsources-skip-directories = ["target", "node_modules"]\n');
+    // No manifest opts in, and a target outside the generator (a format check, say) still names both.
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    assert.equal(run("write").status, 0);
+    for (const build of ["BUILD.bazel", "local/BUILD.bazel", "member/BUILD.bazel"]) {
+      const text = readFileSync(join(root, build), "utf8");
+      for (const name of ["rust_sources", "sources"]) assert.ok(text.includes(`filegroup(\n    name = "${name}",`), `${name} in ${build}`);
+    }
     const manifest = join(root, "member/Cargo.toml");
     writeFileSync(manifest, readFileSync(manifest, "utf8").replace("[dependencies]", 'build = "build.rs"\n\n[package.metadata.bazel]\nrepository-sources = true\n\n[dependencies]'));
     writeFileSync(join(root, "member/build.rs"), "fn main() {}\n");

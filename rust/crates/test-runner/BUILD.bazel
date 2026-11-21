@@ -183,6 +183,13 @@ filegroup(
 )
 
 
+filegroup(
+    name = "sources",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
