@@ -244,6 +244,10 @@ pub enum Serving<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
 
 /// A root whose creation is uncertain, owning its prepared commit.
 pub struct Unsettled<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
+    pending: Box<PendingRoot<P, O>>,
+}
+
+struct PendingRoot<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     prepared: Prepared,
@@ -257,7 +261,7 @@ where
     /// The prepared commit awaiting a definite outcome.
     #[must_use]
     pub const fn prepared(&self) -> &Prepared {
-        &self.prepared
+        &self.pending.prepared
     }
 
     /// Resubmits the identical prepared commit.
@@ -265,7 +269,12 @@ where
     /// # Errors
     /// As [`serve`].
     pub async fn resubmit(self) -> std::result::Result<Serving<P, O>, Error> {
-        settle(self.bound, self.platform, self.prepared).await
+        let PendingRoot {
+            bound,
+            platform,
+            prepared,
+        } = *self.pending;
+        settle(bound, platform, prepared).await
     }
 }
 
@@ -303,9 +312,11 @@ where
         RootSubmission::Created(root) => root,
         RootSubmission::Unknown(prepared) => {
             return Ok(Serving::Unknown(Unsettled {
-                bound,
-                platform,
-                prepared,
+                pending: Box::new(PendingRoot {
+                    bound,
+                    platform,
+                    prepared,
+                }),
             }));
         }
     };
@@ -575,315 +586,237 @@ where
     ) -> std::result::Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
-            AgentCommand::Bind { agent } => {
-                let agent = self.within_tree(agent.as_ref().unwrap_or(&self.root))?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if agent != &self.root {
-                    if let Some((tools, credential)) =
-                        self.bound.selected_observation(&self.root, agent).await?
-                    {
-                        return Ok(AgentBinding::reply(
-                            &self.binding(),
-                            tools,
-                            Some(&credential),
-                        ));
-                    }
-                }
-                Ok(AgentBinding::reply(
-                    &self.binding(),
-                    self.bound.tool_resource(agent).await?,
-                    None,
-                ))
-            }
+            AgentCommand::Bind { agent } => self.bind_agent(agent.as_ref()).await,
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
-            AgentCommand::SetPeerMembership { agent, id, enabled } => {
-                let agent = self.within_tree(agent)?;
-                agents.set_peer_membership(agent, by, id, *enabled).await?;
-                Ok(AgentReply::PeerMembership { enabled: *enabled })
+            AgentCommand::SetPeerMembership { agent, id, enabled } => agents
+                .set_peer_membership(self.within_tree(agent)?, by, id, *enabled)
+                .await
+                .map(|()| AgentReply::PeerMembership { enabled: *enabled }),
+            AgentCommand::AgentFilePreviews { .. }
+            | AgentCommand::AgentFiles { .. }
+            | AgentCommand::ClientFiles { .. }
+            | AgentCommand::Usage { .. }
+            | AgentCommand::Events { .. }
+            | AgentCommand::ChildWakes { .. }
+            | AgentCommand::Directory { .. }
+            | AgentCommand::Read { .. }
+            | AgentCommand::Reply { .. }
+            | AgentCommand::ProjectHeads { .. }
+            | AgentCommand::History { .. } => self.dispatch_projection(command).await,
+            AgentCommand::PublishAgentFiles {
+                agent,
+                operation,
+                changes,
+            } => self
+                .bound
+                .publish_agent_files(self.within_tree(agent)?, *operation, changes)
+                .await
+                .map(|generation| AgentReply::ClientFilesPublished { generation }),
+            AgentCommand::Archive { agent, id } => agents
+                .archive(self.within_tree(agent)?, by, id)
+                .await
+                .map(|delivery| AgentReply::Delivered { delivery }),
+            AgentCommand::Pause { agent, paused } => agents
+                .pause(self.within_tree(agent)?, *paused)
+                .await
+                .map(|()| AgentReply::Paused { paused: *paused }),
+            AgentCommand::MergeSession { agent, id } => self.merge_session(agent, id, by).await,
+            AgentCommand::NameSession { agent, name, id } => {
+                self.require_sessions()?;
+                self.bound
+                    .name_session(agent, name, id)
+                    .await
+                    .map(|()| AgentReply::Root {
+                        agent: agent.clone(),
+                    })
             }
+            AgentCommand::ResolveSession { name } => {
+                self.require_sessions()?;
+                self.bound
+                    .resolve_session(name)
+                    .await
+                    .map(|agent| AgentReply::Root { agent })
+            }
+            AgentCommand::SelectSession { agent, id } => {
+                self.require_sessions()?;
+                self.bound
+                    .select_session(agent, id)
+                    .await
+                    .map(|()| AgentReply::Root {
+                        agent: agent.clone(),
+                    })
+            }
+            AgentCommand::LatestSession {} => {
+                self.require_sessions()?;
+                self.bound
+                    .latest_session()
+                    .await
+                    .map(|agent| AgentReply::LatestSession { agent })
+            }
+            AgentCommand::NewSession { id, peer, .. }
+            | AgentCommand::ForkSession { id, peer, .. } => {
+                self.create_session(command, by, id, *peer).await
+            }
+            AgentCommand::PreparePeer { agent, sender } => self.prepare_peer(agent, sender).await,
+            AgentCommand::Settlement { agent, wait } => self.settlement(agent, wait).await,
+            AgentCommand::Diff { .. } => Err(Error::Turn(Box::new(crate::Error::Unsupported(
+                "workspace diff queries require an original actor socket".into(),
+            )))),
+            AgentCommand::PublishClientFiles {
+                agent,
+                root,
+                operation,
+                changes,
+            } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::ClientFilesPublished {
+                    generation: self
+                        .bound
+                        .publish_files(agent, *root, *operation, changes)
+                        .await?,
+                })
+            }
+            AgentCommand::Prompt {
+                agent,
+                id,
+                body,
+                peer: Some((source, admission)),
+            } => {
+                self.deliver_peer_prompt(agent, source, admission, id, body)
+                    .await
+            }
+            AgentCommand::Prompt {
+                agent,
+                id,
+                body,
+                peer: None,
+            } => self.deliver_prompt(agent, id, body, by).await,
+            AgentCommand::Cancel {
+                agent,
+                id,
+                input,
+                conversation,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let record = InboxRecord::Cancel(crate::agent::Cancellation {
+                    input: *input,
+                    conversation: *conversation,
+                    by: by.clone(),
+                    id: id.clone(),
+                });
+                agents
+                    .send(agent, by, &record)
+                    .await
+                    .map(|delivery| AgentReply::Delivered { delivery })
+            }
+            AgentCommand::Compact {
+                agent,
+                id,
+                instructions,
+            } => {
+                self.compact_context(agent, id, instructions.as_ref(), by)
+                    .await
+            }
+            AgentCommand::Rewind { agent, id } => {
+                self.context(self.within_tree(agent)?, by, id, ContextAction::Rewind)
+                    .await
+            }
+            AgentCommand::Restore {
+                agent,
+                id,
+                at,
+                mode,
+                expected,
+            } => {
+                self.context(
+                    self.within_tree(agent)?,
+                    by,
+                    id,
+                    ContextAction::Restore {
+                        at: *at,
+                        mode: *mode,
+                        expected: expected.clone(),
+                    },
+                )
+                .await
+            }
+            AgentCommand::ClearAll { agent, id } => {
+                self.context(self.within_tree(agent)?, by, id, ContextAction::Clear)
+                    .await
+            }
+            AgentCommand::Children { page, .. } | AgentCommand::Sessions { page, .. } => {
+                self.dispatch_page(command, page).await
+            }
+            AgentCommand::Spawn {
+                parent,
+                id,
+                brief,
+                role,
+            }
+            | AgentCommand::Fork {
+                parent,
+                id,
+                brief,
+                role,
+                ..
+            } => self.spawn_child(command, parent, id, brief, role, by).await,
+            AgentCommand::Approvals { agent, page } => self.approval_page(agent, page).await,
+            AgentCommand::Stage {
+                agent,
+                digest,
+                part,
+                text,
+            } => self.stage_command(agent, digest, *part, text, by).await,
+            // The call assembled its parts before dispatch.
+            AgentCommand::Staged { .. } => Err(Error::Record("a staged command is not assembled")),
+            AgentCommand::Decide {
+                agent,
+                id,
+                binding,
+                verdict,
+                reason,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let Sender::User { .. } = by else {
+                    return Err(Error::Record("a decision needs a human principal"));
+                };
+                Ok(AgentReply::Delivered {
+                    delivery: self
+                        .bound
+                        .decide(agent, id, binding, approver, *verdict, reason.clone())
+                        .await?,
+                })
+            }
+        }
+    }
+
+    async fn dispatch_projection(
+        &self,
+        command: &AgentCommand,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        match command {
             AgentCommand::AgentFilePreviews {
                 agent,
                 paths,
                 after,
                 bytes,
-            } => {
-                let snapshot = self
-                    .bound
-                    .agent_file_previews(self.within_tree(agent)?, paths, after.as_ref(), *bytes)
-                    .await?;
-                Ok(AgentReply::FilePreviews { snapshot })
-            }
+            } => self
+                .bound
+                .agent_file_previews(self.within_tree(agent)?, paths, after.as_ref(), *bytes)
+                .await
+                .map(|snapshot| AgentReply::FilePreviews { snapshot }),
             AgentCommand::AgentFiles {
                 agent,
                 paths,
                 after,
-            } => {
-                let snapshot = self
-                    .bound
-                    .agent_files(self.within_tree(agent)?, paths, after.as_ref())
-                    .await?;
-                Ok(AgentReply::ClientFiles { snapshot })
-            }
-            AgentCommand::PublishAgentFiles {
-                agent,
-                operation,
-                changes,
-            } => {
-                let generation = self
-                    .bound
-                    .publish_agent_files(self.within_tree(agent)?, *operation, changes)
-                    .await?;
-                Ok(AgentReply::ClientFilesPublished { generation })
-            }
-            AgentCommand::Archive { agent, id } => {
-                let delivery = agents.archive(self.within_tree(agent)?, by, id).await?;
-                Ok(AgentReply::Delivered { delivery })
-            }
-            AgentCommand::Pause { agent, paused } => {
-                agents.pause(self.within_tree(agent)?, *paused).await?;
-                Ok(AgentReply::Paused { paused: *paused })
-            }
-            AgentCommand::MergeSession { agent, id } => {
-                if agent.parent().is_none() && !self.platform.sessions() {
-                    return Err(Error::Record("root merge requires a session directory"));
-                }
-                let identity = crate::contract::canonical_json_bytes(&(by, id, agent))
-                    .map_err(|_| Error::Record("merge identity cannot encode"))?;
-                let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.session-merge.v1");
-                hash.update(&identity);
-                let mut operation = [0; 16];
-                hash.finalize_xof().fill(&mut operation);
-                let commit = self
-                    .platform
-                    .merge_session(
-                        self.within_tree(agent)?,
-                        crate::OperationId::from_bytes(operation),
-                        Box::pin(self.bound.merge_session(
-                            agent,
-                            &agent.parent().unwrap_or_else(|| self.root.clone()),
-                            crate::OperationId::from_bytes(operation),
-                        )),
-                    )
-                    .await
-                    .map_err(|error| Error::Turn(Box::new(error)))?;
-                Ok(AgentReply::Merged { commit })
-            }
-            AgentCommand::NameSession { agent, name, id } => {
-                if !self.platform.sessions() {
-                    return Err(Error::Record("this host serves one tree"));
-                }
-                self.bound.name_session(agent, name, id).await?;
-                Ok(AgentReply::Root {
-                    agent: agent.clone(),
-                })
-            }
-            AgentCommand::ResolveSession { name } => {
-                if !self.platform.sessions() {
-                    return Err(Error::Record("this host serves one tree"));
-                }
-                Ok(AgentReply::Root {
-                    agent: self.bound.resolve_session(name).await?,
-                })
-            }
-            AgentCommand::SelectSession { agent, id } => {
-                if !self.platform.sessions() {
-                    return Err(Error::Record("this host serves one tree"));
-                }
-                self.bound.select_session(agent, id).await?;
-                Ok(AgentReply::Root {
-                    agent: agent.clone(),
-                })
-            }
-            AgentCommand::LatestSession {} => {
-                if !self.platform.sessions() {
-                    return Err(Error::Record("this host serves one tree"));
-                }
-                Ok(AgentReply::LatestSession {
-                    agent: self.bound.latest_session().await?,
-                })
-            }
-            AgentCommand::NewSession { id, peer, .. }
-            | AgentCommand::ForkSession { id, peer, .. } => {
-                if !self.platform.sessions() {
-                    return Err(Error::Record("this host serves one tree"));
-                }
-                let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.session.v1");
-                hasher.update(self.root.as_str().as_bytes());
-                // New and historical root intents are independent namespaces.
-                if let AgentCommand::ForkSession { .. } = command {
-                    hasher.update(b"history");
-                }
-                hasher.update(
-                    &serde_json::to_vec(&(by, id))
-                        .map_err(|_| Error::Record("session identity cannot encode"))?,
-                );
-                let mut bytes = [0; 16];
-                hasher.finalize_xof().fill(&mut bytes);
-                let identity = crate::agent::AgentId::from_bytes(bytes);
-                let path = AgentPath::root(&identity);
-                let parameters = blake3::hash(
-                    &serde_json::to_vec(command)
-                        .map_err(|_| Error::Record("session request cannot encode"))?,
-                );
-                let pending = self
-                    .pending_roots
-                    .lock()
-                    .map_err(|_| Error::Record("session publication owner is poisoned"))?
-                    .remove(&path);
-                if pending.is_none() {
-                    match agents.state(&path).await {
-                        Ok(state) => {
-                            let provenance = state
-                                .profile
-                                .as_ref()
-                                .and_then(|profile| profile.continuation.as_ref());
-                            let same = match command {
-                                AgentCommand::ForkSession { agent, at, .. } => provenance
-                                    .is_some_and(|origin| {
-                                        origin.parent_run_id == *agent
-                                            && origin.stream_offset == *at
-                                    }),
-                                _ => provenance.is_none(),
-                            };
-                            let original_peer =
-                                crate::agent::initial_peer_membership(&**agents.provider(), &path)
-                                    .await?;
-                            if !same || original_peer.enabled != *peer {
-                                return Err(Error::Record(
-                                    "session intent already names another creation",
-                                ));
-                            }
-                            return Ok(AgentReply::Root { agent: path });
-                        }
-                        Err(Error::NoSuchAgent) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-                let prepared = match pending {
-                    Some((original, prepared)) => {
-                        if original != parameters {
-                            self.pending_roots
-                                .lock()
-                                .map_err(|_| {
-                                    Error::Record("session publication owner is poisoned")
-                                })?
-                                .insert(path, (original, prepared));
-                            return Err(Error::Record(
-                                "uncertain session intent names another request",
-                            ));
-                        }
-                        prepared
-                    }
-                    None => {
-                        let mut root = self
-                            .platform
-                            .session_root(identity)
-                            .await
-                            .map_err(|error| Error::Turn(Box::new(error)))?;
-                        root.peer = *peer;
-                        match command {
-                            AgentCommand::ForkSession { agent, at, .. } => {
-                                self.bound
-                                    .prepare_session_history(
-                                        id,
-                                        root,
-                                        self.within_tree(agent)?,
-                                        *at,
-                                    )
-                                    .await?
-                            }
-                            _ => match self.platform.session_source() {
-                                Some(source) => {
-                                    self.bound
-                                        .prepare_isolated_session(
-                                            id,
-                                            root,
-                                            &source,
-                                            match command {
-                                                AgentCommand::NewSession { questions, .. } => {
-                                                    *questions
-                                                }
-                                                _ => None,
-                                            },
-                                        )
-                                        .await?
-                                }
-                                None => {
-                                    self.bound
-                                        .prepare_session_root(
-                                            id,
-                                            root,
-                                            match command {
-                                                AgentCommand::NewSession { questions, .. } => {
-                                                    *questions
-                                                }
-                                                _ => None,
-                                            },
-                                        )
-                                        .await?
-                                }
-                            },
-                        }
-                    }
-                };
-                let agent = match self.bound.submit_root(prepared).await? {
-                    RootSubmission::Created(agent) => agent,
-                    RootSubmission::Unknown(prepared) => {
-                        let request = prepared.request().clone();
-                        self.pending_roots
-                            .lock()
-                            .map_err(|_| Error::Record("session publication owner is poisoned"))?
-                            .insert(path, (parameters, prepared));
-                        return Err(Error::Unknown(Box::new(request)));
-                    }
-                };
-                Ok(AgentReply::Root { agent })
-            }
-            AgentCommand::PreparePeer { agent, sender } => {
-                let agent = self.within_tree(agent)?;
-                let sender = self.within_tree(sender)?;
-                let state = agents.state(sender).await?;
-                let Some(profile) = state.profile else {
-                    return Ok(AgentReply::PeerAdmission { admission: None });
-                };
-                Ok(AgentReply::PeerAdmission {
-                    admission: crate::agent::session_peer_admission(
-                        &**agents.provider(),
-                        &profile.peers,
-                        sender,
-                        agent,
-                    )
-                    .await?,
-                })
-            }
-            AgentCommand::Settlement { agent, wait } => {
-                let agent = self.within_tree(agent)?;
-                if *wait {
-                    let tail = crate::agent::inbox_tail(&**agents.provider(), agent).await?;
-                    if let Some(input) = tail.checked_sub(1) {
-                        agents.wait_for_input(agent, input).await?;
-                    }
-                }
-                let (state, settlement) = agents.settlement_snapshot(agent).await?;
-                let profile = state.profile.as_ref();
-                Ok(AgentReply::Settlement {
-                    input: settlement.input,
-                    settled: state.conversation_tail,
-                    statuses: state.status_tail,
-                    role: profile
-                        .and_then(|profile| profile.role())
-                        .map(str::to_owned),
-                    model: profile.and_then(|profile| profile.model.clone()),
-                    compaction_disabled: self.platform.compaction_disabled(),
-                    topology: profile.and_then(|profile| profile.topology.clone()),
-                    phase: settlement.phase,
-                })
-            }
-            AgentCommand::Diff { .. } => Err(Error::Turn(Box::new(crate::Error::Unsupported(
-                "workspace diff queries require an original actor socket".into(),
-            )))),
+            } => self
+                .bound
+                .agent_files(self.within_tree(agent)?, paths, after.as_ref())
+                .await
+                .map(|snapshot| AgentReply::ClientFiles { snapshot }),
             AgentCommand::Usage {
                 agent,
                 input,
@@ -926,79 +859,14 @@ where
                 paths,
                 after,
             } => {
-                let agent = self.within_tree(agent)?;
-                Ok(AgentReply::ClientFiles {
-                    snapshot: match publication {
-                        Some(operation) => {
-                            self.bound
-                                .files_at_publication(agent, *root, paths, *operation)
-                                .await?
-                        }
-                        None => {
-                            self.bound
-                                .files(agent, *root, paths, after.as_ref())
-                                .await?
-                        }
-                    },
-                })
-            }
-            AgentCommand::PublishClientFiles {
-                agent,
-                root,
-                operation,
-                changes,
-            } => {
-                let agent = self.within_tree(agent)?;
-                Ok(AgentReply::ClientFilesPublished {
-                    generation: self
-                        .bound
-                        .publish_files(agent, *root, *operation, changes)
-                        .await?,
-                })
+                self.client_files(agent, *root, publication, paths, after.as_ref())
+                    .await
             }
             AgentCommand::ChildWakes {
                 agent,
                 status,
                 page,
-            } => {
-                let agent = self.within_tree(agent)?;
-                let after = page
-                    .cursor()
-                    .map(|after| after.parse::<u64>())
-                    .transpose()
-                    .map_err(|_| Error::Record("invalid completion cursor"))?;
-                let mut items = self
-                    .bound
-                    .child_wakes(agent, *status, after, page.items() as usize + 1)
-                    .await?;
-                let mut credit = PageCredit::new(page, |next| AgentReply::ChildWakes {
-                    items: Vec::new(),
-                    next,
-                })?;
-                for (index, item) in items.iter().take(page.items() as usize).enumerate() {
-                    let continues = index + 1 < items.len();
-                    let next = item
-                        .status
-                        .checked_add(1)
-                        .ok_or(Error::Record("completion status overflow"))?;
-                    if !credit.accept(item, continues.then_some(u64::from(next.ilog10()) + 1))? {
-                        break;
-                    }
-                }
-                let next = if credit.items() < items.len() {
-                    Some(
-                        items[credit.items() - 1]
-                            .status
-                            .checked_add(1)
-                            .ok_or(Error::Record("completion status overflow"))?
-                            .to_string(),
-                    )
-                } else {
-                    None
-                };
-                items.truncate(credit.items());
-                Ok(AgentReply::ChildWakes { items, next })
-            }
+            } => self.child_wake_page(agent, *status, page).await,
             AgentCommand::Directory {
                 agent,
                 target,
@@ -1007,553 +875,821 @@ where
                 after_generation,
                 page: request,
             } => {
-                let agent = self.within_tree(agent)?;
-                let mut credit = None;
-                let mut admit = |generation: &crate::resources::GenerationRef,
-                                 entry: Option<&crate::conversation::PrivateDirectoryEntry>,
-                                 next: Option<&[u8]>|
-                 -> crate::Result<bool> {
-                    use crate::conversation::PrivateDirectoryPageView;
-                    if credit.is_none() {
-                        let end = AgentReply::Directory {
-                            page: PrivateDirectoryPageView {
-                                generation,
-                                entries: &[],
-                                next: None,
-                            },
-                        };
-                        let more = AgentReply::Directory {
-                            page: PrivateDirectoryPageView {
-                                generation,
-                                entries: &[],
-                                next: Some(&[]),
-                            },
-                        };
-                        credit = Some(PageCredit::from_envelopes(request, &end, &more)?);
-                    }
-                    let next = next
-                        .map(|next| page_json_bytes(&next).map(|bytes| bytes - 2))
-                        .transpose()?;
-                    let credit = credit
-                        .as_mut()
-                        .ok_or(Error::Record("directory credit is uninitialized"))?;
-                    match entry {
-                        Some(entry) => credit.accept(entry, next),
-                        None => credit.accept_boundary(next),
-                    }
-                    .map_err(crate::Error::from)
-                };
-                let page = self
-                    .bound
-                    .directory_page(
-                        agent,
-                        crate::conversation::DirectoryQuery {
-                            target: *target,
-                            path,
-                            generation: generation.as_ref(),
-                            after_generation: after_generation.as_ref(),
-                            after: request.cursor(),
-                            maximum_entries: request.items(),
-                        },
-                        Some(&mut admit),
-                    )
-                    .await?;
-                Ok(AgentReply::Directory { page })
+                self.directory_page(
+                    agent,
+                    crate::conversation::DirectoryQuery {
+                        target: *target,
+                        path,
+                        generation: generation.as_ref(),
+                        after_generation: after_generation.as_ref(),
+                        after: request.cursor(),
+                        maximum_entries: request.items(),
+                    },
+                    request,
+                )
+                .await
             }
             AgentCommand::Read {
                 agent,
                 target,
                 offset,
-            } => {
-                let agent = self.within_tree(agent)?;
-                let (bytes, length) = match target {
-                    ReadTarget::Path {
-                        target,
-                        path,
-                        generation,
-                    } => {
-                        let (bytes, length) = self
-                            .bound
-                            .read_path(
-                                agent,
-                                *target,
-                                path,
-                                generation,
-                                acyclic_fs::ByteRange {
-                                    offset: *offset,
-                                    length: MAX_READ_BYTES,
-                                },
-                            )
-                            .await?;
-                        return Ok(AgentReply::read(&bytes, length));
-                    }
-                    ReadTarget::Approval { status } => {
-                        let (bytes, length) = self
-                            .bound
-                            .read_approval_request(agent, *status, *offset, MAX_READ_BYTES)
-                            .await?;
-                        return Ok(AgentReply::read(&bytes, length));
-                    }
-                    ReadTarget::Execution {
-                        input,
-                        sequence,
-                        field,
-                    } => {
-                        let (bytes, length) = self
-                            .bound
-                            .read_event_payload(
-                                agent,
-                                *input,
-                                *sequence,
-                                *field,
-                                *offset,
-                                MAX_READ_BYTES,
-                            )
-                            .await?;
-                        return Ok(AgentReply::read(&bytes, length));
-                    }
-                    ReadTarget::File { file } => {
-                        self.bound
-                            .read_file(agent, file, *offset, MAX_READ_BYTES)
-                            .await?
-                    }
-                    ReadTarget::Conversation { sequence, file } => {
-                        self.bound
-                            .read_conversation_file(agent, file, *sequence, *offset, MAX_READ_BYTES)
-                            .await?
-                    }
-                    ReadTarget::ToolOutput { path, at } => {
-                        self.bound
-                            .read_tool_output(agent, path, at.as_ref(), *offset, MAX_READ_BYTES)
-                            .await?
-                    }
-                };
-                Ok(AgentReply::read(&bytes, length))
-            }
-            AgentCommand::Prompt {
-                agent,
-                id,
-                body,
-                peer: Some((source, admission)),
-            } => {
-                let agent = self.within_tree(agent)?;
-                let source = self.within_tree(source)?;
-                let state = agents.state(source).await?;
-                if !state
-                    .profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.peers.contains(crate::agent::SEND_PEER))
-                {
-                    return Err(Error::Record("the sender lacks peer message authority"));
-                }
-                let sender = Sender::Agent {
-                    path: source.clone(),
-                };
-                // Peer text is content, never an invocation of user commands,
-                // project skills, attachment expansion, or approval controls.
-                let body = self.bound.stage_prompt(agent, &sender, id, body).await?;
-                let message = Message {
-                    from: sender,
-                    id: id.clone(),
-                    body: Box::new(body),
-                    re: None,
-                    attachments: None,
-                };
-                Ok(AgentReply::Delivered {
-                    delivery: agents.send_peer(agent, source, &message, admission).await?,
-                })
-            }
-            AgentCommand::Prompt {
-                agent,
-                id,
-                body,
-                peer: None,
-            } => {
-                let agent = self.within_tree(agent)?;
-                let (body, attachments) = if let ModelContent::Text(source) = body {
-                    // The message's own identity, as the inbox keys it: its
-                    // recipient, sender and intent.
-                    let key = crate::contract::canonical_json_bytes(&(agent, by, id))
-                        .map_err(|_| Error::Record("message identity does not encode"))?;
-                    let turn = |error| Error::Turn(Box::new(error));
-                    // A replay is answered from what its first delivery pinned:
-                    // its staged body, and the manifest staged before it. Only a
-                    // new delivery reads the project's commands, skills and files.
-                    let (body, attachments) = match self
-                        .bound
-                        .staged_text(agent, "message", by, id, source)
-                        .await?
-                    {
-                        Some(body) => (
-                            body,
-                            self.platform
-                                .attachments(agent, &key, None)
-                                .await
-                                .map_err(turn)?,
-                        ),
-                        None => {
-                            let expanded = self
-                                .platform
-                                .prompt_command(agent, source)
-                                .await
-                                .map_err(turn)?;
-                            let text = expanded.as_deref().unwrap_or(source);
-                            let attachments = self
-                                .platform
-                                .attachments(agent, &key, Some(text))
-                                .await
-                                .map_err(turn)?;
-                            let body = self
-                                .bound
-                                .stage_text(agent, "message", by, id, (source, text))
-                                .await?;
-                            (body, attachments)
-                        }
-                    };
-                    (body, attachments)
-                } else {
-                    (self.bound.stage_prompt(agent, by, id, body).await?, None)
-                };
-                let record = InboxRecord::Message(Message {
-                    from: by.clone(),
-                    id: id.clone(),
-                    body: Box::new(body),
-                    re: None,
-                    attachments: attachments.map(Box::new),
-                });
-                Ok(AgentReply::Delivered {
-                    delivery: agents.send(agent, by, &record).await?,
-                })
-            }
-            AgentCommand::Reply { agent, id, inbox } => Ok(AgentReply::Reply {
-                reply: agents.reply(self.within_tree(agent)?, id, *inbox).await?,
-            }),
-            AgentCommand::Cancel {
-                agent,
-                id,
-                input,
-                conversation,
-            } => {
-                let agent = self.within_tree(agent)?;
-                let record = InboxRecord::Cancel(crate::agent::Cancellation {
-                    input: *input,
-                    conversation: *conversation,
-                    by: by.clone(),
-                    id: id.clone(),
-                });
-                Ok(AgentReply::Delivered {
-                    delivery: agents.send(agent, by, &record).await?,
-                })
-            }
-            AgentCommand::Compact {
-                agent,
-                id,
-                instructions,
-            } => {
-                let agent = self.within_tree(agent)?;
-                let instructions = match instructions.as_ref().map(text).transpose()? {
-                    Some(guidance) if !guidance.trim().is_empty() => Some(Box::new(
-                        self.bound
-                            .stage_text(agent, "compact", by, id, (guidance, guidance))
-                            .await?,
-                    )),
-                    _ => None,
-                };
-                self.context(agent, by, id, ContextAction::Compact { instructions })
-                    .await
-            }
-            AgentCommand::Rewind { agent, id } => {
-                self.context(self.within_tree(agent)?, by, id, ContextAction::Rewind)
-                    .await
-            }
-            AgentCommand::Restore {
-                agent,
-                id,
-                at,
-                mode,
-                expected,
-            } => {
-                self.context(
-                    self.within_tree(agent)?,
-                    by,
-                    id,
-                    ContextAction::Restore {
-                        at: *at,
-                        mode: *mode,
-                        expected: expected.clone(),
-                    },
-                )
+            } => self.read_page(agent, target, offset).await,
+            AgentCommand::Reply { agent, id, inbox } => agents
+                .reply(self.within_tree(agent)?, id, *inbox)
                 .await
-            }
-            AgentCommand::ClearAll { agent, id } => {
-                self.context(self.within_tree(agent)?, by, id, ContextAction::Clear)
-                    .await
-            }
-            AgentCommand::ProjectHeads { agent } => Ok(AgentReply::ProjectHeads {
-                items: self.bound.project_heads(self.within_tree(agent)?).await?,
-            }),
-            AgentCommand::History { agent, page } => {
-                use base64::{Engine as _, engine::general_purpose::STANDARD};
-                use futures::TryStreamExt as _;
-                let agent = self.within_tree(agent)?;
-                let mut credit = PageCredit::new(page, |next| AgentReply::History {
-                    items: Vec::new(),
-                    next,
-                })?;
-                let mut cursor = match page.cursor() {
-                    Some(cursor) => {
-                        let bytes = STANDARD
-                            .decode(cursor)
-                            .map_err(|_| Error::Record("invalid history cursor"))?;
-                        let cursor: HistoryCursor = serde_json::from_slice(&bytes)
-                            .map_err(|_| Error::Record("invalid history cursor"))?;
-                        if cursor.version != 2
-                            || cursor.agent != *agent
-                            || cursor.before > cursor.tail
-                        {
-                            return Err(Error::Record("history cursor differs from selection"));
-                        }
-                        cursor
-                    }
-                    None => {
-                        let tail = self
-                            .tail(agent.history()?)
-                            .await?
-                            .checked_sub(1)
-                            .ok_or(Error::Record("history adoption boundary is absent"))?;
-                        HistoryCursor {
-                            version: 2,
-                            agent: agent.clone(),
-                            before: tail,
-                            tail,
-                        }
-                    }
-                };
-                let count = u64::from(page.items()).min(cursor.before);
-                let start = cursor.before - count;
-                let mut items = Vec::new();
-                if count != 0 {
-                    let mut records = agents
-                        .provider()
-                        .read(acyclic_stream::ReadRequest {
-                            key: None,
-                            path: agent.history()?,
-                            from: start + 1,
-                            limit: count as u32,
-                            at_least: Default::default(),
-                        })
-                        .await
-                        .map_err(Error::Stream)?;
-                    while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
-                        let item = crate::agent::HistoryCheckpoint::summary(&record.value)?;
-                        let sequence = start + 1 + items.len() as u64;
-                        if record.sequence != sequence || item.conversation != sequence {
-                            return Err(Error::Record("history page differs from indexed cut"));
-                        }
-                        items.push(item);
-                    }
-                    if items.len() as u64 != count {
-                        return Err(Error::Record("history page ended before its retained cut"));
-                    }
-                }
-                items.reverse();
-                let mut before = cursor.before;
-                for item in &items {
-                    cursor.before = item.conversation - 1;
-                    let next_bytes = if cursor.before == 0 {
-                        None
-                    } else {
-                        Some(page_json_bytes(&cursor)?.div_ceil(3) * 4)
-                    };
-                    if !credit.accept(item, next_bytes)? {
-                        break;
-                    }
-                    before = cursor.before;
-                }
-                items.truncate(credit.items());
-                cursor.before = before;
-                let next = history_cursor(&cursor)?;
-                Ok(AgentReply::History { items, next })
-            }
-            AgentCommand::Children { page, .. } | AgentCommand::Sessions { page, .. } => {
-                self.dispatch_page(command, page).await
-            }
-            AgentCommand::Spawn {
-                parent,
-                id,
-                brief,
-                role,
-            }
-            | AgentCommand::Fork {
-                parent,
-                id,
-                brief,
-                role,
-                ..
-            } => {
-                let parent = self.within_tree(parent)?;
-                if !self.platform.runs_children() {
-                    return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
-                }
-                // The parent's role admits the child's before anything commits.
-                let continuation = match command {
-                    AgentCommand::Fork { continuation, .. } => continuation.as_ref(),
-                    _ => None,
-                };
-                let mut profile = if let Some(request) = continuation {
-                    if request.version != 1 {
-                        return Err(Error::Record("unsupported continuation version; use v1"));
-                    }
-                    let mut profile = agents
-                        .state(parent)
+                .map(|reply| AgentReply::Reply { reply }),
+            AgentCommand::ProjectHeads { agent } => self
+                .bound
+                .project_heads(self.within_tree(agent)?)
+                .await
+                .map(|items| AgentReply::ProjectHeads { items }),
+            AgentCommand::History { agent, page } => self.history_page(agent, page).await,
+            _ => Err(Error::Record("agent command is not a projection")),
+        }
+    }
+
+    fn require_sessions(&self) -> std::result::Result<(), Error> {
+        if self.platform.sessions() {
+            Ok(())
+        } else {
+            Err(Error::Record("this host serves one tree"))
+        }
+    }
+
+    async fn bind_agent(
+        &self,
+        agent: Option<&AgentPath>,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent.unwrap_or(&self.root))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if agent != &self.root
+            && let Some((tools, credential)) =
+                self.bound.selected_observation(&self.root, agent).await?
+        {
+            return Ok(AgentBinding::reply(
+                &self.binding(),
+                tools,
+                Some(&credential),
+            ));
+        }
+        Ok(AgentBinding::reply(
+            &self.binding(),
+            self.bound.tool_resource(agent).await?,
+            None,
+        ))
+    }
+
+    async fn client_files(
+        &self,
+        agent: &AgentPath,
+        root: crate::client_files::FileRoot,
+        publication: &Option<crate::OperationId>,
+        paths: &[String],
+        after: Option<&crate::client_files::FileCut>,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        Ok(AgentReply::ClientFiles {
+            snapshot: match publication {
+                Some(operation) => {
+                    self.bound
+                        .files_at_publication(agent, root, paths, *operation)
                         .await?
-                        .profile
-                        .ok_or(Error::Record("continuation requires a hosted decider"))?;
-                    if profile.context != crate::agent::SpawnContext::TopLevel
-                        && profile.continuation.is_none()
-                    {
-                        return Err(Error::Record("continuation v1 requires a decider"));
-                    }
-                    profile.context = crate::agent::SpawnContext::Fork;
-                    profile
-                } else {
-                    self.bound.child_profile(parent, role).await?
-                };
-                // A fork selects history, which a fresh-context role cannot
-                // inherit; it is refused before the parent's inbox admits it.
-                if matches!(command, AgentCommand::Fork { .. })
-                    && profile.context == crate::agent::SpawnContext::Fresh
-                {
-                    return Err(Error::SpawnRefused(SpawnRefusal::Role));
                 }
-                let history = match command {
-                    AgentCommand::Fork { at, .. } => {
-                        let saved = crate::filesystem::history_checkpoint(
-                            agents.provider().as_ref(),
-                            parent,
-                            *at,
-                        )
-                        .await
-                        .map_err(|error| Error::Turn(Box::new(error)))?;
-                        if let Some(request) = continuation {
-                            let override_item = if request.override_item.is_some() {
-                                let source = serde_json::to_string(request)
-                                    .map_err(|_| Error::Record("continuation cannot encode"))?;
-                                Some(
-                                    self.bound
-                                        .stage_text(
-                                            parent,
-                                            "continuation",
-                                            by,
-                                            id,
-                                            (&source, &source),
-                                        )
-                                        .await?,
-                                )
-                            } else {
-                                None
-                            };
-                            profile.continuation = Some(Box::new(crate::agent::Continuation::at(
-                                parent,
-                                *at,
-                                &saved,
-                                override_item,
-                            )));
-                        }
-                        Some(crate::agent::HistorySelection {
-                            conversation: saved.conversation,
-                            checkpoint: saved.checkpoint,
-                        })
-                    }
-                    _ => None,
-                };
-                let brief = if continuation.is_some() {
-                    None
-                } else {
-                    let brief = text(brief)?;
-                    Some(Box::new(
-                        self.bound
-                            .stage_text(parent, "brief", by, id, (brief, brief))
-                            .await?,
-                    ))
-                };
-                let record = InboxRecord::Spawn(SpawnRequest {
-                    by: by.clone(),
-                    id: id.clone(),
-                    brief,
-                    profile,
-                    history,
-                });
-                let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
-                    return Err(Error::Record("the parent is archived"));
-                };
-                // The parent's step applies the request against every spawn
-                // before it and commits the outcome; the reply is that record.
-                let (intent, _) = requested_child(parent, inbox)?;
-                let child = match agents.spawned(parent, inbox, &intent).await? {
-                    SpawnOutcome::Spawned { child } => child,
-                    SpawnOutcome::Refused { reason } => return Err(Error::SpawnRefused(reason)),
-                };
-                Ok(AgentReply::Spawned {
-                    agent: child,
-                    delivery: Delivered::Committed { inbox },
-                })
-            }
-            AgentCommand::Approvals { agent, page } => {
-                let agent = self.within_tree(agent)?;
-                // An agent waits on at most one approval: one page holds it.
-                let pending = match page.cursor() {
-                    Some(_) => None,
-                    None => self.bound.pending_approval(agent).await?,
-                };
-                Ok(AgentReply::Approvals {
-                    items: pending
-                        .filter(|_| page.items() > 0)
-                        .map(|(id, status, binding)| PendingApproval {
-                            id,
-                            status,
-                            binding,
-                        })
-                        .into_iter()
-                        .collect(),
-                    next: None,
-                })
-            }
-            AgentCommand::Stage {
-                agent,
-                digest,
-                part,
-                text,
-            } => {
-                let agent = self.within_tree(agent)?;
-                // A part's source is its own identity: its digest and position.
-                let intent = part_intent(digest, *part)?;
+                None => self.bound.files(agent, root, paths, after).await?,
+            },
+        })
+    }
+
+    async fn compact_context(
+        &self,
+        agent: &AgentPath,
+        id: &IntentId,
+        instructions: Option<&ModelContent>,
+        by: &Sender,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        let instructions = match instructions.map(text).transpose()? {
+            Some(guidance) if !guidance.trim().is_empty() => Some(Box::new(
                 self.bound
-                    .stage_text(agent, STAGED_PART, by, &intent, (intent.as_str(), text))
-                    .await?;
-                Ok(AgentReply::Staged {})
-            }
-            // The call assembled its parts before dispatch.
-            AgentCommand::Staged { .. } => Err(Error::Record("a staged command is not assembled")),
-            AgentCommand::Decide {
-                agent,
-                id,
-                binding,
-                verdict,
-                reason,
-            } => {
-                let agent = self.within_tree(agent)?;
-                let Sender::User { .. } = by else {
-                    return Err(Error::Record("a decision needs a human principal"));
-                };
-                Ok(AgentReply::Delivered {
-                    delivery: self
-                        .bound
-                        .decide(agent, id, binding, approver, *verdict, reason.clone())
-                        .await?,
+                    .stage_text(agent, "compact", by, id, (guidance, guidance))
+                    .await?,
+            )),
+            _ => None,
+        };
+        self.context(agent, by, id, ContextAction::Compact { instructions })
+            .await
+    }
+
+    async fn approval_page(
+        &self,
+        agent: &AgentPath,
+        page: &AgentPageRequest,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        // An agent waits on at most one approval: one page holds it.
+        let pending = match page.cursor() {
+            Some(_) => None,
+            None => self.bound.pending_approval(agent).await?,
+        };
+        Ok(AgentReply::Approvals {
+            items: pending
+                .filter(|_| page.items() > 0)
+                .map(|(id, status, binding)| PendingApproval {
+                    id,
+                    status,
+                    binding,
                 })
+                .into_iter()
+                .collect(),
+            next: None,
+        })
+    }
+
+    async fn stage_command(
+        &self,
+        agent: &AgentPath,
+        digest: &str,
+        part: u32,
+        text: &str,
+        by: &Sender,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        // A part's source is its own identity: its digest and position.
+        let intent = part_intent(digest, part)?;
+        self.bound
+            .stage_text(agent, STAGED_PART, by, &intent, (intent.as_str(), text))
+            .await?;
+        Ok(AgentReply::Staged {})
+    }
+
+    async fn merge_session(
+        &self,
+        agent: &AgentPath,
+        id: &IntentId,
+        by: &Sender,
+    ) -> std::result::Result<AgentReply, Error> {
+        if agent.parent().is_none() && !self.platform.sessions() {
+            return Err(Error::Record("root merge requires a session directory"));
+        }
+        let identity = crate::contract::canonical_json_bytes(&(by, id, agent))
+            .map_err(|_| Error::Record("merge identity cannot encode"))?;
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.session-merge.v1");
+        hash.update(&identity);
+        let mut operation = [0; 16];
+        hash.finalize_xof().fill(&mut operation);
+        let commit = self
+            .platform
+            .merge_session(
+                self.within_tree(agent)?,
+                crate::OperationId::from_bytes(operation),
+                Box::pin(self.bound.merge_session(
+                    agent,
+                    &agent.parent().unwrap_or_else(|| self.root.clone()),
+                    crate::OperationId::from_bytes(operation),
+                )),
+            )
+            .await
+            .map_err(|error| Error::Turn(Box::new(error)))?;
+        Ok(AgentReply::Merged { commit })
+    }
+
+    async fn settlement(
+        &self,
+        agent: &AgentPath,
+        wait: &bool,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        let agent = self.within_tree(agent)?;
+        if *wait {
+            let tail = crate::agent::inbox_tail(&**agents.provider(), agent).await?;
+            if let Some(input) = tail.checked_sub(1) {
+                agents.wait_for_input(agent, input).await?;
             }
         }
+        let (state, settlement) = agents.settlement_snapshot(agent).await?;
+        let profile = state.profile.as_ref();
+        Ok(AgentReply::Settlement {
+            input: settlement.input,
+            settled: state.conversation_tail,
+            statuses: state.status_tail,
+            role: profile
+                .and_then(|profile| profile.role())
+                .map(str::to_owned),
+            model: profile.and_then(|profile| profile.model.clone()),
+            compaction_disabled: self.platform.compaction_disabled(),
+            topology: profile.and_then(|profile| profile.topology.clone()),
+            phase: settlement.phase,
+        })
+    }
+
+    async fn directory_page(
+        &self,
+        agent: &AgentPath,
+        query: crate::conversation::DirectoryQuery<'_>,
+        request: &AgentPageRequest<Vec<u8>>,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        let mut credit = None;
+        let mut admit = |generation: &crate::resources::GenerationRef,
+                         entry: Option<&crate::conversation::PrivateDirectoryEntry>,
+                         next: Option<&[u8]>|
+         -> crate::Result<bool> {
+            use crate::conversation::PrivateDirectoryPageView;
+            if credit.is_none() {
+                let end = AgentReply::Directory {
+                    page: PrivateDirectoryPageView {
+                        generation,
+                        entries: &[],
+                        next: None,
+                    },
+                };
+                let more = AgentReply::Directory {
+                    page: PrivateDirectoryPageView {
+                        generation,
+                        entries: &[],
+                        next: Some(&[]),
+                    },
+                };
+                credit = Some(PageCredit::from_envelopes(request, &end, &more)?);
+            }
+            let next = next
+                .map(|next| page_json_bytes(&next).map(|bytes| bytes - 2))
+                .transpose()?;
+            let credit = credit
+                .as_mut()
+                .ok_or(Error::Record("directory credit is uninitialized"))?;
+            match entry {
+                Some(entry) => credit.accept(entry, next),
+                None => credit.accept_boundary(next),
+            }
+            .map_err(crate::Error::from)
+        };
+        let page = self
+            .bound
+            .directory_page(agent, query, Some(&mut admit))
+            .await?;
+        Ok(AgentReply::Directory { page })
+    }
+
+    async fn read_page(
+        &self,
+        agent: &AgentPath,
+        target: &ReadTarget,
+        offset: &u64,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        let (bytes, length) = match target {
+            ReadTarget::Path {
+                target,
+                path,
+                generation,
+            } => {
+                let (bytes, length) = self
+                    .bound
+                    .read_path(
+                        agent,
+                        *target,
+                        path,
+                        generation,
+                        acyclic_fs::ByteRange {
+                            offset: *offset,
+                            length: MAX_READ_BYTES,
+                        },
+                    )
+                    .await?;
+                return Ok(AgentReply::read(&bytes, length));
+            }
+            ReadTarget::Approval { status } => {
+                let (bytes, length) = self
+                    .bound
+                    .read_approval_request(agent, *status, *offset, MAX_READ_BYTES)
+                    .await?;
+                return Ok(AgentReply::read(&bytes, length));
+            }
+            ReadTarget::Execution {
+                input,
+                sequence,
+                field,
+            } => {
+                let (bytes, length) = self
+                    .bound
+                    .read_event_payload(agent, *input, *sequence, *field, *offset, MAX_READ_BYTES)
+                    .await?;
+                return Ok(AgentReply::read(&bytes, length));
+            }
+            ReadTarget::File { file } => {
+                self.bound
+                    .read_file(agent, file, *offset, MAX_READ_BYTES)
+                    .await?
+            }
+            ReadTarget::Conversation { sequence, file } => {
+                self.bound
+                    .read_conversation_file(agent, file, *sequence, *offset, MAX_READ_BYTES)
+                    .await?
+            }
+            ReadTarget::ToolOutput { path, at } => {
+                self.bound
+                    .read_tool_output(agent, path, at.as_ref(), *offset, MAX_READ_BYTES)
+                    .await?
+            }
+        };
+        Ok(AgentReply::read(&bytes, length))
+    }
+
+    async fn deliver_peer_prompt(
+        &self,
+        agent: &AgentPath,
+        source: &AgentPath,
+        admission: &crate::agent::PeerAdmission,
+        id: &IntentId,
+        body: &ModelContent,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        let agent = self.within_tree(agent)?;
+        let source = self.within_tree(source)?;
+        let state = agents.state(source).await?;
+        if !state
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.peers.contains(crate::agent::SEND_PEER))
+        {
+            return Err(Error::Record("the sender lacks peer message authority"));
+        }
+        let sender = Sender::Agent {
+            path: source.clone(),
+        };
+        // Peer text is content, never an invocation of user commands,
+        // project skills, attachment expansion, or approval controls.
+        let body = self.bound.stage_prompt(agent, &sender, id, body).await?;
+        let message = Message {
+            from: sender,
+            id: id.clone(),
+            body: Box::new(body),
+            re: None,
+            attachments: None,
+        };
+        Ok(AgentReply::Delivered {
+            delivery: agents.send_peer(agent, source, &message, admission).await?,
+        })
+    }
+
+    async fn prepare_peer(
+        &self,
+        agent: &AgentPath,
+        sender: &AgentPath,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        let agent = self.within_tree(agent)?;
+        let sender = self.within_tree(sender)?;
+        let state = agents.state(sender).await?;
+        let Some(profile) = state.profile else {
+            return Ok(AgentReply::PeerAdmission { admission: None });
+        };
+        Ok(AgentReply::PeerAdmission {
+            admission: crate::agent::session_peer_admission(
+                &**agents.provider(),
+                &profile.peers,
+                sender,
+                agent,
+            )
+            .await?,
+        })
+    }
+
+    async fn create_session(
+        &self,
+        command: &AgentCommand,
+        by: &Sender,
+        id: &IntentId,
+        peer: bool,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        if !self.platform.sessions() {
+            return Err(Error::Record("this host serves one tree"));
+        }
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.session.v1");
+        hasher.update(self.root.as_str().as_bytes());
+        // New and historical root intents are independent namespaces.
+        if let AgentCommand::ForkSession { .. } = command {
+            hasher.update(b"history");
+        }
+        hasher.update(
+            &serde_json::to_vec(&(by, id))
+                .map_err(|_| Error::Record("session identity cannot encode"))?,
+        );
+        let mut bytes = [0; 16];
+        hasher.finalize_xof().fill(&mut bytes);
+        let identity = crate::agent::AgentId::from_bytes(bytes);
+        let path = AgentPath::root(&identity);
+        let parameters = blake3::hash(
+            &serde_json::to_vec(command)
+                .map_err(|_| Error::Record("session request cannot encode"))?,
+        );
+        let pending = self
+            .pending_roots
+            .lock()
+            .map_err(|_| Error::Record("session publication owner is poisoned"))?
+            .remove(&path);
+        if pending.is_none() {
+            match agents.state(&path).await {
+                Ok(state) => {
+                    let provenance = state
+                        .profile
+                        .as_ref()
+                        .and_then(|profile| profile.continuation.as_ref());
+                    let same = match command {
+                        AgentCommand::ForkSession { agent, at, .. } => {
+                            provenance.is_some_and(|origin| {
+                                origin.parent_run_id == *agent && origin.stream_offset == *at
+                            })
+                        }
+                        _ => provenance.is_none(),
+                    };
+                    let original_peer =
+                        crate::agent::initial_peer_membership(&**agents.provider(), &path).await?;
+                    if !same || original_peer.enabled != peer {
+                        return Err(Error::Record(
+                            "session intent already names another creation",
+                        ));
+                    }
+                    return Ok(AgentReply::Root { agent: path });
+                }
+                Err(Error::NoSuchAgent) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let prepared = if let Some((original, prepared)) = pending {
+            if original != parameters {
+                self.pending_roots
+                    .lock()
+                    .map_err(|_| Error::Record("session publication owner is poisoned"))?
+                    .insert(path, (original, prepared));
+                return Err(Error::Record(
+                    "uncertain session intent names another request",
+                ));
+            }
+            prepared
+        } else {
+            let mut root = self
+                .platform
+                .session_root(identity)
+                .await
+                .map_err(|error| Error::Turn(Box::new(error)))?;
+            root.peer = peer;
+            match command {
+                AgentCommand::ForkSession { agent, at, .. } => {
+                    self.bound
+                        .prepare_session_history(id, root, self.within_tree(agent)?, *at)
+                        .await?
+                }
+                _ => match self.platform.session_source() {
+                    Some(source) => {
+                        self.bound
+                            .prepare_isolated_session(
+                                id,
+                                root,
+                                &source,
+                                match command {
+                                    AgentCommand::NewSession { questions, .. } => *questions,
+                                    _ => None,
+                                },
+                            )
+                            .await?
+                    }
+                    None => {
+                        self.bound
+                            .prepare_session_root(
+                                id,
+                                root,
+                                match command {
+                                    AgentCommand::NewSession { questions, .. } => *questions,
+                                    _ => None,
+                                },
+                            )
+                            .await?
+                    }
+                },
+            }
+        };
+        let agent = match self.bound.submit_root(prepared).await? {
+            RootSubmission::Created(agent) => agent,
+            RootSubmission::Unknown(prepared) => {
+                let request = prepared.request().clone();
+                self.pending_roots
+                    .lock()
+                    .map_err(|_| Error::Record("session publication owner is poisoned"))?
+                    .insert(path, (parameters, prepared));
+                return Err(Error::Unknown(Box::new(request)));
+            }
+        };
+        Ok(AgentReply::Root { agent })
+    }
+
+    async fn deliver_prompt(
+        &self,
+        agent: &AgentPath,
+        id: &IntentId,
+        body: &ModelContent,
+        by: &Sender,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        let agent = self.within_tree(agent)?;
+        let (body, attachments) = if let ModelContent::Text(source) = body {
+            // The message's own identity, as the inbox keys it: its
+            // recipient, sender and intent.
+            let key = crate::contract::canonical_json_bytes(&(agent, by, id))
+                .map_err(|_| Error::Record("message identity does not encode"))?;
+            let turn = |error| Error::Turn(Box::new(error));
+            // A replay is answered from what its first delivery pinned:
+            // its staged body, and the manifest staged before it. Only a
+            // new delivery reads the project's commands, skills and files.
+            if let Some(body) = self
+                .bound
+                .staged_text(agent, "message", by, id, source)
+                .await?
+            {
+                (
+                    body,
+                    self.platform
+                        .attachments(agent, &key, None)
+                        .await
+                        .map_err(turn)?,
+                )
+            } else {
+                let expanded = self
+                    .platform
+                    .prompt_command(agent, source)
+                    .await
+                    .map_err(turn)?;
+                let text = expanded.as_deref().unwrap_or(source);
+                let attachments = self
+                    .platform
+                    .attachments(agent, &key, Some(text))
+                    .await
+                    .map_err(turn)?;
+                let body = self
+                    .bound
+                    .stage_text(agent, "message", by, id, (source, text))
+                    .await?;
+                (body, attachments)
+            }
+        } else {
+            (self.bound.stage_prompt(agent, by, id, body).await?, None)
+        };
+        let record = InboxRecord::Message(Message {
+            from: by.clone(),
+            id: id.clone(),
+            body: Box::new(body),
+            re: None,
+            attachments: attachments.map(Box::new),
+        });
+        Ok(AgentReply::Delivered {
+            delivery: agents.send(agent, by, &record).await?,
+        })
+    }
+
+    async fn history_page(
+        &self,
+        agent: &AgentPath,
+        page: &AgentPageRequest,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use futures::TryStreamExt as _;
+        let agent = self.within_tree(agent)?;
+        let mut credit = PageCredit::new(page, |next| AgentReply::History {
+            items: Vec::new(),
+            next,
+        })?;
+        let mut cursor = if let Some(cursor) = page.cursor() {
+            let bytes = STANDARD
+                .decode(cursor)
+                .map_err(|_| Error::Record("invalid history cursor"))?;
+            let cursor: HistoryCursor = serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Record("invalid history cursor"))?;
+            if cursor.version != 2 || cursor.agent != *agent || cursor.before > cursor.tail {
+                return Err(Error::Record("history cursor differs from selection"));
+            }
+            cursor
+        } else {
+            let tail = self
+                .tail(agent.history()?)
+                .await?
+                .checked_sub(1)
+                .ok_or(Error::Record("history adoption boundary is absent"))?;
+            HistoryCursor {
+                version: 2,
+                agent: agent.clone(),
+                before: tail,
+                tail,
+            }
+        };
+        let count = page
+            .items()
+            .min(u32::try_from(cursor.before).unwrap_or(u32::MAX));
+        let start = cursor.before - u64::from(count);
+        let mut items = Vec::new();
+        if count != 0 {
+            let mut records = agents
+                .provider()
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: agent.history()?,
+                    from: start + 1,
+                    limit: count,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(Error::Stream)?;
+            while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+                let item = crate::agent::HistoryCheckpoint::summary(&record.value)?;
+                let sequence = start + 1 + items.len() as u64;
+                if record.sequence != sequence || item.conversation != sequence {
+                    return Err(Error::Record("history page differs from indexed cut"));
+                }
+                items.push(item);
+            }
+            if items.len() as u64 != u64::from(count) {
+                return Err(Error::Record("history page ended before its retained cut"));
+            }
+        }
+        items.reverse();
+        let mut before = cursor.before;
+        for item in &items {
+            cursor.before = item.conversation - 1;
+            let next_bytes = if cursor.before == 0 {
+                None
+            } else {
+                Some(page_json_bytes(&cursor)?.div_ceil(3) * 4)
+            };
+            if !credit.accept(item, next_bytes)? {
+                break;
+            }
+            before = cursor.before;
+        }
+        items.truncate(credit.items());
+        cursor.before = before;
+        let next = history_cursor(&cursor)?;
+        Ok(AgentReply::History { items, next })
+    }
+
+    async fn spawn_child(
+        &self,
+        command: &AgentCommand,
+        parent: &AgentPath,
+        id: &IntentId,
+        brief: &ModelContent,
+        role: &str,
+        by: &Sender,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agents = self.bound.agents();
+        let parent = self.within_tree(parent)?;
+        if !self.platform.runs_children() {
+            return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
+        }
+        // The parent's role admits the child's before anything commits.
+        let continuation = match command {
+            AgentCommand::Fork { continuation, .. } => continuation.as_ref(),
+            _ => None,
+        };
+        let mut profile = if let Some(request) = continuation {
+            if request.version != 1 {
+                return Err(Error::Record("unsupported continuation version; use v1"));
+            }
+            let mut profile = agents
+                .state(parent)
+                .await?
+                .profile
+                .ok_or(Error::Record("continuation requires a hosted decider"))?;
+            if profile.context != crate::agent::SpawnContext::TopLevel
+                && profile.continuation.is_none()
+            {
+                return Err(Error::Record("continuation v1 requires a decider"));
+            }
+            profile.context = crate::agent::SpawnContext::Fork;
+            profile
+        } else {
+            self.bound.child_profile(parent, role).await?
+        };
+        // A fork selects history, which a fresh-context role cannot
+        // inherit; it is refused before the parent's inbox admits it.
+        if matches!(command, AgentCommand::Fork { .. })
+            && profile.context == crate::agent::SpawnContext::Fresh
+        {
+            return Err(Error::SpawnRefused(SpawnRefusal::Role));
+        }
+        let history = match command {
+            AgentCommand::Fork { at, .. } => {
+                let saved =
+                    crate::filesystem::history_checkpoint(agents.provider().as_ref(), parent, *at)
+                        .await
+                        .map_err(|error| Error::Turn(Box::new(error)))?;
+                if let Some(request) = continuation {
+                    let override_item = if request.override_item.is_some() {
+                        let source = serde_json::to_string(request)
+                            .map_err(|_| Error::Record("continuation cannot encode"))?;
+                        Some(
+                            self.bound
+                                .stage_text(parent, "continuation", by, id, (&source, &source))
+                                .await?,
+                        )
+                    } else {
+                        None
+                    };
+                    profile.continuation = Some(Box::new(crate::agent::Continuation::at(
+                        parent,
+                        *at,
+                        &saved,
+                        override_item,
+                    )));
+                }
+                Some(crate::agent::HistorySelection {
+                    conversation: saved.conversation,
+                    checkpoint: saved.checkpoint,
+                })
+            }
+            _ => None,
+        };
+        let brief = if continuation.is_some() {
+            None
+        } else {
+            let brief = text(brief)?;
+            Some(Box::new(
+                self.bound
+                    .stage_text(parent, "brief", by, id, (brief, brief))
+                    .await?,
+            ))
+        };
+        let record = InboxRecord::Spawn(Box::new(SpawnRequest {
+            by: by.clone(),
+            id: id.clone(),
+            brief,
+            profile,
+            history,
+        }));
+        let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
+            return Err(Error::Record("the parent is archived"));
+        };
+        // The parent's step applies the request against every spawn
+        // before it and commits the outcome; the reply is that record.
+        let (intent, _) = requested_child(parent, inbox)?;
+        let child = match agents.spawned(parent, inbox, &intent).await? {
+            SpawnOutcome::Spawned { child } => child,
+            SpawnOutcome::Refused { reason } => return Err(Error::SpawnRefused(reason)),
+        };
+        Ok(AgentReply::Spawned {
+            agent: child,
+            delivery: Delivered::Committed { inbox },
+        })
+    }
+
+    async fn child_wake_page(
+        &self,
+        agent: &AgentPath,
+        status: u64,
+        page: &AgentPageRequest,
+    ) -> std::result::Result<AgentReply, Error> {
+        let agent = self.within_tree(agent)?;
+        let after = page
+            .cursor()
+            .map(|after| after.parse::<u64>())
+            .transpose()
+            .map_err(|_| Error::Record("invalid completion cursor"))?;
+        let mut items = self
+            .bound
+            .child_wakes(agent, status, after, page.items() as usize + 1)
+            .await?;
+        let mut credit = PageCredit::new(page, |next| AgentReply::ChildWakes {
+            items: Vec::new(),
+            next,
+        })?;
+        for (index, item) in items.iter().take(page.items() as usize).enumerate() {
+            let continues = index + 1 < items.len();
+            let next = item
+                .status
+                .checked_add(1)
+                .ok_or(Error::Record("completion status overflow"))?;
+            if !credit.accept(item, continues.then_some(u64::from(next.ilog10()) + 1))? {
+                break;
+            }
+        }
+        let next = if credit.items() < items.len() {
+            Some(
+                credit
+                    .items()
+                    .checked_sub(1)
+                    .and_then(|last| items.get(last))
+                    .ok_or(Error::Record("child wakes page is empty"))?
+                    .status
+                    .checked_add(1)
+                    .ok_or(Error::Record("completion status overflow"))?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        items.truncate(credit.items());
+        Ok(AgentReply::ChildWakes { items, next })
     }
 
     /// The whole encoding of a staged command: its `parts`, staged by `by`
@@ -1636,11 +1772,10 @@ fn children_cursor_bytes(version: &CommitId, after: &str) -> usize {
 /// A children page's continuation: the listing's hierarchy version, which a
 /// later page must name, and the last returned agent.
 fn children_cursor(version: &CommitId, after: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    use std::fmt::Write as _;
     let mut cursor = String::with_capacity(children_cursor_bytes(version, after));
     for byte in version.as_bytes() {
-        cursor.push(char::from(HEX[usize::from(byte >> 4)]));
-        cursor.push(char::from(HEX[usize::from(byte & 0xf)]));
+        let _ = write!(cursor, "{byte:02x}");
     }
     cursor.push(':');
     cursor.push_str(after);
@@ -1675,7 +1810,8 @@ fn parse_children_cursor(cursor: &str) -> std::result::Result<(CommitId, StreamP
         return Err(invalid());
     }
     let mut bytes = [0; 32];
-    for (byte, pair) in bytes.iter_mut().zip(version.as_bytes().chunks_exact(2)) {
+    let (pairs, _) = version.as_bytes().as_chunks::<2>();
+    for (byte, pair) in bytes.iter_mut().zip(pairs) {
         let pair = std::str::from_utf8(pair).map_err(|_| invalid())?;
         *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
     }

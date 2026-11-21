@@ -264,7 +264,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         .send(
             root,
             &by,
-            &InboxRecord::Spawn(crate::agent::SpawnRequest {
+            &InboxRecord::Spawn(Box::new(crate::agent::SpawnRequest {
                 profile: crate::agent::CreationConfig {
                     question_plugin: false,
                     topology: None,
@@ -278,7 +278,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 id,
                 brief: Some(Box::new(brief)),
                 history: None,
-            }),
+            })),
         )
         .await?
     else {

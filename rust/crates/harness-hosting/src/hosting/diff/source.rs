@@ -134,7 +134,11 @@ fn json_frame(
     if size > u64::from(page.bytes()) {
         return Err(acyclic_stream::StreamError::Capacity.into());
     }
-    let mut body = Vec::with_capacity(size as usize + 1);
+    let capacity = usize::try_from(size)
+        .ok()
+        .and_then(|size| size.checked_add(1))
+        .ok_or(acyclic_stream::StreamError::Capacity)?;
+    let mut body = Vec::with_capacity(capacity);
     body.push(kind);
     serde_json::to_writer(&mut body, value)
         .map_err(|error| crate::Error::Invalid(error.to_string()))?;

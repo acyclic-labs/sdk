@@ -32,10 +32,11 @@ where
         let (projection, invocation) =
             QueryProjection::decode_open(&open).map_err(|_| StreamError::InvalidArgument)?;
         let call = self.admit(invocation)?;
-        let (agent, page) = match (projection, call.command()) {
-            (QueryProjection::Diff(_), AgentCommand::Diff { agent, page })
-            | (QueryProjection::Input(_), AgentCommand::History { agent, page }) => (agent, page),
-            _ => return Err(StreamError::InvalidArgument),
+        let ((QueryProjection::Diff(_), AgentCommand::Diff { agent, page })
+        | (QueryProjection::Input(_), AgentCommand::History { agent, page })) =
+            (projection, call.command())
+        else {
+            return Err(StreamError::InvalidArgument);
         };
         if page.cursor().is_some() {
             return Err(StreamError::InvalidArgument);
