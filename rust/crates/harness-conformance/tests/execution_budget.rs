@@ -6,6 +6,11 @@ use acyclic_harness_conformance::{
 use acyclic_stream::BoxProviderFuture;
 use serde_json::Value;
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
+use tokio::{
+    runtime::{Builder, Handle},
+    sync::OnceCell,
+    task::JoinSet,
+};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -13,11 +18,14 @@ fn corpus() -> PathBuf {
     acyclic_test_support::source_path("rust/crates/harness-e2e/tests/scenarios")
 }
 
-struct Descheduled<S>(S);
+struct Descheduled {
+    execution: Handle,
+    descheduled: OnceCell<()>,
+}
 
-impl<S: Substrate> Substrate for Descheduled<S> {
+impl Substrate for Descheduled {
     fn capabilities(&self) -> BTreeSet<String> {
-        self.0.capabilities()
+        substrate::Local.capabilities()
     }
 
     fn execute(
@@ -26,20 +34,45 @@ impl<S: Substrate> Substrate for Descheduled<S> {
         paths: Vec<String>,
     ) -> BoxProviderFuture<'_, Result<CaseObservation>> {
         Box::pin(async move {
-            // A controlled scheduler stall crosses the old 55-second deadline
-            // without a real sleep or depending on the machine's current load.
-            tokio::time::advance(Duration::from_secs(60)).await;
-            self.0.execute(recipe, paths).await
+            self.descheduled
+                .get_or_init(|| async {
+                    // Stall admission once, past the old 55-second corpus deadline.
+                    tokio::time::advance(Duration::from_secs(60)).await;
+                })
+                .await;
+            // Only the runner sees the simulated stall. Fixture work stays on a
+            // regular executor, with task custody retained across cancellation.
+            let mut tasks = JoinSet::new();
+            tasks.spawn_on(
+                async move { substrate::Local.execute(recipe, paths).await },
+                &self.execution,
+            );
+            tasks.join_next().await.ok_or("fixture task missing")??
         })
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn complete_corpus_verdict_does_not_depend_on_elapsed_time() -> Result {
+#[test]
+fn complete_corpus_verdict_does_not_depend_on_elapsed_time() -> Result {
+    let execution = Builder::new_multi_thread().enable_all().build()?;
+    let clock = Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()?;
     let root = corpus();
     let mut paths = Vec::new();
     scenario_data::discover(&root, &mut paths)?;
-    let report = runner::run(&root, Arc::new(Descheduled(substrate::Local)), None, 1).await?;
+    let report = clock.block_on(async {
+        let start = tokio::time::Instant::now();
+        let substrate = Arc::new(Descheduled {
+            execution: execution.handle().clone(),
+            descheduled: OnceCell::new(),
+        });
+        let parallelism = std::thread::available_parallelism()?.get();
+        let report = runner::run(&root, substrate, None, parallelism).await?;
+        assert!(start.elapsed() >= Duration::from_secs(60));
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(report)
+    })?;
     println!(
         "{} passed, {} failed, {} declared native capabilities",
         report.passed, report.failed, report.skipped
