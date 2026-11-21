@@ -25,14 +25,14 @@ impl StockExecution<'_> {
             .response_base(journal, input, step, history.messages())
             .await?;
         let configuration = if matches!(history, request::ModelStepHistory::Turn(..)) {
-            self.configuration_delta(&base.messages)?
+            self.configuration_delta(&base.context().messages)?
         } else {
             None
         };
         if let Some(update) = configuration {
             history.append_configuration(update, self.io)?;
             stock_vec_push(&mut context_input.prior_messages, update.message(), self.io)?;
-            stock_vec_push(&mut base.messages, update.message(), self.io)?;
+            base = base.push(update.message(), self.io)?;
         }
         let (context, prepared) = self
             .prepare_transformed_request(&context_input, base)

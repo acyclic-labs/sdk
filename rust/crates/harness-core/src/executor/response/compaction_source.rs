@@ -19,6 +19,7 @@ impl StockExecution<'_> {
         {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
+            let base = base.into_context();
             if selected_base || self.context_pipeline().contains_stage("context-manifest") {
                 return Ok(CompactionSource::Base { context: base });
             }

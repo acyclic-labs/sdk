@@ -228,7 +228,7 @@ async fn guarded_run(
             summary: false,
             compose_tools: false,
             model: resolved.model().clone(),
-            messages: context.messages,
+            messages: context.into_context().messages,
             tools: tools.definitions(None)?,
             sampling: Default::default(),
         };

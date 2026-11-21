@@ -52,6 +52,8 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
                 current_input_index: Some(0),
                 ..Default::default()
             };
+            let context =
+                crate::context::AdmittedContext::admit(context, execution.stock.limits, None)?;
             let (mut projection, prepared) = execution
                 .prepare_transformed_request(&input, context)
                 .await?;
@@ -260,6 +262,7 @@ proptest! {
         // The former selector really clones both the vector and nested JSON.
         prop_assert_ne!(buffers(&expected.request().messages).0, original.0);
         prop_assert_ne!(buffers(&expected.request().messages).1, original.1);
+        let plain_context = crate::context::AdmittedContext::admit(plain_context, executor.limits, None).unwrap();
         let legacy_base = plain_context.clone();
         futures::executor::block_on(async {});
         // Execute the former transform, including the same validation/encoding.
@@ -285,6 +288,7 @@ proptest! {
         prop_assert!(no_copy(transferred), "transient history copies: {transferred:?}, {legacy:?}, {copying:?}");
         prop_assert!(!no_copy(legacy), "restored copying transform escaped detection");
         drop(projected);
+        let context = crate::context::AdmittedContext::admit(context, executor.limits, None).unwrap();
         let mut projected = futures::executor::block_on(session.transform_projection(&input, context)).unwrap();
         prop_assert_eq!(buffers(&projected.messages), original);
         let final_request = crate::model::PreparedModelRequest::prepare(

@@ -256,7 +256,7 @@ mod tests;
 
 struct ManifestStage {
     environment: Option<EnvironmentFacts>,
-    context: Context,
+    context: AdmittedContext,
     sources: Vec<FileRef>,
 }
 
@@ -270,16 +270,16 @@ impl ContextStage for ManifestStage {
     }
 
     fn contract(&self, io: Option<&PreparationIo>) -> Result<Value> {
-        context_contract(&self.context.metadata, io)
+        context_contract(&self.context.context().metadata, io)
     }
 
     fn apply<'a>(
         &'a self,
         _: &'a ContextInput,
-        context: Context,
+        context: AdmittedContext,
         limits: Limits,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, AdmittedContext>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             selection::place_snapshot(
                 context,

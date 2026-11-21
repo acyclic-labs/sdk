@@ -98,14 +98,14 @@ impl SourceStage {
 fn project_source<'a>(
     stage: &'a SourceStage,
     input: &'a ContextInput,
-    context: Context,
+    context: AdmittedContext,
     limits: Limits,
     io: Option<&'a crate::executor::PreparationIo>,
-) -> impl std::future::Future<Output = Result<Context>> + 'a {
+) -> impl std::future::Future<Output = Result<AdmittedContext>> + 'a {
     async move {
-        validate_projected_context(&context, limits, io)?;
+        let context = context.under(limits, io)?;
         let loaded = stage.source.load(input, limits, io)?.await?;
-        selection::apply_context_projection(
+        selection::project_messages(
             context,
             loaded,
             selection::ContextRenderMode::Prompt,
@@ -165,10 +165,10 @@ impl ContextStage for SourceStage {
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
-        context: Context,
+        context: AdmittedContext,
         limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, AdmittedContext>> {
         #[cfg(not(target_arch = "wasm32"))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)

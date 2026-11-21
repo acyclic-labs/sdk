@@ -3,7 +3,9 @@ use super::*;
 #[tokio::test]
 pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admission()
 -> Result<()> {
-    use acyclic_harness::context::{ContextInput, ContextStage as _, PinnedContextStage};
+    use acyclic_harness::context::{
+        AdmittedContext, ContextInput, ContextStage as _, PinnedContextStage,
+    };
     use std::collections::BTreeMap;
 
     let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
@@ -72,8 +74,9 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         Some(&input.input)
     );
     let verifies = reader.verifies.load(Ordering::SeqCst);
-    let mut collision = ContextPipeline::base_context(&input, limits, None)?;
+    let mut collision = ContextPipeline::base_context(&input, limits, None)?.into_context();
     collision.metadata = snapshot.metadata.clone();
+    let collision = AdmittedContext::admit(collision, limits, None)?;
     assert!(matches!(
         stage.apply(&input, collision, limits, None)?.await,
         Err(Error::Conflict(_))
@@ -153,6 +156,8 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         metadata: BTreeMap::from([("fresh.state".into(), metadata.clone())]),
         current_input_index: Some(0),
     };
+    let snapshot = AdmittedContext::admit(snapshot, limits, None)?;
+    let delta = AdmittedContext::admit(delta, limits, None)?;
     let continued = ContextPipeline::continue_base(snapshot.clone(), delta.clone(), limits, None)?;
     assert_eq!(continued.metadata.len(), 2);
     assert_eq!(continued.metadata.get("snapshot.state"), Some(&metadata));
@@ -170,8 +175,9 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         ),
         Err(Error::Invalid(_))
     ));
-    let mut duplicate = delta;
+    let mut duplicate = delta.into_context();
     duplicate.metadata = snapshot.metadata.clone();
+    let duplicate = AdmittedContext::admit(duplicate, limits, None)?;
     assert!(matches!(
         ContextPipeline::continue_base(snapshot.clone(), duplicate, limits, None),
         Err(Error::Conflict(_))

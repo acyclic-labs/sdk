@@ -220,6 +220,8 @@ impl StockExecution<'_> {
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
         if pre_stage {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
+            let compacted =
+                crate::context::AdmittedContext::admit(compacted, self.stock.limits, self.io)?;
             self.prepare_transformed_request(&context_input, compacted)
                 .await
         } else {

@@ -350,7 +350,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     };
     let pipeline = ContextPipeline::new([
         Arc::new(ManifestStage {
-            context: Context::default(),
+            context: AdmittedContext::admit(Context::default(), Limits::default(), None)?,
             sources: Vec::new(),
             environment: Some(EnvironmentFacts {
                 cwd: Some("/bound".into()),

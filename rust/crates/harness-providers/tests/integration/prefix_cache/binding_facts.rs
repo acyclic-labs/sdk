@@ -2,7 +2,9 @@
 //! conversations and two forks from one pinned parent, through every encoder.
 use super::*;
 use acyclic_harness_core::{
-    context::{Context, ContextInput, ContextManifest, ContextPipeline, EnvironmentFacts},
+    context::{
+        AdmittedContext, Context, ContextInput, ContextManifest, ContextPipeline, EnvironmentFacts,
+    },
     model::{
         ModelDispatch, ModelMessage, ModelPrefix, ModelProvider as _, ModelRequest, ModelRole,
         PreparedModelRequest,
@@ -100,16 +102,20 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
                             step: 0,
                             prior_messages: history.clone(),
                         },
-                        Context {
-                            current_input_index: Some(history.len() as u32),
-                            messages,
-                            ..Default::default()
-                        },
+                        AdmittedContext::admit(
+                            Context {
+                                current_input_index: Some(history.len() as u32),
+                                messages,
+                                ..Default::default()
+                            },
+                            limits,
+                            None,
+                        )?,
                         limits,
                         None,
                     )
                     .await?;
-                let mut messages = context.messages;
+                let mut messages = context.into_context().messages;
                 let environment = messages
                     .iter()
                     .position(|m| {

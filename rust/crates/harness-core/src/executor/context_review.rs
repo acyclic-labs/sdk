@@ -324,6 +324,7 @@ impl<'a> StockExecution<'a> {
             drop(hold);
         }
         let (_, base, _) = self.response_base(journal, input, step, prior).await?;
+        let base = base.into_context();
         let budget = with_history_io(self.io, |work| {
             policy.try_projection_budget(&base, None, base.messages.len().saturating_sub(1), work)
         })?;
@@ -421,6 +422,7 @@ impl<'a> StockExecution<'a> {
         // The receipt's cut names the pre-stage history; the stages run again
         // on the compacted base below.
         let (_, source, _) = self.response_base(journal, input, step, prior).await?;
+        let source = source.into_context();
         let through = receipt.summary.source_messages as usize;
         if through >= source.messages.len()
             || crate::context::prefix_digest(&source, through, self.io)?

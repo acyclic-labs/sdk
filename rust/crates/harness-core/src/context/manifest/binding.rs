@@ -173,7 +173,7 @@ impl ContextManifest {
             metadata,
             current_input_index: None,
         };
-        validate_projected_context(&context, limits, io)?;
+        let context = AdmittedContext::admit(context, limits, io)?;
         Ok((
             tools,
             Arc::new(ManifestStage {

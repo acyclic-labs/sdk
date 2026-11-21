@@ -1,5 +1,102 @@
 use super::*;
 
+/// A context the one projection admission accepted under `limits`: its
+/// metadata, every message and its instruction bodies are within bounds.
+/// The fields are private to this module, so a holder can only read it, join
+/// it with another admitted part, or extend it by one message admitted alone;
+/// no holder walks an admitted message again.
+#[derive(Clone, Debug)]
+pub struct AdmittedContext {
+    context: Context,
+    limits: Limits,
+}
+
+impl AdmittedContext {
+    /// The projection admission every later holder relies on.
+    pub fn admit(context: Context, limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
+        validate_projected_context(&context, limits, io)?;
+        Ok(Self { context, limits })
+    }
+
+    /// This context admitted under `limits`, walking it only when they differ
+    /// from the limits it was admitted under.
+    pub fn under(self, limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
+        if self.limits == limits {
+            return Ok(self);
+        }
+        Self::admit(self.context, limits, io)
+    }
+
+    /// Borrows the context after proving it within `limits`, walking it only
+    /// when they differ from the limits it was admitted under.
+    pub fn within(&self, limits: Limits, io: Option<&PreparationIo>) -> Result<&Context> {
+        if self.limits != limits {
+            validate_projected_context(&self.context, limits, io)?;
+        }
+        Ok(&self.context)
+    }
+
+    /// The admitted context.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Releases the context; a changed copy must be admitted again.
+    #[must_use]
+    pub fn into_context(self) -> Context {
+        self.context
+    }
+
+    /// Marks the active input historical; removing a marker keeps every bound.
+    #[must_use]
+    pub(crate) fn into_history(mut self) -> Self {
+        self.context.current_input_index = None;
+        self
+    }
+
+    /// Appends one message: only that message and the whole-context counts
+    /// and instruction budget are checked, never the admitted messages.
+    pub(crate) fn push(
+        mut self,
+        message: ModelMessage,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        crate::executor::with_history_io(io, |work| {
+            message.content.validate_limits(self.limits, work)
+        })?;
+        crate::executor::stock_vec_push(&mut self.context.messages, message, io)?;
+        validate_extended_context(&self.context, self.limits, io)?;
+        Ok(self)
+    }
+}
+
+/// Two admitted contexts are equal when their contexts are: the limits only
+/// record which admission proved them.
+impl PartialEq for AdmittedContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.context == other.context
+    }
+}
+
+/// Reads see the admitted context; there is no mutable access.
+impl std::ops::Deref for AdmittedContext {
+    type Target = Context;
+    fn deref(&self) -> &Context {
+        &self.context
+    }
+}
+
+/// An admitted context serializes as the context it admits.
+impl Serialize for AdmittedContext {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.context.serialize(serializer)
+    }
+}
+
 /// Validates and places renderer output; shared by native stages and narrow WASM bindings.
 pub fn apply_context_projection(
     context: Context,
@@ -9,46 +106,75 @@ pub fn apply_context_projection(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Context> {
+    project_messages(
+        AdmittedContext::admit(context, limits, io)?,
+        messages,
+        mode,
+        placement,
+        limits,
+        io,
+    )
+    .map(AdmittedContext::into_context)
+}
+
+/// Admits renderer output alone and places it beside an admitted context.
+pub(in crate::context) fn project_messages(
+    context: AdmittedContext,
+    messages: Vec<ModelMessage>,
+    mode: ContextRenderMode,
+    placement: ContextPlacement,
+    limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<AdmittedContext> {
     let placement = if mode == ContextRenderMode::Update {
         ContextPlacement::Append
     } else {
         placement
     };
-    place_context(
-        context,
+    let contribution = AdmittedContext::admit(
         Context {
             messages,
             ..Context::default()
         },
-        placement,
         limits,
         io,
-    )
+    )?;
+    place_context(context, contribution, placement, limits, io)
 }
 
 pub(in crate::context) fn place_context(
-    context: Context,
-    contribution: Context,
+    context: AdmittedContext,
+    contribution: AdmittedContext,
     placement: ContextPlacement,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<Context> {
+) -> Result<AdmittedContext> {
+    let context = context.under(limits, io)?.context;
+    let contribution = contribution.under(limits, io)?.context;
     let marker = preflight_context_composition(&context, &contribution, placement, limits, io)?;
     compose_context(context, contribution, placement, marker, limits, io)
 }
 
 pub(in crate::context) fn place_snapshot(
-    context: Context,
-    snapshot: &Context,
+    context: AdmittedContext,
+    snapshot: &AdmittedContext,
     placement: ContextPlacement,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<Context> {
-    let marker = preflight_context_composition(&context, snapshot, placement, limits, io)?;
-    let snapshot = copy_context(snapshot, io)?;
+) -> Result<AdmittedContext> {
+    let context = context.under(limits, io)?.context;
+    let marker = preflight_context_composition(
+        &context,
+        snapshot.within(limits, io)?,
+        placement,
+        limits,
+        io,
+    )?;
+    let snapshot = copy_context(&snapshot.context, io)?;
     compose_context(context, snapshot, placement, marker, limits, io)
 }
 
+/// Both parts are admitted under `limits`; only their joint bounds remain.
 fn preflight_context_composition(
     context: &Context,
     contribution: &Context,
@@ -56,8 +182,6 @@ fn preflight_context_composition(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Option<u32>> {
-    validate_projected_context(context, limits, io)?;
-    validate_projected_context(contribution, limits, io)?;
     if context
         .messages
         .len()
@@ -155,7 +279,7 @@ fn compose_context(
     marker: Option<u32>,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<Context> {
+) -> Result<AdmittedContext> {
     context.current_input_index = marker;
     context.metadata.extend(contribution.metadata);
     match placement {
@@ -167,8 +291,9 @@ fn compose_context(
             append_context_messages(&mut context.messages, &mut contribution.messages, io)?;
         }
     }
+    // Deduplication rewrites admitted messages, so the result is admitted again.
     if crate::model::deduplicate_reads(&mut context.messages, io)? {
-        validate_projected_context(&context, limits, io)?;
+        return AdmittedContext::admit(context, limits, io);
     }
-    Ok(context)
+    Ok(AdmittedContext { context, limits })
 }

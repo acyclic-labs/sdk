@@ -113,10 +113,22 @@ pub(crate) fn copy<T: Clone + Serialize>(
     quota: &mut CodecQuota<'_, '_>,
     owned: impl FnOnce(&T, &mut Option<&mut dyn HistoryIo>) -> Result<u64>,
 ) -> Result<T> {
+    if quota.work().is_some() {
+        inspect_metadata(source, quota.work())?;
+    }
+    copy_admitted(source, quota, owned)
+}
+/// Funds a copy of a value whose metadata was inspected when it was built and
+/// cannot change after: every field is private to its module and immutable.
+/// Copying it again proves nothing new, so only the owned bytes are charged.
+pub(crate) fn copy_admitted<T: Clone>(
+    source: &T,
+    quota: &mut CodecQuota<'_, '_>,
+    owned: impl FnOnce(&T, &mut Option<&mut dyn HistoryIo>) -> Result<u64>,
+) -> Result<T> {
     if quota.work().is_none() {
         return Ok(source.clone());
     }
-    inspect_metadata(source, quota.work())?;
     let bytes = owned(source, quota.work())?;
     quota.observer()?.admit_copy(bytes)?;
     quota.replace(owned_sum([quota.retained(), bytes])?)?;

@@ -7,12 +7,13 @@ impl StockExecution<'_> {
     pub(super) async fn transform_projection_original(
         &self,
         input: &ContextInput,
-        base: crate::context::Context,
+        base: crate::context::AdmittedContext,
     ) -> Result<crate::context::Context> {
         let mut context = self
             .context_pipeline()
             .transform(input, base, self.stock.limits, self.io)
-            .await?;
+            .await?
+            .into_context();
         let message_count = context.messages.len();
         let request = self.request_taking_context(&mut context)?;
         let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {

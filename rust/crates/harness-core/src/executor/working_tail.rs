@@ -82,7 +82,11 @@ impl<'a> StockExecution<'a> {
         input: &TurnInput,
         step: u32,
         prior: &[ModelMessage],
-    ) -> Result<(ContextInput, crate::context::Context, Option<FileRef>)> {
+    ) -> Result<(
+        ContextInput,
+        crate::context::AdmittedContext,
+        Option<FileRef>,
+    )> {
         let compaction = !matches!(
             self.compaction_policy()?,
             crate::context::CompactionPolicy::Disabled
@@ -117,6 +121,8 @@ impl<'a> StockExecution<'a> {
                     ContextInput::copy_turn_suffix(input, step, prior, covered, self.io)?;
                 let delta =
                     ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
+                let base =
+                    crate::context::AdmittedContext::admit(base, self.stock.limits, self.io)?;
                 let base = ContextPipeline::continue_base(base, delta, self.stock.limits, self.io)?;
                 return Ok((context_input, base, None));
             }
@@ -165,7 +171,7 @@ impl<'a> StockExecution<'a> {
                 current_input_index: retained.context.current_input_index,
             })
         })?;
-        crate::context::validate_projected_context(&base, self.stock.limits, self.io)?;
+        let base = crate::context::AdmittedContext::admit(base, self.stock.limits, self.io)?;
         Ok((context_input, base, Some(reference)))
     }
 

@@ -799,10 +799,11 @@ impl crate::context::ContextStage for OnceStage {
     fn apply<'a>(
         &'a self,
         _: &'a ContextInput,
-        context: crate::context::Context,
+        context: crate::context::AdmittedContext,
         _: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::context::Context>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::context::AdmittedContext>>
+    {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if self.0.fetch_add(1, Ordering::SeqCst) != 0 {
                 return Err(Error::NotFound("source removed after admission".into()));

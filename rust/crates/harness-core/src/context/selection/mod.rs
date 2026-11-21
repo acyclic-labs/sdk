@@ -1,6 +1,7 @@
 //! Pinned sources and bounded context rendering.
 use super::{
-    Context, ContextPlacement, append_context_messages, copy_context, validate_projected_context,
+    Context, ContextPlacement, append_context_messages, copy_context, validate_extended_context,
+    validate_projected_context,
 };
 use crate::{
     Error, Result,
@@ -18,8 +19,8 @@ pub use input::*;
 mod renderer;
 pub use renderer::*;
 mod composition;
-pub use composition::apply_context_projection;
-pub(super) use composition::{place_context, place_snapshot};
+pub use composition::{AdmittedContext, apply_context_projection};
+pub(super) use composition::{place_context, place_snapshot, project_messages};
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;

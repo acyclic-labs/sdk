@@ -19,6 +19,10 @@ impl ContextSource for Probe {
 
 struct Transform(u32);
 
+fn admit(context: Context) -> AdmittedContext {
+    AdmittedContext::admit(context, payload_limits(), None).unwrap()
+}
+
 impl ContextStage for Transform {
     fn name(&self) -> &str {
         "transform"
@@ -29,11 +33,12 @@ impl ContextStage for Transform {
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
-        mut context: Context,
-        _: Limits,
+        context: AdmittedContext,
+        limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, AdmittedContext>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let mut context = context.into_context();
             context.messages.push(text(
                 ModelRole::System,
                 &format!("{}:{:?}", self.0, input.input),
@@ -43,9 +48,64 @@ impl ContextStage for Transform {
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?;
             context.current_input_index =
                 context.current_input_index.map(|index| length - 1 - index);
-            Ok(context)
+            AdmittedContext::admit(context, limits, io)
         })
     }
+}
+
+/// Admission walks each message once. Source stages that place their output
+/// beside an admitted base add no measurement of the base's notice batch:
+/// a pipeline of two such stages measures exactly what base assembly did.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn stages_never_walk_admitted_history_again() {
+    use acyclic_native_runtime::{cost::Cost, testing::Schedule};
+    let measured = |stages: usize| {
+        let mut input = input();
+        input.prior_messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::Notices {
+                notices: vec![crate::conversation::wire::Notice {
+                    source: "tools".into(),
+                    kind: "tools.changed".into(),
+                    body: serde_json::json!({"history": "x".repeat(512)}),
+                    wake: false,
+                    coalesce_key: None,
+                }],
+            }),
+        });
+        let probe = Arc::new(Probe::default());
+        let pipeline = ContextPipeline::new((0..stages).map(|_| {
+            Arc::new(SourceStage::new(
+                "source",
+                "1",
+                probe.clone(),
+                ContextPlacement::Append,
+            )) as Arc<dyn ContextStage>
+        }));
+        let (schedule, mut boundaries) = Schedule::seeded(1);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let projected = runtime.block_on(async {
+            let driver = async {
+                while let Some(boundary) = boundaries.recv().await {
+                    boundary.release();
+                }
+            };
+            tokio::select! {
+                projected = schedule.scope(pipeline.run(&input, payload_limits(), None)) => projected,
+                () = driver => unreachable!("the schedule outlives its driver"),
+            }
+        });
+        assert_eq!(projected.unwrap().context().messages.len(), 2 + stages);
+        schedule.ledger().unattributed.count(Cost::Measure)
+    };
+    let base = measured(0);
+    assert_ne!(base, 0, "base assembly admits the notice batch");
+    assert_eq!(measured(2), base);
 }
 
 #[tokio::test]
@@ -162,7 +222,7 @@ async fn explicit_base_transforms_reload_and_preserve_current_input() -> Result<
     );
     let pipeline = ContextPipeline::new([Arc::new(Transform(1)) as Arc<dyn ContextStage>]);
     let first = pipeline
-        .transform(&input, base.clone(), payload_limits(), None)
+        .transform(&input, admit(base.clone()), payload_limits(), None)
         .await?;
     assert_eq!(first.current_input_index, Some(1));
     assert_eq!(first.messages[1].content, input.input);
@@ -173,10 +233,10 @@ async fn explicit_base_transforms_reload_and_preserve_current_input() -> Result<
         Arc::new(Transform(2)) as Arc<dyn ContextStage>
     ]))?;
     let old = pipeline
-        .transform(&input, next.clone(), payload_limits(), None)
+        .transform(&input, admit(next.clone()), payload_limits(), None)
         .await?;
     let new = reloaded
-        .transform(&input, next, payload_limits(), None)
+        .transform(&input, admit(next), payload_limits(), None)
         .await?;
     assert_ne!(old.messages[0], first.messages[0]);
     assert_ne!(new.messages[0], old.messages[0]);
@@ -186,7 +246,7 @@ async fn explicit_base_transforms_reload_and_preserve_current_input() -> Result<
     invalid.current_input_index = None;
     assert!(
         pipeline
-            .transform(&input, invalid, payload_limits(), None)
+            .transform(&input, admit(invalid), payload_limits(), None)
             .await
             .is_err()
     );

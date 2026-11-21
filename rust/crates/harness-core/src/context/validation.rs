@@ -65,6 +65,18 @@ pub(crate) fn validate_projected_context(
     crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
 }
 
+/// The whole-context bounds an admitted context re-checks after it gains a
+/// message admitted on its own: counts, metadata and the instruction budget.
+pub(crate) fn validate_extended_context(
+    context: &Context,
+    limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    validate_projection_metadata(context, context.messages.len(), limits, io)?;
+    let mut remaining = limits.render_bytes;
+    crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
+}
+
 /// Message and instruction bounds were established by this immutable request's
 /// admission. Only projection metadata remains to be admitted at publication.
 pub(crate) fn validate_projected_request(
@@ -129,13 +141,13 @@ pub(crate) async fn verify_file(
 }
 
 pub(super) async fn validate_context_refs(
-    context: &Context,
+    context: &AdmittedContext,
     verifier: &dyn ContentResidencyVerifier,
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
-    validate_projected_context(context, limits, io)?;
+    let context = context.within(limits, io)?;
     for message in &context.messages {
         for file in message.content.file_refs() {
             verify_file(file, verifier, io).await?;

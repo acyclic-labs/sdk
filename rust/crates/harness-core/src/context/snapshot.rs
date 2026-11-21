@@ -1,6 +1,6 @@
 //! Immutable whole-context imports through the ordinary stage pipeline.
 
-use super::{Context, ContextInput, ContextPlacement, ContextStage};
+use super::{AdmittedContext, Context, ContextInput, ContextPlacement, ContextStage};
 use crate::{
     Error, Result,
     conversation::{ContentResidencyVerifier, FileRef, Limits},
@@ -13,7 +13,7 @@ pub struct PinnedContextStage {
     name: String,
     revision: String,
     reference: FileRef,
-    context: Context,
+    context: AdmittedContext,
     reader: Arc<dyn ContentResidencyVerifier>,
     placement: ContextPlacement,
     limits: Limits,
@@ -40,7 +40,6 @@ impl PinnedContextStage {
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;
-        super::validate_projected_context(&context, limits, None)?;
         if context.current_input_index.is_some() {
             return Err(Error::Invalid(
                 "context snapshot still marks a historical input as active".into(),
@@ -49,6 +48,7 @@ impl PinnedContextStage {
         if !crate::contract::canonical_json_matches(&context, bytes.as_ref())? {
             return Err(Error::Invalid("context snapshot is not canonical".into()));
         }
+        let context = AdmittedContext::admit(context, limits, None)?;
         super::validate_context_refs(&context, reader.as_ref(), limits, None).await?;
         Ok(Self {
             name,
@@ -110,7 +110,8 @@ impl ContextStage for PinnedContextStage {
                 "context snapshot reader has no original native capability",
             ));
         }
-        super::validate_projected_context(&self.context, self.limits, io)
+        // Admitted at capture under these limits; the stored context never changes.
+        self.context.within(self.limits, io).map(|_| ())
     }
 
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
@@ -141,10 +142,10 @@ impl ContextStage for PinnedContextStage {
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
-        context: Context,
+        context: AdmittedContext,
         limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, AdmittedContext>> {
         #[cfg(not(target_arch = "wasm32"))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)

@@ -132,14 +132,15 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         }
         Ok(())
     }
-    /// Transforms context under admitted limits and the optional original ledger.
+    /// Transforms an admitted context under the optional original ledger.
+    /// The result is admitted too, so the pipeline never walks it again.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
-        context: Context,
+        context: AdmittedContext,
         limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, AdmittedContext>>;
     /// Whether this stage has optional data to project after required assembly.
     fn has_optional(&self) -> bool {
         false
@@ -228,7 +229,7 @@ impl ContextPipeline {
         input: &ContextInput,
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Context> {
+    ) -> Result<AdmittedContext> {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         let metadata = BTreeMap::new();
         let messages = ContextMessages {
@@ -295,19 +296,17 @@ impl ContextPipeline {
             metadata,
             current_input_index: Some(current_input_index),
         };
-        validate_projected_context(&context, limits, io)?;
-        Ok(context)
+        AdmittedContext::admit(context, limits, io)
     }
 
     /// Adds an exact new delta to an owner-resolved base before running stages.
     pub fn continue_base(
-        mut retained: Context,
-        delta: Context,
+        retained: AdmittedContext,
+        delta: AdmittedContext,
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Context> {
-        validate_projected_context(&retained, limits, io)?;
-        if delta.current_input_index.is_none() {
+    ) -> Result<AdmittedContext> {
+        if delta.context().current_input_index.is_none() {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -315,8 +314,13 @@ impl ContextPipeline {
             ));
         }
         // The retained parent's old active input is historical in this admission.
-        retained.current_input_index = None;
-        selection::place_context(retained, delta, ContextPlacement::Append, limits, io)
+        selection::place_context(
+            retained.into_history(),
+            delta,
+            ContextPlacement::Append,
+            limits,
+            io,
+        )
     }
 
     /// Bounds the initial view and every intermediate projection, without truncation.
@@ -325,7 +329,7 @@ impl ContextPipeline {
         input: &ContextInput,
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Context> {
+    ) -> Result<AdmittedContext> {
         self.transform(input, Self::base_context(input, limits, io)?, limits, io)
             .await
     }
@@ -334,28 +338,33 @@ impl ContextPipeline {
     pub async fn transform(
         &self,
         input: &ContextInput,
-        context: Context,
+        context: AdmittedContext,
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Context> {
-        let before = context.current_input_index.unwrap_or(0);
-        let mut context = self.transform_required(input, context, limits, io).await?;
+    ) -> Result<AdmittedContext> {
+        let before = context.context().current_input_index.unwrap_or(0);
+        let context = self.transform_required(input, context, limits, io).await?;
+        if !self.has_optional() {
+            return Ok(context);
+        }
         let prepended = context
+            .context()
             .current_input_index
             .unwrap_or(0)
             .saturating_sub(before) as usize;
+        let mut context = context.into_context();
         self.project_optional(&mut context, 0, prepended, limits, 0, io)?;
-        Ok(context)
+        AdmittedContext::admit(context, limits, io)
     }
 
     /// Joins required stages before optional metadata consumes any allowance.
     pub(crate) async fn transform_required(
         &self,
         input: &ContextInput,
-        mut context: Context,
+        context: AdmittedContext,
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Context> {
+    ) -> Result<AdmittedContext> {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         self.validate(io)?;
         if limits
@@ -372,8 +381,8 @@ impl ContextPipeline {
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, io)?;
         }
-        validate_projected_context(&context, limits, io)?;
-        if context.current_input_index.is_none() {
+        let mut context = context.under(limits, io)?;
+        if context.context().current_input_index.is_none() {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -381,9 +390,11 @@ impl ContextPipeline {
             ));
         }
         for stage in &self.0 {
-            context = stage.apply(input, context, limits, io)?.await?;
-            validate_projected_context(&context, limits, io)?;
-            if context.current_input_index.is_none() {
+            context = stage
+                .apply(input, context, limits, io)?
+                .await?
+                .under(limits, io)?;
+            if context.context().current_input_index.is_none() {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Invalid,
@@ -394,6 +405,8 @@ impl ContextPipeline {
         Ok(context)
     }
 
+    /// Inserts optional messages into a context whose final admission follows:
+    /// the request admission, or [`Self::transform`]'s own.
     pub(crate) fn project_optional(
         &self,
         context: &mut Context,
@@ -427,7 +440,6 @@ impl ContextPipeline {
             {
                 insertion.insert(context, prefix_messages, io)?;
             }
-            validate_projected_context(context, limits, io)?;
         }
         Ok(())
     }

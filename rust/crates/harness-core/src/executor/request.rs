@@ -125,9 +125,9 @@ impl StockExecution<'_> {
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         let mut base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
         if self.summary.is_some()
-            && let Some(update) = self.configuration_delta(&base.messages)?
+            && let Some(update) = self.configuration_delta(&base.context().messages)?
         {
-            stock_vec_push(&mut base.messages, update.message(), self.io)?;
+            base = base.push(update.message(), self.io)?;
         }
         self.prepare_transformed_request(&context_input, base)
             .await
@@ -141,7 +141,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-    ) -> Result<crate::context::Context> {
+    ) -> Result<crate::context::AdmittedContext> {
         let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         self.canonical_base_for_input(journal, &mut context_input)
             .await
@@ -151,7 +151,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         context_input: &mut ContextInput,
-    ) -> Result<crate::context::Context> {
+    ) -> Result<crate::context::AdmittedContext> {
         // A stage observes the same input used to assemble its base. Temporarily
         // remove the owner-resolved checkpoint, then restore its exact reference
         // before any fallible load or stage can observe the input.
@@ -185,6 +185,8 @@ impl StockExecution<'_> {
                 "checkpoint covers the new turn input",
             ));
         }
+        let retained =
+            crate::context::AdmittedContext::admit(retained, self.stock.limits, self.io)?;
         ContextPipeline::continue_base(retained, delta, self.stock.limits, self.io)
     }
 
@@ -192,7 +194,7 @@ impl StockExecution<'_> {
     pub(super) async fn transform_projection(
         &self,
         input: &ContextInput,
-        base: crate::context::Context,
+        base: crate::context::AdmittedContext,
     ) -> Result<crate::context::Context> {
         let (mut context, prepared) = self.prepare_transformed_request(input, base).await?;
         context.messages = prepared.into_messages();
@@ -202,13 +204,14 @@ impl StockExecution<'_> {
     pub(super) async fn prepare_transformed_request(
         &self,
         input: &ContextInput,
-        base: crate::context::Context,
+        base: crate::context::AdmittedContext,
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
-        let before = base.current_input_index.unwrap_or(0);
+        let before = base.context().current_input_index.unwrap_or(0);
         let mut context = self
             .context_pipeline()
             .transform_required(input, base, self.stock.limits, self.io)
-            .await?;
+            .await?
+            .into_context();
         let prepended = context
             .current_input_index
             .unwrap_or(0)
@@ -269,12 +272,12 @@ impl StockExecution<'_> {
             request_frame,
             self.io,
         )?;
-        if prefix_count != 0 || self.context_pipeline().has_optional() {
-            crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
-        }
         request.messages = std::mem::take(&mut context.messages);
+        // The request admission bounds every message, including the inherited
+        // prefix and optional insertions; only projection metadata remains.
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
+        crate::context::validate_projected_request(&context, &prepared, self.io)?;
         Ok((context, prepared))
     }
 

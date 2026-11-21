@@ -277,7 +277,8 @@ impl Scope {
     }
 
     pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        copy(self, quota, |scope, _| scope.logical_owned_bytes())
+        // Admission inspected this immutable grant when it was decoded or issued.
+        copy_admitted(self, quota, |scope, _| scope.logical_owned_bytes())
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
