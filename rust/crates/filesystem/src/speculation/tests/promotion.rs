@@ -878,3 +878,40 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
     assert_eq!(engine.metrics().wasted, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn promotion_to_a_read_cache_does_not_publish_to_its_origin()
+-> Result<(), Box<dyn std::error::Error>> {
+    let volume_id = VolumeId::from_bytes([1; 16]);
+    let generation_id = generation(2);
+    let object_id = object(3);
+    let bytes = OwnedBytes::from(vec![3; 64]);
+    let source = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    AsyncObjectStore::put(&source, object_id, bytes.clone(), &mut work).await?;
+    let cache = crate::CachedObjectStore::new(MemoryObjectStore::default(), Default::default())?;
+    let mut engine = PromotionSpeculator::new(Default::default(), volume_id, generation_id)?;
+    let plan = planned(&mut engine, 8, volume_id, generation_id, object_id)?;
+    let executor = StorePromotionExecutor::new(
+        plan.source.location_id,
+        source,
+        plan.destination.location_id,
+        cache,
+    )?;
+    let receipt = execute_promotion(
+        &engine,
+        &executor,
+        &plan,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(receipt.work.object_bytes_written, 0);
+    let cache = executor.destination();
+    assert!(!cache.contains(object_id, &mut work).await?);
+    assert_eq!(cache.read(object_id, 64, &mut work).await?.bytes, bytes);
+    cache.clear()?;
+    assert!(!cache.contains(object_id, &mut work).await?);
+    Ok(())
+}

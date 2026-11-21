@@ -372,7 +372,11 @@ impl<S> CachedObjectStore<S> {
         let object_id = self.shared.key(object_id);
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
-        let Some(entry) = state.entries.get_mut(&object_id) else {
+        let Some(entry) = state
+            .entries
+            .get_mut(&object_id)
+            .filter(|entry| entry.present_at_origin)
+        else {
             state.misses = increment(state.misses)?;
             return Ok(false);
         };
@@ -393,6 +397,7 @@ impl<S> CachedObjectStore<S> {
         object_id: ObjectId,
         bytes: OwnedBytes,
         epoch: u64,
+        present_at_origin: bool,
     ) -> Result<bool, ObjectStoreError> {
         let object_id = self.shared.key(object_id);
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
@@ -405,10 +410,11 @@ impl<S> CachedObjectStore<S> {
             if epoch != self.shared.fill_epoch() {
                 return Ok(false);
             }
-            if let Some(existing) = state.entries.get(&object_id) {
+            if let Some(existing) = state.entries.get_mut(&object_id) {
                 if existing.bytes != bytes {
                     return Err(ObjectStoreError::Corrupt);
                 }
+                existing.present_at_origin |= present_at_origin;
                 return Ok(true);
             }
             if !self.needs_eviction(&state, length) {
@@ -432,6 +438,7 @@ impl<S> CachedObjectStore<S> {
             object_id,
             CacheEntry {
                 bytes,
+                present_at_origin,
                 touched: tick,
             },
         );

@@ -5,6 +5,7 @@ use crate::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct CacheEntry {
     pub(super) bytes: OwnedBytes,
+    pub(super) present_at_origin: bool,
     pub(super) touched: u64,
 }
 

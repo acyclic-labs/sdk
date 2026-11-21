@@ -57,7 +57,35 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         let retained = bytes.clone();
         let epoch = self.shared.fill_epoch();
         self.inner.put(object_id, bytes, context).await?;
-        self.insert(object_id, retained, epoch)?;
+        self.insert(object_id, retained, epoch, true)?;
+        Ok(())
+    }
+
+    async fn admit_promoted(
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        let epoch = self.shared.fill_epoch();
+        let mut accounting = context.accounting();
+        accounting
+            .charge(WorkCounters {
+                bytes_hashed: bytes.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(crate::async_storage::object_error)?;
+        if crate::storage::object_digest(&bytes) != object_id.digest {
+            return Err(ObjectStoreError::DigestMismatch);
+        }
+        accounting
+            .check()
+            .map_err(crate::async_storage::object_error)?;
+        if !self.insert(object_id, bytes, epoch, false)? {
+            return Err(ObjectStoreError::Rejected(
+                "promotion destination could not retain the object".to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -74,7 +102,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         let retained = object.bytes().clone();
         let epoch = self.shared.fill_epoch();
         self.inner.put_hashed(object, context).await?;
-        self.insert(object_id, retained, epoch)?;
+        self.insert(object_id, retained, epoch, true)?;
         Ok(())
     }
 
@@ -86,7 +114,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         let epoch = self.shared.fill_epoch();
         self.inner.put_many_hashed(objects, context).await?;
         for object in objects {
-            self.insert(object.object_id(), object.bytes().clone(), epoch)?;
+            self.insert(object.object_id(), object.bytes().clone(), epoch, true)?;
         }
         Ok(())
     }
@@ -102,7 +130,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         let epoch = self.shared.fill_epoch();
         self.inner.put_many(writes, context).await?;
         for write in writes {
-            self.insert(write.object_id, write.bytes.clone(), epoch)?;
+            self.insert(write.object_id, write.bytes.clone(), epoch, true)?;
         }
         Ok(())
     }

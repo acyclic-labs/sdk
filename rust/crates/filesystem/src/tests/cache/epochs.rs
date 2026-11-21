@@ -199,11 +199,11 @@ fn reentrant_clear_refuses_the_original_fill() -> Result<(), ObjectStoreError> {
         value,
     )?);
     let original_epoch = cache.shared.fill_epoch();
-    assert!(!cache.insert(id, bytes.clone(), original_epoch)?);
+    assert!(!cache.insert(id, bytes.clone(), original_epoch, true,)?);
     assert_eq!(cache.stats()?.resident_entries, 0);
     // Counterfactual: rediscovering an epoch after the original fill loses its
     // evidence and wrongly allows that same old result to restore residency.
-    assert!(cache.insert(id, bytes, cache.shared.fill_epoch())?);
+    assert!(cache.insert(id, bytes, cache.shared.fill_epoch(), true,)?);
     assert_eq!(cache.stats()?.resident_entries, 1);
     Ok(())
 }

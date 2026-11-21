@@ -141,6 +141,16 @@ pub trait AsyncObjectStore: ProviderPlatform {
         bytes: acyclic_stream::OwnedBytes,
         context: &mut crate::async_storage::AuthorityWork<'_>,
     ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask;
+    /// Admits authenticated logical bytes at a configured promotion destination.
+    /// Disposable caches can satisfy this without mutating their backing store.
+    fn admit_promoted(
+        &self,
+        object_id: crate::storage::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
+        self.put(object_id, bytes, context)
+    }
     /// Imports the exact immutable representation named by the full reference.
     /// Plain stores use their ordinary write boundary. Sealed stores must
     /// authenticate the association and preserve the original CAS bytes.

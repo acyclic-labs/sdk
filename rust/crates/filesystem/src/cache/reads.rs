@@ -23,7 +23,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 return Err(error);
             }
         };
-        if self.insert(object_id, read.bytes.clone(), epoch)? {
+        if self.insert(object_id, read.bytes.clone(), epoch, true)? {
             read.retention = ObjectReadRetention::Shared;
         }
         guard.finish(Some(read.bytes.clone()))?;
@@ -147,7 +147,8 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         }
         for (leader, read) in prepared.leaders.value.iter().zip(&mut reads.0) {
             let bytes = read.bytes.clone();
-            let retained = self.insert(leader.object_id, bytes.clone(), leader.flight.epoch)?;
+            let retained =
+                self.insert(leader.object_id, bytes.clone(), leader.flight.epoch, true)?;
             if retained {
                 read.retention = ObjectReadRetention::Shared;
             }

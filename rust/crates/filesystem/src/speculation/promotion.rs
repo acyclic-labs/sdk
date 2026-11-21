@@ -504,7 +504,7 @@ impl PromotionSpeculator {
 
 /// Backend-specific execution boundary for one already selected plan.
 pub trait PromotionExecutor {
-    /// Copies, authenticates, and durably admits the exact object at the plan's
+    /// Copies, authenticates, and admits the exact object at the plan's
     /// destination, retaining the operation identity for idempotent retry.
     fn promote(
         &self,
@@ -614,7 +614,7 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
             let mut work = crate::AuthorityWork::new(remaining, cancellation);
             let result = self
                 .destination
-                .put(request.object_id, read.value.bytes, &mut work)
+                .admit_promoted(request.object_id, read.value.bytes, &mut work)
                 .await;
             work.receipt(result)
         }

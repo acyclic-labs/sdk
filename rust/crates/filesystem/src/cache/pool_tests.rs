@@ -37,6 +37,7 @@ fn namespaces_isolate_bytes_decoders_and_clear() {
             object(1),
             OwnedBytes::from_static(b"one"),
             first.shared.fill_epoch(),
+            true,
         )
         .unwrap();
     let key = DecodedCacheKey::new::<u64>(object(1), Default::default());
@@ -52,6 +53,7 @@ fn namespaces_isolate_bytes_decoders_and_clear() {
             object(2),
             OwnedBytes::from_static(b"two"),
             second.shared.fill_epoch(),
+            true,
         )
         .unwrap();
     first.clear().unwrap();
@@ -73,6 +75,7 @@ fn pooled_eviction_preserves_an_active_payload() {
             object(1),
             OwnedBytes::from_static(b"one"),
             first.shared.fill_epoch(),
+            true,
         )
         .unwrap();
     let ReadPlan::Hit(held) = first
@@ -92,6 +95,7 @@ fn pooled_eviction_preserves_an_active_payload() {
             object(2),
             OwnedBytes::from_static(b"two"),
             second.shared.fill_epoch(),
+            true,
         )
         .unwrap();
     assert!(!first.cached_contains(object(1)).unwrap());
@@ -191,6 +195,7 @@ fn drops_after_unlock(retirement: Retirement) -> bool {
                     object(2),
                     OwnedBytes::from_static(b"two"),
                     cache.shared.fill_epoch(),
+                    true,
                 )
                 .unwrap();
         }
@@ -214,7 +219,8 @@ fn reentrant_eviction_preserves_new_admission() {
                     .insert(
                         self.target,
                         OwnedBytes::from_static(b"new"),
-                        store.shared.fill_epoch()
+                        store.shared.fill_epoch(),
+                        true,
                     )
                     .unwrap()
             );
@@ -245,7 +251,8 @@ fn reentrant_eviction_preserves_new_admission() {
                 .insert(
                     requested,
                     OwnedBytes::from_static(b"new"),
-                    cache.shared.fill_epoch()
+                    cache.shared.fill_epoch(),
+                    true,
                 )
                 .unwrap(),
             same_key
@@ -273,6 +280,7 @@ fn namespace_retirement_preserves_peers_leases_and_unlocked_destruction() {
             object(1),
             OwnedBytes::from_static(b"one"),
             first.shared.fill_epoch(),
+            true,
         )
         .unwrap();
     second
@@ -280,6 +288,7 @@ fn namespace_retirement_preserves_peers_leases_and_unlocked_destruction() {
             object(2),
             OwnedBytes::from_static(b"two"),
             second.shared.fill_epoch(),
+            true,
         )
         .unwrap();
     let key = DecodedCacheKey::new::<u64>(object(1), Default::default());
