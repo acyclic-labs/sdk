@@ -31,15 +31,14 @@ impl From<sdk::MaterializationJournalCopyError> for StoreError {
 
 impl std::fmt::Debug for StoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.cause {
-            Some(cause) => formatter.debug_tuple("NativeWork").field(cause).finish(),
-            None => {
-                let mut debug = formatter.debug_tuple("Conflict");
-                if let Some(journal) = &self.journal {
-                    debug.field(journal);
-                }
-                debug.finish()
+        if let Some(cause) = &self.cause {
+            formatter.debug_tuple("NativeWork").field(cause).finish()
+        } else {
+            let mut debug = formatter.debug_tuple("Conflict");
+            if let Some(journal) = &self.journal {
+                debug.field(journal);
             }
+            debug.finish()
         }
     }
 }
