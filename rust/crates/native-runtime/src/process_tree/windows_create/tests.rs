@@ -7,9 +7,7 @@ use std::io::{BufRead, Write as _};
 use std::os::windows::process::CommandExt as _;
 use std::time::Duration;
 use windows_sys::Wdk::System::Threading::NtQueryInformationProcess;
-use windows_sys::Win32::Foundation::{
-    CompareObjectHandles, ERROR_INVALID_HANDLE, UNICODE_STRING, WAIT_OBJECT_0,
-};
+use windows_sys::Win32::Foundation::{CompareObjectHandles, UNICODE_STRING, WAIT_OBJECT_0};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::Console::{
@@ -497,17 +495,12 @@ fn probe() -> io::Result<()> {
             let name: Vec<u16> = name.encode_wide().chain([0]).collect();
             let inherited: usize = value.parse().map_err(io::Error::other)?;
             // Retain the candidate before opening the comparison event: a
-            // missing inherited slot can be reused by that very open.
+            // missing inherited slot can be reused by that very open. An event
+            // always duplicates, so a slot that does not is no inherited event:
+            // it is empty, or the child reused its number for an object whose
+            // type refuses duplication (ERROR_NOT_SUPPORTED).
             let inherited =
-                match uninheritable_duplicate(std::ptr::with_exposed_provenance_mut(inherited)) {
-                    Ok(handle) => Some(handle),
-                    Err(error)
-                        if error.raw_os_error() == Some(ERROR_INVALID_HANDLE.cast_signed()) =>
-                    {
-                        None
-                    }
-                    Err(error) => return Err(error),
-                };
+                uninheritable_duplicate(std::ptr::with_exposed_provenance_mut(inherited)).ok();
             // SAFETY: a NUL-terminated name.
             let own = unsafe { OpenEventW(SYNCHRONIZE, 0, name.as_ptr()) };
             if own.is_null() {
