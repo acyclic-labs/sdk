@@ -58,11 +58,18 @@ pub fn serialized_json_digest<T: Serialize + ?Sized>(value: &T) -> Result<[u8; 3
     serialized_json_digest_bounded(value, None)
 }
 
-#[inline(never)]
 fn serialized_json_digest_bounded<T: Serialize + ?Sized>(
     value: &T,
     maximum: Option<u64>,
 ) -> Result<[u8; 32]> {
+    serialized_json_identity_bounded(value, maximum).map(|(digest, _)| digest)
+}
+
+#[inline(never)]
+fn serialized_json_identity_bounded<T: Serialize + ?Sized>(
+    value: &T,
+    maximum: Option<u64>,
+) -> Result<([u8; 32], u64)> {
     let mut writer = DigestWriter {
         buffer: arrayvec::ArrayVec::new(),
         hasher: None,
@@ -72,11 +79,11 @@ fn serialized_json_digest_bounded<T: Serialize + ?Sized>(
     #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     super::record_serialization::<T>();
     serde_json::to_writer(&mut writer, value).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*match writer.hasher {
+    let digest = match writer.hasher {
         Some(mut hasher) => hasher.update(&writer.buffer).finalize(),
         None => blake3::hash(&writer.buffer),
-    }
-    .as_bytes())
+    };
+    Ok((*digest.as_bytes(), writer.written))
 }
 
 /// Counts compact JSON under its byte limit and optional original ledger.
@@ -235,8 +242,18 @@ pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
     maximum_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
+    borrowed_json_identity(value, maximum_bytes, work).map(|(digest, _)| digest)
+}
+
+/// [`borrowed_json_digest`] and the canonical byte length it hashed, so a
+/// value digested once can still answer each caller's own byte allowance.
+pub(crate) fn borrowed_json_identity<T: Serialize + ?Sized>(
+    value: &T,
+    maximum_bytes: Option<u64>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<([u8; 32], u64)> {
     let Some(observer) = work.as_deref_mut() else {
-        return serialized_json_digest_bounded(value, maximum_bytes);
+        return serialized_json_identity_bounded(value, maximum_bytes);
     };
     if maximum_bytes == Some(0) {
         return Err(crate::store::guarded_boundary(
@@ -247,7 +264,8 @@ pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
     }
     let code = crate::store::operations::original_native_decode_mode(observer)
         .then_some(crate::wire::ErrorCode::Invalid);
-    serialization::borrowed_digest_with_work(
+    let mut digest = blake3::Hasher::new();
+    let written = serialization::borrowed_update_with_work(
         value,
         JsonBounds {
             maximum_bytes,
@@ -256,5 +274,7 @@ pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
         },
         code,
         observer,
-    )
+        &mut digest,
+    )?;
+    Ok((*digest.finalize().as_bytes(), written))
 }

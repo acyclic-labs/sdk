@@ -197,11 +197,9 @@ mod tests {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         for file in files()? {
             let expected = file.read_capability(&mut None)?;
-            // The label names the volume's identity beside the file's, so the
-            // work is exactly both canonical forms, each hashed once.
-            let bytes = (crate::contract::canonical_json_bytes(file.volume())?.len()
-                + crate::contract::canonical_json_bytes(&file)?.len())
-                as u64;
+            // The label names the volume's sealed identity beside the file's,
+            // so the work is exactly the file's canonical form, hashed once.
+            let bytes = crate::contract::canonical_json_bytes(&file)?.len() as u64;
             let cancellation = CancellationToken::new();
             let mut budget = acyclic_fs_work::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;

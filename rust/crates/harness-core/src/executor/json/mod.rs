@@ -40,7 +40,7 @@ mod identity;
 mod object;
 mod sequence;
 mod spans;
-pub(crate) use identity::borrowed_json_digest;
+pub(crate) use identity::{borrowed_json_digest, borrowed_json_identity};
 pub(crate) use object::{JsonObject, decode_object, deserialize_object};
 pub(crate) use sequence::canonical_sequence_digests;
 pub(crate) use spans::{JsonSpans, SpanEvent, SpanKind};

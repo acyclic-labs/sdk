@@ -32,17 +32,17 @@ ceiling!(extension_binding, registry::ExtensionBinding, 192);
 ceiling!(extension_admission, ExtensionAdmission, 88);
 ceiling!(scope, Scope, 160);
 ceiling!(capabilities, crate::Capabilities, 24);
-ceiling!(extension_state_migration, ExtensionStateMigration, 408);
-ceiling!(extension_record, ExtensionRecord, 368);
-ceiling!(extension_configuration, ExtensionConfiguration, 336);
+ceiling!(extension_state_migration, ExtensionStateMigration, 440);
+ceiling!(extension_record, ExtensionRecord, 400);
+ceiling!(extension_configuration, ExtensionConfiguration, 368);
 ceiling!(extension_dependency, ExtensionDependency, 32);
 ceiling!(authority, Authority, 32);
 ceiling!(event_reference, EventReference, 40);
-ceiling!(conversation_message, ConversationMessage, 648);
+ceiling!(conversation_message, ConversationMessage, 712);
 ceiling!(
     conversation_state,
     ConversationState,
-    424 + CONVERSATION_CUSTODY_BYTES
+    456 + CONVERSATION_CUSTODY_BYTES
 );
 #[cfg(not(target_arch = "wasm32"))]
 ceiling!(
@@ -50,12 +50,12 @@ ceiling!(
     Option<acyclic_fs::NativeAllocation>,
     64
 );
-ceiling!(model_context_selection, ModelContextSelection, 304);
-ceiling!(file_ref, FileRef, 272);
-ceiling!(volume_ref, crate::conversation::VolumeRef, 136);
+ceiling!(model_context_selection, ModelContextSelection, 336);
+ceiling!(file_ref, FileRef, 304);
+ceiling!(volume_ref, crate::conversation::VolumeRef, 168);
 ceiling!(file_descriptor, crate::conversation::FileDescriptor, 64);
-ceiling!(interaction_ticket, InteractionTicket, 360);
-ceiling!(interaction_resolution, InteractionResolution, 320);
+ceiling!(interaction_ticket, InteractionTicket, 392);
+ceiling!(interaction_resolution, InteractionResolution, 352);
 ceiling!(resource_ref, crate::resources::ResourceRef, 128);
 ceiling!(provider_ref, crate::resources::ProviderRef, 72);
 ceiling!(json_entry, (String, serde_json::Value), 56);
@@ -63,5 +63,5 @@ ceiling!(value, serde_json::Value, 32);
 ceiling!(
     project_source_authorization,
     crate::source_authorization::ProjectSourceAuthorization,
-    648
+    680
 );

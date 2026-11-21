@@ -45,8 +45,9 @@ impl EncodedSnapshot<'_> {
     deny_unknown_fields
 )]
 pub enum SummaryOutcome {
-    /// Complete immutable artifact set returned by the original producer.
-    Ready(SummaryRef),
+    /// Complete immutable artifact set returned by the original producer,
+    /// boxed so a pending outcome stays the size of its failure marker.
+    Ready(Box<SummaryRef>),
     /// The producer terminated without a summary, including loss of custody.
     Failed,
 }
@@ -233,7 +234,7 @@ impl Snapshot {
         let mut state = self.state;
         state.swap(pending.summary, expected, head)?;
         if !matches!((&self.outcome, &next.summary),
-            (Some(SummaryOutcome::Ready(body)), Some(summary)) if body == summary)
+            (Some(SummaryOutcome::Ready(body)), Some(summary)) if **body == *summary)
         {
             return Err(SnapshotError::ResultReference);
         }

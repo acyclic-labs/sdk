@@ -564,17 +564,6 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     Ok(bytes)
 }
 /// Hash borrowed ordered fields on the original observer without a Value tree.
-pub(crate) fn borrowed_digest_with_work<T: Serialize + ?Sized>(
-    value: &T,
-    bounds: JsonBounds,
-    code: Option<crate::wire::ErrorCode>,
-    observer: &mut dyn crate::store::HistoryIo,
-) -> Result<[u8; 32]> {
-    let mut digest = blake3::Hasher::new();
-    borrowed_update_with_work(value, bounds, code, observer, &mut digest)?;
-    Ok(*digest.finalize().as_bytes())
-}
-
 pub(crate) fn borrowed_update_with_work<T: Serialize + ?Sized>(
     value: &T,
     bounds: JsonBounds,

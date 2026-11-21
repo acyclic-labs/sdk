@@ -199,9 +199,9 @@ pub(crate) fn directory_read_granted_with_work(
     Ok(directory_read_grant(grants, volume, path, work)?.is_some())
 }
 
-pub(crate) fn contains_content_grant_with_work<T: serde::Serialize + ?Sized>(
+pub(crate) fn contains_content_grant_with_work(
     grants: &crate::Capabilities,
-    value: &T,
+    volume: &crate::conversation::VolumeRef,
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
@@ -211,11 +211,7 @@ pub(crate) fn contains_content_grant_with_work<T: serde::Serialize + ?Sized>(
     if grants.with_prefix(prefix).next().is_none() {
         return Ok(false);
     }
-    let digest = crate::executor::json::canonical_json_digest(
-        value,
-        Some(acyclic_stream::MAX_RECORD_BYTES as u64),
-        work,
-    )?;
+    let digest = volume.identity_digest(acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         io.copy_bytes((prefix.len() + 64) as u64)?;

@@ -6,11 +6,31 @@ pub(in crate::conversation) struct Canonical<'a, T: ?Sized>(pub(in crate::conver
 
 impl Serialize for Canonical<'_, VolumeRef> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        Fields {
+            provider: &self.0.provider,
+            id: &self.0.id,
+            class: self.0.class,
+            owner: &self.0.owner,
+        }
+        .serialize(serializer)
+    }
+}
+
+/// The borrowed identity fields a volume's digest is sealed from.
+pub(super) struct Fields<'a> {
+    pub(super) provider: &'a ProviderRef,
+    pub(super) id: &'a str,
+    pub(super) class: VolumeClass,
+    pub(super) owner: &'a VolumeOwner,
+}
+
+impl Serialize for Fields<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut fields = serializer.serialize_map(Some(4))?;
-        fields.serialize_entry("class", &self.0.class)?;
-        fields.serialize_entry("id", &self.0.id)?;
-        fields.serialize_entry("owner", &Canonical(&self.0.owner))?;
-        fields.serialize_entry("provider", &Canonical(&self.0.provider))?;
+        fields.serialize_entry("class", &self.class)?;
+        fields.serialize_entry("id", self.id)?;
+        fields.serialize_entry("owner", &Canonical(self.owner))?;
+        fields.serialize_entry("provider", &Canonical(self.provider))?;
         fields.end()
     }
 }
@@ -110,9 +130,15 @@ mod tests {
 
     #[test]
     fn volume_labels_borrow_all_closed_identity_fields() -> Result<()> {
-        for mut volume in volumes()? {
+        for volume in volumes()? {
             // Preserve escaped and Unicode strings without a generic Value tree.
-            volume.id.push_str("-\"\\\n\u{03b1}");
+            let volume = VolumeRef::seal(
+                volume.provider,
+                format!("{}-\"\\\n\u{03b1}", volume.id),
+                volume.class,
+                volume.owner,
+                &mut None,
+            )?;
             assert_eq!(
                 serde_json::to_vec(&Canonical(&volume)).unwrap(),
                 crate::contract::canonical_json_bytes(&volume)?
@@ -215,8 +241,8 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&work)?,
             );
             assert_eq!(labels(&volume, &mut Some(&mut io))?, expected);
-            let bytes = 4 * crate::contract::canonical_json_bytes(&volume)?.len()
-                + crate::contract::canonical_json_bytes(&(&volume, ""))?.len();
+            // The sealed identity is reused: only the directory target hashes.
+            let bytes = crate::contract::canonical_json_bytes(&(&volume, ""))?.len();
             assert_eq!(work.receipt()?.bytes_hashed, bytes as u64);
             assert_eq!(work.receipt()?.bytes_copied, budget.bytes_copied);
             cancellation.cancel();
@@ -244,24 +270,107 @@ mod tests {
             let mut denied_io = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(&denied)?,
             );
-            assert!(volume.storage_name(&mut Some(&mut denied_io)).is_err());
+            // Labels of a sealed volume hash nothing, so unfunded hashing
+            // still names it; sealing is where its identity is hashed, so
+            // unfunded hashing refuses the volume itself.
+            assert_eq!(volume.storage_name(&mut Some(&mut denied_io))?, expected[0]);
+            assert_eq!(
+                volume.capability(VolumeOperation::Read, &mut Some(&mut denied_io))?,
+                expected[2]
+            );
+            assert!(
+                VolumeRef::new(
+                    volume.provider.clone(),
+                    volume.id.clone(),
+                    volume.class,
+                    volume.owner.clone(),
+                    &mut Some(&mut denied_io),
+                )
+                .is_err()
+            );
             assert!(
                 volume
                     .directory_read_capability("", &mut Some(&mut denied_io))
                     .is_err()
             );
-            assert!(
-                volume
-                    .capability(VolumeOperation::Read, &mut Some(&mut denied_io))
-                    .is_err()
-            );
-            assert!(
-                volume
-                    .capability(VolumeOperation::Write, &mut Some(&mut denied_io))
-                    .is_err()
-            );
             assert_eq!(denied.receipt()?.bytes_hashed, 0);
         }
+        Ok(())
+    }
+
+    /// A volume's identity is digested once, when it is sealed: any number of
+    /// uses measure nothing more, decoding seals the same identity, each use
+    /// still answers its own byte allowance, and every field reaches it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sealed_volume_identity_is_measured_once() -> Result<()> {
+        use {
+            crate::test_support::bounds::measure,
+            acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        };
+        let cancellation = CancellationToken::new();
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_048_576);
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
+        let template = volumes()?.remove(0);
+        let (volume, sealing) = measure(async {
+            VolumeRef::new(
+                template.provider.clone(),
+                template.id.clone(),
+                template.class,
+                template.owner.clone(),
+                &mut Some(&mut io),
+            )
+        });
+        let volume = volume?;
+        assert_ne!(sealing, 0, "sealing measures the canonical identity");
+        for count in [1_usize, 8] {
+            let (used, measured) = measure(async {
+                for _ in 0..count {
+                    volume.storage_name(&mut Some(&mut io))?;
+                    volume.identity_digest(u64::MAX, &mut Some(&mut io))?;
+                }
+                Ok::<_, Error>(())
+            });
+            used?;
+            assert_eq!(measured, 0, "{count} uses measured the sealed identity");
+        }
+
+        let canonical = crate::contract::canonical_json_bytes(&volume)?;
+        let bytes = canonical.len() as u64;
+        assert!(volume.identity_digest(bytes - 1, &mut None).is_err());
+        assert_eq!(
+            volume.identity_digest(bytes, &mut None)?,
+            *blake3::hash(&canonical).as_bytes()
+        );
+        let encoded = serde_json::to_string(&volume).unwrap();
+        assert!(!encoded.contains("identity"), "{encoded}");
+        // Equality covers the sealed identity, so decoding sealed the same one.
+        assert_eq!(serde_json::from_str::<VolumeRef>(&encoded).unwrap(), volume);
+
+        let mut variants = volumes()?;
+        variants.push(VolumeRef::new(
+            template.provider.clone(),
+            "other".into(),
+            template.class,
+            template.owner.clone(),
+            &mut None,
+        )?);
+        variants.push(VolumeRef::new(
+            ProviderRef::new("acyclic".into(), "filesystem".into(), "3".into(), &mut None)?,
+            template.id.clone(),
+            template.class,
+            template.owner.clone(),
+            &mut None,
+        )?);
+        let digests = variants
+            .iter()
+            .map(|variant| variant.identity_digest(u64::MAX, &mut None))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        assert_eq!(digests.len(), variants.len());
         Ok(())
     }
 }

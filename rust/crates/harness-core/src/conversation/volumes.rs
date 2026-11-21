@@ -63,40 +63,123 @@ pub enum VolumeOwner {
 }
 
 /// Globally addressable volume identity with no embedded capability or endpoint.
+// Ordering and equality cover the sealed identity last; it is a pure function
+// of the fields before it, so they agree with ordering over those fields.
 #[derive(
-    Clone,
-    Debug,
-    Eq,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-    crate::HeapLayout,
+    Clone, Eq, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema, crate::HeapLayout,
 )]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct VolumeRef {
     pub(super) provider: ProviderRef,
-    #[serde(deserialize_with = "deserialize_label")]
     #[heap_layout(scalar)]
     pub(super) id: String,
     pub(super) class: VolumeClass,
     pub(super) owner: VolumeOwner,
+    // The canonical identity digest and its canonical byte length, computed
+    // once by `seal` from the private fields above, which nothing mutates in
+    // place. It is never serialized: decoding seals the fields again.
+    #[serde(skip)]
+    #[schemars(skip)]
+    identity: [u8; 32],
+    // A u32 fits the padding beside `class`, so only the digest adds bytes.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[heap_layout(scalar)]
+    identity_bytes: u32,
 }
 
+impl std::fmt::Debug for VolumeRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VolumeRef")
+            .field("provider", &self.provider)
+            .field("id", &self.id)
+            .field("class", &self.class)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+/// The decoded identity fields, which decoding seals into a [`VolumeRef`].
+#[derive(Deserialize)]
+#[serde(rename = "VolumeRef", deny_unknown_fields)]
+struct VolumeFields {
+    provider: ProviderRef,
+    #[serde(deserialize_with = "deserialize_label")]
+    id: String,
+    class: VolumeClass,
+    owner: VolumeOwner,
+}
+
+impl<'de> Deserialize<'de> for VolumeRef {
+    fn deserialize<D: Deserializer<'de>>(decoder: D) -> std::result::Result<Self, D::Error> {
+        let VolumeFields {
+            provider,
+            id,
+            class,
+            owner,
+        } = VolumeFields::deserialize(decoder)?;
+        // Serde decoding carries no work observer, like its label checks; the
+        // identity bound still holds, so an over-bound identity fails decode.
+        Self::seal(provider, id, class, owner, &mut None).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The sealing bound on a canonical volume identity, above every label and
+/// grant allowance (at most 32 command frames). Each use checks its own
+/// allowance against the sealed length, so no bound is loosened; the execution
+/// journal's claim namespace only names volumes that also have a storage name.
+const IDENTITY_MAXIMUM_BYTES: u32 = u32::MAX;
+
 impl VolumeRef {
+    /// The one place a volume's identity is digested: every value is built or
+    /// decoded through here, and its fields are immutable afterwards, so the
+    /// sealed digest can never be stale.
+    pub(super) fn seal(
+        provider: ProviderRef,
+        id: String,
+        class: VolumeClass,
+        owner: VolumeOwner,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Self> {
+        let (identity, identity_bytes) = crate::executor::json::borrowed_json_identity(
+            &canonical::Fields {
+                provider: &provider,
+                id: &id,
+                class,
+                owner: &owner,
+            },
+            Some(u64::from(IDENTITY_MAXIMUM_BYTES)),
+            work,
+        )?;
+        let identity_bytes = u32::try_from(identity_bytes)
+            .map_err(|_| Error::Invalid("volume identity exceeds its sealing bound".into()))?;
+        Ok(Self {
+            provider,
+            id,
+            class,
+            owner,
+            identity,
+            identity_bytes,
+        })
+    }
+
+    /// The sealed canonical identity digest, admitted only when its canonical
+    /// form fits the caller's `maximum_bytes`. It hashes and copies nothing.
     pub(crate) fn identity_digest(
         &self,
         maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        crate::executor::json::borrowed_json_digest(
-            &canonical::Canonical(self),
-            Some(maximum_bytes),
-            work,
-        )
+        if u64::from(self.identity_bytes) > maximum_bytes {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "volume identity exceeds the canonical byte allowance",
+            ));
+        }
+        Ok(self.identity)
     }
 
     fn directory_digest(
@@ -132,14 +215,8 @@ impl VolumeRef {
         owner: VolumeOwner,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        let value = Self {
-            provider,
-            id,
-            class,
-            owner,
-        };
-        value.validate(work)?;
-        Ok(value)
+        Self::validate_fields(&provider, &id, &owner, work)?;
+        Self::seal(provider, id, class, owner, work)
     }
 
     /// Validates metadata under the caller's optional work observer.
@@ -147,12 +224,15 @@ impl VolumeRef {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let Self {
-            provider,
-            id,
-            owner,
-            ..
-        } = self;
+        Self::validate_fields(&self.provider, &self.id, &self.owner, work)
+    }
+
+    fn validate_fields(
+        provider: &ProviderRef,
+        id: &str,
+        owner: &VolumeOwner,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         provider.validate(work)?;
         validate_label(id, work)?;
         match owner {
@@ -266,6 +346,9 @@ impl VolumeRef {
                 }
                 VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
             },
+            // The copied fields equal these, so their sealed identity does.
+            identity: self.identity,
+            identity_bytes: self.identity_bytes,
         })
     }
 
@@ -869,7 +952,9 @@ crate::core::ownership::owned_struct!(VolumeRef {
     provider,
     id,
     class,
-    owner
+    owner,
+    identity,
+    identity_bytes
 });
 
 /// Name of the model-visible private volume binding.

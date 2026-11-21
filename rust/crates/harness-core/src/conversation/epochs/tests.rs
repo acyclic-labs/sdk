@@ -243,7 +243,10 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                 ),
                 2 | 3 => {
                     let (result, outcome) = if operation == 2 {
-                        (Completion::Ready, SummaryOutcome::Ready(body.clone()))
+                        (
+                            Completion::Ready,
+                            SummaryOutcome::Ready(Box::new(body.clone())),
+                        )
                     } else {
                         (Completion::Failed, SummaryOutcome::Failed)
                     };
@@ -561,7 +564,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
 
     let body = next.summary.clone().unwrap();
     reopened
-        .complete(summary, SummaryOutcome::Ready(body.clone()))
+        .complete(summary, SummaryOutcome::Ready(Box::new(body.clone())))
         .unwrap();
     let other_body = SummaryRef::new(
         super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "other-summary.txt")
@@ -581,11 +584,11 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     )
     .unwrap();
     assert!(matches!(
-        reopened.complete(summary, SummaryOutcome::Ready(late.clone())),
+        reopened.complete(summary, SummaryOutcome::Ready(Box::new(late.clone()))),
         Err(SnapshotError::Transition(Refusal::Contradiction))
     ));
     assert!(matches!(
-        reopened.complete(summary, SummaryOutcome::Ready(other_body.clone())),
+        reopened.complete(summary, SummaryOutcome::Ready(Box::new(other_body.clone()))),
         Err(SnapshotError::Transition(Refusal::Contradiction))
     ));
     assert!(matches!(
@@ -600,7 +603,10 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     ));
     let mut reopened =
         Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12).unwrap();
-    assert_eq!(reopened.outcome(), Some(&SummaryOutcome::Ready(body)));
+    assert_eq!(
+        reopened.outcome(),
+        Some(&SummaryOutcome::Ready(Box::new(body)))
+    );
     let ready = reopened.clone();
     let mut wrong = next.clone();
     wrong.key.through = 11;

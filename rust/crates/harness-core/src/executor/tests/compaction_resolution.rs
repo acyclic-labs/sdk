@@ -117,20 +117,18 @@ async fn compaction_policy_matrix_resolves_through_the_task_writer() -> Result<(
 #[tokio::test]
 async fn native_resolution_failures_reject_before_journal_or_model_work() -> Result<()> {
     let context = admitted(true).await?;
-    for fault in 0..5 {
+    // Writer resolution reads sealed volume identities and allocates nothing,
+    // so allocation-count and peak-allocation faults no longer reach it.
+    for fault in [0, 2, 3] {
         for policy in [None, Some(CompactionPolicy::default())] {
             let operation = OperationId::new();
             let executor = executor(&context, operation, policy)?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut budget = acyclic_fs_work::performance::work_budget(1 << 20, 1 << 20);
             match fault {
-                0 => budget.bytes_hashed = 0,
-                1 => budget.allocation_operations = 1, // the original ledger only
+                // Sealed volume identities hash nothing here; label copies do.
+                0 => budget.bytes_copied = 0,
                 2 => budget.items_examined = 0,
-                4 => {
-                    budget.peak_allocation_bytes =
-                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
-                }
                 _ => {}
             }
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
@@ -171,7 +169,7 @@ async fn native_resolution_failures_reject_before_journal_or_model_work() -> Res
                             cause: acyclic_fs::NativeTreeMaterializationError::Work(_),
                             ..
                         }),
-                        0..=2 | 4,
+                        0 | 2,
                     ) => true,
                     _ => false,
                 },
@@ -351,10 +349,10 @@ async fn compaction_resolves_once_with_original_work() -> Result<()> {
                         );
                     }
                 });
-                assert!(
-                    repeated.count_total > 0 && work.receipt() != resolved,
-                    "{case}: repeats went undetected ({repeated:?})"
-                );
+                // Sealed volume identities make the repeats allocation-free;
+                // the original-work detector still sees each one.
+                assert_eq!(repeated.count_total, 0, "{case}: {repeated:?}");
+                assert_ne!(work.receipt(), resolved, "{case}: repeats went undetected");
             }
         }
     }

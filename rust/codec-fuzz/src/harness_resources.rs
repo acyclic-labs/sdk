@@ -418,7 +418,7 @@ fn snapshot_completions(original: &Value, body: &e::SummaryRef) {
     for prior in [
         None,
         Some(e::SummaryOutcome::Failed),
-        Some(e::SummaryOutcome::Ready(body.clone())),
+        Some(e::SummaryOutcome::Ready(Box::new(body.clone()))),
     ] {
         let mut wire = original.clone();
         wire["snapshot"]["pending"]["completion"] = serde_json::to_value(&prior).unwrap();
@@ -453,7 +453,7 @@ fn snapshot_completions(original: &Value, body: &e::SummaryRef) {
         foreign[0] ^= 1;
         for desired in [
             e::SummaryOutcome::Failed,
-            e::SummaryOutcome::Ready(body.clone()),
+            e::SummaryOutcome::Ready(Box::new(body.clone())),
         ] {
             let completion = match &desired {
                 e::SummaryOutcome::Failed => Completion::Failed,
@@ -596,10 +596,13 @@ fn snapshot_swaps(snapshot: &e::Snapshot) -> Option<e::Snapshot> {
     }
     .into();
     let other: e::SummaryRef = serde_json::from_value(changed).unwrap();
-    assert_ne!(other, *body);
+    assert_ne!(other, **body);
     assert!(
         matches!(
-            replay.complete(pending.summary, e::SummaryOutcome::Ready(other.clone())),
+            replay.complete(
+                pending.summary,
+                e::SummaryOutcome::Ready(Box::new(other.clone()))
+            ),
             Err(e::SnapshotError::Transition(
                 e::protocol::Refusal::Contradiction
             ))
@@ -613,7 +616,7 @@ fn snapshot_swaps(snapshot: &e::Snapshot) -> Option<e::Snapshot> {
 
     let mut next = snapshot.epoch().clone();
     next.key.through = pending.through;
-    next.summary = Some(body.clone());
+    next.summary = Some((**body).clone());
     let Some(generation) = snapshot.state().generation().checked_add(1) else {
         let mut state = snapshot.state();
         assert_eq!(
@@ -645,7 +648,7 @@ fn snapshot_swaps(snapshot: &e::Snapshot) -> Option<e::Snapshot> {
         "different swap result reference admitted",
     );
     assert_eq!(replay, *snapshot, "refused swap changed snapshot custody");
-    next.summary = Some(body.clone());
+    next.summary = Some((**body).clone());
     assert!(
         matches!(
             replay.swap(snapshot.state().generation() ^ 1, next.clone(), u64::MAX),
@@ -1089,7 +1092,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn Error>> {
     let mut failed = prepared.clone();
     failed.complete(id, e::SummaryOutcome::Failed)?;
     seeds.push(("epoch-failed", encoded(&failed)?));
-    prepared.complete(id, e::SummaryOutcome::Ready(summary.clone()))?;
+    prepared.complete(id, e::SummaryOutcome::Ready(Box::new(summary.clone())))?;
     seeds.push(("epoch-ready", encoded(&prepared)?));
     let mut next = prepared.epoch().clone();
     next.key.through = 10;

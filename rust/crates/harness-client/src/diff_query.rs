@@ -66,8 +66,8 @@ pub struct DiffSummary {
 /// One credited step. Empty filtered work is distinct from query completion.
 #[derive(Debug)]
 pub enum DiffQueryEvent {
-    /// Initial immutable selection.
-    Snapshot(DiffSnapshot),
+    /// Initial immutable selection, boxed so page and progress steps stay small.
+    Snapshot(Box<DiffSnapshot>),
     /// Visible fragments of one file; their cursors continue that file only.
     Page(Vec<DiffFilePage>),
     /// Counts through the current frontier, without patch bytes.
@@ -162,7 +162,7 @@ impl DiffQuery {
                     .validate(&mut None)
                     .map_err(|_| CommandError::Invalid)?;
                 self.snapshot = true;
-                DiffQueryEvent::Snapshot(snapshot)
+                DiffQueryEvent::Snapshot(Box::new(snapshot))
             }
             2 if self.snapshot && self.projection == DiffProjection::Patch => {
                 let command = AgentCommand::Diff {
