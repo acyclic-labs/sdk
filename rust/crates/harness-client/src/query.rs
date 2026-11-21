@@ -36,7 +36,8 @@ impl QueryProjection {
         if bytes.len() < 3 || bytes.len() > acyclic_stream::MAX_COMMAND_BYTES {
             return Err(CommandError::Capacity);
         }
-        let projection = match &bytes[..2] {
+        let (header, invocation) = bytes.split_first_chunk().ok_or(CommandError::Capacity)?;
+        let projection = match header {
             [1, 0] => Self::Diff(DiffProjection::Patch),
             [1, 1] => Self::Diff(DiffProjection::Summary),
             [1, 2] => Self::Input(InputSelection::Latest),
@@ -44,6 +45,6 @@ impl QueryProjection {
             [1, 4] => Self::Input(InputSelection::History),
             _ => return Err(CommandError::Invalid),
         };
-        Ok((projection, &bytes[2..]))
+        Ok((projection, invocation))
     }
 }

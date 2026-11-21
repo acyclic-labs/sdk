@@ -71,7 +71,7 @@ const MAX_RECENT: usize = 16;
 /// Rows in one frame, at most.
 const MAX_ROWS: usize = 512;
 /// History rows in one window, at most.
-const MAX_HISTORY_ROWS: usize = 1024;
+const MAX_HISTORY_ROWS: u32 = 1024;
 
 /// A tree position: a listed child, or a listing page not loaded yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -865,11 +865,11 @@ pub enum Row {
         /// Immutable creation role, absent until its bounded read completes.
         role: Option<String>,
         /// Latest committed status, `None` until read.
-        status: Option<StatusRecord>,
+        status: Option<Box<StatusRecord>>,
         /// Conversation tail, from the listing projection or a later read.
         conversation: Option<u64>,
         /// The latest committed conversation record, projected by the listing.
-        latest: Option<RecordBytes>,
+        latest: Option<Box<RecordBytes>>,
         /// Whether children are shown.
         expanded: bool,
     },
@@ -892,7 +892,7 @@ pub struct HistoryRow {
 struct History {
     stream: StreamPath,
     from: u64,
-    rows: usize,
+    rows: u32,
     end: bool,
 }
 
@@ -1259,11 +1259,13 @@ impl Explorer {
         let Ok(stream) = agent.conversation() else {
             return;
         };
-        self.push_recent(&agent);
+        self.push_recent(agent);
         self.history = Some(History {
             stream,
             from: 0,
-            rows: rows.clamp(1, MAX_HISTORY_ROWS),
+            rows: u32::try_from(rows)
+                .unwrap_or(MAX_HISTORY_ROWS)
+                .clamp(1, MAX_HISTORY_ROWS),
             end: true,
         });
     }
@@ -1288,9 +1290,9 @@ impl Explorer {
         }
     }
 
-    fn push_recent(&mut self, agent: &AgentPath) {
-        self.recent.retain(|recent| recent != agent);
-        self.recent.push_front(agent.clone());
+    fn push_recent(&mut self, agent: AgentPath) {
+        self.recent.retain(|recent| recent != &agent);
+        self.recent.push_front(agent);
         self.recent.truncate(MAX_RECENT);
     }
 
@@ -1599,10 +1601,10 @@ impl Explorer {
                     .and_then(|(s, tail)| cache.record(s, tail.checked_sub(1)?).cloned());
                 Row::Agent {
                     role: crate::ui::agent_role(&self.reader, &path),
-                    latest,
+                    latest: latest.map(Box::new),
                     expanded: self.descend || self.expanded.contains_key(&path),
                     path,
-                    status,
+                    status: status.map(Box::new),
                     conversation,
                 }
             }
@@ -1621,7 +1623,7 @@ impl Explorer {
                 .and_then(|c| agent_of(&c))
             && let Ok(status) = agent.status()
         {
-            let mut selected = Some(agent.clone());
+            let mut selected = Some(agent);
             while let Some(current) = selected {
                 if let Ok(want) = crate::ui::role_want(&self.reader, &current) {
                     out.push((want, priority));
@@ -1674,9 +1676,7 @@ impl Explorer {
         }
     }
 
-    /// Lay out one frame and hand the reader its needs. Returns the rows.
-    pub fn frame(&mut self, now: u64) -> &[(Pos, Row)] {
-        self.reader.begin_frame(now);
+    fn normalize_anchor(&mut self) {
         // A loaded gap becomes its first row.
         if let Pos::Gap { parent, page } = &self.anchor
             && let Some(listing) =
@@ -1707,6 +1707,12 @@ impl Explorer {
                 page: *page,
             };
         }
+    }
+
+    /// Lay out one frame and hand the reader its needs. Returns the rows.
+    pub fn frame(&mut self, now: u64) -> &[(Pos, Row)] {
+        self.reader.begin_frame(now);
+        self.normalize_anchor();
         let mut wants = Vec::new();
         let mut visible = Vec::with_capacity(self.height);
         let mut pos = Some(self.anchor.clone());
@@ -1742,9 +1748,10 @@ impl Explorer {
         let ahead = if self.overscan == 0 {
             0
         } else {
-            (self.overscan as u64)
-                .saturating_add(self.velocity.unsigned_abs().saturating_mul(rtt_rows))
-                .min(MAX_LOOKAHEAD as u64) as usize
+            let motion = self.velocity.unsigned_abs().saturating_mul(rtt_rows);
+            self.overscan
+                .saturating_add(usize::try_from(motion).unwrap_or(MAX_LOOKAHEAD))
+                .min(MAX_LOOKAHEAD)
         };
         let (forward, backward) = if self.velocity < 0 {
             (self.overscan, ahead)
@@ -1842,7 +1849,7 @@ impl Explorer {
             }
         }
         for agent in &active {
-            self.push_recent(agent);
+            self.push_recent(agent.clone());
         }
         self.seen = seen;
         self.reader.set_follows(follows);
@@ -1930,7 +1937,7 @@ impl Explorer {
     }
 
     fn history_wants(&self, history: &History, wants: &mut Vec<(Want, Priority)>) {
-        let rows = history.rows as u32;
+        let rows = history.rows;
         if history.end {
             wants.push((
                 Want::Last {
@@ -1968,7 +1975,7 @@ impl Explorer {
     fn history_start(&self, history: &History) -> Option<u64> {
         if history.end {
             let tail = self.reader.cache().tail(&history.stream)?;
-            Some(tail.saturating_sub(history.rows as u64))
+            Some(tail.saturating_sub(u64::from(history.rows)))
         } else {
             Some(history.from)
         }
@@ -1983,7 +1990,7 @@ impl Explorer {
         let Some(start) = self.history_start(history) else {
             return Vec::new();
         };
-        let end = start.saturating_add(history.rows as u64);
+        let end = start.saturating_add(u64::from(history.rows));
         let end = self
             .reader
             .cache()

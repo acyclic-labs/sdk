@@ -186,7 +186,8 @@ impl AttachedSession {
         conversation: u64,
         notification: CancelNotification,
     ) -> Result<PreparedAgentInvocation<'static>, InputError<std::convert::Infallible>> {
-        if notification.session_id != self.agent().as_str() {
+        let CancelNotification { session_id, .. } = notification;
+        if session_id != self.agent().as_str() {
             return Err(InputError::SessionMismatch);
         }
         Ok(self

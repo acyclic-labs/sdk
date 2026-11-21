@@ -38,10 +38,10 @@ impl Reply {
     ) -> Result<AgentCommand> {
         let mut ids = BTreeSet::new();
         for block in blocks {
-            if let Some(id) = block.attributes.get("id") {
-                if !ids.insert(id) {
-                    return Err(Error::Invalid("duplicate input id"));
-                }
+            if let Some(id) = block.attributes.get("id")
+                && !ids.insert(id)
+            {
+                return Err(Error::Invalid("duplicate input id"));
             }
         }
         if self.answers.keys().any(|id| !ids.contains(id)) {

@@ -572,14 +572,8 @@ fn validate_reply(
             AgentCommand::SelectSession {
                 agent: requested, ..
             },
-        ) => {
-            return if agent == requested {
-                Ok(())
-            } else {
-                Err(CommandError::Invalid)
-            };
-        }
-        (
+        )
+        | (
             AgentReply::Root { agent },
             AgentCommand::NameSession {
                 agent: requested, ..
@@ -592,10 +586,10 @@ fn validate_reply(
             };
         }
         (AgentReply::Bound { observation, .. }, AgentCommand::Bind { .. }) => {
-            if let Some(credential) = observation {
-                if base64_length(credential)? == 0 {
-                    return Err(CommandError::Invalid);
-                }
+            if let Some(credential) = observation
+                && base64_length(credential)? == 0
+            {
+                return Err(CommandError::Invalid);
             }
             return Ok(());
         }
@@ -1625,7 +1619,7 @@ mod tests {
                 &Ok(AgentReply::Reply {
                     reply: Reply::Answered {
                         sequence: 2,
-                        entry,
+                        entry: Box::new(entry),
                         origin,
                         steering: None,
                     },
@@ -1652,7 +1646,7 @@ mod tests {
         let steered_goal = AgentReply::Reply {
             reply: Reply::Answered {
                 sequence: 2,
-                entry: terminal.clone(),
+                entry: Box::new(terminal.clone()),
                 origin: Some(Box::new(steered_origin)),
                 steering: Some(acyclic_harness_core::agent::SteeringReply {
                     inbox: 2,
@@ -1791,7 +1785,7 @@ mod tests {
         assert!(
             matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Reply {
             reply: Reply::Answered { entry, steering: Some(source), origin: None, .. }
-        }) if entry == settled && source.inbox == 2 && source.id == *id)
+        }) if *entry == settled && source.inbox == 2 && source.id == *id)
         );
         let envelope = Envelope::decode(bytes.as_slice())?;
         let Some(envelope::Value::Reply(body)) = &envelope.value else {

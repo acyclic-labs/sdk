@@ -217,42 +217,48 @@ impl UsageQuery {
                 let provider = providers
                     .entry(row.provider.clone())
                     .or_insert_with(|| self.prices.totals());
+                let state = pending.get_mut(purpose).ok_or_else(missing_admission)?;
                 if row.completed {
-                    let previous = match pending[purpose] {
-                        Pending::Existing => self.pending[purpose]
-                            .as_ref()
+                    let previous = match *state {
+                        Pending::Existing => self
+                            .pending
+                            .get(purpose)
+                            .and_then(Option::as_ref)
                             .ok_or_else(missing_admission)?,
-                        Pending::Row(previous) => &page.items[previous]
-                            .estimate(self.prices.price(&page.items[previous]))
-                            .map_err(failed)?,
+                        Pending::Row(previous) => {
+                            let row = page.items.get(previous).ok_or_else(missing_admission)?;
+                            &row.estimate(self.prices.price(row)).map_err(failed)?
+                        }
                         Pending::None => return Err(missing_admission().into()),
                     };
                     totals.replace(previous, &projection).map_err(failed)?;
                     provider.replace(previous, &projection).map_err(failed)?;
                     model_time_ns.push(row.latency_ns).map_err(failed)?;
-                    pending[purpose] = Pending::None;
+                    *state = Pending::None;
                 } else {
                     // A stopped producer has no terminal usage contribution.
                     // Its unknown counters already remain in the aggregate;
                     // the next admission takes this role's live slot.
                     totals.push(&projection).map_err(failed)?;
                     provider.push(&projection).map_err(failed)?;
-                    pending[purpose] = Pending::Row(index);
+                    *state = Pending::Row(index);
                 }
             }
             if !finished {
                 let mut admitted = [None, None];
                 for (index, row) in page.items.into_iter().enumerate() {
                     let purpose = purpose_slot(row.purpose)?;
-                    if matches!(pending[purpose], Pending::Row(selected) if selected == index) {
-                        admitted[purpose] = Some(owned(row, &self.prices)?);
+                    if matches!(pending.get(purpose), Some(Pending::Row(selected)) if *selected == index)
+                    {
+                        *admitted.get_mut(purpose).ok_or_else(missing_admission)? =
+                            Some(owned(row, &self.prices)?);
                     }
                 }
-                for (purpose, state) in pending.into_iter().enumerate() {
+                for ((slot, state), next) in self.pending.iter_mut().zip(pending).zip(admitted) {
                     match state {
                         Pending::Existing => {}
-                        Pending::None => self.pending[purpose] = None,
-                        Pending::Row(_) => self.pending[purpose] = admitted[purpose].take(),
+                        Pending::None => *slot = None,
+                        Pending::Row(_) => *slot = next,
                     }
                 }
             }

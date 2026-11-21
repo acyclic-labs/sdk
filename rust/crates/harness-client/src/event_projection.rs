@@ -306,8 +306,7 @@ impl EventProjection {
         agent: &'a AgentPath,
         input: u64,
         record: &'a ExecutionRecord,
-        field: ExecutionPayloadField,
-        offset: u64,
+        (field, offset): (ExecutionPayloadField, u64),
         bytes: &[u8],
         after: ExecutionPosition,
     ) -> Result<ExecutionPayloadEvent<'a>, &'static str> {

@@ -73,9 +73,9 @@ impl InputQuery {
         let event = match kind {
             4 if body.is_empty() => InputPreviewStep::Progress,
             6 if self.selection == InputSelection::Latest && body.len() >= 8 => {
-                let bytes =
-                    u64::from_le_bytes(body[..8].try_into().map_err(|_| CommandError::Invalid)?);
-                let text = std::str::from_utf8(&body[8..]).map_err(|_| CommandError::Invalid)?;
+                let (length, text) = body.split_first_chunk().ok_or(CommandError::Invalid)?;
+                let bytes = u64::from_le_bytes(*length);
+                let text = std::str::from_utf8(text).map_err(|_| CommandError::Invalid)?;
                 if text.len() as u64 > bytes {
                     return Err(CommandError::Invalid.into());
                 }
@@ -90,13 +90,13 @@ impl InputQuery {
                 InputSelection::Pending | InputSelection::History
             ) && body.len() >= 24 =>
             {
-                let inbox =
-                    u64::from_le_bytes(body[..8].try_into().map_err(|_| CommandError::Invalid)?);
-                let offset =
-                    u64::from_le_bytes(body[8..16].try_into().map_err(|_| CommandError::Invalid)?);
-                let bytes =
-                    u64::from_le_bytes(body[16..24].try_into().map_err(|_| CommandError::Invalid)?);
-                let text = std::str::from_utf8(&body[24..]).map_err(|_| CommandError::Invalid)?;
+                let (inbox, tail) = body.split_first_chunk().ok_or(CommandError::Invalid)?;
+                let (offset, tail) = tail.split_first_chunk().ok_or(CommandError::Invalid)?;
+                let (length, text) = tail.split_first_chunk().ok_or(CommandError::Invalid)?;
+                let inbox = u64::from_le_bytes(*inbox);
+                let offset = u64::from_le_bytes(*offset);
+                let bytes = u64::from_le_bytes(*length);
+                let text = std::str::from_utf8(text).map_err(|_| CommandError::Invalid)?;
                 if offset > bytes || text.len() as u64 > bytes - offset {
                     return Err(CommandError::Invalid.into());
                 }

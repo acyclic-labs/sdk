@@ -91,7 +91,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(
                 if conversation
                     || agent != observed.agent
                     || sequence != observed.conversation_from
-                    || entry != observed.entry
+                    || *entry != observed.entry
                 {
                     return Err(failure(
                         "tool_conversation",

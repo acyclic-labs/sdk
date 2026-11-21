@@ -165,13 +165,9 @@ impl WireSession {
     /// # Errors
     /// Excess demand leaves both existing demand and follows unchanged.
     pub fn set_view(&mut self, demand: ViewDemand) -> Result<(), WireSessionError> {
-        let demand = ViewDemand::new(
-            self.policy,
-            demand.full().cloned(),
-            std::iter::empty(),
-            demand.expanded().cloned(),
-        )
-        .map_err(WireSessionError::Demand)?;
+        demand
+            .validate_capacity(self.policy)
+            .map_err(WireSessionError::Demand)?;
         if self
             .policy
             .selected_capacity()
@@ -245,13 +241,13 @@ impl WireSession {
                 return Err(WireSessionError::AlreadyOpen);
             }
         }
-        self.replace_selected(subscriptions, Some(requested))
+        self.replace_selected(subscriptions, Some(&requested))
     }
 
     fn replace_selected(
         &mut self,
         subscriptions: impl IntoIterator<Item = (StreamPath, wire::SessionSubscription)>,
-        resources: Option<BTreeMap<String, wire::SessionSubscription>>,
+        resources: Option<&BTreeMap<String, wire::SessionSubscription>>,
     ) -> Result<(), WireSessionError> {
         let mut requested = BTreeMap::new();
         for (index, (path, subscription)) in subscriptions.into_iter().enumerate() {
@@ -272,9 +268,7 @@ impl WireSession {
                 return Err(WireSessionError::AlreadyOpen);
             }
         }
-        let resource_count = resources
-            .as_ref()
-            .map_or(self.resource_views.len(), BTreeMap::len);
+        let resource_count = resources.map_or(self.resource_views.len(), BTreeMap::len);
         if self
             .policy
             .selected_capacity()
@@ -289,7 +283,7 @@ impl WireSession {
             self.demand.expanded().cloned(),
         )
         .map_err(WireSessionError::Demand)?;
-        let opening_resources = resources.as_ref().map_or(0, |requested| {
+        let opening_resources = resources.map_or(0, |requested| {
             requested
                 .keys()
                 .filter(|key| !self.resource_views.contains_key(*key))
@@ -310,7 +304,7 @@ impl WireSession {
         let mut staged = Vec::with_capacity(opening);
         let mut revision = self.revision + 1;
         let mut staged_resources = Vec::with_capacity(opening_resources);
-        if let Some(requested) = &resources {
+        if let Some(requested) = resources {
             for (resource, subscription) in requested {
                 if self.resource_views.contains_key(resource) {
                     continue;
@@ -360,7 +354,7 @@ impl WireSession {
             keep
         });
         self.views.retain(|path, _| demand.contains_full(path));
-        if let Some(requested) = &resources {
+        if let Some(requested) = resources {
             self.resources.retain(|key, id| {
                 let keep = requested.contains_key(key);
                 if !keep {
@@ -626,6 +620,7 @@ impl WireSession {
             let Delivery::Frame(Some(frame)) = delivery else {
                 return Ok(None);
             };
+            let frame = *frame;
             let revision = self
                 .revision
                 .checked_add(1)

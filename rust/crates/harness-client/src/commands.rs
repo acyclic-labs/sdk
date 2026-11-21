@@ -329,7 +329,8 @@ impl CommandCatalog {
     ) -> Result<String> {
         let body = if has_frontmatter(body) {
             let (_, _, start) = crate::context::frontmatter_end(body)?;
-            &body[start..]
+            body.get(start..)
+                .ok_or_else(|| Error::Invalid("invalid command body offset".into()))?
         } else {
             body
         };

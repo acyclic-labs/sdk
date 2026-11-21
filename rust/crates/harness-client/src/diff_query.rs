@@ -180,10 +180,7 @@ impl DiffQuery {
                 let AgentReply::Diff { items } = crate::decode_agent_reply(body, &command)?? else {
                     return Err(CommandError::Invalid.into());
                 };
-                if items.is_empty() {
-                    return Err(CommandError::Invalid.into());
-                }
-                let first = &items[0];
+                let first = items.first().ok_or(CommandError::Invalid)?;
                 if items
                     .iter()
                     .any(|item| item.path != first.path || item.publication != first.publication)

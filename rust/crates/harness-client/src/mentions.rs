@@ -60,34 +60,42 @@ pub async fn resolve_file_mentions_at(
 #[doc(hidden)]
 pub fn file_mention_paths(input: &str) -> Result<Vec<(usize, usize, &str)>> {
     let mut result = Vec::new();
+    let invalid_offset = || Error::Invalid("invalid mention offset".into());
     let mut offset = 0;
+    let mut previous_whitespace = true;
     while offset < input.len() {
-        let tail = &input[offset..];
-        let character = tail
-            .chars()
-            .next()
-            .ok_or_else(|| Error::Invalid("invalid mention offset".into()))?;
-        if character != '@' || (offset != 0 && !input[..offset].ends_with(char::is_whitespace)) {
+        let tail = input.get(offset..).ok_or_else(invalid_offset)?;
+        let character = tail.chars().next().ok_or_else(invalid_offset)?;
+        let Some(tail) = tail.strip_prefix('@').filter(|_| previous_whitespace) else {
+            previous_whitespace = character.is_whitespace();
             offset += character.len_utf8();
             continue;
-        }
+        };
         let start = offset;
-        let tail = &tail[1..];
         let (path, end) = if let Some(quoted) = tail.strip_prefix('"') {
-            let close = quoted
-                .find('"')
+            let (path, _) = quoted
+                .split_once('"')
                 .ok_or_else(|| Error::Invalid("unclosed file mention quote".into()))?;
-            (&quoted[..close], start + 3 + close)
+            (path, start + 3 + path.len())
         } else {
             let length = tail.find(char::is_whitespace).unwrap_or(tail.len());
-            (&tail[..length], start + 1 + length)
+            (
+                tail.get(..length).ok_or_else(invalid_offset)?,
+                start + 1 + length,
+            )
         };
         if path.is_empty() {
             return Err(Error::Invalid("empty file mention".into()));
         }
-        if end < input.len() && !input[end..].starts_with(char::is_whitespace) {
+        if end < input.len()
+            && !input
+                .get(end..)
+                .ok_or_else(invalid_offset)?
+                .starts_with(char::is_whitespace)
+        {
             return Err(Error::Invalid("file mention must end at whitespace".into()));
         }
+        previous_whitespace = false;
         crate::conversation::validate_content_path(path, &mut None)?;
         result.push((start, end, path));
         offset = end;

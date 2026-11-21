@@ -213,7 +213,7 @@ impl WasmExplorer {
                         conversation: *conversation,
                         expanded: *expanded,
                     },
-                    Some(latest.as_deref()),
+                    Some(latest.as_deref().map(AsRef::as_ref)),
                 ),
                 Row::Loading { depth } => (RowView::Loading { depth: *depth }, None),
             };

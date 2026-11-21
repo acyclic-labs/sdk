@@ -215,8 +215,7 @@ async fn journal(
                                 conversation.path(),
                                 query.input,
                                 record,
-                                field,
-                                offset,
+                                (field, offset),
                                 &bytes,
                                 complete,
                             )

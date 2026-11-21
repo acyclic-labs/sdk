@@ -206,7 +206,7 @@ async fn verify_observation(
                 if conversation
                     || agent != fixture.agent
                     || sequence != fixture.conversation_from
-                    || entry != fixture.entry
+                    || *entry != fixture.entry
                 {
                     return Err(failure(
                         "exact_conversation",

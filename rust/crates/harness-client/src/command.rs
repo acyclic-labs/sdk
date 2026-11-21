@@ -711,6 +711,10 @@ impl AgentCommand {
                 publication: Some(_),
                 after: Some(_),
                 ..
+            }
+            | Self::Read {
+                target: ReadTarget::Execution { sequence: 0, .. },
+                ..
             } => Err(CommandError::Invalid),
             Self::SetPeerMembership { agent, .. } if agent.parent().is_some() => {
                 Err(CommandError::Invalid)
@@ -777,10 +781,6 @@ impl AgentCommand {
             Self::Spawn { role, .. } | Self::Fork { role, .. } if role.is_empty() => {
                 Err(CommandError::Invalid)
             }
-            Self::Read {
-                target: ReadTarget::Execution { sequence: 0, .. },
-                ..
-            } => Err(CommandError::Invalid),
             Self::Prompt { body, .. }
             | Self::Spawn { brief: body, .. }
             | Self::Fork { brief: body, .. }
@@ -804,10 +804,10 @@ impl AgentCommand {
                     .map_err(|_| CommandError::Invalid)
             }
             Self::ChildWakes { page, .. } => {
-                if let Some(after) = page.cursor() {
-                    if !after.parse::<u64>().is_ok_and(|n| n.to_string() == after) {
-                        return Err(CommandError::Invalid);
-                    }
+                if let Some(after) = page.cursor()
+                    && !after.parse::<u64>().is_ok_and(|n| n.to_string() == after)
+                {
+                    return Err(CommandError::Invalid);
                 }
                 Ok(())
             }

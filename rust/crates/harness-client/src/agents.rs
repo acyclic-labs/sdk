@@ -57,8 +57,7 @@ impl AgentClientError {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Session(cause) => cause.code(),
-            Self::Subscription { cause, .. } => cause.code(),
+            Self::Session(cause) | Self::Subscription { cause, .. } => cause.code(),
             Self::Record(cause) => cause.code(),
             Self::Closed(_) => "agent_stream_closed",
             Self::ResourceClosed(_) => "agent_resource_closed",
@@ -81,7 +80,7 @@ pub enum AgentEvent {
         /// Sequence in the selected conversation stream.
         sequence: u64,
         /// Bounded canonical record; output bytes remain in the filesystem.
-        entry: ConversationEntry,
+        entry: Box<ConversationEntry>,
     },
     /// A lifecycle transition from the selected agent's actual status path.
     Status {
@@ -363,7 +362,7 @@ impl AgentClient {
                     .map(|entry| AgentEvent::Conversation {
                         agent: agent.clone(),
                         sequence: record.sequence,
-                        entry,
+                        entry: Box::new(entry),
                     })
                     .map_err(AgentClientError::Record)
             })
@@ -528,7 +527,7 @@ impl AgentClient {
                 ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
                     agent: agent.clone(),
                     sequence: record.sequence,
-                    entry,
+                    entry: Box::new(entry),
                 })
             }
             Some(wire::session_frame::Body::Closed(_)) => {

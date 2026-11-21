@@ -982,14 +982,20 @@ impl Reader {
                 OpKey::Children(..) if self.hierarchy.is_none() && self.inflight.has_children() => {
                     continue;
                 }
-                OpKey::Children(parent, limit, index, tail) => Op::Children {
-                    id,
-                    parent: parent.clone(),
-                    index: *index as u32,
-                    limit: *limit as u32,
-                    tail: tail.clone(),
-                    version: (*index != 0).then_some(self.hierarchy).flatten(),
-                },
+                OpKey::Children(parent, limit, index, tail) => {
+                    let (Ok(index), Ok(limit)) = (u32::try_from(*index), u32::try_from(*limit))
+                    else {
+                        continue;
+                    };
+                    Op::Children {
+                        id,
+                        parent: parent.clone(),
+                        index,
+                        limit,
+                        tail: tail.clone(),
+                        version: (index != 0).then_some(self.hierarchy).flatten(),
+                    }
+                }
             };
             self.inflight.insert(
                 id,
@@ -1035,8 +1041,9 @@ impl Reader {
         self.rtt_ms = if self.rtt_ms == 0 {
             rtt
         } else {
-            // The weighted mean fits u64 even when its numerator does not.
-            ((u128::from(self.rtt_ms) * 7 + u128::from(rtt)) / 8) as u64
+            // Divide the whole and remainder terms separately so the weighted mean
+            // stays in range and rounds down once.
+            (self.rtt_ms / 8) * 7 + rtt / 8 + ((self.rtt_ms % 8) * 7 + rtt % 8) / 8
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
@@ -1112,7 +1119,10 @@ impl Reader {
                     version,
                 },
             ) => {
-                let valid = children.len() <= *limit as usize
+                let (Ok(index), Ok(limit)) = (u32::try_from(*index), u32::try_from(*limit)) else {
+                    return;
+                };
+                let valid = children.len() as u64 <= u64::from(limit)
                     && children.iter().all(|child| {
                         child
                             .tail
@@ -1137,8 +1147,7 @@ impl Reader {
                     self.hierarchy = Some(version);
                     self.listed(
                         parent,
-                        *index as u32,
-                        *limit as u32,
+                        (index, limit),
                         (std::mem::take(&mut flight.paging), tail),
                         children,
                         next,
@@ -1168,8 +1177,7 @@ impl Reader {
     fn listed(
         &mut self,
         parent: &StreamPath,
-        index: u32,
-        limit: u32,
+        (index, limit): (u32, u32),
         (paging, tail): (Paging, &Option<StreamPath>),
         children: Vec<ListedChild>,
         next: Option<StreamPath>,

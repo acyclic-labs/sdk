@@ -268,7 +268,10 @@ impl Observer {
             } => {
                 self.next_turn = sequence + 1;
                 self.reset_output()?;
-                Some(Event::Turn { sequence, entry })
+                Some(Event::Turn {
+                    sequence,
+                    entry: *entry,
+                })
             }
             AgentEvent::Resource { resource, .. }
                 if self.input_resource.as_ref() == Some(&resource) =>

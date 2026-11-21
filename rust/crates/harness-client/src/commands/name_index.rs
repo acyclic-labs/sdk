@@ -23,25 +23,28 @@ impl Default for NameIndex {
 
 impl NameIndex {
     pub(super) fn insert(&mut self, name: &str, canonical: &str) -> Result<(), String> {
+        let invalid_node = || format!("invalid index node for command or alias {name:?}");
         let mut node = 0;
         for byte in name.bytes().map(|byte| byte.to_ascii_lowercase()) {
             step();
-            node = match self.nodes[node].edges.get(&byte) {
-                Some(&next) => next,
-                None => {
-                    let next = self.nodes.len();
+            let next = self.nodes.len();
+            let current = self.nodes.get_mut(node).ok_or_else(invalid_node)?;
+            node = match current.edges.entry(byte) {
+                std::collections::btree_map::Entry::Occupied(edge) => *edge.get(),
+                std::collections::btree_map::Entry::Vacant(edge) => {
+                    edge.insert(next);
                     self.nodes.push(Node::default());
-                    self.nodes[node].edges.insert(byte, next);
                     next
                 }
             };
         }
-        if let Some(owner) = &self.nodes[node].canonical {
+        let current = self.nodes.get_mut(node).ok_or_else(invalid_node)?;
+        if let Some(owner) = &current.canonical {
             return Err(format!(
                 "duplicate command or alias {name:?}: already registered by {owner:?}"
             ));
         }
-        self.nodes[node].canonical = Some(canonical.into());
+        current.canonical = Some(canonical.into());
         Ok(())
     }
 
@@ -49,9 +52,9 @@ impl NameIndex {
         let mut node = 0;
         for byte in name.bytes().map(|byte| byte.to_ascii_lowercase()) {
             step();
-            node = *self.nodes[node].edges.get(&byte)?;
+            node = *self.nodes.get(node)?.edges.get(&byte)?;
         }
-        self.nodes[node].canonical.as_deref()
+        self.nodes.get(node)?.canonical.as_deref()
     }
 }
 

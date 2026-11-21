@@ -54,14 +54,19 @@ impl DiffView {
         let mut end = start;
         let available_rows = rows - usize::from(!continued);
         if available_rows != 0 && start < file.patch.len() {
-            let tail = &file.patch[start..];
+            let tail = file.patch.get(start..).ok_or_else(invalid_cursor)?;
             let mut maximum = patch_bytes.min(tail.len());
             while !tail.is_char_boundary(maximum) {
                 maximum -= 1;
             }
             // Bound the searched slice before looking for a newline: a single
             // enormous line must not make a small visible page scan its tail.
-            for line in tail[..maximum].split_inclusive('\n').take(available_rows) {
+            for line in tail
+                .get(..maximum)
+                .ok_or_else(invalid_cursor)?
+                .split_inclusive('\n')
+                .take(available_rows)
+            {
                 end += line.len();
             }
             if end == start {
@@ -92,7 +97,11 @@ impl DiffView {
             binary: file.binary,
             omitted_bytes: file.omitted_bytes,
             continued,
-            patch: file.patch[start..end].to_owned(),
+            patch: file
+                .patch
+                .get(start..end)
+                .ok_or_else(invalid_cursor)?
+                .to_owned(),
             next,
         }))
     }

@@ -58,8 +58,15 @@ impl Frontier {
     }
 }
 
-fn step(previous: &Frontier, index: usize, degree: usize, n: isize, m: isize) -> (isize, bool) {
-    let diagonal = 2 * index as isize - degree as isize;
+fn signed(value: usize) -> Result<isize> {
+    isize::try_from(value).map_err(|_| work_bound())
+}
+
+fn unsigned(value: isize) -> Result<usize> {
+    usize::try_from(value).map_err(|_| work_bound())
+}
+
+fn step(previous: &Frontier, index: usize, diagonal: isize, n: isize, m: isize) -> (isize, bool) {
     let down = previous.get(index).copied().unwrap_or(-1);
     let right = index
         .checked_sub(1)
@@ -109,16 +116,16 @@ fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut Work) -> Result<Vec<Ed
             values: Vec::with_capacity(end - start + 1),
         };
         for index in start..=end {
+            let diagonal = 2 * signed(index)? - signed(degree)?;
             let mut x = match trace.last() {
-                Some(previous) => step(previous, index, degree, n, m).0,
+                Some(previous) => step(previous, index, diagonal, n, m).0,
                 None => 0,
             };
-            let diagonal = 2 * index as isize - degree as isize;
             let mut y = x - diagonal;
             if x >= 0 {
                 while x < n && y < m {
-                    let before = old.get(x as usize).ok_or_else(work_bound)?;
-                    let after = new.get(y as usize).ok_or_else(work_bound)?;
+                    let before = old.get(unsigned(x)?).ok_or_else(work_bound)?;
+                    let after = new.get(unsigned(y)?).ok_or_else(work_bound)?;
                     charge(work, before.len().min(after.len()) + 1)?;
                     if before != after {
                         break;
@@ -155,35 +162,30 @@ fn traceback<'a>(
     work: &mut Work,
 ) -> Result<Vec<Edit<'a>>> {
     let mut result = Vec::new();
-    let (mut x, mut y) = (old.len() as isize, new.len() as isize);
+    let (n, m) = (signed(old.len())?, signed(new.len())?);
+    let (mut x, mut y) = (n, m);
     for degree in (1..trace.len()).rev() {
         let previous = trace.get(degree - 1).ok_or_else(work_bound)?;
         let diagonal = x - y;
-        let index = usize::try_from((diagonal + degree as isize) / 2).map_err(|_| work_bound())?;
-        let (start, down) = step(
-            previous,
-            index,
-            degree,
-            old.len() as isize,
-            new.len() as isize,
-        );
+        let index = unsigned((diagonal + signed(degree)?) / 2)?;
+        let (start, down) = step(previous, index, diagonal, n, m);
         let px = start - if down { 0 } else { 1 };
         let py = px - (diagonal + if down { 1 } else { -1 });
         while x > px && y > py {
             charge(work, 1)?;
             result.push(Edit::Keep(
-                old.get((x - 1) as usize).ok_or_else(work_bound)?,
+                old.get(unsigned(x - 1)?).ok_or_else(work_bound)?,
             ));
             x -= 1;
             y -= 1;
         }
         charge(work, 1)?;
         if down {
-            result.push(Edit::Add(new.get((y - 1) as usize).ok_or_else(work_bound)?));
+            result.push(Edit::Add(new.get(unsigned(y - 1)?).ok_or_else(work_bound)?));
             y -= 1;
         } else {
             result.push(Edit::Remove(
-                old.get((x - 1) as usize).ok_or_else(work_bound)?,
+                old.get(unsigned(x - 1)?).ok_or_else(work_bound)?,
             ));
             x -= 1;
         }
@@ -191,7 +193,7 @@ fn traceback<'a>(
     while x > 0 && y > 0 {
         charge(work, 1)?;
         result.push(Edit::Keep(
-            old.get((x - 1) as usize).ok_or_else(work_bound)?,
+            old.get(unsigned(x - 1)?).ok_or_else(work_bound)?,
         ));
         x -= 1;
         y -= 1;

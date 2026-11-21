@@ -1667,10 +1667,11 @@ impl<'a> Input<'a> {
                             return Err(SnapshotError);
                         }
                         let bytes = self.take(payload)?;
-                        let units: Vec<u16> = bytes
-                            .chunks_exact(2)
-                            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-                            .collect();
+                        let (units, []) = bytes.as_chunks() else {
+                            return Err(SnapshotError);
+                        };
+                        let units: Vec<u16> =
+                            units.iter().copied().map(u16::from_le_bytes).collect();
                         CredentialRevision::from(units)
                     }
                     _ => return Err(SnapshotError),
@@ -1695,7 +1696,7 @@ impl<'a> Input<'a> {
         Ok(head)
     }
     fn u8(&mut self) -> Result<u8, SnapshotError> {
-        Ok(self.take(1)?[0])
+        self.take(1)?.first().copied().ok_or(SnapshotError)
     }
     fn u64(&mut self) -> Result<u64, SnapshotError> {
         let bytes: [u8; 8] = self.take(8)?.try_into().map_err(|_| SnapshotError)?;

@@ -409,8 +409,7 @@ impl ExecutionExport {
             agent,
             batch.query.input,
             record,
-            field,
-            batch.offset,
+            (field, batch.offset),
             bytes,
             complete,
         )?;

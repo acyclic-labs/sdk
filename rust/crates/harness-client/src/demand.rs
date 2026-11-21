@@ -95,6 +95,19 @@ impl ViewDemand {
         Ok(demand)
     }
 
+    pub(crate) fn validate_capacity(&self, policy: DemandPolicy) -> Result<(), DemandError> {
+        if policy.selected.is_some_and(|limit| self.full.len() > limit) {
+            return Err(DemandError::SelectedCapacity);
+        }
+        if policy
+            .expanded
+            .is_some_and(|limit| self.expanded.len() > limit)
+        {
+            return Err(DemandError::ExpandedCapacity);
+        }
+        Ok(())
+    }
+
     /// Borrow full-follow demand without enumerating undisplayed agents.
     pub fn full(&self) -> impl Iterator<Item = &StreamPath> {
         self.full.iter()

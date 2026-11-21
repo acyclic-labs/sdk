@@ -1091,7 +1091,7 @@ impl Conversation {
                 if sequence >= to {
                     return Ok(entries);
                 }
-                entries.push(entry);
+                entries.push(*entry);
                 if sequence + 1 == to {
                     return Ok(entries);
                 }

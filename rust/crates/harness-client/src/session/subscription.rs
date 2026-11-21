@@ -10,7 +10,7 @@ pub(crate) enum Interest {
 
 pub(super) enum Delivery {
     Opened,
-    Frame(Option<acyclic_stream::session::Frame>),
+    Frame(Option<Box<acyclic_stream::session::Frame>>),
 }
 
 pub(super) type Event = (Interest, Result<Delivery, StreamError>);
@@ -51,7 +51,7 @@ impl Stream for Subscription {
                 },
                 SubscriptionState::Open(follow) => match follow.poll_next_unpin(context) {
                     Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Some(Ok(frame))) => Ok(Delivery::Frame(Some(frame))),
+                    Poll::Ready(Some(Ok(frame))) => Ok(Delivery::Frame(Some(Box::new(frame)))),
                     Poll::Ready(Some(Err(error))) => Err(error),
                     Poll::Ready(None) => Ok(Delivery::Frame(None)),
                 },
