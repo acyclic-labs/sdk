@@ -23,6 +23,8 @@ def _wasm_bindings_impl(ctx):
         inputs = ctx.files.module,
         outputs = [output],
         mnemonic = "WasmBindings",
+        # Match the action's default one-CPU local reservation.
+        env = {"RAYON_NUM_THREADS": "1"},
         toolchain = "@rules_rust_wasm_bindgen//:toolchain_type",
     )
     return [DefaultInfo(files = depset([output]))]
