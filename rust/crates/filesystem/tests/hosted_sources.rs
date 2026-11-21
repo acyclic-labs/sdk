@@ -157,7 +157,7 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(
         tonic::transport::Server::builder()
-            .add_service(wire::filesystem_service_server::FilesystemServiceServer::new(service))
+            .add_service(service.into_server())
             .serve_with_incoming_shutdown(
                 tokio_stream::wrappers::TcpListenerStream::new(listener),
                 async {

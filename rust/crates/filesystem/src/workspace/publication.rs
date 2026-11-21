@@ -335,6 +335,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                     publication_closure: None,
                 })
             });
+        let result = read_core::authorize(self, result, &mut accounting, cancellation).await;
         work.finish(result, &accounting)
     }
 

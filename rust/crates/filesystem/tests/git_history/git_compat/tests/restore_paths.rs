@@ -95,7 +95,7 @@ async fn a_whole_tree_restore_rewrites_a_replaced_shape_either_way()
     let cancel = CancellationToken::new();
     for directory_saved in [true, false] {
         let (workspace, source, current) = replaced(directory_saved).await?;
-        let paths = git_restore_paths(&current, &source, u32::MAX, &cancel).await?;
+        let paths = git_restore_paths(&current, &source, &cancel).await?;
         if directory_saved {
             // Negative control: children before their replaced parent cannot
             // restore the saved directory.

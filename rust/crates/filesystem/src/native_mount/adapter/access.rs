@@ -48,7 +48,7 @@ pub(in crate::native_mount) fn access_time(
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|time| u64::try_from(time.as_millis()).ok())
-        .unwrap_or(0);
+        .ok_or(MountSourceError::AccessDenied)?;
     crate::access::unix_seconds(millis).map_err(|_| MountSourceError::AccessDenied)
 }
 

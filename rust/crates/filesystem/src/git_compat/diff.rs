@@ -223,20 +223,18 @@ where
 pub async fn git_restore_paths<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
-    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    let maximum_changes = maximum_changes.into();
     let changes = from
-        .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .diff_to(to, None, WorkBudget::UNBOUNDED, cancellation)
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?
-        .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .changed_paths(None, WorkBudget::UNBOUNDED, cancellation)
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;

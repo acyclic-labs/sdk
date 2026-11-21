@@ -71,12 +71,11 @@ where
                 };
                 // Ignore rules select each side's reported changes, not the
                 // inherited source facts shared by both sides of the fork.
-                let mut candidates = git_restore_paths(&base, &child, None, &cancellation).await?;
+                let mut candidates = git_restore_paths(&base, &child, &cancellation).await?;
                 if !stat {
                     // Parent-only materialization can differ from the authored
                     // cut while matching the child's inherited source facts.
-                    candidates
-                        .extend(git_restore_paths(&base, &parent, None, &cancellation).await?);
+                    candidates.extend(git_restore_paths(&base, &parent, &cancellation).await?);
                     candidates.sort_unstable();
                     candidates.dedup();
                 }

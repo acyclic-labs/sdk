@@ -230,6 +230,15 @@ pub struct FilesystemWireService<A: 'static, O: 'static> {
 }
 
 impl<A, O> FilesystemWireService<A, O> {
+    /// The generated gRPC server, refusing any message whose wire encoding
+    /// exceeds the advertised `maximum_request_bytes` before decoding it.
+    #[must_use]
+    pub fn into_server(self) -> wire::filesystem_service_server::FilesystemServiceServer<Self> {
+        let maximum = usize::try_from(self.limits.maximum_request_bytes).unwrap_or(usize::MAX);
+        wire::filesystem_service_server::FilesystemServiceServer::new(self)
+            .max_decoding_message_size(maximum)
+    }
+
     /// Binds one canonical engine and validates transfer bounds and policies.
     ///
     /// # Errors

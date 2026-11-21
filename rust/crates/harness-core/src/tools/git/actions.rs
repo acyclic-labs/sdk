@@ -288,7 +288,7 @@ where
             .map_err(Error::from)?;
         // A whole-tree restore rewrites every changed path, nested ones
         // included.
-        let paths = git_restore_paths(&current, &source, u32::MAX, &CancellationToken::new())
+        let paths = git_restore_paths(&current, &source, &CancellationToken::new())
             .await
             .map_err(Error::from)?;
         if paths.is_empty() {

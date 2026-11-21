@@ -4,14 +4,13 @@ use tonic::Code;
 #[tokio::test]
 async fn absent_workspace_is_not_found_over_real_wire() -> Result<(), Box<dyn std::error::Error>> {
     use wire::filesystem_service_client::FilesystemServiceClient;
-    use wire::filesystem_service_server::FilesystemServiceServer;
     let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(
         tonic::transport::Server::builder()
-            .add_service(FilesystemServiceServer::new(service))
+            .add_service(service.into_server())
             .serve_with_incoming_shutdown(
                 tokio_stream::wrappers::TcpListenerStream::new(listener),
                 async {

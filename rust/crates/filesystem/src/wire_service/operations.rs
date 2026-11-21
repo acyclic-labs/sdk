@@ -343,8 +343,6 @@ where
             .map_err(|failure| Status::from(&failure.error))?
             .value
             .0;
-        let truncated =
-            u32::try_from(plan.spans.len()).unwrap_or(u32::MAX) == request.maximum_extents;
         Ok(Response::new(wire::PlanExtentsResponse {
             extents: plan
                 .spans
@@ -357,7 +355,7 @@ where
                     kind: hosted_contract::extent_kind(span.kind) as i32,
                 })
                 .collect(),
-            truncated,
+            truncated: false,
         }))
     }
 
