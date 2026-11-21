@@ -43,7 +43,7 @@ pub struct PlainObjects;
 
 impl ObjectSealer for PlainObjects {
     fn maximum_reference_bytes(&self) -> usize {
-        33
+        ObjectId::PLAIN_ENCODED_LEN
     }
     fn prepare(
         &self,

@@ -482,8 +482,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             let mut records: Option<crate::kernel::Retained<Vec<WorkspaceLineageRecord>>> = None;
             self.ancestry_until(
                 workspace,
-                None,
-                maximum,
+                AncestryBound::Maximum(maximum),
                 &mut accounting,
                 |record, accounting| {
                     let records = match &mut records {
@@ -527,8 +526,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         let result = self
             .ancestry_until(
                 workspace,
-                Some(ancestor),
-                u32::MAX,
+                AncestryBound::Ancestor(ancestor),
                 &mut accounting,
                 |_, _| Ok(()),
             )
@@ -541,8 +539,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     async fn ancestry_until(
         &self,
         workspace: WorkspaceId,
-        ancestor: Option<WorkspaceId>,
-        maximum: u32,
+        bound: AncestryBound,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
         mut visit: impl FnMut(
             WorkspaceLineageRecord,
@@ -554,11 +551,12 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         let mut returned = 0_u32;
         while let Some(id) = next {
             accounting.check().map_err(WorkspaceError::from)?;
-            if ancestor == Some(id) {
-                return Ok(());
-            }
-            if ancestor.is_none() && returned >= maximum {
-                return Err(WorkspaceLineageError::TraversalLimit);
+            match bound {
+                AncestryBound::Ancestor(ancestor) if ancestor == id => return Ok(()),
+                AncestryBound::Maximum(maximum) if returned >= maximum => {
+                    return Err(WorkspaceLineageError::TraversalLimit);
+                }
+                _ => {}
             }
             let visited = seen
                 .get_or_try_insert_with(id.into_bytes(), accounting, |_| Ok(false))
@@ -569,22 +567,21 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             let record = match self.lookup(id, accounting).await? {
                 // A workspace this lineage never registered is outside it,
                 // which is a definite refusal rather than corrupt state.
-                None if ancestor.is_some() && id == workspace => {
+                None if matches!(bound, AncestryBound::Ancestor(_)) && id == workspace => {
                     return Err(WorkspaceLineageError::UnauthorizedJoin);
                 }
                 None => return Err(WorkspaceLineageError::IncompatibleState),
                 Some(record) => record,
             };
             next = record.parent_workspace_id;
-            if ancestor.is_none() && id != workspace {
+            if matches!(bound, AncestryBound::Maximum(_)) && id != workspace {
                 visit(record, accounting)?;
                 returned += 1;
             }
         }
-        if ancestor.is_some() {
-            Err(WorkspaceLineageError::UnauthorizedJoin)
-        } else {
-            Ok(())
+        match bound {
+            AncestryBound::Ancestor(_) => Err(WorkspaceLineageError::UnauthorizedJoin),
+            AncestryBound::Maximum(_) => Ok(()),
         }
     }
 
@@ -712,3 +709,11 @@ pub use memory::{MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError};
 
 #[cfg(test)]
 mod tests;
+
+/// Where one ancestry walk stops: at a named ancestor, or after `maximum`
+/// returned records.
+#[derive(Clone, Copy)]
+enum AncestryBound {
+    Ancestor(WorkspaceId),
+    Maximum(u32),
+}

@@ -49,7 +49,8 @@ pub(super) fn children(
     if id.kind == crate::ObjectKind::BlobChunk {
         return Ok(crate::kernel::Owned::new(Vec::new(), guard(work)?, 0));
     }
-    let mut references = crate::kernel::Owned::allocate(plaintext.len() / 33, work)?;
+    let mut references =
+        crate::kernel::Owned::allocate(plaintext.len() / ObjectId::PLAIN_ENCODED_LEN, work)?;
     crate::kernel::visit_object_references(
         id,
         plaintext,

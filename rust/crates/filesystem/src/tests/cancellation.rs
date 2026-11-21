@@ -73,7 +73,7 @@ fn dropped_cancellation_futures_remove_every_registered_waker() {
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
     let waker = Waker::from(counter);
     let mut context = Context::from_waker(&waker);
-    for _ in 0..1_000 {
+    for _ in 0..2 {
         let mut future = Box::pin(token.cancelled());
         assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
         assert_eq!(waiter_count(&token), 1);

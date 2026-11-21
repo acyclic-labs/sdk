@@ -41,7 +41,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> BoundSource<'_, A, O> {
             return rescan_session(session, key, SourceOperation::Reconcile, SourceState::Clean)
                 .await;
         }
-        let maximum_paths = session.capture.maximum_paths.unwrap_or(1024);
+        let maximum_paths = session.capture.maximum_paths.unwrap_or(u32::MAX);
         let batch = session
             .watcher
             .poll(

@@ -44,12 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("unknown argument: {argument}").into());
         }
     }
-    if writes == 0 || writes > 1024 {
-        return Err("writes must be between 1 and 1024".into());
+    if writes == 0 {
+        return Err("writes must be positive".into());
     }
     if capture {
-        if file_bytes == 0 || file_bytes > 1024 * 1024 * 1024 {
-            return Err("file-bytes must be between 1 and 1073741824".into());
+        if file_bytes == 0 {
+            return Err("file-bytes must be positive".into());
         }
         return boxed(benchmark_capture(writes, file_bytes)).await;
     }

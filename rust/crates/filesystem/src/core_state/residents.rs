@@ -2,7 +2,7 @@
 use super::*;
 
 const KEY_BYTES: usize = 17;
-const KEY_BITS: usize = KEY_BYTES * 8;
+pub(super) const KEY_BITS: usize = KEY_BYTES * 8;
 
 impl RecordKey {
     fn index_key(self) -> [u8; KEY_BYTES] {

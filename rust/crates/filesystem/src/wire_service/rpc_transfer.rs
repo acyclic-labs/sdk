@@ -113,7 +113,7 @@ where
         let manifest = crate::decode_generation_export_manifest(
             &first.contents,
             self.limits.maximum_response_bytes,
-            u64::from(self.limits.maximum_page_items),
+            None,
         )
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let expected_workspace = self
@@ -131,11 +131,6 @@ where
         let mut terminal = first.terminal;
         while let Some(chunk) = stream.next().await.transpose()? {
             self.admit_message(&chunk)?;
-            if expected_index >= self.limits.maximum_page_items as usize {
-                return Err(Status::resource_exhausted(
-                    "import object count exceeds service bound",
-                ));
-            }
             if chunk.workspace.as_ref() != Some(&workspace_ref)
                 || chunk.operation_id != operation_bytes
                 || terminal

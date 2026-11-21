@@ -35,8 +35,10 @@ fn cached_absence_lookup_cost_is_bounded_by_record_identity_width() {
         work.receipt().unwrap().verify(budget).unwrap();
     }
     assert!(
-        measured.iter().all(|(_, examined)| *examined <= 137),
-        "one 136-bit record identity must bound the complete cached-read lookup: {measured:?}"
+        measured
+            .iter()
+            .all(|(_, examined)| *examined <= (crate::core_state::residents::KEY_BITS + 1) as u64),
+        "one record identity must bound the complete cached-read lookup: {measured:?}"
     );
 }
 

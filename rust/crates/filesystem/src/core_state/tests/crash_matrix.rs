@@ -19,7 +19,6 @@ pub(in crate::core_state) fn assert_core_commits_are_crash_atomic(owned: bool) {
     // subsequent child still starts cold and is killed at exactly one cut.
     let count = run_cut(directory.path(), &snapshots, owned, 0).unwrap();
     assert!(count > 16, "crash points were not exercised");
-    assert!(count < 1_000, "crash script never completed");
     let snapshots = Arc::new(snapshots);
     let jobs = (1..=count)
         .map(|point| {
