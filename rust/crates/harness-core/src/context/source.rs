@@ -92,28 +92,25 @@ impl SourceStage {
     }
 }
 
-/// The future [`SourceStage`] admits, named so its size is a type fact. A
-/// plain `async move` block keeps the arguments as its only upvars; an
-/// `async fn` would also store them apart from the body's locals.
-fn project_source<'a>(
-    stage: &'a SourceStage,
-    input: &'a ContextInput,
+/// The future [`SourceStage`] admits: the admitted base under `limits`, then
+/// the source output admitted alone and placed beside it.
+async fn project_source(
+    stage: &SourceStage,
+    input: &ContextInput,
     context: AdmittedContext,
     limits: Limits,
-    io: Option<&'a crate::executor::PreparationIo>,
-) -> impl std::future::Future<Output = Result<AdmittedContext>> + 'a {
-    async move {
-        let context = context.under(limits, io)?;
-        let loaded = stage.source.load(input, limits, io)?.await?;
-        selection::project_messages(
-            context,
-            loaded,
-            selection::ContextRenderMode::Prompt,
-            stage.placement,
-            limits,
-            io,
-        )
-    }
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<AdmittedContext> {
+    let context = context.under(limits, io)?;
+    let loaded = stage.source.load(input, limits, io)?.await?;
+    selection::project_messages(
+        context,
+        loaded,
+        selection::ContextRenderMode::Prompt,
+        stage.placement,
+        limits,
+        io,
+    )
 }
 
 impl ContextStage for SourceStage {
