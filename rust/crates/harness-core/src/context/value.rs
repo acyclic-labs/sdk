@@ -133,6 +133,49 @@ impl BorrowedContext<'_> {
         })
     }
 }
+/// Exactly the borrowed messages one bounds walk accepted under `limits`.
+/// Only [`BorrowedContext::bound`] makes one, and spending it copies exactly
+/// the messages it walked, so the copy needs no second walk.
+pub(super) struct BoundedContext<'a> {
+    messages: ContextMessages<'a>,
+    limits: Limits,
+}
+impl<'a> BorrowedContext<'a> {
+    /// Walks every message under `limits` and keeps the walked borrow as proof.
+    pub(super) fn bound(
+        self,
+        limits: Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<BoundedContext<'a>> {
+        self.validate_bounds(limits, io)?;
+        Ok(BoundedContext {
+            messages: self.messages,
+            limits,
+        })
+    }
+}
+impl BoundedContext<'_> {
+    /// The limits every walked message is within.
+    pub(super) const fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    /// Copies exactly the walked messages, the user input as a user message.
+    pub(super) fn copy_messages(
+        self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ModelMessage>> {
+        crate::executor::with_history_io(io, |work| {
+            compaction::clone_messages(
+                self.messages.first,
+                self.messages.user,
+                self.messages.second,
+                work,
+            )
+            .map(|(copy, _)| copy)
+        })
+    }
+}
 /// Inputs visible to every context stage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct ContextInput {

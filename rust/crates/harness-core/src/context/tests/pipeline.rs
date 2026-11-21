@@ -53,27 +53,73 @@ impl ContextStage for Transform {
     }
 }
 
+/// The test input with a notice batch in its history, which bounds measure.
+#[cfg(not(target_arch = "wasm32"))]
+fn notice_input() -> ContextInput {
+    let mut input = input();
+    input.prior_messages.push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Part(ModelContentPart::Notices {
+            notices: vec![crate::conversation::wire::Notice {
+                source: "tools".into(),
+                kind: "tools.changed".into(),
+                body: serde_json::json!({"history": "x".repeat(512)}),
+                wake: false,
+                coalesce_key: None,
+            }],
+        }),
+    });
+    input
+}
+
+/// Runs `work` under a seeded schedule and counts its bound measurements.
+#[cfg(not(target_arch = "wasm32"))]
+fn measure<T>(work: impl std::future::Future<Output = T>) -> (T, u64) {
+    use acyclic_native_runtime::{cost::Cost, testing::Schedule};
+    let (schedule, mut boundaries) = Schedule::seeded(1);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let output = runtime.block_on(async {
+        let driver = async {
+            while let Some(boundary) = boundaries.recv().await {
+                boundary.release();
+            }
+        };
+        tokio::select! {
+            output = schedule.scope(work) => output,
+            () = driver => unreachable!("the schedule outlives its driver"),
+        }
+    });
+    (output, schedule.ledger().unattributed.count(Cost::Measure))
+}
+
+/// Base assembly bounds each message once: it measures exactly what one
+/// admission of the context it assembles measures.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn base_assembly_bounds_each_message_once() {
+    let input = notice_input();
+    let (base, assembled) =
+        measure(async { ContextPipeline::base_context(&input, payload_limits(), None) });
+    let context = base.unwrap().into_context();
+    let (admitted, once) =
+        measure(async { AdmittedContext::admit(context, payload_limits(), None) });
+    admitted.unwrap();
+    assert_ne!(once, 0, "admission bounds the notice batch");
+    assert_eq!(assembled, once);
+}
+
 /// Admission walks each message once. Source stages that place their output
 /// beside an admitted base add no measurement of the base's notice batch:
 /// a pipeline of two such stages measures exactly what base assembly did.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn stages_never_walk_admitted_history_again() {
-    use acyclic_native_runtime::{cost::Cost, testing::Schedule};
     let measured = |stages: usize| {
-        let mut input = input();
-        input.prior_messages.push(ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Part(ModelContentPart::Notices {
-                notices: vec![crate::conversation::wire::Notice {
-                    source: "tools".into(),
-                    kind: "tools.changed".into(),
-                    body: serde_json::json!({"history": "x".repeat(512)}),
-                    wake: false,
-                    coalesce_key: None,
-                }],
-            }),
-        });
+        let input = notice_input();
         let probe = Arc::new(Probe::default());
         let pipeline = ContextPipeline::new((0..stages).map(|_| {
             Arc::new(SourceStage::new(
@@ -83,25 +129,9 @@ fn stages_never_walk_admitted_history_again() {
                 ContextPlacement::Append,
             )) as Arc<dyn ContextStage>
         }));
-        let (schedule, mut boundaries) = Schedule::seeded(1);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .start_paused(true)
-            .build()
-            .unwrap();
-        let projected = runtime.block_on(async {
-            let driver = async {
-                while let Some(boundary) = boundaries.recv().await {
-                    boundary.release();
-                }
-            };
-            tokio::select! {
-                projected = schedule.scope(pipeline.run(&input, payload_limits(), None)) => projected,
-                () = driver => unreachable!("the schedule outlives its driver"),
-            }
-        });
+        let (projected, measures) = measure(pipeline.run(&input, payload_limits(), None));
         assert_eq!(projected.unwrap().context().messages.len(), 2 + stages);
-        schedule.ledger().unattributed.count(Cost::Measure)
+        measures
     };
     let base = measured(0);
     assert_ne!(base, 0, "base assembly admits the notice batch");

@@ -258,14 +258,17 @@ impl ContextPipeline {
                 "current input index exceeds portable count",
             )
         })?;
-        let base = BorrowedContext {
+        let bounded = BorrowedContext {
             messages,
             metadata: &metadata,
             current_input_index: Some(current_input_index),
-        };
-        base.validate_bounds(limits, io)?;
+        }
+        .bound(limits, io)?;
         crate::executor::with_history_io(io, |work| {
-            input.input.validate_limits(limits, work)?;
+            // A synthesized base already walked the input as its user message.
+            if input.selected_context.is_some() {
+                input.input.validate_limits(limits, work)?;
+            }
             input.input.validate_turn_input(work)
         })?;
         if let Some(selected) = &input.selected_context {
@@ -282,21 +285,7 @@ impl ContextPipeline {
                 "canonical checkpoint requires owner-resolved base context",
             ));
         }
-        let messages = crate::executor::with_history_io(io, |work| {
-            compaction::clone_messages(
-                base.messages.first,
-                base.messages.user,
-                base.messages.second,
-                work,
-            )
-            .map(|(copy, _)| copy)
-        })?;
-        let context = Context {
-            messages,
-            metadata,
-            current_input_index: Some(current_input_index),
-        };
-        AdmittedContext::admit(context, limits, io)
+        AdmittedContext::copy_bounded(bounded, Some(current_input_index), io)
     }
 
     /// Adds an exact new delta to an owner-resolved base before running stages.

@@ -18,6 +18,23 @@ impl AdmittedContext {
         Ok(Self { context, limits })
     }
 
+    /// Admits a copy of messages one bounds walk already accepted, with no
+    /// metadata: only the whole-context counts and instruction budget are checked.
+    pub(in crate::context) fn copy_bounded(
+        bounded: crate::context::value::BoundedContext<'_>,
+        current_input_index: Option<u32>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        let limits = bounded.limits();
+        let context = Context {
+            messages: bounded.copy_messages(io)?,
+            metadata: std::collections::BTreeMap::new(),
+            current_input_index,
+        };
+        validate_extended_context(&context, limits, io)?;
+        Ok(Self { context, limits })
+    }
+
     /// This context admitted under `limits`, walking it only when they differ
     /// from the limits it was admitted under.
     pub fn under(self, limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
