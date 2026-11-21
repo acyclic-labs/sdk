@@ -1,10 +1,10 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import ts from 'typescript-parser';
-import {pollingUnit, sameRustImportLayout, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
+import {newSites, pollingUnit, SourceSyntaxError, temporalModule, validateDispositions} from './index.mjs';
 
-/** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean, rechecks: Set<Dependency>, calls: Set<Dependency>, result: boolean}} Dependency */
-/** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
+/** @typedef {{id: string, unit: string, edges: Set<Dependency>, origins: Set<string>, callable: boolean, rechecks: Set<Dependency>, calls: Set<Dependency>, result: boolean}} Dependency */
+/** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, origins: Set<string>, fingerprint: string}} Component */
 /** @typedef {{node: import('typescript-parser').Node, target?: Dependency, unresolved?: string}} Reference */
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const script = file => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
@@ -59,7 +59,7 @@ function dependencyComponents(nodes) {
  for (const root of ordered.reverse()) {
   if (owner.has(root)) continue;
   /** @type {Component} */
-  const component = {members: [], edges: new Set(), parents: new Set(), remaining: 0, hazardous: false, fingerprint: ''};
+  const component = {members: [], edges: new Set(), parents: new Set(), remaining: 0, origins: new Set(), fingerprint: ''};
   components.push(component);
   const stack = [root];
   owner.set(root, component);
@@ -99,9 +99,13 @@ function dependencyComponents(nodes) {
    }
    return false;
   };
-  component.hazardous = component.members.some(node => node.hazardous
-   || [...node.rechecks].some(target => owner.get(target) === component && (target === node || callsBack(target, node))))
-   || [...component.edges].some(child => child.hazardous);
+  // A component reaches the timers its members and dependencies reach; a recursion that re-observes is its own.
+  for (const node of component.members) {
+   for (const item of node.origins) component.origins.add(item);
+   if ([...node.rechecks].some(target => owner.get(target) === component && (target === node || callsBack(target, node))))
+    component.origins.add('recursion:' + node.id);
+  }
+  for (const child of component.edges) for (const item of child.origins) component.origins.add(item);
   component.fingerprint = digest([
    component.members.map(node => [node.id, node.unit]).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
    [...component.edges].map(child => child.fingerprint).sort(),
@@ -240,10 +244,15 @@ export function projectPollingSites(sources, {historical = false, dispositions =
  const units = new Map();
  /** @type {ReturnType<typeof pollingUnit>['sites']} */
  const sites = [];
- // A site with an accepted typed disposition (a caller deadline, a transport backoff) is that disposition's: no
- // hazard to its callers either. Its fingerprint holds its whole unit, so any edit to the producer reopens it and
- // every caller (2026-11-21: one disposed deadline timer made every transitive caller a finding).
+ // A site with an accepted typed disposition (a caller deadline, a transport backoff) is that disposition's, and so
+ // are its origins and, for a disposed function, every site in its body: no hazard to what only reaches them, a
+ // caller, a field or the test that calls it. Its fingerprint holds its whole unit, so any edit to the producer reopens it and every
+ // caller (2026-11-21: one disposed deadline timer made every transitive caller a finding).
  const disposed = new Set(dispositions.map(item => item.file + ':' + item.fingerprint));
+ // A call to a disposed function is its spelling to each file's own analysis. Where that spelling can only name the
+ // disposed function it reaches nothing else (disposedCallers).
+ /** @type {[(file: string) => boolean, string][]} */
+ const calls = [];
  const errors = [];
  const workspaceNames = new Set();
  const files = new Map();
@@ -269,11 +278,33 @@ export function projectPollingSites(sources, {historical = false, dispositions =
    errors.push(error);
    continue;
   }
-  for (const site of unit.sites) if (!disposed.has(file + ':' + site.fingerprint)) sites.push(site);
+  const gone = unit.sites.filter(site => disposed.has(file + ':' + site.fingerprint));
+  if (gone.length) {
+   const own = new Set(gone.flatMap(site => site.own)), bodies = gone.flatMap(site => site.function ? [file + ':' + site.function + ':'] : []);
+   for (const site of gone) if (site.function) calls.push([disposedCallers(file, site.function, sources), site.function]);
+   const kept = item => !own.has(item) && !bodies.some(body => item.startsWith(body));
+   const functions = new Set(gone.flatMap(site => site.function ? [site.function] : []));
+   unit.sites = unit.sites.flatMap(site => {
+    const origins = site.origins.filter(kept);
+    return disposed.has(file + ':' + site.fingerprint) || functions.has(site.scope) || !origins.length ? []
+     : [{...site, origins, own: site.own.filter(kept)}];
+   });
+  }
+  sites.push(...unit.sites);
   if (script(file) && !unit.parsed?.isDeclarationFile) { units.set(file, unit); files.set('/' + file, source); }
  }
  if (errors.length === 1) throw errors[0];
  if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
+ if (calls.length) {
+  const call = (file, item) => calls.some(([caller, name]) => item.startsWith(file + ':') && item.endsWith(':' + name)
+   && !item.slice(file.length + 1, -name.length - 1).includes(':') && caller(file));
+  const strip = list => list.flatMap(site => {
+   const origins = site.origins.filter(item => !call(site.file, item));
+   return origins.length ? [{...site, origins, own: site.own.filter(item => !call(site.file, item))}] : [];
+  });
+  sites.splice(0, sites.length, ...strip(sites));
+  for (const unit of units.values()) unit.sites = strip(unit.sites);
+ }
  if (!units.size) return sites;
  const {program, resolveModule} = scriptProgram(files, units);
  const checker = program.getTypeChecker();
@@ -304,7 +335,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
  // reasons, not a retry: each of its sites is data wherever the checker resolves the name, across imports too
  // (2026-11-21: one such read in Cloud's identity-native made every machines.mjs importer a finding). A number, a
  // period or a count, stays a policy.
- const dataSites = new Set();
+ const dataSites = new Set(), dataLiterals = new Set();
  const modeled = site => (site.kind === 'indirect-timer-or-call' && moduleLoads.get(site.file)?.has(site.start))
   || dataSites.has(site.file + ':' + site.start) || disposed.has(site.file + ':' + site.fingerprint);
 
@@ -339,7 +370,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
   const previous = dependencies.get(id);
   if (previous) return previous;
   /** @type {Dependency} */
-  const value = {id, unit, edges: new Set(), hazardous: false, callable: false, rechecks: new Set(), calls: new Set(), result: false};
+  const value = {id, unit, edges: new Set(), origins: new Set(), callable: false, rechecks: new Set(), calls: new Set(), result: false};
   dependencies.set(id, value);
   return value;
  };
@@ -410,7 +441,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
   // in unrelated lexical scopes or source files.
   const value = dependency(identities.map(item => item.position).sort().join('|'),
    digest(identities.map(item => item.unit).sort()));
-  if (module && temporalModule(module)) value.hazardous = true;
+  if (module && temporalModule(module)) value.origins.add('module:' + module);
   value.result = symbol.declarations.every(resultBinding);
   symbols.set(symbol, value);
   symbolQueue.push(symbol);
@@ -450,10 +481,17 @@ export function projectPollingSites(sources, {historical = false, dispositions =
  };
  for (const [file, unit] of units) {
   const wanted = new Set(unit.sites.filter(site => site.kind === 'timer-or-readiness').map(site => site.start));
+  const literals = new Set(unit.sites.filter(site => site.kind === 'embedded-timer-or-retry').map(site => site.start));
   const source = program.getSourceFile('/' + file);
-  if (!wanted.size || !source) continue;
+  if ((!wanted.size && !literals.size) || !source) continue;
   /** @param {import('typescript-parser').Node} node */
   const visit = node => {
+   // A literal that is data (an element, a key, a value, an initializer), not what a call runs, is no timer origin to
+   // what depends on it, though it is its own site (2026-11-21: the key name 'retryAfterMs' in diagnostic.mjs's
+   // metadata list made every importer of its module a finding).
+   if (ts.isStringLiteralLike(node) && literals.has(node.getStart(source)) && !ts.isCallExpression(node.parent)
+    && !ts.isNewExpression(node.parent) && !ts.isTaggedTemplateExpression(node.parent) && !ts.isTemplateSpan(node.parent))
+    dataLiterals.add(file + ':' + node.getStart(source));
    if (ts.isIdentifier(node) && wanted.has(node.getStart(source))) {
     const declarations = canonical(checker.getSymbolAtLocation(node))?.declarations ?? [];
     if (declarations.length && declarations.every(item => ts.isVariableDeclaration(item) && item.initializer
@@ -471,7 +509,9 @@ export function projectPollingSites(sources, {historical = false, dispositions =
  for (const source of program.getSourceFiles()) {
   const file = source.fileName.slice(1);
   const unit = required(units, file);
-  const hazardPositions = new Set(unit.sites.filter(site => !modeled(site)).map(site => site.start));
+  const hazards = new Map();
+  for (const site of unit.sites) if (!modeled(site) && !dataLiterals.has(file + ':' + site.start))
+   hazards.set(site.start, [...(hazards.get(site.start) ?? []), ...site.origins]);
   /** @type {{node: import('typescript-parser').Node, owner: Dependency}[]} */
   const stack = [{node: source, owner: required(roots, source.fileName)}];
   while (stack.length) {
@@ -530,7 +570,7 @@ export function projectPollingSites(sources, {historical = false, dispositions =
     if (ts.isExportAssignment(node) && !ts.isArrowFunction(node.expression) && !ts.isFunctionExpression(node.expression)) parentOwner.edges.add(owner);
    }
    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isConstructorDeclaration(node)) owner.callable = true;
-   if (hazardPositions.has(node.getStart(source))) owner.hazardous = true;
+   for (const item of hazards.get(node.getStart(source)) ?? []) owner.origins.add(item);
    if (ts.isCallExpression(node)) {
     const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name : node.expression;
     const target = ts.isIdentifier(callee) ? symbolDependency(checker.getSymbolAtLocation(callee)) : undefined;
@@ -573,22 +613,38 @@ export function projectPollingSites(sources, {historical = false, dispositions =
  const components = dependencyComponents([...dependencies.values()]);
  for (const {node, target, unresolved} of references) {
   const component = target && required(components, target);
-  if (!unresolved && !component?.hazardous) continue;
+  if (!unresolved && !component?.origins.size) continue;
   const {file, index} = nodePosition(node);
+  const own = unresolved ? ['unresolved:' + file + ':' + unresolved] : [];
   sites.push({file, line: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1,
    kind: unresolved ? 'unresolved-local-helper' : 'polling-helper-reference',
    fingerprint: digest([index, required(units, file).fingerprint, unresolved ?? component?.fingerprint]),
-   dependency: unresolved ?? component?.fingerprint, start: node.getStart()});
+   dependency: unresolved ?? component?.fingerprint, start: node.getStart(), token: node.getText(),
+   origins: unresolved ? own : [...component.origins].sort(), own});
  }
  for (const {node, target} of initializers) {
   const component = required(components, target);
-  if (!component.hazardous) continue;
+  if (!component.origins.size) continue;
   const {file, index} = nodePosition(node);
   sites.push({file, line: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1,
    kind: 'polling-module-initialization', fingerprint: digest([index, required(units, file).fingerprint, component.fingerprint]),
-   dependency: component.fingerprint, start: node.getStart()});
+   dependency: component.fingerprint, start: node.getStart(), token: node.getText(), origins: [...component.origins].sort(), own: []});
  }
  return sites.filter(site => !modeled(site));
+}
+
+// The files where a disposed function's spelling can only name it. Rust has no project graph: its module tree, the file
+// and its child modules where its tests are (`a/b.rs` owns `a/b/`; `mod.rs`, `lib.rs` and `main.rs` their directory).
+// A script imports it by that name, unaliased, from the disposed module.
+function disposedCallers(file, name, sources) {
+ if (file.endsWith('.rs')) {
+  const children = /(?:^|\/)(?:mod|lib|main)\.rs$/.test(file) ? file.slice(0, file.lastIndexOf('/') + 1) : file.slice(0, -3) + '/';
+  return caller => caller === file || caller.startsWith(children);
+ }
+ const stem = path => path.replace(/\.[cm]?[jt]sx?$/, '');
+ return caller => caller === file || [...(sources.get(caller) ?? '').matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"](\.\.?\/[^'"]+)['"]/g)]
+  .some(([, names, specifier]) => names.split(',').some(part => part.trim() === name)
+   && stem(posix.join(posix.dirname(caller), specifier)) === stem(file));
 }
 
 /** @param {Map<string, string>} before @param {Map<string, string>} after */
@@ -596,18 +652,6 @@ export function newProjectPollingSites(before, after, dispositions = [], policy 
  validateDispositions(dispositions, policy);
  const candidates = projectPollingSites(after, {dispositions});
  if (!candidates.length) return candidates;
- const retained = new Map();
- const historical = new Map(before);
- for (const file of new Set(candidates.map(site => site.file))) {
-  const previous = before.get(file), current = after.get(file);
-  if (previous !== undefined && current !== undefined && sameRustImportLayout(file, previous, current))
-   historical.set(file, current);
- }
- for (const site of projectPollingSites(historical, {historical: true, dispositions})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
- return candidates.filter(site => {
-  const key = site.file + ':' + site.fingerprint;
-  const count = retained.get(key) ?? 0;
-  if (count) { retained.set(key, count - 1); return false; }
-  return true;
- });
+ const text = sources => site => sources.get(site.file).split('\n')[site.line - 1]?.trim();
+ return newSites(projectPollingSites(before, {historical: true, dispositions}), candidates, text(before), text(after));
 }

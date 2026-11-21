@@ -89,12 +89,12 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['(?:rs|[cm]?[jt]s|', '(?:[cm]?[jt]s|', 'control.rs', ''],
   ['throw new SourceSyntaxError(', 'throw new Error(', 'control.ts', '}'],
   ['const malformed = message => new SourceSyntaxError(', 'const malformed = message => new Error(', 'control.ps1', '<#'],
-  ['const site = {file, line: t.line, kind, fingerprint, start: t.start};',
-   'const site = {file, line: 0, kind, fingerprint, start: t.start};', 'control.ts', 'Bun.sleep(1);'],
-  ['const site = {file, line: t.line, kind, fingerprint, start: t.start};',
-   'const site = {file, line: t.line, kind, fingerprint, start: -1};', 'control.ts', 'Bun.sleep(1);'],
-  ['const site = {file, line: t.line, kind, fingerprint, start: t.start};',
-   "const site = {file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start};", 'control.ts', 'Bun.sleep(1);'],
+  ['const site = {file, line: t.line, kind, fingerprint, start: t.start, token: t.value};',
+   'const site = {file, line: 0, kind, fingerprint, start: t.start, token: t.value};', 'control.ts', 'Bun.sleep(1);'],
+  ['const site = {file, line: t.line, kind, fingerprint, start: t.start, token: t.value};',
+   'const site = {file, line: t.line, kind, fingerprint, start: -1, token: t.value};', 'control.ts', 'Bun.sleep(1);'],
+  ['const site = {file, line: t.line, kind, fingerprint, start: t.start, token: t.value};',
+   "const site = {file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start, token: t.value};", 'control.ts', 'Bun.sleep(1);'],
  ]) {
   const parser = await mutant('./source-policy/index.mjs', original, replacement);
   assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser.source), {name: 'AssertionError'});
@@ -102,7 +102,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
  const lexer = await mutant('./source-policy/index.mjs', "t.kind === 'literal' && (embeddedTimer(t.value) || embeddedTimer(escapedSpelling(t.value))) ?", 'false ?');
  assert.throws(() => targets.fuzz(Buffer.from('original'), lexer.source.pollingSites), {name: 'AssertionError'});
  const graph = await mutant('./source-policy/project.mjs',
-  'if (!unresolved && !component?.hazardous) continue;', 'if (!unresolved) continue;');
+  'if (!unresolved && !component?.origins.size) continue;', 'if (!unresolved) continue;');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), graph),
   {name: 'AssertionError', message: /lost dependency/});
  const collation = await mutant('./source-policy/project.mjs',
@@ -110,9 +110,9 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), collation),
   {name: 'AssertionError', message: /snapshot enumeration/});
  const baseline = await mutant('./source-policy/project.mjs',
-  'projectPollingSites(historical, {historical: true, dispositions})', '[]');
+  'projectPollingSites(before, {historical: true, dispositions})', '[]');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), baseline),
-  {name: 'AssertionError', message: /shadowed source changed the exact runtime dependency/});
+  {name: 'AssertionError', message: /an unchanged chain reopened its caller/});
  const resolution = await mutant('./source-policy/project.mjs',
   'ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule',
   "name.endsWith('/helper') ? undefined : ts.resolveModuleName(name, containingFile, options, host, moduleCache).resolvedModule");
@@ -163,7 +163,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['if (historical && error instanceof SourceSyntaxError) continue;',
    'if (error instanceof SourceSyntaxError) continue;', '}',
    {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/}],
-  ['projectPollingSites(historical, {historical: true, dispositions})', 'projectPollingSites(before)', [0],
+  ['projectPollingSites(before, {historical: true, dispositions})', 'projectPollingSites(before)', [0],
    {name: 'SourceSyntaxError', message: /lib\/helper\.ts/}],
  ]) {
   const refusal = await mutant('./source-policy/project.mjs', original, replacement);

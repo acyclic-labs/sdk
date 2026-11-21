@@ -430,39 +430,6 @@ function nativeTokens(source, file) {
 // Rustfmt can reorder an unadorned file-level import block and remove the
 // optional comma before a use-tree's closing brace. Keep everything else,
 // including attributes, visibility, aliases, and executable tokens, exact.
-function rustImportLayout(file, source) {
- const tokens = nativeTokens(source, file).map(token => [token.kind, token.value]);
- const punctuation = (index, value) => tokens[index]?.[0] === 'punctuation' && tokens[index][1] === value;
- let start = 0;
- while (punctuation(start, '#') && punctuation(start + 1, '!') && punctuation(start + 2, '[')) {
-  let depth = 1;
-  start += 3;
-  while (depth && start < tokens.length) {
-   if (punctuation(start, '[')) depth++;
-   if (punctuation(start, ']')) depth--;
-   start++;
-  }
- }
- const imports = [];
- let end = start;
- while (tokens[end]?.[0] === 'word' && tokens[end][1] === 'use') {
-  let stop = end + 1;
-  while (tokens[stop]?.[0] === 'word' || ['{', '}', ',', ':', '*'].some(value => punctuation(stop, value))) stop++;
-  if (!punctuation(stop, ';')) break;
-  const declaration = tokens.slice(end, stop).filter((_, offset) =>
-   !punctuation(end + offset, ',') || !punctuation(end + offset + 1, '}'));
-  imports.push(JSON.stringify(declaration));
-  end = stop + 1;
- }
- return JSON.stringify([tokens.slice(0, start), imports.sort(), tokens.slice(end)]);
-}
-
-export function sameRustImportLayout(file, before, after) {
- if (!file.endsWith('.rs') || before === after) return false;
- try { return rustImportLayout(file, before) === rustImportLayout(file, after); }
- catch (error) { if (error instanceof SourceSyntaxError) return false; throw error; }
-}
-
 // Recognize casts, typed bindings and `for` in types in Rust syntax. Macro
 // and attribute bodies may use other grammars, so their candidates stay intact.
 function rustSyntax(stream) {
@@ -746,6 +713,25 @@ export function pollingUnit(file, source, parser = undefined) {
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
+ // A timer's origin is its spelling in its enclosing named function (`fn`, `function`; the file for a top-level one),
+ // never its position: an edit elsewhere in the file leaves every origin, and so every chain, as it was.
+ const within = new Array(stream.length);
+ {
+  const scopes = [''];
+  let pending, nesting = 0, at = 0;
+  for (let i = 0; i < stream.length; i++) {
+   const t = stream[i];
+   within[i] = scopes[scopes.length - 1];
+   if (t.kind === 'word' && (t.value === 'fn' || t.value === 'function') && stream[i + 1]?.kind === 'word') { pending = stream[i + 1].value; at = nesting; }
+   else if (t.kind !== 'punctuation') continue;
+   else if (t.value === '(' || t.value === '[') nesting++;
+   else if (t.value === ')' || t.value === ']') nesting--;
+   else if (t.value === '{') { scopes.push(pending ?? scopes[scopes.length - 1]); pending = undefined; }
+   else if (t.value === '}') { if (scopes.length > 1) scopes.pop(); }
+   else if (t.value === ';' && nesting === at) pending = undefined;
+  }
+ }
+ const origin = i => file + ':' + within[i] + ':' + (stream[i].kind === 'word' ? '' : stream[i].kind + ':') + stream[i].value;
  const aliases = new Map();
  const name = lexicalNames(stream, rust);
  // Names resolve before they match. A local binding (`const select = selector => ...`, `const elapsed = field(...)`)
@@ -799,10 +785,16 @@ export function pollingUnit(file, source, parser = undefined) {
  };
  const candidate = (t, i) => t.kind === 'word' && !futurePoll(i) && !dataField(i)
   && ((temporal.test(t.value) && !local(i)) || (policyName.test(t.value) && !inertPolicy(i)));
- const forbidden = new Set(stream.flatMap((t, i) => candidate(t, i) && !deadlineWord.test(t.value) ? [name(i)] : []));
- for (const [binding, [from, to]] of spans) {
-  for (let j = from; j < to; j++) if (candidate(stream[j], j) && !deadlineWord.test(stream[j].value)) { forbidden.add(binding); break; }
- }
+ // A timer spelling is its own origin; a name bound to or aliasing one reaches each origin it can hold.
+ const timers = stream.map((t, i) => candidate(t, i) && !deadlineWord.test(t.value));
+ const forbidden = new Set(), reaches = new Map();
+ const seed = (binding, i) => {
+  forbidden.add(binding);
+  if (!reaches.has(binding)) reaches.set(binding, new Set());
+  reaches.get(binding).add(origin(i));
+ };
+ for (let i = 0; i < stream.length; i++) if (timers[i]) seed(name(i), i);
+ for (const [binding, [from, to]] of spans) for (let j = from; j < to; j++) if (timers[j]) seed(binding, j);
  const bounds = new Set(stream.flatMap((t, i) => candidate(t, i) && deadlineWord.test(t.value) ? [name(i)] : []));
  const edge = (from, to) => {
   if (!from || !to) return;
@@ -829,7 +821,9 @@ export function pollingUnit(file, source, parser = undefined) {
    if (!rustForms?.casts.has(i) && stream[i + 1]?.value === 'as' && stream[i + 2]) edge(name(i), name(i + 2));
    // A declared type is independent of its binding's value. Destructuring
    // fields and other ambiguous colons still propagate alias candidates.
-   if (!rustForms?.typed.has(i) && stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word')
+   // A field initialized by an expression (`retry: Mutex::new(..)`, `wait: make()`) binds no alias.
+   if (!rustForms?.typed.has(i) && stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word'
+    && !['(', ':', '.', '<', '!'].includes(stream[i + 3]?.value))
     edge(name(i), name(i + 2));
    // A binding of a timer's type is that timer: a loop waiting on a passed `tick: Interval` reaches it.
    if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word' && temporal.test(stream[i + 2].value))
@@ -842,9 +836,14 @@ export function pollingUnit(file, source, parser = undefined) {
   if (t.kind === 'punctuation' && t.value === '}') braceDepth--;
  }
  const queue = [...forbidden];
- for (let i = 0; i < queue.length; i++) {
-  for (const alias of aliases.get(queue[i]) ?? []) {
-   if (!forbidden.has(alias)) { forbidden.add(alias); queue.push(alias); }
+ for (let k = 0; k < queue.length; k++) {
+  const from = reaches.get(queue[k]);
+  for (const alias of aliases.get(queue[k]) ?? []) {
+   forbidden.add(alias);
+   if (!reaches.has(alias)) reaches.set(alias, new Set());
+   const to = reaches.get(alias), size = to.size;
+   for (const item of from) to.add(item);
+   if (to.size > size) queue.push(alias);
   }
  }
  const kindAt = i => {
@@ -882,16 +881,35 @@ export function pollingUnit(file, source, parser = undefined) {
   if (extents.has(i)) { active.push(i); if (extents.get(i).empty) reasons.set(i, -1); }
  }
  for (const i of reasons.keys()) found.push([i, 'loop']);
+ // A site's origins are the timers it reaches; its own are those spelled at it (a loop's, each in its body).
+ const reached = j => {
+  const kind = kindAt(j);
+  return kind === 'timer-or-readiness' ? reaches.get(name(j)) ?? [] : kind === 'embedded-timer-or-retry' || kind === 'indirect-timer-or-call' ? [origin(j)] : [];
+ };
  const sites = [];
  for (const [i, kind] of found.sort((x, y) => x[0] - y[0])) {
   const t = stream[i];
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
-  const site = {file, line: t.line, kind, fingerprint, start: t.start};
+  const site = {file, line: t.line, kind, fingerprint, start: t.start, token: t.value};
+  const origins = new Set(), own = new Set();
   if (kind === 'loop') {
    const by = reasons.get(i);
    site.timer = by < 0 ? 'an empty body (spin)' : stream[by].value;
    site.timerLine = by < 0 ? t.line : stream[by].line;
+   if (by < 0) { origins.add(origin(i)); own.add(origin(i)); }
+   else if (!kindAt(by) || kindAt(by) === 'deadline') { origins.add(origin(by)); own.add(origin(by)); }
+   for (let j = i + 1; j <= extents.get(i).end; j++) {
+    for (const item of reached(j)) origins.add(item);
+    if (timers[j] || (stream[j].kind !== 'word' && kindAt(j))) own.add(origin(j));
+   }
+  } else {
+   for (const item of reached(i)) origins.add(item);
+   if (timers[i] || t.kind !== 'word') own.add(origin(i));
   }
+  site.origins = [...origins].sort();
+  site.own = [...own].sort();
+  if (t.kind === 'word' && (stream[i - 1]?.value === 'fn' || stream[i - 1]?.value === 'function')) site.function = t.value;
+  site.scope = within[i];
   sites.push(site);
  }
  return {stream, fingerprint: unit, sites, parsed: parsed?.parsed};
@@ -920,17 +938,41 @@ export function validateDispositions(dispositions, {inScope = supportedSource} =
  }
 }
 
+/** The sites of `current` that are new against `previous`. Sites of one file, kind and spelling form a group. A site is
+ * new where it reaches an origin (a timer or readiness wait, by file, enclosing function and spelling) that no site of
+ * its group reached before, so a new timer and every chain newly reaching a timer are new; and its group's sites that
+ * outnumber the predecessor's are new, so a second identical timer is. Nothing else is: not a position, not the text of
+ * a module on the chain, not a chain that lost an origin (2026-11-21: an edit to one shared Cloud test module
+ * re-reported 375 unchanged helper references in its import cone). Of a grown group, the sites reported are those whose
+ * source line (`text`) the predecessor's sites lack, so the finding names the added line.
+ * @param {{file: string, kind: string, token: string, origins: string[]}[]} previous @param {typeof previous} current
+ * @param {(site: previous[number]) => string} before @param {(site: previous[number]) => string} after */
+export function newSites(previous, current, before = () => '', after = () => '') {
+ const group = site => JSON.stringify([site.file, site.kind, site.token]);
+ const reached = new Map(), remaining = new Map(), lines = new Map();
+ const count = (map, key, step) => map.set(key, (map.get(key) ?? 0) + step).get(key);
+ for (const site of previous) {
+  const key = group(site);
+  count(remaining, key, 1);
+  count(lines, JSON.stringify([key, before(site)]), 1);
+  if (!reached.has(key)) reached.set(key, new Set());
+  for (const item of site.origins) reached.get(key).add(item);
+ }
+ const fresh = new Set(), unmatched = [];
+ for (const site of current) {
+  const key = group(site);
+  if (!site.origins.every(item => reached.get(key)?.has(item))) fresh.add(site);
+  else if (count(lines, JSON.stringify([key, after(site)]), -1) >= 0) count(remaining, key, -1);
+  else unmatched.push(site);
+ }
+ for (const site of unmatched) if (count(remaining, group(site), -1) < 0) fresh.add(site);
+ return current.filter(site => fresh.has(site));
+}
+
 export function newPollingSites(file, before, after, dispositions = [], policy = {}) {
  validateDispositions(dispositions, policy);
- const retained = new Map();
- for (const site of pollingSites(file, before)) retained.set(site.fingerprint, (retained.get(site.fingerprint) ?? 0) + 1);
- for (const item of dispositions) {
-  if (item.file !== file) continue;
-  retained.set(item.fingerprint, Math.max(1, retained.get(item.fingerprint) ?? 0));
- }
- return pollingSites(file, after).filter(site => {
-  const count = retained.get(site.fingerprint) ?? 0;
-  if (count) { retained.set(site.fingerprint, count - 1); return false; }
-  return true;
- });
+ const disposed = new Set(dispositions.filter(item => item.file === file).map(item => item.fingerprint));
+ const reviewed = source => pollingSites(file, source).filter(site => !disposed.has(site.fingerprint));
+ const text = source => { const lines = source.split('\n'); return site => (lines[site.line - 1] ?? '').trim(); };
+ return newSites(reviewed(before), reviewed(after), text(before), text(after));
 }

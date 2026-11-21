@@ -56,51 +56,36 @@ test('closed project consumers use the original parser and production graph orac
  assert.throws(() => replay(negative), /runtime parser lookup/);
 });
 
-test('an unrelated declaration does not reopen a polling helper consumer', () => {
+// A site is new only where the change adds a timer or a chain newly reaches one. An edit to a module on an unchanged
+// chain (an unrelated declaration, a moved function, a timer's argument, a dormant body, module state) reports
+// nothing, however it changes the module's text (2026-11-21: one edited shared Cloud test module re-reported 375
+// unchanged helper references in its import cone).
+test('an edit to a module on an unchanged chain reports nothing; a new timer or a chain newly reaching one reports one', () => {
  const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
- const helper = 'export function settle() { const ticks = 1; return Bun.sleep(ticks); }';
- const before = new Map([
-  [producer, helper + '\nexport function unrelated() { return true; }'],
-  [consumer, "import {settle} from '../lib/helper.js'; export const out = settle();"],
- ]);
+ const helper = 'const ticks = 1; export function settle() { return Bun.sleep(ticks); }\nexport function unrelated() { return true; }';
+ const before = new Map([[producer, helper], [consumer, "import {settle} from '../lib/helper.js'; export const out = settle();"]]);
  const edit = source => newProjectPollingSites(before, new Map(before).set(producer, source));
- assert.ok(!edit(helper + '\nexport function unrelated() { return false; }').some(site => site.file === consumer));
- assert.ok(!edit('export function unrelated() { return false; }\n' + helper).some(site => site.file === consumer));
- assert.ok(edit(before.get(producer).replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
+ for (const unchanged of [
+  helper.replace('return true', 'return false'),
+  'export const label = "unrelated";\n' + helper.split('\n').reverse().join('\n'),
+  helper.replace('ticks = 1', 'ticks = 2'),
+  'globalThis.ready = true; ' + helper,
+ ]) assert.deepEqual(edit(unchanged), [], unchanged);
+ const added = edit(helper.replace('return true', 'return setTimeout(wake, 5)'));
+ assert.deepEqual(added.map(site => [site.file, site.token]), [[producer, 'setTimeout']]);
+ const quiet = new Map(before).set(consumer, "import {unrelated} from '../lib/helper.js'; export const out = unrelated();");
+ const reached = newProjectPollingSites(quiet, new Map(quiet).set(consumer, "import {settle} from '../lib/helper.js'; export const out = settle();"));
+ assert.deepEqual(reached.map(site => [site.file, site.kind, site.token]), [[consumer, 'polling-helper-reference', 'settle']]);
+ const loaded = new Map([[producer, 'Bun.sleep(1); export function dormant() { return true; }'], [consumer, "import '../lib/helper.js';"]]);
+ assert.deepEqual(newProjectPollingSites(loaded, new Map(loaded).set(producer, 'Bun.sleep(2); export function dormant() { return false; }')), []);
 });
 
-test('a dormant function body does not change a module initialization dependency', () => {
- const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
- const source = 'Bun.sleep(1); export function dormant() { return true; }';
- const before = new Map([[producer, source], [consumer, "import '../lib/helper.js';"]]);
- const changes = newSource => newProjectPollingSites(before, new Map(before).set(producer, newSource));
- assert.ok(!changes(source.replace('true', 'false')).some(site => site.file === consumer));
- assert.ok(changes(source.replace('sleep(1)', 'sleep(2)'))
-  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
- const active = new Map(before).set(producer, source + ' dormant();');
- assert.ok(newProjectPollingSites(active, new Map(active).set(producer, active.get(producer).replace('true', 'false')))
-  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
-});
-
-test('unrelated source edits preserve dependencies on immutable literal bindings', () => {
- const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
- const helper = 'const ticks = 1; export function settle() { return Bun.sleep(ticks); }';
- const caller = "import {settle} from '../lib/helper.js'; export const out = settle();";
- const before = new Map([[producer, helper], [consumer, caller]]);
- const changes = source => newProjectPollingSites(before, new Map(before).set(producer, source));
- assert.ok(!changes('export const label = "unrelated"; ' + helper).some(site => site.file === consumer));
- assert.ok(changes(helper.replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
-});
-
-test('opaque execution retains module state and initializer dependencies', () => {
- const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
- const global = 'globalThis.ready = true; export async function settle() { while (!globalThis.ready) await Bun.sleep(1); }';
- const caller = "import {settle} from '../lib/helper.js'; settle();";
- const referenced = new Map([[producer, global], [consumer, caller]]);
- assert.ok(newProjectPollingSites(referenced, new Map(referenced).set(producer, global.replace('true', 'false')))
-  .some(site => site.file === consumer && site.kind === 'polling-helper-reference'));
- const indirect = "eval('start()'); function start() { return Bun.sleep(1); }";
- const imported = new Map([[producer, indirect], [consumer, "import '../lib/helper.js';"]]);
- assert.ok(newProjectPollingSites(imported, new Map(imported).set(producer, indirect.replace('sleep(1)', 'sleep(2)')))
-  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+// A literal that is data (a list of metadata key names) is its own site, never a timer origin to what imports it.
+test('a data literal is no timer origin to its dependents', () => {
+ const producer = 'lib/diagnostic.ts', consumer = 'svc/consumer.ts';
+ const sources = new Map([[producer, "const metadata = ['exitCode', 'retryAfterMs']; export function keys() { return metadata; }"],
+  [consumer, "import {keys} from '../lib/diagnostic.js'; export const out = keys();"]]);
+ assert.ok(!newProjectPollingSites(new Map(), sources).some(site => site.file === consumer));
+ const command = new Map(sources).set(producer, "export function keys() { return run('sleep 5'); }");
+ assert.ok(newProjectPollingSites(new Map(), command).some(site => site.file === consumer), 'a command literal lost its dependents');
 });

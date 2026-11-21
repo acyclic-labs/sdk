@@ -142,8 +142,9 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
  assert.ok(project(new Map([[caller, load]])).some(site => site.file === caller && site.kind === 'unresolved-local-helper'),
   'missing runtime module producer was accepted');
  const exact = new Map(loaded).set('lib/helper.js', 'Bun.sleep(3); export const value = 1;');
- assert.ok(newProjectPollingSites(exact, new Map(exact).set('lib/helper.js', 'Bun.sleep(4);')).some(site => site.file === caller),
-  'exact runtime source edit did not reopen its caller');
+ // An edit that leaves the chain as it was (the same timer in the same producer) reopens no caller.
+ assert.ok(!newProjectPollingSites(exact, new Map(exact).set('lib/helper.js', 'Bun.sleep(4);')).some(site => site.file === caller),
+  'an unchanged chain reopened its caller');
  assert.ok(!newProjectPollingSites(exact, new Map(exact).set(helper, 'Bun.sleep(4);')).some(site => site.file === caller),
   'shadowed source changed the exact runtime dependency');
  const typeOnly = new Map(loaded).set(caller, "import type original = require('../lib/helper.js');");
@@ -159,9 +160,9 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
  if (variant % 4 === 3) relative.set('lib/helper/package.json', '{"main":"entry.js"}');
  assert.ok(project(relative).some(site => site.file === caller && site.kind === 'polling-helper-reference'),
   'relative source resolution lost dependency on its producer');
- assert.ok(newProjectPollingSites(relative, new Map(relative).set(relativeHelper,
+ assert.ok(!newProjectPollingSites(relative, new Map(relative).set(relativeHelper,
   'export function settle() { return Bun.sleep(2); }')).some(site => site.file === caller),
-  'relative producer edit did not reopen its caller');
+  'relative producer edit on an unchanged chain reopened its caller');
  const [declaration, executable] = [['lib/declared.d.ts', 'lib/declared.js'],
   ['lib/declared/index.d.mts', 'lib/declared/index.mjs'],
   ['lib/declared/index.d.cts', 'lib/declared/index.cjs']][variant % 3];
@@ -176,9 +177,9 @@ export function fuzzProject(data, {source: api = sourcePolicy, graph = projectPo
   'declaration hid executable producer');
  assert.ok(newProjectPollingSites(declared, called).some(site => site.file === caller),
   'declaration authorized a new executable reference');
- assert.ok(newProjectPollingSites(called, new Map(called).set(executable,
-  'export function settle() { return Bun.sleep(2); }')).some(site => site.file === caller),
-  'executable edit behind declaration did not reopen caller');
+ assert.ok(newProjectPollingSites(declared, new Map(declared).set(executable,
+  'export function settle() { return Bun.sleep(2); }').set(caller, declaredLoad + ' settle();')).some(site => site.file === caller),
+  'a call behind a declaration newly reaching the executable timer was accepted');
  assert.ok(!newProjectPollingSites(called, new Map(called).set(declaration,
   'export declare function settle(value: number): void;')).some(site => site.file === caller),
   'type declaration changed executable dependency');

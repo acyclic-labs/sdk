@@ -371,7 +371,7 @@ test('a walk over a finite structure and reads of a helper result are no polling
  assert.ok(projectPollingSites(new Map([[helper, factory], [script, calls]])).some(site => site.file === script && site.line === 4), calls);
 });
 
-test('a producer edit reopens unchanged callers through recursive dependencies', () => {
+test('a producer edit reopens no unchanged caller through recursive dependencies unless its disposition goes stale', () => {
  const first = 'typescript/packages/example/test/first.ts';
  const second = 'typescript/packages/example/test/second.ts';
  const unrelated = 'typescript/packages/example/test/unrelated.ts';
@@ -387,7 +387,7 @@ test('a producer edit reopens unchanged callers through recursive dependencies',
  const originalSecond = before.get(second);
  assert.ok(originalSecond);
  const changed = new Map(before).set(second, originalSecond.replace('ready()', 'otherReady()'));
- assert.ok(newProjectPollingSites(before, changed).some(site => site.file === script && site.kind === 'polling-helper-reference'));
+ assert.deepEqual(newProjectPollingSites(before, changed), []);
  const accepted = projectPollingSites(before).map(site => disposition(site, 'event-wait', 'original producer', 'original producer loss', 'suppress the original event'));
  assert.ok(newProjectPollingSites(before, changed, accepted).some(site => site.file === script));
 });
@@ -400,6 +400,26 @@ test('aliases cannot use an unchanged timer import to conceal a new call', () =>
   const before = declaration + '\n' + 'const padding = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16];\n';
   assert.ok(newPollingSites(script, before, before + 'await pause(1);').some(site => site.line === 3));
  }
+});
+
+// A disposed Rust function is its disposition's, body and all: what only reaches it (a caller in its module tree, the
+// test calling it, an unchanged or a new plain field) is no finding, and a new timer anywhere still is (2026-11-21:
+// Cloud's voter cooldown cap reported 10 sites behind one disposed transport backoff).
+test('a disposed Rust function clears what only reaches it; a new timer in its file is still a finding', () => {
+ const file = 'src/cell/transport.rs', child = 'src/cell/transport/tests.rs';
+ const endpoint = (field, value) => `struct Endpoint { retry: Mutex<Backoff>,${field} }\n`
+  + `impl Default for Endpoint { fn default() -> Self { Self { retry: Mutex::new(crate::retry::cell()),${value} } } }\nimpl Endpoint {\n`;
+ const backoff = body => ` fn backoff(&self) -> Instant {\n let delay = self.retry.lock().unwrap().delay();${body}\n Instant::now() + delay\n }\n}\n`;
+ const before = new Map([[file, endpoint('', '') + backoff('')], [child, 'fn cooled() { let until = endpoint.backoff();\n assert!(until > now); }\n']]);
+ const after = new Map([[file, endpoint(' voter: Mutex<u32>,', ' voter: Mutex::default(),') + backoff('\n let delay = delay.min(Backoff::new(ceiling).delay());')],
+  [child, before.get(child) + 'fn capped() { let until = endpoint.backoff();\n assert!(until < cap); }\n']]);
+ const disposition = sources => [{file, classification: 'transient-transport-backoff', producer: 'Endpoint::backoff',
+  terminal: 'a success clears it', negativeControl: 'any other dial failure is no cooldown',
+  fingerprint: projectPollingSites(sources).find(site => site.file === file && site.function === 'backoff').fingerprint}];
+ assert.ok(newProjectPollingSites(before, after).length > 0, 'the undisposed change was clean');
+ assert.deepEqual(newProjectPollingSites(before, after, disposition(after)), []);
+ const timer = new Map(after).set(file, after.get(file) + 'fn settle() { std::thread::sleep(PERIOD); }\n');
+ assert.deepEqual(newProjectPollingSites(after, timer, disposition(timer)).map(site => [site.file, site.token]), [[file, 'sleep']]);
 });
 
 // Every way Rust aliases a timer name keeps it a timer: destructuring, `use ... as`, a braced use, `extern crate ...
