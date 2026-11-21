@@ -49,15 +49,14 @@ fn check(data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    if let Some((id, tail)) = data.split_first_chunk::<16>() {
-        if let Ok(path) = std::str::from_utf8(tail)
-            && let Ok(resource) = acyclic_fs::session::resource(
-                acyclic_fs_format::identity::VolumeId::from_bytes(*id),
-                path,
-            )
-        {
-            assert!(acyclic_auth::valid_resource(&resource));
-        }
+    if let Some((id, tail)) = data.split_first_chunk::<16>()
+        && let Ok(path) = std::str::from_utf8(tail)
+        && let Ok(resource) = acyclic_fs::session::resource(
+            acyclic_fs_format::identity::VolumeId::from_bytes(*id),
+            path,
+        )
+    {
+        assert!(acyclic_auth::valid_resource(&resource));
     }
     Ok(())
 }

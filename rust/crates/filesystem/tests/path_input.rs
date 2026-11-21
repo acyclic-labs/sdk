@@ -119,7 +119,7 @@ pub fn observe<E>(
         .take(16)
         .copied()
         .chain(std::iter::once(0))
-        .map(|index| FOLDS[usize::from(index) % FOLDS.len()])
+        .filter_map(|index| FOLDS.get(usize::from(index) % FOLDS.len()).copied())
         .collect();
     let text: String = parts.iter().map(|&(text, _)| text).collect();
     let expected: String = parts.iter().map(|&(_, folded)| folded).collect();
@@ -194,7 +194,12 @@ fn native_names<E>(
             .collect();
         let windows: Vec<_> = std::iter::once(u16::from(b'n'))
             .chain(chunk.chunks(2).map(|pair| {
-                match u16::from_le_bytes([pair[0], pair.get(1).copied().unwrap_or(0)]) {
+                let unit = match *pair {
+                    [low, high] => u16::from_le_bytes([low, high]),
+                    [low] => u16::from(low),
+                    _ => 0,
+                };
+                match unit {
                     0 | 47 | 92 => u16::from(b'x'),
                     unit => unit,
                 }

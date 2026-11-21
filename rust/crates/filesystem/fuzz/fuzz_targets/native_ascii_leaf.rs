@@ -3,9 +3,12 @@
 
 libfuzzer_sys::fuzz_target!(|data: [u8; 88]| {
     acyclic_fs::native_host::check_prepared_ascii_leaf(data);
-    let position = usize::from(data[0]) % data.len();
+    let [selector, ..] = data;
+    let position = usize::from(selector) % data.len();
     let mut name = data.map(|byte| byte & 0x7f);
-    name[position] = 0;
+    if let Some(byte) = name.get_mut(position) {
+        *byte = 0;
+    }
     let ascii = std::str::from_utf8(&name);
     assert!(ascii.is_ok(), "masked input must be ASCII");
     if let Ok(ascii) = ascii {

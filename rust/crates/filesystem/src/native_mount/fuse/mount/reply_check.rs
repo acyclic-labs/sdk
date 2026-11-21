@@ -15,7 +15,8 @@ pub fn check(input: &[u8]) -> std::io::Result<()> {
 
 fn check_round_trip(input: &[u8]) -> std::io::Result<()> {
     let count = usize::from(input.first().copied().unwrap_or(0) % 17);
-    let payload = &input.get(1..).unwrap_or_default()[..input.len().saturating_sub(1).min(32)];
+    let tail = input.get(1..).unwrap_or_default();
+    let (payload, _) = tail.split_at(tail.len().min(32));
     // A path without an open handle: the descriptor census below counts every
     // remaining descriptor for this unique inode.
     let path = tempfile::NamedTempFile::new()?.into_temp_path();
@@ -45,7 +46,6 @@ fn check_round_trip(input: &[u8]) -> std::io::Result<()> {
         )?,
         payload.len()
     );
-    drop(control);
     drop(rights);
     drop(files);
     drop(source);

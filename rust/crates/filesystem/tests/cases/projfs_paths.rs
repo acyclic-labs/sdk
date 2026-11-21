@@ -22,8 +22,11 @@ fn encoded(parts: &[Vec<u8>]) -> Vec<u16> {
             wide.push(92);
         }
         wide.extend(
-            part.chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
+            part.as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes),
         );
     }
     wide
