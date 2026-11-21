@@ -71,7 +71,9 @@ mod sites;
 pub mod snapshot;
 pub mod sweep;
 pub(crate) use metadata::stable_identity;
-pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times, source_identity};
+pub use metadata::{
+    NativeMetadataInput, NativeTimes, capture_native_times, source_identity, stable_native_time,
+};
 pub use sites::{SiteCall, SiteFault};
 #[cfg(test)]
 #[cfg(loom)]

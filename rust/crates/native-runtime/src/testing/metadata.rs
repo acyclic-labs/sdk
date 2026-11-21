@@ -102,21 +102,47 @@ pub fn stable_identity<const N: usize>(domain: &'static str, original: [u8; N]) 
     let Some(context) = Context::simulation().filter(|context| context.schedule.is_seeded()) else {
         return original;
     };
-    let ordinal = {
-        let mut state = context.schedule.0.state();
-        let next = state
-            .stand_ins
-            .range((domain, Vec::new())..)
-            .take_while(|((seen, _), _)| *seen == domain)
-            .count() as u64;
-        *state
-            .stand_ins
-            .entry((domain, original.to_vec()))
-            .or_insert(next)
-    };
+    let ordinal = ordinal(&context.schedule, domain, &original);
     let mut hash = blake3::Hasher::new_derive_key(domain);
     hash.update(&ordinal.to_le_bytes());
     let mut stand_in = [0; N];
     hash.finalize_xof().fill(&mut stand_in);
     stand_in
+}
+
+/// The world's number for `original` in `domain`: distinct originals are
+/// numbered in first-sight order, and an original seen again keeps its number.
+fn ordinal(schedule: &Schedule, domain: &'static str, original: &[u8]) -> u64 {
+    let mut state = schedule.0.state();
+    let next = state
+        .stand_ins
+        .range((domain, Vec::new())..)
+        .take_while(|((seen, _), _)| *seen == domain)
+        .count() as u64;
+    *state
+        .stand_ins
+        .entry((domain, original.to_vec()))
+        .or_insert(next)
+}
+
+/// The timestamp a physical capture records. A seeded world without a times
+/// provider records each distinct host timestamp as a stand-in numbered in its
+/// first-sight order, so equal times stay equal, distinct times stay distinct,
+/// and the record repeats in every process. A world with a provider, and any
+/// code outside a seeded simulation, records the host's time.
+pub fn stable_native_time(original_ns: i64) -> i64 {
+    const BASE_NS: i64 = 1_700_000_000_000_000_000;
+    match Context::simulation().filter(|context| {
+        context.schedule.is_seeded() && context.schedule.0.state().metadata.is_none()
+    }) {
+        Some(context) => {
+            let ordinal = ordinal(
+                &context.schedule,
+                "acyclic.testing.native-time/v1",
+                &original_ns.to_le_bytes(),
+            );
+            BASE_NS.saturating_add(i64::try_from(ordinal).unwrap_or(i64::MAX))
+        }
+        None => original_ns,
+    }
 }

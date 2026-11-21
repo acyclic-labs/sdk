@@ -184,7 +184,12 @@ fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
         hash.update(&metadata.volume_serial_number.to_le_bytes());
         hash.update(&metadata.raw.FileId.to_le_bytes());
     }
-    SourceVersion(*hash.finalize().as_bytes())
+    // The digest covers host inode numbers and clocks; a seeded world records
+    // its schedule stand-in, which keeps equal versions equal.
+    SourceVersion(acyclic_native_runtime::stable_identity(
+        "acyclic.fs.native-source-version/v1",
+        *hash.finalize().as_bytes(),
+    ))
 }
 
 /// A file's identity: its device and inode, its file handle, which carries
@@ -209,7 +214,10 @@ pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
     {
         hash.update(&born.as_nanos().to_le_bytes());
     }
-    *hash.finalize().as_bytes()
+    acyclic_native_runtime::stable_identity(
+        "acyclic.fs.native-source-file/v1",
+        *hash.finalize().as_bytes(),
+    )
 }
 
 #[cfg(windows)]
@@ -227,7 +235,10 @@ fn windows_file_identity(volume: u64, index: u64) -> [u8; 32] {
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&u32::try_from(volume).unwrap_or_default().to_le_bytes());
     hash.update(&index.to_le_bytes());
-    *hash.finalize().as_bytes()
+    acyclic_native_runtime::stable_identity(
+        "acyclic.fs.native-source-file/v1",
+        *hash.finalize().as_bytes(),
+    )
 }
 
 fn source_metadata(metadata: &HostStat) -> SourceMetadata {
@@ -273,6 +284,21 @@ fn physical_source_metadata(metadata: &HostStat) -> SourceMetadata {
     #[cfg(windows)]
     {
         result.windows_attributes = Some(metadata.raw.FileAttributes);
+    }
+    #[cfg(feature = "test-support")]
+    for time in [
+        &mut result.created_ns,
+        &mut result.modified_ns,
+        &mut result.accessed_ns,
+        &mut result.changed_ns,
+    ] {
+        // The same stand-ins a physical capture records, so a demand node and
+        // a capture of one host file still agree.
+        if let Some(nanos) = time.and_then(|time| i64::try_from(time.nanos()).ok()) {
+            *time = SourceTimestamp::from_nanos(i128::from(
+                acyclic_native_runtime::testing::stable_native_time(nanos),
+            ));
+        }
     }
     result
 }

@@ -63,7 +63,13 @@ impl AppliedRevisions {
         hash.update(kind.as_bytes());
         hash.update(b"\0");
         hash.update(location);
-        RevisionScope::new(hash.finalize().to_vec())
+        let scope: [u8; 32] = hash.finalize().into();
+        // A location is a host path; a seeded world records its schedule
+        // stand-in, so one location keeps one scope within the world.
+        #[cfg(not(target_arch = "wasm32"))]
+        let scope =
+            acyclic_native_runtime::stable_identity("acyclic.stream.revision.scope/v1", scope);
+        RevisionScope::new(scope.to_vec())
     }
 
     /// A staging authority with this identity, applied through nothing yet.

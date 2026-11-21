@@ -151,6 +151,19 @@ pub(crate) fn physical_metadata(metadata: &HostStat) -> FileMetadata {
         ..FileMetadata::default()
     };
     populate_platform_metadata(metadata, &mut result);
+    #[cfg(feature = "test-support")]
+    for time in [
+        &mut result.created_ns,
+        &mut result.modified_ns,
+        &mut result.accessed_ns,
+        &mut result.changed_ns,
+    ] {
+        // A seeded world records schedule stand-ins for host timestamps;
+        // equal host times map to equal stand-ins, so comparisons still hold.
+        if let MetadataField::Value(nanos) = time {
+            *nanos = acyclic_native_runtime::testing::stable_native_time(*nanos);
+        }
+    }
     result
 }
 
