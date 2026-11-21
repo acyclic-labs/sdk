@@ -87,19 +87,28 @@ use crate::test_support::accounted::accounted;
 use acyclic_fs_work::performance::WorkCounters;
 use acyclic_test_support::differential;
 
-fn exact_unmetered_allocation(
+/// The shipping read allocates nothing the original reader did not, and saves
+/// at least the original factory's frame. Allocating less than the oracle is
+/// not a violation: the bound is one-sided, as the guarantee is.
+fn within_unmetered_frame(
     original: acyclic_test_support::AllocationInfo,
     candidate: acyclic_test_support::AllocationInfo,
     saved: u64,
 ) -> proptest::test_runner::TestCaseResult {
-    prop_assert_eq!(
+    prop_assert!(
+        candidate.count_total <= original.count_total,
+        "pinned read allocation count: {} exceeds the original {}",
         candidate.count_total,
         original.count_total,
-        "pinned read allocation count"
     );
-    prop_assert_eq!(
-        original.bytes_total.checked_sub(candidate.bytes_total),
-        Some(saved)
+    prop_assert!(
+        original
+            .bytes_total
+            .checked_sub(candidate.bytes_total)
+            .is_some_and(|saving| saving >= saved),
+        "pinned read allocation bytes: {} saves less than the {saved}-byte frame from {}",
+        candidate.bytes_total,
+        original.bytes_total,
     );
     Ok(())
 }
@@ -207,6 +216,14 @@ proptest! {
             (host, file)
         };
         let (layout_host, layout_file) = initialize();
+        // A runtime's and a thread's first use set up std and tokio internals
+        // lazily, from the global allocator on some platforms (macOS boxes its
+        // pthread locks). Pay that once for both readers, outside every
+        // measurement, so each one is measured in its steady state.
+        for old in [true, false] {
+            let (host, file) = initialize();
+            drop(runtime.block_on(read(&host, &file, maximum, None, old)));
+        }
         let observe = |(host, file): (Arc<Host>, FileRef), old, extra_box| {
             let mut result = None;
             let allocation = acyclic_test_support::measure(|| {
@@ -225,7 +242,7 @@ proptest! {
         prop_assert!(saved > 0);
         prop_assert_eq!(&before.0.0, &after.0.0);
         prop_assert_eq!(&before.1, &after.1);
-        exact_unmetered_allocation(before.0.1, after.0.1, saved)?;
+        within_unmetered_frame(before.0.1, after.0.1, saved)?;
         // The caller-owned future may shrink; its original upper bound must not grow.
         // The separately admitted heap factory has exact allocation guards below.
         prop_assert!(after.0.2 <= before.0.2, "enclosing frame exceeds the original upper bound");
@@ -234,15 +251,15 @@ proptest! {
             |fixture| observe(fixture, true, false));
         prop_assert_eq!(&before.0.0, &broken.0.0);
         prop_assert_eq!(&before.1, &broken.1);
-        prop_assert!(exact_unmetered_allocation(before.0.1, broken.0.1, saved).is_err(),
+        prop_assert!(within_unmetered_frame(before.0.1, broken.0.1, saved).is_err(),
             "restored original factory passed the same allocation guard");
         let boxed = differential::observe::<_, _, (&'static str, u64)>(initialize,
             |fixture| observe(fixture, false, true));
         prop_assert_eq!(&before.0.0, &boxed.0.0);
         prop_assert_eq!(&before.1, &boxed.1);
-        let error = exact_unmetered_allocation(before.0.1, boxed.0.1, saved).unwrap_err();
-        prop_assert!(error.to_string().contains("pinned read allocation count"),
-            "extra factory box bypassed the exact count guard");
+        let error = within_unmetered_frame(before.0.1, boxed.0.1, saved).unwrap_err();
+        prop_assert!(error.to_string().contains("pinned read allocation"),
+            "extra factory box bypassed the allocation guard");
         let padded = differential::observe::<_, _, (&'static str, u64)>(initialize,
             |fixture| crate::conversation::BoundedContentFuture::<acyclic_stream::OwnedBytes>::with_padded_frame(true,
                 || observe(fixture, false, false)));
@@ -251,8 +268,8 @@ proptest! {
         prop_assert_eq!(after.0.1.count_total, padded.0.1.count_total,
             "inline padding unexpectedly added an allocation");
         prop_assert!(padded.0.1.bytes_total > after.0.1.bytes_total);
-        prop_assert!(exact_unmetered_allocation(before.0.1, padded.0.1, saved).is_err(),
-            "retained inline factory padding passed the exact byte guard");
+        prop_assert!(within_unmetered_frame(before.0.1, padded.0.1, saved).is_err(),
+            "retained inline factory padding passed the frame byte guard");
         for native in [false, true] {
             let baseline = if native {
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()

@@ -166,7 +166,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
     let mut first_write = None;
     let mut first_log_write = None;
     let mut first_metadata_read = None;
-    for history in [1, 8, 64, 512] {
+    for (levels, history) in [1, 8, 64, 512].into_iter().enumerate() {
         let messages = |start| {
             (start..history).map(|index| ModelMessage {
                 role: ModelRole::User,
@@ -285,19 +285,23 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
                 )?
                 .len();
         // Compare identical appends, including the real filesystem's page and
-        // authority overhead. A 512-fold history increase must not change their
-        // order of growth; an extra tree-page split may double fixed overhead.
+        // authority overhead. An append copies the path of its persistent
+        // trees, and every copied page records a holder key for each child in
+        // the Objects medium, so each 8-fold history growth may add at most one
+        // level: one more first append's worth. Writing history grows linearly
+        // and fails this logarithmic bound; the bound is one-sided.
+        let bound = |first: u64| (1 + levels as u64) * first;
         assert!(
-            written >= new_bytes as u64 && written <= 2 * *first_write.get_or_insert(written),
+            written >= new_bytes as u64 && written <= bound(*first_write.get_or_insert(written)),
             "history={history} written={written}"
         );
         assert!(
-            log_written > 0 && log_written <= 2 * *first_log_write.get_or_insert(log_written),
+            log_written > 0 && log_written <= bound(*first_log_write.get_or_insert(log_written)),
             "history={history} log_written={log_written}"
         );
         if history == 512 {
             assert!(
-                prepared.bytes().len() as u64 > 2 * first_write.unwrap(),
+                prepared.bytes().len() as u64 > bound(first_write.unwrap()),
                 "the former full-snapshot writer must violate the same oracle"
             );
         }
