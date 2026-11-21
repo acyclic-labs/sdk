@@ -10,6 +10,9 @@ common --lockfile_mode=error
 build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures
+# A named target no platform of this host builds (a macOS-only test on Linux) is skipped, not an analysis error:
+# every command that names targets (a landing, a leg, a lane) judges the same set, one rule in one place.
+build --skip_incompatible_explicit_targets
 # Windows Rust targets link the static CRT (-Ctarget-feature=+crt-static), so C and C++ compile for it too:
 # the MSVC toolchain's default /MD, in every build script's CFLAGS, otherwise wins over cc-rs's /MT and leaves
 # a C++ -sys crate (libfuzzer-sys) importing CRT symbols no static link provides. Toolchains without the

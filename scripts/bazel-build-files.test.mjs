@@ -293,6 +293,23 @@ test("only a package that declares test-env-inherit gives its tests those host v
   }
 });
 
+test("a package's platforms reach each test runner of its binary, a profile's runner too", () => {
+  const { root, run } = fixture();
+  const manifest = join(root, "member/Cargo.toml");
+  try {
+    writeFileSync(manifest, readFileSync(manifest, "utf8").replace("\n[dependencies]", '\n[package.metadata.bazel]\ntarget-compatible-with = ["@platforms//os:macos"]\n\n[dependencies]'));
+    mkdirSync(join(root, ".config"));
+    writeFileSync(join(root, ".config/nextest.toml"), '[profile.pg]\ndefault-filter = "package(=member) & test(pg::capability::)"\n');
+    assert.equal(run("write").status, 0);
+    const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    for (const target of ["member_test", "member_test_pg"]) {
+      assert.match(build, new RegExp(`isolated_test\\(\\n    name = "${target}",[^)]*target_compatible_with = \\["@platforms//os:macos"\\]`, "s"), target);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("an uncacheable test tag or host test environment is refused", () => {
   const { root, run } = fixture();
   try {

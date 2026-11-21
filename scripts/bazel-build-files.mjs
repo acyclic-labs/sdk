@@ -1257,7 +1257,10 @@ ${platformSources.map(([platform, sources]) =>
     const envInherit = p.metadata?.bazel?.["test-env-inherit"] ?? [];
     const isolated = (target, selection, extra, extraBinaries = {}, targetData = undefined, targetEnv = undefined) => {
       const all = { ...tools, ...extraBinaries };
-      return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["data", targetData], ["env", targetEnv], ["tags", runtimeTags.length || extra.length ? q([...extra, ...runtimeTags]) : undefined]]];
+      // The binary's platforms are its runner's: a runner of a target no platform here builds is that target's own
+      // incompatibility, never one inherited at analysis from its binary.
+      const compat = selection.some(([key]) => key === "target_compatible_with") ? [] : [["target_compatible_with", q(bazel?.["target-compatible-with"])]];
+      return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ...compat, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["data", targetData], ["env", targetEnv], ["tags", runtimeTags.length || extra.length ? q([...extra, ...runtimeTags]) : undefined]]];
     };
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs.filter(([key]) => key !== "tags"), ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads), list(binaryLabels))], ["env", Object.keys(binaryEnv).length ? q(binaryEnv) : undefined], ["args", profiles.length ? list(profiles.flatMap(({ pattern }) => ["--skip", pattern])) : undefined], ["tags", q(["manual", ...tags])]]],
@@ -1266,7 +1269,7 @@ ${platformSources.map(([platform, sources]) =>
       ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => {
         const profileName = `${name}_${profile}`;
         const linux = profile === "linux-guest";
-        return isolated(profileName, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined], ["target_compatible_with", linux ? q(["@platforms//os:linux", "@platforms//cpu:x86_64"]) : undefined]], linux ? [] : ["manual"], wrapper ? { "@nodejs//:node": "node" } : {}, linux ? list(testDataLinux(p, profileName)) : selectLinux(testDataLinux(p, profileName)), selectLinuxEnv(testEnvLinux(p, profileName)));
+        return isolated(profileName, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined], ["target_compatible_with", q(linux ? ["@platforms//os:linux", "@platforms//cpu:x86_64"] : bazel?.["target-compatible-with"])]], linux ? [] : ["manual"], wrapper ? { "@nodejs//:node": "node" } : {}, linux ? list(testDataLinux(p, profileName)) : selectLinux(testDataLinux(p, profileName)), selectLinuxEnv(testEnvLinux(p, profileName)));
       }),
     );
     return name;

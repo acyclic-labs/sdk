@@ -119,6 +119,7 @@ isolated_test(
     binary = ":acyclic_fs_darwin_bridge_test_cases",
     id = "acyclic-fs-darwin-bridge",
     exclude = ["::full_cloud::"],
+    target_compatible_with = ["@platforms//os:macos"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -131,6 +132,7 @@ isolated_test(
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
+    target_compatible_with = ["@platforms//os:macos"],
     limit_seconds = 10,
     tags = ["manual","no-sandbox"],
 )
