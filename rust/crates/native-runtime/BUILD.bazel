@@ -54,7 +54,8 @@ cargo_build_script(
 rust_library(
     name = "acyclic_native_runtime",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/process_tree/custodian_admission.rs","src/bin/acyclic-process-host.rs"], allow_empty = True) + select({
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/execution/macos.rs","src/process_tree/custodian_admission.rs","src/bin/acyclic-process-host.rs"], allow_empty = True) + select({
+        "@platforms//os:macos": glob(["src/execution/macos.rs"], allow_empty = True),
         "@platforms//os:windows": glob(["src/process_tree/custodian_admission.rs"], allow_empty = True),
         "//conditions:default": [],
     }),

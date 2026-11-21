@@ -25,6 +25,7 @@ build-script-inputs = [
 ]
 
 [package.metadata.bazel.platform-sources]
+"@platforms//os:macos" = ["src/execution/macos.rs"]
 "@platforms//os:windows" = ["src/process_tree/custodian_admission.rs"]
 
 [package.metadata.bazel.test-tools.main]
