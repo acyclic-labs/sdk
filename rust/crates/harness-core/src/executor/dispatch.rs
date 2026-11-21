@@ -114,14 +114,14 @@ impl StockExecution<'_> {
                 let messages = boundary
                     .messages(input.operation_id, step, frozen.flatten())
                     .await?;
-                let from = history.len();
+                let from = history.messages().len();
                 for message in messages {
                     with_history_io(self.io, |work| {
                         message.content.validate_limits(self.stock.limits, work)
                     })?;
-                    stock_vec_push(history, message, self.io)?;
+                    history.push_message(message, self.io)?;
                 }
-                steering.admit(from..history.len(), self.io)?;
+                steering.admit(from..history.messages().len(), self.io)?;
             }
             if retained.request.is_none() {
                 self.selected_tools().refresh().await?;
@@ -134,15 +134,8 @@ impl StockExecution<'_> {
                     live = self.request_tools()?;
                     &live
                 };
-                {
-                    let mut context = crate::context::Context {
-                        messages: std::mem::take(history),
-                        ..Default::default()
-                    };
-                    let result = self.tools_notice(&mut context, tools);
-                    **history = context.messages;
-                    result?;
-                }
+                let notices = self.tool_notices(history.messages(), tools)?;
+                history.push_batch(notices, self.io)?;
             }
             if let Some(update) = retained.configuration {
                 prior_messages.append_configuration(update, self.io)?;

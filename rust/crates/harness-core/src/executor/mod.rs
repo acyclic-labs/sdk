@@ -118,6 +118,7 @@ mod record_index;
 pub(crate) use record_index::call_bucket_key;
 mod records;
 mod request;
+use request::{AppendHistory, TurnHistory};
 mod response;
 mod retained_request;
 pub(crate) mod transcript;

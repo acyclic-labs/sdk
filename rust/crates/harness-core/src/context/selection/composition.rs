@@ -74,17 +74,51 @@ impl AdmittedContext {
 
     /// Appends one message: only that message and the whole-context counts
     /// and instruction budget are checked, never the admitted messages.
-    pub(crate) fn push(
+    pub(crate) fn push(self, message: ModelMessage, io: Option<&PreparationIo>) -> Result<Self> {
+        self.extend(std::iter::once(message), io)
+    }
+
+    /// Appends messages: each is bounded alone, then the whole-context counts
+    /// and instruction budget are checked once, never the admitted messages.
+    pub(crate) fn extend(
         mut self,
-        message: ModelMessage,
+        messages: impl IntoIterator<Item = ModelMessage>,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        crate::executor::with_history_io(io, |work| {
-            message.content.validate_limits(self.limits, work)
-        })?;
-        crate::executor::stock_vec_push(&mut self.context.messages, message, io)?;
+        for message in messages {
+            crate::executor::with_history_io(io, |work| {
+                message.content.validate_limits(self.limits, work)
+            })?;
+            crate::executor::stock_vec_push(&mut self.context.messages, message, io)?;
+        }
         validate_extended_context(&self.context, self.limits, io)?;
         Ok(self)
+    }
+
+    /// An owned copy under the same admission: copying changes no bound.
+    pub(crate) fn copy(&self, io: Option<&PreparationIo>) -> Result<Self> {
+        Ok(Self {
+            context: copy_context(&self.context, io)?,
+            limits: self.limits,
+        })
+    }
+
+    /// A copy of admitted messages `range`: each is already bounded, so only
+    /// the whole-context counts and instruction budget are checked.
+    pub(crate) fn copy_range(
+        &self,
+        range: std::ops::Range<usize>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        let context = crate::executor::with_history_io(io, |work| {
+            crate::context::clone_context_range(&self.context, range, work)
+                .map(|(context, _)| context)
+        })?;
+        validate_extended_context(&context, self.limits, io)?;
+        Ok(Self {
+            context,
+            limits: self.limits,
+        })
     }
 }
 

@@ -1,5 +1,43 @@
 use super::*;
 
+/// A turn's history carries its base admission: extending it by one message
+/// measures only that message, whether 8 or 512 came before. A rewrite drops
+/// the admission, so the next base is measured in full again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn turn_history_bounds_only_appended_messages() {
+    use crate::test_support::bounds::{measure, notice_message};
+    let turn = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::from_bytes([31; 16]),
+        input: ModelContent::Text("input".into()),
+        selected_context: None,
+    };
+    let limits = Limits {
+        file_bytes: Some(1_048_576),
+        ..Limits::default()
+    };
+    let measured = |count: usize| {
+        let messages = (0..count).map(|_| notice_message()).collect::<Vec<_>>();
+        let mut history = crate::executor::TurnHistory::from(messages);
+        history.base(&turn, 0, limits, None).unwrap();
+        crate::executor::AppendHistory::push_message(&mut history, notice_message(), None).unwrap();
+        let (carried, appended) = measure(async { history.base(&turn, 1, limits, None) });
+        let (input, carried) = carried.unwrap();
+        let assembled = ContextPipeline::base_context(&input, limits, None).unwrap();
+        assert_eq!(carried, assembled, "the carried base is the assembled one");
+        history.rewrite();
+        let (rewritten, full) = measure(async { history.base(&turn, 1, limits, None) });
+        assert_eq!(rewritten.unwrap().1, assembled);
+        (appended, full)
+    };
+    let (small, small_full) = measured(8);
+    let (large, large_full) = measured(512);
+    assert_ne!(small, 0, "the appended notice batch is bounded");
+    assert_eq!(large, small);
+    assert!(small < small_full && small_full < large_full);
+}
+
 #[test]
 fn base_and_stages_reuse_the_same_input_without_a_history_copy() {
     let executor = uncompacted_executor(

@@ -15,7 +15,7 @@ pub(super) fn hook_context(text: String) -> ModelMessage {
 impl StockExecution<'_> {
     pub(super) fn append_hook_context(
         &self,
-        messages: &mut Vec<ModelMessage>,
+        messages: &mut dyn AppendHistory,
         mut output: HookOutput,
     ) -> Result<()> {
         let blocked = output.take_block_reason();
@@ -24,7 +24,7 @@ impl StockExecution<'_> {
             message
                 .content
                 .validate_limits(self.stock.limits, &mut None)?;
-            stock_vec_push(messages, message, self.io)?;
+            messages.push_message(message, self.io)?;
         }
         Ok(())
     }
@@ -232,7 +232,7 @@ impl StockExecution<'_> {
     /// The model continues from its own answer and the Stop hook's reason.
     pub(super) fn continue_after_stop(
         &self,
-        messages: &mut Vec<ModelMessage>,
+        messages: &mut dyn AppendHistory,
         answer: &str,
         output: HookOutput,
     ) -> Result<()> {
@@ -244,7 +244,7 @@ impl StockExecution<'_> {
             message
                 .content
                 .validate_limits(self.stock.limits, &mut None)?;
-            stock_vec_push(messages, message, self.io)?;
+            messages.push_message(message, self.io)?;
         }
         self.append_hook_context(messages, output)?;
         Ok(())

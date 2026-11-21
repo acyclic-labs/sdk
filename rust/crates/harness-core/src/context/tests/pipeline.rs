@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::test_support::bounds::{measure, notice_message};
 
 #[derive(Default)]
 struct Probe(std::sync::Mutex<Vec<Limits>>);
@@ -57,43 +59,8 @@ impl ContextStage for Transform {
 #[cfg(not(target_arch = "wasm32"))]
 fn notice_input() -> ContextInput {
     let mut input = input();
-    input.prior_messages.push(ModelMessage {
-        role: ModelRole::User,
-        content: ModelContent::Part(ModelContentPart::Notices {
-            notices: vec![crate::conversation::wire::Notice {
-                source: "tools".into(),
-                kind: "tools.changed".into(),
-                body: serde_json::json!({"history": "x".repeat(512)}),
-                wake: false,
-                coalesce_key: None,
-            }],
-        }),
-    });
+    input.prior_messages.push(notice_message());
     input
-}
-
-/// Runs `work` under a seeded schedule and counts its bound measurements.
-#[cfg(not(target_arch = "wasm32"))]
-fn measure<T>(work: impl std::future::Future<Output = T>) -> (T, u64) {
-    use acyclic_native_runtime::{cost::Cost, testing::Schedule};
-    let (schedule, mut boundaries) = Schedule::seeded(1);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .unwrap();
-    let output = runtime.block_on(async {
-        let driver = async {
-            while let Some(boundary) = boundaries.recv().await {
-                boundary.release();
-            }
-        };
-        tokio::select! {
-            output = schedule.scope(work) => output,
-            () = driver => unreachable!("the schedule outlives its driver"),
-        }
-    });
-    (output, schedule.ledger().unattributed.count(Cost::Measure))
 }
 
 /// Base assembly bounds each message once: it measures exactly what one
@@ -136,6 +103,34 @@ fn stages_never_walk_admitted_history_again() {
     let base = measured(0);
     assert_ne!(base, 0, "base assembly admits the notice batch");
     assert_eq!(measured(2), base);
+}
+
+/// Extending an admission bounds only the appended message, and copying all
+/// or part of one bounds nothing: an admitted history of 8 or 512 notice
+/// batches measures the same to extend by one more.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn extending_an_admission_bounds_only_appended_messages() {
+    let measured = |count: usize| {
+        let context = Context {
+            messages: (0..count).map(|_| notice_message()).collect(),
+            ..Context::default()
+        };
+        let admitted = AdmittedContext::admit(context, payload_limits(), None).unwrap();
+        let (copied, copying) = measure(async {
+            let range = admitted.copy_range(0..count / 2, None)?;
+            admitted.copy(None).map(|copy| (copy, range))
+        });
+        let (copy, range) = copied.unwrap();
+        assert_eq!((copy == admitted, range.messages.len()), (true, count / 2));
+        assert_eq!(copying, 0, "a copy keeps its admission");
+        let (extended, measures) = measure(async { copy.push(notice_message(), None) });
+        assert_eq!(extended.unwrap().messages.len(), count + 1);
+        measures
+    };
+    let small = measured(8);
+    assert_ne!(small, 0, "the appended notice batch is bounded");
+    assert_eq!(measured(512), small);
 }
 
 #[tokio::test]

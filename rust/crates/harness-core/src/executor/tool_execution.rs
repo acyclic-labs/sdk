@@ -314,7 +314,7 @@ impl<'io> StockExecution<'io> {
         (operation_id, step): (OperationId, u32),
         (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
         invocation_index: usize,
-        prior_messages: &mut Vec<ModelMessage>,
+        prior_messages: &mut dyn AppendHistory,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         let name = tool_operation_name(&invocation.name);
@@ -338,12 +338,12 @@ impl<'io> StockExecution<'io> {
         (operation_id, step): (OperationId, u32),
         (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
         invocation_index: usize,
-        prior_messages: &mut Vec<ModelMessage>,
+        prior_messages: &mut dyn AppendHistory,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_invocation_binding(operation_id, &invocation, pinned.as_ref())?;
         let metadata = metadata_for_call(
-            prior_messages,
+            prior_messages.messages(),
             invocation_index,
             &invocation.call_id,
             self.io,
@@ -1016,7 +1016,7 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         content: crate::model::ToolResultContent,
         receipt: Option<ToolReceipt<'io>>,
-        prior_messages: &mut Vec<ModelMessage>,
+        prior_messages: &mut dyn AppendHistory,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         let message = ModelMessage {
             role: ModelRole::Tool,
@@ -1029,7 +1029,7 @@ impl<'io> StockExecution<'io> {
         with_history_io(self.io, |work| {
             message.content.validate_limits(self.stock.limits, work)
         })?;
-        stock_vec_push(prior_messages, message, self.io)?;
+        prior_messages.push_message(message, self.io)?;
         Ok(ExecutionProgress::Ready(receipt))
     }
     /// Records a refusal as the call's settlement, or replays the one recorded; the model

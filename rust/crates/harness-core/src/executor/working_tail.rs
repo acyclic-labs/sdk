@@ -53,7 +53,8 @@ pub(super) struct RetainedCut<'a> {
     journal: Option<ExecutionJournalCacheId>,
     reference: FileRef,
     cut: WorkingCut,
-    context: crate::context::Context,
+    // Admitted once under the stock limits when loaded; steps extend copies.
+    context: crate::context::AdmittedContext,
     // All resident fields are destroyed before their original custody.
     _hold: Option<crate::conversation::ContentHold<'a>>,
 }
@@ -82,6 +83,28 @@ impl<'a> StockExecution<'a> {
         input: &TurnInput,
         step: u32,
         prior: &[ModelMessage],
+    ) -> Result<(
+        ContextInput,
+        crate::context::AdmittedContext,
+        Option<FileRef>,
+    )> {
+        self.response_history_base(
+            journal,
+            input,
+            step,
+            &mut request::ModelStepHistory::Selected(prior),
+        )
+        .await
+    }
+
+    /// [`Self::response_base`] over a step's history. A stock turn's history
+    /// carries its uncompacted base, so that step bounds only new messages.
+    pub(super) async fn response_history_base(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        history: &mut request::ModelStepHistory<'_>,
     ) -> Result<(
         ContextInput,
         crate::context::AdmittedContext,
@@ -117,24 +140,40 @@ impl<'a> StockExecution<'a> {
             if compaction
                 && let Some((covered, base)) = self.preceding_context(journal, input).await?
             {
-                let context_input =
-                    ContextInput::copy_turn_suffix(input, step, prior, covered, self.io)?;
+                let context_input = ContextInput::copy_turn_suffix(
+                    input,
+                    step,
+                    history.messages(),
+                    covered,
+                    self.io,
+                )?;
                 let delta =
                     ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
-                let base =
-                    crate::context::AdmittedContext::admit(base, self.stock.limits, self.io)?;
                 let base = ContextPipeline::continue_base(base, delta, self.stock.limits, self.io)?;
                 return Ok((context_input, base, None));
             }
             if self.working_tail.lock().await.prior_offset != 0 {
                 return Err(self.invalid_working_cut());
             }
-            let mut context_input = ContextInput::copy_for_turn(input, step, prior, self.io)?;
+            // A checkpoint base is owner-resolved and composed again each step.
+            if let request::ModelStepHistory::Turn(history, _) = history
+                && input
+                    .selected_context
+                    .as_ref()
+                    .is_none_or(|selected| selected.selection.checkpoint.is_none())
+            {
+                let (context_input, base) =
+                    history.base(input, step, self.stock.limits, self.io)?;
+                return Ok((context_input, base, None));
+            }
+            let mut context_input =
+                ContextInput::copy_for_turn(input, step, history.messages(), self.io)?;
             let base = self
                 .canonical_base_for_input(journal, &mut context_input)
                 .await?;
             return Ok((context_input, base, None));
         };
+        let prior = history.messages();
         let mut cache = self.working_tail.lock().await;
         self.refresh_working_cut(&mut cache, journal, &reference)
             .await?;
@@ -152,26 +191,12 @@ impl<'a> StockExecution<'a> {
             .get(consumed..)
             .ok_or_else(|| self.invalid_working_cut())?;
         let context_input = ContextInput::copy_for_turn(input, step, suffix, self.io)?;
-        let base = with_history_io(self.io, |work| {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let (messages, claim) = crate::context::clone_messages(
-                &retained.context.messages,
-                None,
-                &context_input.prior_messages,
-                quota.work(),
-            )?;
-            quota.adopt(claim)?;
-            let (metadata, claim) =
-                crate::context::clone_metadata(&retained.context.metadata, quota.work())?;
-            quota.adopt(claim)?;
-            quota.transfer();
-            Ok::<_, Error>(crate::context::Context {
-                messages,
-                metadata,
-                current_input_index: retained.context.current_input_index,
-            })
-        })?;
-        let base = crate::context::AdmittedContext::admit(base, self.stock.limits, self.io)?;
+        let suffix = crate::model::clone_messages(&context_input.prior_messages, self.io)?;
+        let base = retained
+            .context
+            .copy(self.io)?
+            .under(self.stock.limits, self.io)?
+            .extend(stock_into_iter(suffix, self.io)?, self.io)?;
         Ok((context_input, base, Some(reference)))
     }
 
@@ -204,7 +229,7 @@ impl<'a> StockExecution<'a> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-    ) -> Result<Option<(usize, crate::context::Context)>> {
+    ) -> Result<Option<(usize, crate::context::AdmittedContext)>> {
         let Some(prefix) = journal.preceding_working_context() else {
             return Ok(None);
         };
@@ -234,11 +259,10 @@ impl<'a> StockExecution<'a> {
             .current_input_index
             .and_then(|index| (index as usize).checked_add(1))
             .ok_or_else(|| self.invalid_working_cut())?;
-        let context = with_history_io(self.io, |work| {
-            crate::context::clone_context_range(&retained.context, 0..through, work)
-                .map(|(context, _)| context)
-        })?;
-        Ok(Some((covered, context)))
+        Ok(Some((
+            covered,
+            retained.context.copy_range(0..through, self.io)?,
+        )))
     }
 
     /// Carry only the original first-step cut. Later cuts can consume part of
@@ -413,9 +437,9 @@ impl<'a> StockExecution<'a> {
         // Both decoded values already own their admitted backing. Keep that
         // custody while validating, then transfer it instead of copying them.
         let decoded = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        if authenticated {
-            crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
-        }
+        // The one bounds walk of the retained context: every step extends it.
+        let original_context =
+            crate::context::AdmittedContext::admit(original_context, self.stock.limits, io)?;
         if !authenticated || expected.is_some() {
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, &cut.compaction, io)
@@ -428,7 +452,7 @@ impl<'a> StockExecution<'a> {
                 let source = retain_preparation(
                     load_json::<crate::context::Context>(journal, &cut.source, io).await?,
                 )?;
-                self.validate_working_compaction(
+                self.validate_admitted_compaction(
                     &source,
                     &original_context,
                     &proof,
@@ -540,8 +564,21 @@ impl<'a> StockExecution<'a> {
         identity: (OperationId, u32),
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        crate::context::validate_projected_context(source, self.stock.limits, io)?;
         crate::context::validate_projected_context(retained, self.stock.limits, io)?;
+        self.validate_admitted_compaction(source, retained, proof, identity, io)
+    }
+
+    /// [`Self::validate_working_compaction`] of a retained context already
+    /// admitted under the stock limits.
+    fn validate_admitted_compaction(
+        &self,
+        source: &crate::context::Context,
+        retained: &crate::context::Context,
+        proof: &crate::context::CompactionReference,
+        identity: (OperationId, u32),
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        crate::context::validate_projected_context(source, self.stock.limits, io)?;
         crate::context::validate_compaction(proof, source, retained, io)?;
         if proof
             .summary

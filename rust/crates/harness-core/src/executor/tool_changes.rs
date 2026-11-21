@@ -22,17 +22,15 @@ pub(crate) fn decode_tool_table(
 }
 
 impl StockExecution<'_> {
+    /// Appends the table notices `context` lacks. A turn history appends
+    /// them through [`TurnHistory::push_batch`] instead.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) fn tools_notice(
         &self,
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
-        let compose = self.code_composition(tools)?;
-        let mut pending = self.tool_table_notice(context, tools, compose, true)?;
-        let dynamic = self.tool_table_notice(context, tools, compose, false)?;
-        for message in stock_into_iter(dynamic, self.io)? {
-            stock_vec_push(&mut pending, message, self.io)?;
-        }
+        let pending = self.tool_notices(&context.messages, tools)?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -46,9 +44,24 @@ impl StockExecution<'_> {
         )
     }
 
+    /// The table notices `messages` lack for `tools`, in publication order.
+    pub(super) fn tool_notices(
+        &self,
+        messages: &[ModelMessage],
+        tools: &[crate::tool::ToolDefinition],
+    ) -> Result<Vec<ModelMessage>> {
+        let compose = self.code_composition(tools)?;
+        let mut pending = self.tool_table_notice(messages, tools, compose, true)?;
+        let dynamic = self.tool_table_notice(messages, tools, compose, false)?;
+        for message in stock_into_iter(dynamic, self.io)? {
+            stock_vec_push(&mut pending, message, self.io)?;
+        }
+        Ok(pending)
+    }
+
     fn tool_table_notice(
         &self,
-        context: &crate::context::Context,
+        messages: &[ModelMessage],
         tools: &[crate::tool::ToolDefinition],
         compose: bool,
         native: bool,
@@ -165,7 +178,7 @@ impl StockExecution<'_> {
             None => "[]",
         };
         let mut previous = String::new();
-        for message in &context.messages {
+        for message in messages {
             if let Some((notices, _)) = message.content.notice_parts() {
                 for notice in notices {
                     if notice.source == "tools" && notice.kind == kind {

@@ -216,20 +216,24 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
                 .await
                 .is_err()
         );
-        let mut tail = prior.clone();
+        let mut tail = crate::executor::TurnHistory::from(prior.clone());
         let mut steering = crate::executor::working_tail::retirement::SteeringHistory::default();
         steering.admit(2..4, None)?;
         session
             .retire_working_history(input.operation_id, &mut tail, Some(&mut steering))
             .await?;
-        assert_eq!(tail.as_slice(), &prior[3..]);
+        assert_eq!(tail.messages(), &prior[3..]);
         // The cut splits the admitted steering range. Repeating that cut
         // must neither lose its retired prefix nor duplicate the live suffix.
         session
             .retire_working_history(input.operation_id, &mut tail, Some(&mut steering))
             .await?;
-        let transcript =
-            session.settled_transcript(steering.into_retired(), tail.clone(), false, "final")?;
+        let transcript = session.settled_transcript(
+            steering.into_retired(),
+            tail.messages().to_vec(),
+            false,
+            "final",
+        )?;
         let mut expected = prior[2..].to_vec();
         expected.push(ModelMessage {
             role: ModelRole::Assistant,
@@ -237,20 +241,22 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         });
         assert_eq!(transcript, expected);
         assert_ne!(
-            session.settled_transcript(Vec::new(), tail.clone(), false, "final")?,
+            session.settled_transcript(Vec::new(), tail.messages().to_vec(), false, "final")?,
             expected,
             "the old tail-only settlement lost no steering"
         );
         assert_eq!(
-            session.absolute_prior_count(tail.len()).await?,
+            session.absolute_prior_count(tail.messages().len()).await?,
             prior.len() as u64
         );
-        let (_, retired_base, _) = session.response_base(&journal, &input, step, &tail).await?;
+        let (_, retired_base, _) = session
+            .response_base(&journal, &input, step, tail.messages())
+            .await?;
         assert_eq!(retired_base.messages.last(), prior.last());
         assert!(crate::contract::canonical_json_bytes(&retired_base)?.len() < 17_000);
         assert!(
             session
-                .response_base(&journal, &input, 0, &tail)
+                .response_base(&journal, &input, 0, tail.messages())
                 .await
                 .is_err(),
             "a missing checkpoint silently discarded the retired prefix"

@@ -24,16 +24,18 @@ impl StockExecution<'_> {
     pub(in crate::executor) async fn retire_working_history(
         &self,
         operation: OperationId,
-        messages: &mut Vec<ModelMessage>,
+        messages: &mut TurnHistory,
         steering: Option<&mut retirement::SteeringHistory>,
     ) -> Result<()> {
         let mut cache = self.working_tail.lock().await;
+        // Only a cut past the retired offset rewrites history positions.
         if let Some(retained) = &cache.retained
             && retained.cut.operation == operation
+            && retained.cut.prior_messages != cache.prior_offset
         {
             let through = retained.cut.prior_messages;
             retirement::retire_prefix(
-                messages,
+                messages.rewrite(),
                 &mut cache.prior_offset,
                 through,
                 steering,

@@ -203,7 +203,7 @@ impl StockExecution<'_> {
         (operation_id, step): (OperationId, u32),
         invocation: ToolInvocation,
         invocation_index: usize,
-        prior_messages: &mut Vec<ModelMessage>,
+        prior_messages: &mut dyn AppendHistory,
         hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);

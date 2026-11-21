@@ -4,7 +4,7 @@ use super::*;
 /// their already selected history without collecting another inbox boundary.
 pub(super) enum ModelStepHistory<'a> {
     Turn(
-        &'a mut Vec<ModelMessage>,
+        &'a mut TurnHistory,
         &'a mut working_tail::retirement::SteeringHistory,
     ),
     Selected(&'a [ModelMessage]),
@@ -13,7 +13,7 @@ pub(super) enum ModelStepHistory<'a> {
 impl ModelStepHistory<'_> {
     pub(super) fn messages(&self) -> &[ModelMessage] {
         match self {
-            Self::Turn(messages, _) => messages,
+            Self::Turn(history, _) => history.messages(),
             Self::Selected(messages) => messages,
         }
     }
@@ -23,12 +23,154 @@ impl ModelStepHistory<'_> {
         update: crate::model::ConfigurationUpdate,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if let Self::Turn(messages, retained) = self {
-            let from = messages.len();
-            stock_vec_push(messages, update.message(), io)?;
-            retained.admit(from..messages.len(), io)?;
+        if let Self::Turn(history, retained) = self {
+            let from = history.messages().len();
+            history.push_message(update.message(), io)?;
+            retained.admit(from..history.messages().len(), io)?;
         }
         Ok(())
+    }
+}
+
+/// Append-only access to a step's growing history: the only change a reply,
+/// tool result or hook makes, so an admission of the existing messages holds.
+pub(super) trait AppendHistory: Send {
+    fn messages(&self) -> &[ModelMessage];
+    fn push_message(&mut self, message: ModelMessage, io: Option<&PreparationIo>) -> Result<()>;
+    /// Admits storage for one message, so the next [`Self::push_reserved`]
+    /// can neither fail nor allocate.
+    fn reserve_message(&mut self, io: Option<&PreparationIo>) -> Result<()>;
+    fn push_reserved(&mut self, message: ModelMessage);
+}
+
+impl AppendHistory for Vec<ModelMessage> {
+    fn messages(&self) -> &[ModelMessage] {
+        self
+    }
+    fn push_message(&mut self, message: ModelMessage, io: Option<&PreparationIo>) -> Result<()> {
+        stock_vec_push(self, message, io)
+    }
+    fn reserve_message(&mut self, io: Option<&PreparationIo>) -> Result<()> {
+        stock_vec_prepare_push(self, io)
+    }
+    fn push_reserved(&mut self, message: ModelMessage) {
+        self.push(message);
+    }
+}
+
+/// A stock turn's history and the one admission of its canonical base. The
+/// history only appends, so each step bounds only the messages appended since
+/// the admission. Retiring a prefix, the one rewrite, drops the admission
+/// first, and settlement consumes the history.
+#[derive(Default)]
+pub(super) struct TurnHistory {
+    messages: Vec<ModelMessage>,
+    base: Option<CarriedBase>,
+}
+
+/// The admitted base of one operation's input and the messages it covers.
+struct CarriedBase {
+    operation: OperationId,
+    base: crate::context::AdmittedContext,
+    covered: usize,
+}
+
+impl From<Vec<ModelMessage>> for TurnHistory {
+    fn from(messages: Vec<ModelMessage>) -> Self {
+        Self {
+            messages,
+            base: None,
+        }
+    }
+}
+
+impl TurnHistory {
+    pub(super) fn messages(&self) -> &[ModelMessage] {
+        &self.messages
+    }
+
+    /// Mutable positions, after the admission that relied on them is dropped.
+    pub(super) fn rewrite(&mut self) -> &mut Vec<ModelMessage> {
+        self.base = None;
+        &mut self.messages
+    }
+
+    pub(super) fn into_messages(self) -> Vec<ModelMessage> {
+        self.messages
+    }
+
+    /// Appends `messages` as one insertion, all of them or none.
+    pub(super) fn push_batch(
+        &mut self,
+        messages: Vec<ModelMessage>,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let messages = stock_into_iter(messages, io)?;
+        let mut context = crate::context::Context {
+            messages: std::mem::take(&mut self.messages),
+            ..Default::default()
+        };
+        let end = context.messages.len();
+        let result =
+            crate::context::ContextInsertion::insert_batch(messages, end, &mut context, 0, io);
+        self.messages = context.messages;
+        result
+    }
+
+    /// The stage input and canonical base of `turn` over this history, for a
+    /// selection without a checkpoint. The admission carried from the last
+    /// call is extended by only the messages appended since; the first call
+    /// or another operation assembles the base once.
+    pub(super) fn base(
+        &mut self,
+        turn: &TurnInput,
+        step: u32,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<(ContextInput, crate::context::AdmittedContext)> {
+        let input = ContextInput::copy_for_turn(turn, step, &self.messages, io)?;
+        let base = match self.base.take() {
+            Some(carried) if carried.operation == turn.operation_id => {
+                let appended = self.messages.get(carried.covered..).ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "carried base exceeds its turn history",
+                    )
+                })?;
+                let appended = crate::model::clone_messages(appended, io)?;
+                carried
+                    .base
+                    .under(limits, io)?
+                    .extend(stock_into_iter(appended, io)?, io)?
+            }
+            _ => ContextPipeline::base_context(&input, limits, io)?,
+        };
+        let copy = base.copy(io)?;
+        self.base = Some(CarriedBase {
+            operation: turn.operation_id,
+            base,
+            covered: self.messages.len(),
+        });
+        Ok((input, copy))
+    }
+}
+
+impl AppendHistory for TurnHistory {
+    fn messages(&self) -> &[ModelMessage] {
+        &self.messages
+    }
+    fn push_message(&mut self, message: ModelMessage, io: Option<&PreparationIo>) -> Result<()> {
+        stock_vec_push(&mut self.messages, message, io)
+    }
+    fn reserve_message(&mut self, io: Option<&PreparationIo>) -> Result<()> {
+        stock_vec_prepare_push(&mut self.messages, io)
+    }
+    fn push_reserved(&mut self, message: ModelMessage) {
+        self.messages.push(message);
     }
 }
 

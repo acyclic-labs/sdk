@@ -117,3 +117,47 @@ pub fn prefix_digest_for_test(
 ) -> crate::Result<[u8; 32]> {
     crate::context::prefix_digest(context, through, None)
 }
+
+/// Counting helpers for tests that prove which messages a step bounds.
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod bounds {
+    /// Runs `work` under a seeded schedule and counts its bound measurements.
+    pub(crate) fn measure<T>(work: impl std::future::Future<Output = T>) -> (T, u64) {
+        use acyclic_native_runtime::{cost::Cost, testing::Schedule};
+        let (schedule, mut boundaries) = Schedule::seeded(1);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let output = runtime.block_on(async {
+            let driver = async {
+                while let Some(boundary) = boundaries.recv().await {
+                    boundary.release();
+                }
+            };
+            tokio::select! {
+                output = schedule.scope(work) => output,
+                () = driver => unreachable!("the schedule outlives its driver"),
+            }
+        });
+        (output, schedule.ledger().unattributed.count(Cost::Measure))
+    }
+
+    /// A notice batch, which bounds measure (plain text charges none).
+    pub(crate) fn notice_message() -> crate::model::ModelMessage {
+        crate::model::ModelMessage {
+            role: crate::model::ModelRole::User,
+            content: crate::model::ModelContent::Part(crate::model::ModelContentPart::Notices {
+                notices: vec![crate::conversation::wire::Notice {
+                    source: "tools".into(),
+                    kind: "tools.changed".into(),
+                    body: serde_json::json!({"history": "x".repeat(512)}),
+                    wake: false,
+                    coalesce_key: None,
+                }],
+            }),
+        }
+    }
+}

@@ -158,12 +158,11 @@ impl StockExecution<'_> {
         self.ensure_started(journal, input).await?;
         self.begin_working_history().await;
         self.begin_request_continuation().await;
-        let mut prior_messages = Vec::new();
+        let mut prior_messages = TurnHistory::default();
         if let Some(crate::agent::ContinuationOverride::Instruction { text }) =
             self.stock.intervention.as_deref()
         {
-            stock_vec_push(
-                &mut prior_messages,
+            prior_messages.push_message(
                 ModelMessage {
                     role: ModelRole::User,
                     content: ModelContent::Text(stock_string_copy(text, self.io)?),
@@ -285,17 +284,20 @@ impl StockExecution<'_> {
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
-                let source_messages = prior_messages.len();
+                let source_messages = prior_messages.messages().len();
                 unsettled = Some(source_messages);
                 let collected =
                     self.collect_step_events(input, step, model_events, &mut prior_messages)?;
-                let appended = prior_messages.get(source_messages..).ok_or_else(|| {
-                    stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "model step lost source messages",
-                    )
-                })?;
+                let appended = prior_messages
+                    .messages()
+                    .get(source_messages..)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            self.io,
+                            crate::wire::ErrorCode::Invalid,
+                            "model step lost source messages",
+                        )
+                    })?;
                 output.include(&collected, appended, self.io)?;
                 let CollectedStep {
                     calls,
@@ -316,13 +318,16 @@ impl StockExecution<'_> {
                             journal,
                             input,
                             step,
-                            prior_messages.get(..source_messages).ok_or_else(|| {
-                                stock_boundary(
-                                    self.io,
-                                    crate::wire::ErrorCode::Invalid,
-                                    "model step lost source messages",
-                                )
-                            })?,
+                            prior_messages
+                                .messages()
+                                .get(..source_messages)
+                                .ok_or_else(|| {
+                                    stock_boundary(
+                                        self.io,
+                                        crate::wire::ErrorCode::Invalid,
+                                        "model step lost source messages",
+                                    )
+                                })?,
                             &metadata,
                         )
                         .await?;
@@ -388,13 +393,16 @@ impl StockExecution<'_> {
                                 journal,
                                 input,
                                 step,
-                                prior_messages.get(..source_messages).ok_or_else(|| {
-                                    stock_boundary(
-                                        self.io,
-                                        crate::wire::ErrorCode::Invalid,
-                                        "model step lost source messages",
-                                    )
-                                })?,
+                                prior_messages
+                                    .messages()
+                                    .get(..source_messages)
+                                    .ok_or_else(|| {
+                                        stock_boundary(
+                                            self.io,
+                                            crate::wire::ErrorCode::Invalid,
+                                            "model step lost source messages",
+                                        )
+                                    })?,
                                 &metadata,
                             )
                             .await?;
@@ -442,13 +450,16 @@ impl StockExecution<'_> {
                         journal,
                         input,
                         step,
-                        prior_messages.get(..source_messages).ok_or_else(|| {
-                            stock_boundary(
-                                self.io,
-                                crate::wire::ErrorCode::Invalid,
-                                "model step lost source messages",
-                            )
-                        })?,
+                        prior_messages
+                            .messages()
+                            .get(..source_messages)
+                            .ok_or_else(|| {
+                                stock_boundary(
+                                    self.io,
+                                    crate::wire::ErrorCode::Invalid,
+                                    "model step lost source messages",
+                                )
+                            })?,
                         &metadata,
                     )
                     .await?;
@@ -478,7 +489,7 @@ impl StockExecution<'_> {
                             // This call settled; a later stop or failure keeps it
                             // in the transcript the next turn sees.
                             unanswered.retain(|index| *index != invocation_index);
-                            unsettled = Some(prior_messages.len());
+                            unsettled = Some(prior_messages.messages().len());
                             settled_call = true;
                             // The turn's own stop ends the turn before another
                             // call can start, after the call it interrupted.
@@ -517,6 +528,7 @@ impl StockExecution<'_> {
             ))
         }
         .await;
+        let mut prior_messages = prior_messages.into_messages();
         let progress = match progress {
             Ok(progress) => progress,
             // A definitive failure settles the turn with the steps it
@@ -626,7 +638,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         model_events: Vec<ModelEvent>,
-        prior_messages: &mut Vec<ModelMessage>,
+        prior_messages: &mut dyn AppendHistory,
     ) -> Result<CollectedStep> {
         let scope = crate::filesystem::PreparationScope::with_input(
             self.io,
@@ -699,7 +711,7 @@ impl StockExecution<'_> {
                     )
                     .with_metadata(metadata)
                     .with_native(native);
-                    let index = prior_messages.len();
+                    let index = prior_messages.messages().len();
                     self.append_assistant_part(
                         prior_messages,
                         ModelContentPart::ToolCall(call),
@@ -786,7 +798,7 @@ impl StockExecution<'_> {
 
     pub(super) fn append_assistant_part(
         &self,
-        messages: &mut Vec<ModelMessage>,
+        messages: &mut dyn AppendHistory,
         part: ModelContentPart,
         source: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -806,10 +818,10 @@ impl StockExecution<'_> {
         with_history_io(io, |work| {
             message.content.validate_limits(self.stock.limits, work)
         })?;
-        stock_vec_prepare_push(messages, self.io)?;
+        messages.reserve_message(self.io)?;
         scope.finish_into(self.io, retained)?;
         // Storage and custody are admitted; insertion cannot fail or allocate.
-        messages.push(message);
+        messages.push_reserved(message);
         Ok(())
     }
 }
@@ -817,12 +829,12 @@ impl StockExecution<'_> {
 /// Results go straight into history; hook context is deferred until every
 /// result is present. No sorting scratch allocation or reordering is needed.
 pub(super) fn append_step_context(
-    messages: &mut Vec<ModelMessage>,
+    messages: &mut dyn AppendHistory,
     context: &mut Vec<ModelMessage>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     for message in context.drain(..) {
-        stock_vec_push(messages, message, io)?;
+        messages.push_message(message, io)?;
     }
     Ok(())
 }

@@ -22,7 +22,7 @@ impl StockExecution<'_> {
             return Ok((continued.0, continued.1, None));
         }
         let (mut context_input, mut base, working) = self
-            .response_base(journal, input, step, history.messages())
+            .response_history_base(journal, input, step, history)
             .await?;
         let configuration = if matches!(history, request::ModelStepHistory::Turn(..)) {
             self.configuration_delta(&base.context().messages)?
