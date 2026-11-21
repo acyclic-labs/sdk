@@ -207,7 +207,7 @@ pub(crate) fn is_overlapped(file: &File) -> io::Result<bool> {
     Ok(mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0)
 }
 
-pub(super) fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
+pub(crate) fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
     // SAFETY: reopens the same file object without path traversal.
     let handle = unsafe {
         ReOpenFile(
@@ -243,6 +243,7 @@ pub(crate) fn with_overlapped<T>(
         if let Some(meter) = meter {
             meter.admit_read(0)?;
         }
+        crate::cost::charge(crate::cost::Cost::Reopen);
         transfer(&reopen_overlapped(file, access)?)
     }
 }

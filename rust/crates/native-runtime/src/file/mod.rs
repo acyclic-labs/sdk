@@ -38,8 +38,8 @@ pub use capability::{NativeFile, NativeFileMeter};
 #[cfg(unix)]
 pub use operations::read_declared_source_bytes;
 pub use operations::{
-    Durability, OwnedRead, OwnedWrite, read_at, read_batch_async, set_len, sync_data, sync_file,
-    sync_filesystem, sync_parent, write_all_at,
+    Durability, OwnedRead, OwnedWrite, positional_file, read_at, read_batch_async, set_len,
+    sync_data, sync_file, sync_filesystem, sync_parent, write_all_at,
 };
 #[cfg(windows)]
 pub use operations::{NativeControlCompletion, device_control_in_place};

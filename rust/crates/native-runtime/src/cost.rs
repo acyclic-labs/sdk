@@ -28,6 +28,9 @@ pub enum Cost {
     Copy,
     /// A credential or capability check.
     AuthCheck,
+    /// A fresh open of a file the request already holds, made for that one
+    /// request (a Windows positional operation on a synchronous handle).
+    Reopen,
 }
 
 /// Counts one `cost` against every operation open in the current simulation

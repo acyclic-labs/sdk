@@ -459,12 +459,15 @@ impl Shared {
     /// one: a crash leaves either whole, and every write is durable after.
     fn compact(&self, log: &mut Log) -> std::io::Result<()> {
         let next = self.root.join(NEXT);
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&next)?;
+        let file = acyclic_native_runtime::positional_file(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&next)?,
+            true,
+        )?;
         self.created();
         let mut end = 0;
         let mut index = BTreeMap::new();
@@ -787,6 +790,8 @@ fn open_root(
     // Publish FORMAT, LOCK, LOG and the recovery marker together. No caller
     // observes this root until their one namespace barrier completes.
     directory(&root)?;
+    // Replay and recovery were the log's last cursor I/O.
+    let log = acyclic_native_runtime::positional_file(log, true)?;
     Ok(Shared {
         source: ObservationSource::new(),
         root,
@@ -1144,6 +1149,55 @@ mod isolation_tests {
         assert_eq!(medium.counts(), (0, 1));
         medium.flush(&[]).await.unwrap();
         assert_eq!(medium.counts(), (0, 1));
+    }
+
+    /// Each write and read is one native call on its log handle: none reopens
+    /// the file for itself, across open, writes, reads, compaction and reopen.
+    /// The same ledger counts the operation's flushes, so it observes the
+    /// persistence workers where a reopen would be charged.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn log_writes_and_reads_never_reopen_the_log() {
+        use acyclic_native_runtime::{cost::Cost, testing};
+        let (schedule, mut events) = testing::Schedule::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let workload = testing::ledger::operation("objects", async {
+            let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+                .await
+                .unwrap();
+            for key in 0..64 {
+                let key = format!("k/{key}");
+                assert!(medium.create(&key, bytes(b"value")).await.unwrap());
+                assert!(medium.remove(&key).await.unwrap());
+            }
+            assert!(medium.create("kept", bytes(b"value")).await.unwrap());
+            medium.flush(&["kept".to_owned()]).await.unwrap();
+            medium.shared.compact(&mut medium.shared.log()).unwrap();
+            assert_eq!(
+                medium.read("kept", None).await.unwrap().unwrap().as_ref(),
+                b"value"
+            );
+            drop(medium);
+            let reopened = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+                .await
+                .unwrap();
+            assert!(reopened.create("after", bytes(b"value")).await.unwrap());
+            assert_eq!(
+                reopened.read("kept", None).await.unwrap().unwrap().as_ref(),
+                b"value"
+            );
+        });
+        runtime.block_on(testing::drive(&schedule, &mut events, |_| {}, workload));
+        let ledger = schedule.ledger();
+        let objects = ledger.operation("objects").expect("measured");
+        assert!(objects.total.count(Cost::Fsync) > 0, "{ledger}");
+        ledger
+            .check(&[testing::ledger::Budget::Count("objects", Cost::Reopen, 0)])
+            .unwrap();
     }
 
     /// Every crash prefix recovers whole frames and can commit a clean successor.

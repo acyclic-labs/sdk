@@ -386,6 +386,33 @@ pub fn write_all_at(
     write_bounded_in_place(file, offset, bytes, meter)
 }
 
+/// Prepares `file` to serve only positional I/O ([`read_at`], [`write_all_at`],
+/// flushes and length changes) at native cost. A Windows positional
+/// operation on a synchronous handle reopens the file overlapped for that one
+/// operation; a file serving many of them is reopened once here instead.
+/// Elsewhere `file` is returned unchanged. Cursor reads, writes and seeks on
+/// the result are unsupported: Windows completes them asynchronously.
+pub fn positional_file(file: File, writable: bool) -> io::Result<File> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+        if windows::is_overlapped(&file)? {
+            return Ok(file);
+        }
+        let access = if writable {
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE
+        } else {
+            FILE_GENERIC_READ
+        };
+        windows::reopen_overlapped(&file, access)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = writable;
+        Ok(file)
+    }
+}
+
 /// One terminal device-control result, preserving partial query output for paging.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
