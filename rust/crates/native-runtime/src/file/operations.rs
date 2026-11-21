@@ -285,6 +285,7 @@ fn sync_parent_ordered(path: &Path, durability: Durability) -> io::Result<()> {
 
 /// Reads at an absolute offset without changing the file cursor.
 pub fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+    crate::cost::charge_bytes(crate::cost::Cost::FileRead, destination.len() as u64);
     with_file_admission(file, || {
         #[cfg(target_vendor = "apple")]
         return read_at_impl(file, offset, ReadDestination::Slice(destination));
@@ -365,6 +366,7 @@ pub fn write_all_at(
     bytes: &[u8],
     meter: Option<(&dyn NativeReadMeter, bool)>,
 ) -> io::Result<()> {
+    crate::cost::charge_bytes(crate::cost::Cost::FileWrite, bytes.len() as u64);
     let Some((meter, held)) = meter else {
         return with_file_admission(file, || {
             #[cfg(windows)]

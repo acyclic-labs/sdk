@@ -1,0 +1,107 @@
+{
+ "v": 1,
+ "metrics": {
+  "AllocatedBytes": {
+   "budget": 126054985,
+   "target": 4201833,
+   "unit": "per request",
+   "assert": false
+  },
+  "Allocations": {
+   "budget": 272162,
+   "target": 9073,
+   "unit": "per request",
+   "assert": false
+  },
+  "Copy": {
+   "budget": 1542,
+   "target": 52,
+   "unit": "per request",
+   "assert": false
+  },
+  "CopyBytes": {
+   "budget": 664481,
+   "target": 22150,
+   "unit": "per request",
+   "assert": false
+  },
+  "Encode": {
+   "budget": 64,
+   "target": 3,
+   "unit": "per request",
+   "assert": false
+  },
+  "EncodeBytes": {
+   "budget": 24012,
+   "target": 800,
+   "unit": "per request",
+   "assert": false
+  },
+  "FileRead": {
+   "budget": 552,
+   "target": 19,
+   "unit": "per request",
+   "assert": false
+  },
+  "FileReadBytes": {
+   "budget": 144936,
+   "target": 4832,
+   "unit": "per request",
+   "assert": false
+  },
+  "FileWrite": {
+   "budget": 1512,
+   "target": 51,
+   "unit": "per request",
+   "assert": false
+  },
+  "FileWriteBytes": {
+   "budget": 592847,
+   "target": 19762,
+   "unit": "per request",
+   "assert": false
+  },
+  "Fsync": {
+   "budget": 33,
+   "target": 1,
+   "unit": "per request",
+   "assert": false
+  },
+  "Handoff": {
+   "budget": 2140,
+   "target": 72,
+   "unit": "per request",
+   "assert": false
+  },
+  "Identity": {
+   "budget": 2095,
+   "target": 70,
+   "unit": "per request",
+   "assert": false
+  },
+  "JournalAppend": {
+   "budget": 23,
+   "target": 1,
+   "unit": "per request",
+   "assert": false
+  },
+  "Measure": {
+   "budget": 281,
+   "target": 10,
+   "unit": "per request",
+   "assert": false
+  },
+  "MeasureBytes": {
+   "budget": 2172023,
+   "target": 72401,
+   "unit": "per request",
+   "assert": false
+  },
+  "Reopen": {
+   "budget": 0,
+   "target": 0,
+   "unit": "per request",
+   "assert": false
+  }
+ }
+}

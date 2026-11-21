@@ -42,6 +42,7 @@ rust_test(
         "tests/main.rs",
     ],
     compile_data = [
+        "cost-budget.json",
         "tests/dst/classes.json",
     ],
     edition = "2024",

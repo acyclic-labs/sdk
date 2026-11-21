@@ -382,6 +382,12 @@ fn write<T: Serialize + ?Sized>(
     maximum: Option<u64>,
     canonical: bool,
 ) -> Result<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let retained = if output.is_some() {
+        acyclic_native_runtime::cost::Cost::Encode
+    } else {
+        acyclic_native_runtime::cost::Cost::Measure
+    };
     let admitted_items = scope.lexical.items;
     scope.lexical = admission::Lexical::default();
     let state = RefCell::new(&mut *scope);
@@ -427,6 +433,8 @@ fn write<T: Serialize + ?Sized>(
     if scope.lexical.string || scope.lexical.depth != 0 {
         return Err(boundary("incomplete JSON document", scope.code));
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    acyclic_native_runtime::cost::charge_bytes(retained, written);
     Ok(written)
 }
 fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Value> {

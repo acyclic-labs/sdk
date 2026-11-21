@@ -268,6 +268,7 @@ pub(crate) fn poll_submission_with(
             wake_capacity_waiter(next);
             drop(retired);
             drop(displaced);
+            crate::cost::charge(crate::cost::Cost::Handoff);
             if let Some(observation) = observation {
                 obs::project(move || {
                     observation.record("native.queued", true);

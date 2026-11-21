@@ -23,6 +23,11 @@ use std::collections::BTreeSet;
 
 /// Seeds in the fast suite. `DST_SEEDS=<a>..<b>` runs a deeper sweep.
 const SEEDS: std::ops::Range<u64> = 0..64;
+/// The seed whose exact per-request costs `cost-budget.json` bounds.
+const BUDGETED_SEED: u64 = 0;
+const COST_BUDGET: &str = include_str!("../../cost-budget.json");
+/// The cost-ledger operation holding the whole swarm and all work it spawns.
+const SWARM_OPERATION: &str = "dst.swarm";
 const MARKER: &str = "swarm-node:";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -537,8 +542,19 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step], seen: &'a Seen) -> EntryFutu
 /// the driver's simulated deadline included, names the model requests each
 /// node made, in order.
 fn run(seed: u64, plan: &[Step]) -> std::result::Result<(), String> {
+    run_metered(seed, plan, false).map(drop)
+}
+
+/// The world's exact costs: its swarm operation's ledger counts, the
+/// simulation thread's allocations when measured, and its model requests.
+struct Spent {
+    costs: BTreeMap<String, u64>,
+    requests: u64,
+}
+
+fn run_metered(seed: u64, plan: &[Step], measured: bool) -> std::result::Result<Spent, String> {
     let seen = Seen::default();
-    let caught = std::panic::catch_unwind(|| run_world(seed, plan, &seen));
+    let caught = std::panic::catch_unwind(|| run_world(seed, plan, &seen, measured));
     let outcome = caught.unwrap_or_else(|panic| {
         Err(panic
             .downcast_ref::<String>()
@@ -557,29 +573,136 @@ fn run(seed: u64, plan: &[Step]) -> std::result::Result<(), String> {
     })
 }
 
-fn run_world(seed: u64, plan: &[Step], seen: &Seen) -> std::result::Result<(), String> {
+fn run_world(
+    seed: u64,
+    plan: &[Step],
+    seen: &Seen,
+    measured: bool,
+) -> std::result::Result<Spent, String> {
     let runtime =
         acyclic_native_runtime::testing::seeded_runtime(seed).map_err(|e| e.to_string())?;
-    runtime.block_on(async {
-        tokio::time::pause();
-        let directory = temporary_directory().map_err(|e| e.to_string())?;
-        let mut driver = driver::Driver::new(seed, None);
-        // The driver's simulated deadline fails a swarm that stops making
-        // progress, instead of hanging.
-        match driver
-            .run(swarm(directory.path(), plan, seen))
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            driver::Outcome::Completed(result) => result.map_err(|error| error.to_string()),
-            driver::Outcome::Crashed(cause) => Err(format!("unplanned storage fault: {cause}")),
-        }
-    })
+    let world = || {
+        runtime.block_on(async {
+            tokio::time::pause();
+            let directory = temporary_directory().map_err(|e| e.to_string())?;
+            let mut driver = driver::Driver::new(seed, None);
+            // The driver's simulated deadline fails a swarm that stops making
+            // progress, instead of hanging.
+            let swarm = entry(acyclic_native_runtime::cost::operation(
+                SWARM_OPERATION,
+                swarm(directory.path(), plan, seen),
+            ));
+            match driver.run(swarm).await.map_err(|error| error.to_string())? {
+                driver::Outcome::Completed(result) => result.map_err(|error| error.to_string())?,
+                driver::Outcome::Crashed(cause) => {
+                    return Err(format!("unplanned storage fault: {cause}"));
+                }
+            }
+            // The driver ran the scope until drained, so every call has recorded.
+            Ok(driver.schedule.ledger())
+        })
+    };
+    let (ledger, allocations) = if measured {
+        let measured = acyclic_test_support::measure(world);
+        let totals = (measured.count_total, measured.bytes_total);
+        (measured.output?, Some(totals))
+    } else {
+        (world()?, None)
+    };
+    let swarm = ledger
+        .operation(SWARM_OPERATION)
+        .ok_or_else(|| format!("{SWARM_OPERATION} never completed\nledger:\n{ledger}"))?;
+    let mut costs: BTreeMap<String, u64> = swarm
+        .total
+        .costs
+        .iter()
+        .map(|(cost, count)| (format!("{cost:?}"), *count))
+        .collect();
+    costs.extend(
+        swarm
+            .total
+            .bytes
+            .iter()
+            .map(|(cost, bytes)| (format!("{cost:?}Bytes"), *bytes)),
+    );
+    if let Some(allocations) = allocations {
+        costs.insert("Allocations".into(), allocations.0);
+        costs.insert("AllocatedBytes".into(), allocations.1);
+    }
+    let requests = seen.lock().map_err(|e| e.to_string())?.len() as u64;
+    Ok(Spent { costs, requests })
 }
 
 /// The seed's world, run once. The sweep stops at its first failing seed.
 fn world(seed: u64) -> std::result::Result<(), String> {
     run(seed, &generate(seed))
+}
+
+/// `cost-budget.json`, v1: each metric's per-request budget and its target.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CostBudget {
+    v: u32,
+    metrics: BTreeMap<String, Metric>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Metric {
+    budget: u64,
+    // Read by people ratcheting the budget, not by the check.
+    #[serde(rename = "target")]
+    _target: u64,
+    #[serde(rename = "unit")]
+    _unit: String,
+    #[serde(default = "asserted")]
+    assert: bool,
+}
+
+fn asserted() -> bool {
+    true
+}
+
+/// Each asserted metric's per-request count (rounded up) is at most its
+/// budget, and every counted cost has a budget, so a new hot-path cost cannot
+/// arrive unaccounted. The per-request table is printed either way. A metric
+/// marked `"assert": false` still varies between runs of the one seed; it is
+/// reported, and asserted once its path is deterministic.
+fn within_budget(spent: &Spent) -> std::result::Result<(), String> {
+    let file: CostBudget =
+        serde_json::from_str(COST_BUDGET).map_err(|error| format!("cost-budget.json: {error}"))?;
+    if file.v != 1 {
+        return Err("cost-budget.json: unknown version".into());
+    }
+    let metrics = file.metrics;
+    let requests = spent.requests.max(1);
+    let mut table = format!("seed {BUDGETED_SEED}: {} model requests\n", spent.requests);
+    let mut over = Vec::new();
+    for (name, total) in &spent.costs {
+        let per_request = total.div_ceil(requests);
+        table.push_str(&format!(
+            "  {name}: {per_request} per request ({total} total)\n"
+        ));
+        let Some(metric) = metrics.get(name) else {
+            over.push(format!("{name}: {per_request} per request has no budget"));
+            continue;
+        };
+        if !metric.assert {
+            continue;
+        }
+        let budget = metric.budget;
+        if per_request > budget {
+            over.push(format!(
+                "{name}: {per_request} per request exceeds budget {budget}"
+            ));
+        }
+    }
+    eprint!("{table}");
+    if over.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{}\n{table}", over.join("\n")))
+    }
 }
 
 /// Shrinks a failing seed's plan to the 1-minimal subset that still fails.
@@ -677,11 +800,19 @@ acyclic_test_support::cases! {
 fn swarms(part: u64) -> std::result::Result<(), String> {
     let seeds = sweep::seeds(SEEDS).map_err(|malformed| malformed.to_string())?;
     let single = seeds.end - seeds.start == 1;
+    // The budgeted seed's exact costs per model request must stay within
+    // `cost-budget.json`; every cut lowers its budget in the same change. An
+    // exceeded budget is reported after the sweep: shrinking a plan cannot
+    // explain a cost.
+    let mut budget = Ok(());
     let swept = sweep::sweep("swarm", seeds, |seed| {
-        if seed % CASES == part {
-            world(seed)
-        } else {
+        if seed % CASES != part {
             Ok(())
+        } else if seed == BUDGETED_SEED {
+            budget = within_budget(&run_metered(seed, &generate(seed), true)?);
+            Ok(())
+        } else {
+            world(seed)
         }
     })
     .map_err(|failure| {
@@ -693,5 +824,5 @@ fn swarms(part: u64) -> std::result::Result<(), String> {
         format!("{failure}\n{trace}")
     })?;
     eprintln!("swarm part {part}: {:?}", swept.elapsed);
-    Ok(())
+    budget
 }

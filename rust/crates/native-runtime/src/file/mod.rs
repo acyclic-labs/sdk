@@ -159,6 +159,7 @@ pub type FileIdentity = (u64, u64);
 /// Queries the platform's stable identity for an open file.
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
+    crate::cost::charge(crate::cost::Cost::Identity);
     #[cfg(test)]
     FILE_IDENTITY_QUERIES.with(|count| count.set(count.get() + 1));
     #[cfg(windows)]

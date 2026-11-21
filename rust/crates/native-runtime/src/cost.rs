@@ -31,6 +31,21 @@ pub enum Cost {
     /// A fresh open of a file the request already holds, made for that one
     /// request (a Windows positional operation on a synchronous handle).
     Reopen,
+    /// A job handed from a task to a native worker thread: a queue transfer
+    /// and a thread wake, paid so blocking work never stalls the executor.
+    Handoff,
+    /// A file identity query (one `fstat`/`statx`) that finds a descriptor's
+    /// shared native state.
+    Identity,
+    /// One positional native file read; charged with the bytes requested.
+    FileRead,
+    /// One positional native file write; charged with the bytes written.
+    FileWrite,
+    /// A document encoded to retained bytes; charged with the bytes.
+    Encode,
+    /// A document measured, digested or compared without retaining its
+    /// bytes; charged with the bytes it would encode to.
+    Measure,
 }
 
 /// Counts one `cost` against every operation open in the current simulation
