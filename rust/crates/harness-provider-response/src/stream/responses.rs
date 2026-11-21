@@ -71,10 +71,10 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         }
         Some("response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done") => {
             let index = index(value, "output_index")?;
-            if !state.calls.get(&index).is_some_and(|call| call.freeform) {
+            let Some(call) = state.calls.get(&index).filter(|call| call.freeform) else {
                 return Err(invalid("freeform tool input without custom item"));
-            }
-            validate_item_id(&state.calls[&index], value.get("item_id"))?;
+            };
+            validate_item_id(call, value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             if value["type"] == "response.custom_tool_call_input.delta" {
                 append_input(call, budget, &value["delta"])?;
@@ -90,19 +90,19 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         }
         Some("response.function_call_arguments.delta") => {
             let index = index(value, "output_index")?;
-            if !state.calls.get(&index).is_some_and(|call| !call.freeform) {
+            let Some(call) = state.calls.get(&index).filter(|call| !call.freeform) else {
                 return Err(invalid("tool delta without item"));
-            }
-            validate_item_id(&state.calls[&index], value.get("item_id"))?;
+            };
+            validate_item_id(call, value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             append_input(call, budget, &value["delta"])?;
         }
         Some("response.function_call_arguments.done") => {
             let index = index(value, "output_index")?;
-            if !state.calls.get(&index).is_some_and(|call| !call.freeform) {
+            let Some(call) = state.calls.get(&index).filter(|call| !call.freeform) else {
                 return Err(invalid("tool done without item"));
-            }
-            validate_item_id(&state.calls[&index], value.get("item_id"))?;
+            };
+            validate_item_id(call, value.get("item_id"))?;
             let (call, budget) = state.call(index)?;
             complete_input(
                 call,
@@ -190,7 +190,11 @@ fn complete(
     state.identity(response)?;
     state.usage(&response["usage"])?;
     if incomplete || response["status"] == "incomplete" {
-        if response["incomplete_details"]["reason"] != "max_output_tokens" {
+        if response
+            .pointer("/incomplete_details/reason")
+            .and_then(Value::as_str)
+            != Some("max_output_tokens")
+        {
             return Err(invalid("Responses generation was incomplete"));
         }
         state.finish_reason("length")?;
@@ -253,10 +257,10 @@ fn admit_call(
                 "Responses completed tool input changed; recovery: preserve its original complete input",
             ));
         }
-    } else if let Some(id) = acyclic_harness_provider_protocol::present(item.get("id")) {
-        if string(id)?.is_empty() {
-            return Err(invalid("incomplete Responses tool item identity"));
-        }
+    } else if let Some(id) = acyclic_harness_provider_protocol::present(item.get("id"))
+        && string(id)?.is_empty()
+    {
+        return Err(invalid("incomplete Responses tool item identity"));
     }
     let (call, budget) = state.call(index)?;
     call.freeform = kind == Output::Freeform;
@@ -342,7 +346,11 @@ impl State<'_> {
         let (last, text) = self
             .completed_message
             .get_or_insert_with(|| (position, String::new()));
-        self.budget.string(text, &self.texts[&position].text)?;
+        let part = self
+            .texts
+            .get(&position)
+            .ok_or_else(|| invalid("completed message text part missing"))?;
+        self.budget.string(text, &part.text)?;
         *last = position;
         Ok(())
     }

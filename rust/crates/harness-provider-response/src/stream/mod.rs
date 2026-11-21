@@ -87,7 +87,10 @@ pub fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<Vec<Mode
         return Err(invalid("model event must be an object"));
     }
     if value.get("error").is_some_and(|error| !error.is_null())
-        || matches!(value["type"].as_str(), Some("error" | "response.failed"))
+        || matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("error" | "response.failed")
+        )
     {
         return Err(error::classify(adapter, &value));
     }

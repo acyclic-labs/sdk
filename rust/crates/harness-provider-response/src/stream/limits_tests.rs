@@ -175,16 +175,16 @@ mod accounting {
 
     #[test]
     fn recount_negative_control_exceeds_the_linear_work_bound() {
-        for count in [128, 256] {
+        for count in [128_u16, 256] {
             let mut state = State::new(1024 * 1024);
             let mut rescanned = 0;
             for i in 0..count {
-                state.call(i).unwrap();
+                state.call(u64::from(i)).unwrap();
                 rescanned += scanned_bytes(&state).1;
             }
-            assert_eq!(rescanned, (count * (count + 1) / 2) as usize);
+            assert_eq!(rescanned, usize::from(count) * (usize::from(count) + 1) / 2);
             assert!(
-                rescanned > 2 * count as usize,
+                rescanned > 2 * usize::from(count),
                 "the former complete inventory violates the per-frame linear bound"
             );
         }
@@ -210,9 +210,9 @@ mod accounting {
                     "function":{"name":"echo","arguments":text}
                 }]}}]});
                 if chat::parse(&mut state, &event).is_err() { break; }
-                if reasoning {
-                    if state.retain_thinking(index, &json!({"type":"reasoning","summary":[{"text":text}]})).is_err() { break; }
-                }
+                if reasoning
+                    && state.retain_thinking(index, &json!({"type":"reasoning","summary":[{"text":text}]})).is_err()
+                { break; }
                 // A query reads exactly the scalar balance maintained at mutation.
                 prop_assert_eq!(state.logical_owned_bytes().unwrap(),
                     std::mem::size_of::<State>() as u64 + state.budget.used() as u64);

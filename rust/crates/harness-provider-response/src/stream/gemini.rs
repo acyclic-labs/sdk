@@ -58,7 +58,10 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         ));
     }
     let mut events = Vec::new();
-    if let Some(parts) = candidate["content"]["parts"].as_array() {
+    if let Some(parts) = candidate
+        .pointer("/content/parts")
+        .and_then(Value::as_array)
+    {
         if state.terminal && !parts.is_empty() {
             return Err(invalid("Gemini content after terminal marker"));
         }

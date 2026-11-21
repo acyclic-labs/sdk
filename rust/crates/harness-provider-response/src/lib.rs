@@ -153,9 +153,8 @@ impl<'de> Visitor<'de> for Position {
         output.context &= fields_valid;
         output.context = match self {
             Self::Root => envelope_valid && error.or(response_error).unwrap_or(output.context),
-            Self::Response => false,
+            Self::Response | Self::Text => false,
             Self::Fields => output.context,
-            Self::Text => false,
         };
         if matches!(self, Self::Response) {
             output.response_error = envelope_valid.then_some(error).flatten();

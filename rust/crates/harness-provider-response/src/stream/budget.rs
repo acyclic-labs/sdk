@@ -143,15 +143,14 @@ impl<'work> Budget<'work> {
         key: &str,
         value: &Value,
     ) -> Result<()> {
-        match map.get_mut(key) {
-            Some(target) => self.value(target, value),
-            None => {
-                // Admit the map slot and payload before either is allocated.
-                let payload = size(value, true)?;
-                self.add(size_of::<(String, Value)>() + key.len() + payload)?;
-                map.insert(key.into(), value.clone());
-                Ok(())
-            }
+        if let Some(target) = map.get_mut(key) {
+            self.value(target, value)
+        } else {
+            // Admit the map slot and payload before either is allocated.
+            let payload = size(value, true)?;
+            self.add(size_of::<(String, Value)>() + key.len() + payload)?;
+            map.insert(key.into(), value.clone());
+            Ok(())
         }
     }
     pub fn member_str(

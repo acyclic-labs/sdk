@@ -5,7 +5,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
     match value["type"].as_str() {
         Some("message_start") => {
             state.identity(&value["message"])?;
-            state.usage(&value["message"]["usage"])?;
+            state.usage(value.pointer("/message/usage").unwrap_or(&Value::Null))?;
         }
         Some("content_block_start") => {
             let block = &value["content_block"];
@@ -96,7 +96,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         }
         Some("message_delta") => {
             state.usage(&value["usage"])?;
-            if let Some(reason) = value["delta"]["stop_reason"].as_str() {
+            if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 state.finish_reason(
                     if matches!(reason, "max_tokens" | "model_context_window_exceeded") {
                         "length"
