@@ -108,6 +108,11 @@ json.dump(encode(documents), sys.stdout, allow_nan=False)
 `, texts);
 }
 
+let cacheTomlParse;
+export function useTomlParseCache(cache) {
+  cacheTomlParse = cache;
+}
+
 export function tomlFiles(root, files) {
   const changed = new Map();
   for (const file of files) {
@@ -116,9 +121,10 @@ export function tomlFiles(root, files) {
     if (manifests.get(absolute)?.source !== source) changed.set(absolute, source);
   }
   if (changed.size) {
-    const parsed = parseToml(Object.fromEntries(changed));
-    for (const [file, manifest] of Object.entries(parsed))
-      manifests.set(file, {source: changed.get(file), manifest});
+    const parse = () => Object.values(parseToml(Object.fromEntries(changed)));
+    const parsed = cacheTomlParse ? cacheTomlParse([...changed.values()], parse, parseJson) : parse();
+    let index = 0;
+    for (const [file, source] of changed) manifests.set(file, {source, manifest: parsed[index++]});
   }
   return Object.fromEntries(files.map(file => [file, manifests.get(resolve(root, file)).manifest]));
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,7 @@ function fixture({ module = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "bazel-build-files-"));
   mkdirSync(join(root, "scripts"));
   writeFileSync(join(root, "scripts/bazel-build-files.mjs"), readFileSync("scripts/bazel-build-files.mjs"));
+  writeFileSync(join(root, "scripts/bazel-generator-cache.mjs"), readFileSync("scripts/bazel-generator-cache.mjs"));
   writeFileSync(join(root, "scripts/bazel-executables.mjs"), readFileSync("scripts/bazel-executables.mjs"));
   writeFileSync(join(root, "scripts/check-bazel-lockfile.mjs"), readFileSync("scripts/check-bazel-lockfile.mjs"));
   writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync("scripts/policy-core.mjs"));
@@ -51,6 +52,56 @@ function fixture({ module = false } = {}) {
   const run = (mode, env = {}) => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8", env: { ...process.env, ...env } });
   return { root, run };
 }
+
+test("a changed blob is scanned once and only its crate and dependent rebuild", () => {
+  const { root } = fixture();
+  const scratch = mkdtempSync(join(tmpdir(), "bazel-incremental-"));
+  try {
+    const write = (file, text) => writeFileSync(join(root, file), text);
+    write("Cargo.toml", readFileSync(join(root, "Cargo.toml"), "utf8")
+      .replace('members = ["member"]', 'members = ["member", "local", "spare"]').replace('exclude = ["local"]', ""));
+    mkdirSync(join(root, "spare/src"), { recursive: true });
+    write("spare/Cargo.toml", '[package]\nname = "spare"\nversion = "0.1.0"\nedition = "2024"\n');
+    write("spare/src/lib.rs", "pub fn three() -> u8 { 3 }\n");
+    write("Cargo.lock", readFileSync(join(root, "Cargo.lock"), "utf8") + '\n[[package]]\nname = "spare"\nversion = "0.1.0"\n');
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const output = join(scratch, "manifest.json"), stats = join(scratch, "stats.json");
+    const generate = directory => {
+      const result = spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", "write", "--output", output], {
+        cwd: root, encoding: "utf8", env: { ...process.env, BAZEL_GENERATOR_CACHE_DIR: directory, BAZEL_GENERATOR_STATS: stats },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const counts = JSON.parse(readFileSync(stats, "utf8"));
+      return { manifest: readFileSync(output, "utf8"), ...counts };
+    };
+    const cache = join(scratch, "cache");
+    generate(cache);
+    write("local/src/lib.rs", 'pub fn two() -> u8 { 22 }\npub const FIXTURE: &str = "spare/src/lib.rs";\n');
+    // A staged edit changes the Git blob even though the path inventory is unchanged.
+    execFileSync("git", ["add", "local/src/lib.rs"], { cwd: root });
+    const incremental = generate(cache);
+    assert.deepEqual(incremental.scanned, ["local/src/lib.rs"]);
+    assert.deepEqual(incremental.rebuilt.sort(), ["local", "member"]);
+    const cold = generate("");
+    assert.equal(incremental.manifest, cold.manifest);
+    assert.match(JSON.parse(cold.manifest)["member/BUILD.bazel"], /"\/\/spare:src\/lib\.rs"/);
+    const warm = generate(cache);
+    assert.deepEqual(warm.scanned, []);
+    assert.deepEqual(warm.rebuilt, []);
+    assert.equal(warm.manifest, cold.manifest);
+    const entries = join(cache, "v1", "crate");
+    for (const shard of readdirSync(entries)) {
+      for (const entry of readdirSync(join(entries, shard))) writeFileSync(join(entries, shard, entry), "{truncated");
+    }
+    const recovered = generate(cache);
+    assert.deepEqual(recovered.rebuilt.sort(), ["local", "member", "spare"]);
+    assert.deepEqual(recovered.scanned, []);
+    assert.equal(recovered.manifest, cold.manifest);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 test("another workspace names this one's libraries by [package.metadata.sdk] and keeps its BUILD.rules.bazel", () => {
   const generator = fixture(), other = fixture();

@@ -11,10 +11,11 @@
 import { assertRegistryPinsCurrent, registryInputs, workspaceBrowserGraph, workspaceGraph, workspacePackages as cargoPackages } from "./workspace-model.mjs";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { contentKey, generatorCache, trackedBlobs, workingBlob } from "./bazel-generator-cache.mjs";
 import path from "node:path";
 import { GENERATED_HEADER as HEADER, bazelCommand } from "./bazel-executables.mjs";
 import { pathToFileURL } from "node:url";
-import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
+import { repositoryRoot, toml, tomlFiles, trackedFiles, useTomlParseCache } from "./policy-core.mjs";
 import { parseJsonc } from "./jsonc.mjs";
 import { selectTypeScriptBindings } from "./protobuf-bindings.mjs";
 import { runtimeOutputs as streamTokenOutputs } from "./generate-stream-token-operations.mjs";
@@ -41,6 +42,7 @@ if (root !== repositoryRoot && !sourceRepository) {
 const testRunner = `${sourceRepository ? repositoryName : ""}//rust/crates/test-runner:isolated_test.bzl`;
 const sourceDirectory = sourceRoot ? path.resolve(sourceRoot) : null;
 // A generation job declares one output manifest instead of changing its source checkout.
+ // BAZEL_GENERATOR_CACHE_DIR overrides the per-user cache directory; an empty value disables reuse.
 const outputAt = args.indexOf("--output");
 const output = outputAt < 0 ? null : path.resolve(args[outputAt + 1]);
 if (outputAt >= 0) args.splice(outputAt, 2);
@@ -48,10 +50,19 @@ const mode = args[0];
 if (args.length !== 1 || (mode !== "write" && mode !== "check") || (output && mode !== "write")) {
   throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR --source-repository DIRECTORY @REPOSITORY] write [--output FILE]|check; recovery: node scripts/bazel-build-files.mjs write");
 }
+const cache = generatorCache(contentKey([
+  "bazel-build-files.mjs", "bazel-generator-cache.mjs", "policy-core.mjs", "workspace-model.mjs",
+].map(file => fs.readFileSync(path.join(repositoryRoot, "scripts", file), "utf8"))));
+useTomlParseCache((key, parse, decode) => cache("toml", key, parse, { decode }));
+
 // Each parse is one interpreter start, so the workspace-level files this run reads parse in one; the
 // member manifests the workspace names parse together next, in workspacePackages.
 tomlFiles(root, ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", ".config/nextest.toml"].filter(file => fs.existsSync(path.join(root, file))));
-assertRegistryPinsCurrent(root);
+const local = cargoPackages(root);
+const resolutionFile = path.join(root, "cargo-bazel-lock.json");
+const resolution = fs.existsSync(resolutionFile) ? JSON.parse(fs.readFileSync(resolutionFile, "utf8")) : null;
+const registry = registryInputs(root, { local, resolution });
+assertRegistryPinsCurrent(root, registry);
 
 // Bazel builds each crate for these targets. A dependency or feature that differs between
 // them becomes a select() on the rules_rust platform setting.
@@ -95,6 +106,7 @@ const UNCACHEABLE_TAGS = new Set(["external", "local", "no-cache", "nocache"]);
 const UNCACHEABLE_FLAGS = /--(?:test_env|nocache_test_results|cache_test_results=no)\b/;
 // The host privileges a test case can declare it needs ([package.metadata.bazel.privileged]).
 const renderedTests = new Set();
+let crateTests;
 // The one list of host privileges, which the privileged run wrapper (test-runner privileged.sh) grants.
 const PRIVILEGES = fs.readFileSync(path.join(repositoryRoot, "rust/crates/test-runner/privileges.txt"), "utf8").split("\n").filter(line => line && !line.startsWith("#"));
 function assertCacheable(file, text) {
@@ -156,7 +168,7 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
-const runs = TRIPLES.map(triple => workspaceGraph(root, triple));
+const runs = TRIPLES.map(triple => workspaceGraph(root, triple, { local, resolution }));
 // Published browser modules use a selected production feature closure.
 async function wasmResolution() {
   const producer = path.join(root, "scripts/wasm-packages.mjs");
@@ -172,7 +184,7 @@ async function wasmResolution() {
     directory: "rust/crates/conformance/cloudflare/generated",
   }];
   const selected = modules.map(module => module.selection);
-  return {run: workspaceBrowserGraph(root, selected), roots:new Set(selected.map(args => args[args.indexOf("-p") + 1])), modules, testConsumers:wasmTestConsumers};
+  return {run: workspaceBrowserGraph(root, selected, local), roots:new Set(selected.map(args => args[args.indexOf("-p") + 1])), modules, testConsumers:wasmTestConsumers};
 }
 const wasm = await wasmResolution();
 const [base] = runs;
@@ -231,6 +243,10 @@ const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replac
 const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
 // Workspace TypeScript packages by npm name, from their package.json files.
 const workspacePackages = new Map();
+const blobs = trackedBlobs(root);
+const tracked = [...blobs.keys()];
+const firstBlob = [...blobs.values()].find(Boolean);
+const blobAlgorithm = firstBlob?.length === 64 ? "sha256" : "sha1";
 for (const file of trackedFiles(root, ["typescript/packages/*/package.json", "typescript/packages/@acyclic/*/package.json"])) {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
   if (pkg.name) workspacePackages.set(pkg.name, path.dirname(file).replaceAll("\\", "/"));
@@ -271,20 +287,27 @@ for (const selection of wasmSelections) {
 }
 
 // Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
-const tracked = trackedFiles(root);
-const memberDirs = [...members].map(id => dir(packages.get(id))).sort((a, b) => b.length - a.length);
-const ownerOf = file => memberDirs.find(d => file.startsWith(`${d}/`)) ?? "";
+const memberDirs = new Set([...members].map(id => dir(packages.get(id))));
+const owners = new Map();
+function ownerOf(file) {
+  if (owners.has(file)) return owners.get(file);
+  let end = file.lastIndexOf("/");
+  while (end >= 0) {
+    const parent = file.slice(0, end);
+    if (memberDirs.has(parent)) {
+      owners.set(file, parent);
+      return parent;
+    }
+    end = parent.lastIndexOf("/");
+  }
+  owners.set(file, "");
+  return "";
+}
 const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
 const rustByOwner = Map.groupBy(tracked.filter(file => file.endsWith(".rs")), ownerOf);
-const rustSourceBytes = new Map();
 function rustMemory(sources) {
-  let bytes = 0;
-  for (const file of new Set(sources)) {
-    if (!rustSourceBytes.has(file)) {
-      rustSourceBytes.set(file, Buffer.byteLength(fs.readFileSync(path.join(root, file), "utf8").replaceAll("\r\n", "\n")));
-    }
-    bytes += rustSourceBytes.get(file);
-  }
+  const files = [...new Set(sources)];
+  const bytes = cachedInputs("sizes", files, () => files.reduce((total, file) => total + scan(file).bytes, 0));
   // Clippy peaks: filesystem-base 146 MB / 47 kB of Rust, auth 632 MB / 694 kB (bb2 sandbox),
   // harness-core about 8.4 GB / 10.6 MB (ivar). Budget 128 MB of startup plus 800 MB per MB of
   // Rust input, rounding up in 128 MB buckets to absorb measurement noise and small source edits.
@@ -297,18 +320,44 @@ function rustMemory(sources) {
 // later arguments (a macro's name, say): every tracked file under that prefix is an input.
 // A file this misses fails the sandboxed compile loudly; it is never read stale.
 const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*)?(env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"|#\[path\s*=\s*()"([^"]+)"\]/g;
-const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*;/gm;
-// A `mod` or `#[path]` module declared inside inline `mod a { mod b { ... } }` resolves under
-// `/a/b` of its file's module directory, as Rust does: the path of the inline modules around
-// `offset` in `code` (codeOnly's output), or "" at the file's top level.
-const INLINE_MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*\{/gm;
-function inlineDirs(code, offset) {
+const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*([;{])/gm;
+
+function inlineModules(code) {
+  return [...code.matchAll(MOD)].filter(match => match[2] === "{")
+    .map(match => [match.index, itemEnd(code, match.index), match[1]]);
+}
+
+function inlineDirs(modules, offset) {
   let dirs = "";
-  for (const match of code.matchAll(INLINE_MOD)) if (match.index < offset && offset < itemEnd(code, match.index)) dirs += `/${match[1]}`;
+  for (const [start, end, name] of modules) if (start < offset && offset < end) dirs += "/" + name;
   return dirs;
 }
 const TEST_DIRS = /^(tests|benches|examples)\//;
+const sortedPaths = [...tracked].sort();
+function pathsWithPrefix(prefix) {
+  crateInputs?.add("\0prefix:" + prefix);
+  return matchingPaths(prefix);
+}
+function matchingPaths(prefix) {
+  let low = 0, high = sortedPaths.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (sortedPaths[middle] < prefix) low = middle + 1;
+    else high = middle;
+  }
+  const paths = [];
+  for (let i = low; sortedPaths[i]?.startsWith(prefix); i++) paths.push(sortedPaths[i]);
+  return paths;
+}
 const trackedSet = new Set(tracked);
+function isTracked(file) {
+  crateInputs?.add("\0file:" + file);
+  return trackedSet.has(file);
+}
+function isTrackedDirectory(file) {
+  crateInputs?.add("\0directory:" + file);
+  return trackedDirs.has(file);
+}
 // A file of another package. Every package exports each of its files (exportsRule), so a test
 // here or in a workspace that depends on the SDK can declare any SDK file it reads.
 function fileLabel(file) {
@@ -318,32 +367,125 @@ function fileLabel(file) {
 // A module declared inside an inline `mod x { ... }` lives at a path the declaration alone does not
 // name, so every globbed source (`seeds`) is read too: an embed or #[path] in any of them is an input.
 // `view` gives the source as the compile sees it.
-const source = file => fs.readFileSync(path.join(root, file), "utf8");
-function closure(crateDir, rootFile, seeds = [], view = source) {
+let crateInputs;
+function source(file) {
+  crateInputs?.add(file);
+  return fs.readFileSync(path.join(root, file), "utf8");
+}
+const blobKeys = new Map();
+function fileKey(file) {
+  if (!blobKeys.has(file)) {
+    let key;
+    if (file.startsWith("\0")) {
+      const colon = file.indexOf(":"), value = file.slice(colon + 1);
+      switch (file.slice(1, colon)) {
+        case "prefix": key = contentKey(matchingPaths(value)); break;
+        case "file": key = trackedSet.has(value); break;
+        case "directory": key = trackedDirs.has(value); break;
+        case "sdk": key = sdkSourceLabel(value) ?? null; break;
+      }
+    } else {
+      key = blobs.get(file) ?? workingBlob(path.join(root, file), blobAlgorithm);
+    }
+    blobKeys.set(file, key);
+  }
+  return blobKeys.get(file);
+}
+const inventoryKey = contentKey(tracked);
+const currentInput = ([file, hash]) => fileKey(file) === hash;
+const fileScans = new Map();
+const syntaxByFile = new Map();
+const scanned = new Set();
+function syntax(file) {
+  if (!syntaxByFile.has(file)) {
+    scanned.add(file);
+    const text = source(file);
+    syntaxByFile.set(file, { text, code: codeOnly(text), attrs: [...attributes(text)] });
+  }
+  return syntaxByFile.get(file);
+}
+function scan(file) {
+  crateInputs?.add(file);
+  if (fileScans.has(file)) return fileScans.get(file);
+  const blob = fileKey(file);
+  const compute = () => {
+    const { text, code, attrs } = syntax(file);
+    let library = text;
+    for (const { path: name, args, start, end } of attrs) {
+      if (name !== "test" && (name !== "cfg" || values(parseCfg(args), { test: false }).yes)) continue;
+      const to = text[start + 1] === "!" ? text.length : itemEnd(code, end);
+      library = library.slice(0, start) + library.slice(start, to).replace(/[^\\n]/g, " ") + library.slice(to);
+    }
+    const raw = sourceFacts(text, code);
+    return { attrs, raw, library: library === text ? raw : sourceFacts(library), bytes: Buffer.byteLength(text.replaceAll("\\r\\n", "\\n")) };
+  };
+  const result = blob ? cache("scan", blob, compute) : compute();
+  fileScans.set(file, result);
+  return result;
+}
+
+function sourceFacts(text, code) {
+  const declarations = [...text.matchAll(MOD)];
+  const inline = declarations.some(match => match[2] === "{") ? inlineModules(code ?? codeOnly(text)) : [];
+  const embeds = [...text.matchAll(EMBED)].map(({ index, 1: concat, 2: relative, 3: literal, 5: module }) =>
+    [Boolean(concat), Boolean(relative), literal ?? module, module === undefined ? "" : inlineDirs(inline, index)]);
+  const modules = declarations.filter(match => match[2] === ";").map(match => [match[1], inlineDirs(inline, match.index)]);
+  return { embeds, modules, literals: [...text.matchAll(LITERAL)].map(match => match[1]),
+    named: [...text.matchAll(NAMED)].map(match => match.slice(1)) };
+}
+
+function inputWitnesses(files) {
+  const inventory = [], content = [];
+  for (const file of files) {
+    const witnesses = file.startsWith("\0") && !file.startsWith("\0sdk:") ? inventory : content;
+    witnesses.push([file, fileKey(file)]);
+  }
+  return { inventoryKey, inventory, content };
+}
+function currentWitnesses(entry) {
+  return entry.content.every(currentInput) &&
+    (entry.inventoryKey === inventoryKey || entry.inventory.every(currentInput));
+}
+function cachedInputs(kind, key, compute) {
+  const outer = crateInputs;
+  const entry = cache(kind, key, () => {
+    const inputs = new Set();
+    crateInputs = inputs;
+    try {
+      const value = compute();
+      return { value, ...inputWitnesses(inputs) };
+    } finally { crateInputs = outer; }
+  }, { valid: currentWitnesses });
+  if (outer) {
+    for (const [file] of entry.content) outer.add(file);
+    for (const [file] of entry.inventory) outer.add(file);
+  }
+  return entry.value;
+}
+
+function closure(crateDir, rootFile, seeds = [], view = "raw") {
+  return new Set(cachedInputs("closure", [crateDir, rootFile, seeds, view],
+    () => [...sourceClosure(crateDir, rootFile, seeds, view)]));
+}
+function sourceClosure(crateDir, rootFile, seeds, view) {
   const seen = new Set([rootFile, ...seeds]), queue = [...seen];
   while (queue.length) {
     const file = queue.pop(), here = path.posix.dirname(file);
-    const text = view(file);
+    const { embeds, modules } = scan(file)[view];
     const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
     const found = [];
-    // Both module layouts' bases: a candidate that exists but is unused is an extra input only.
-    const code = INLINE_MOD.test(text) && codeOnly(text);
-    INLINE_MOD.lastIndex = 0;
-    const dirs = offset => (code ? inlineDirs(code, offset) : "");
-    for (const { index, 1: concat, 2: manifestRelative, 3: literal, 5: module } of text.matchAll(EMBED)) {
-      const nested = module === undefined ? "" : dirs(index);
-      const bases = nested ? [here, stem].map(base => `${base}${nested}`) : [manifestRelative ? crateDir : here];
+    for (const [concat, manifestRelative, literal, nested] of embeds) {
+      const bases = nested ? [here + nested, stem + nested] : [manifestRelative ? crateDir : here];
       for (const base of bases) {
-        const named = path.posix.normalize(path.posix.join(base, literal ?? module));
-        found.push(...(concat && !trackedSet.has(named) ? tracked.filter(file => file.startsWith(named)) : [named]));
+        const named = path.posix.normalize(path.posix.join(base, literal));
+        found.push(...(concat && !isTracked(named) ? pathsWithPrefix(named) : [named]));
       }
     }
-    for (const { index, 1: name } of text.matchAll(MOD)) {
-      const nested = dirs(index);
-      for (const base of [here, stem]) found.push(`${base}${nested}/${name}.rs`, `${base}${nested}/${name}/mod.rs`);
+    for (const [name, nested] of modules) {
+      for (const base of [here, stem]) found.push(base + nested + "/" + name + ".rs", base + nested + "/" + name + "/mod.rs");
     }
     for (const next of found) {
-      if (!trackedSet.has(next) || seen.has(next)) continue;
+      if (!isTracked(next) || seen.has(next)) continue;
       seen.add(next);
       if (next.endsWith(".rs")) queue.push(next);
     }
@@ -400,7 +542,7 @@ function stringEnd(text, at) {
 // { path: "tokio::test", args: "" }. Comments and literals are skipped, so a `#[test]` a doc
 // comment spells is not a test of this crate.
 function* attributes(text) {
-  const raw = at => /^(?:b?r#*")/.test(text.slice(at)) && !/\w/.test(text[at - 1] ?? "");
+  const raw = at => (text[at] === "r" || text[at] === "b") && /^b?r#*"/.test(text.slice(at)) && !/\w/.test(text[at - 1] ?? "");
   const string = at => text[at] === '"' || raw(at);
   // A char literal, not a lifetime: `'a'`, `'\n'`, `b'"'`.
   const character = at => (text[at] === "'" && (text[at + 1] === "\\" || text[at + 2] === "'")) || (text[at] === "b" && text[at + 1] === "'");
@@ -438,25 +580,38 @@ function* attributes(text) {
 // The crate's own unit tests, from the test attributes and #[cfg] expressions its library root
 // reaches. Only such a crate needs a test-config compile of its library; a crate whose tests all
 // live under tests/ links the library's rlib instead and never compiles the library twice.
+function collectInputs(memo, key, compute) {
+  const outer = crateInputs;
+  if (!memo.has(key)) {
+    const inputs = new Set();
+    crateInputs = inputs;
+    try { memo.set(key, { value: compute(), inputs }); }
+    finally { crateInputs = outer; }
+  }
+  const { value, inputs } = memo.get(key);
+  if (outer) for (const file of inputs) outer.add(file);
+  return value;
+}
+
 const unitTests = new Map();
 function hasUnitTests(crateDir, rootFile) {
   const key = `${crateDir} ${rootFile}`;
-  if (unitTests.has(key)) return unitTests.get(key);
-  let found = false;
-  for (const file of closure(crateDir, rootFile)) {
-    if (!file.endsWith(".rs")) continue;
-    for (const { path: attribute, args } of attributes(fs.readFileSync(path.join(root, file), "utf8"))) {
-      // The test harnesses in use: `#[test]`, `#[tokio::test]`, `#[wasm_bindgen_test]`.
-      const name = attribute.slice(attribute.lastIndexOf(":") + 1);
-      if (name === "cfg" ? cfgHasTest(args) : name === "test" || name.endsWith("_test")) {
-        found = true;
-        break;
+  return collectInputs(unitTests, key, () => {
+    let found = false;
+    for (const file of closure(crateDir, rootFile)) {
+      if (!file.endsWith(".rs")) continue;
+      for (const { path: attribute, args } of scan(file).attrs) {
+        // The test harnesses in use: `#[test]`, `#[tokio::test]`, `#[wasm_bindgen_test]`.
+        const name = attribute.slice(attribute.lastIndexOf(":") + 1);
+        if (name === "cfg" ? cfgHasTest(args) : name === "test" || name.endsWith("_test")) {
+          found = true;
+          break;
+        }
       }
+      if (found) break;
     }
-    if (found) break;
-  }
-  unitTests.set(key, found);
-  return found;
+    return found;
+  });
 }
 // What a test reads at run time, from the string literals of a module closure: a literal naming
 // a tracked file, or a directory holding tracked files, either repository-relative (test-support's
@@ -480,12 +635,12 @@ function scriptClosure(files) {
   const found = new Set(), queue = files.filter(file => SCRIPT.test(file));
   while (queue.length) {
     const file = queue.pop();
-    for (const [, , imported, , url] of fs.readFileSync(path.join(root, file), "utf8").matchAll(IMPORT)) {
+    for (const [, , imported, , url] of source(file).matchAll(IMPORT)) {
       const specifier = imported ?? url;
       const named = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
-      if (found.has(named) || files.includes(named) || !(trackedSet.has(named) || generatedFiles[named])) continue;
+      if (found.has(named) || files.includes(named) || !(isTracked(named) || generatedFiles[named])) continue;
       found.add(named);
-      if (trackedSet.has(named) && SCRIPT.test(named)) queue.push(named);
+      if (isTracked(named) && SCRIPT.test(named)) queue.push(named);
     }
   }
   return found;
@@ -494,6 +649,10 @@ function scriptClosure(files) {
 // isolated test runner points it there), so a file it names there is declared by that repository's label:
 // the file in its innermost Bazel package, which exports every file it holds.
 function sourceLabel(file) {
+  crateInputs?.add("\0sdk:" + file);
+  return sdkSourceLabel(file);
+}
+function sdkSourceLabel(file) {
   if (!fs.statSync(path.join(sourceDirectory, file), { throwIfNoEntry: false })?.isFile()) return undefined;
   let owner = path.posix.dirname(file);
   while (owner !== "." && !fs.existsSync(path.join(sourceDirectory, owner, "BUILD.bazel"))) owner = path.posix.dirname(owner);
@@ -502,55 +661,52 @@ function sourceLabel(file) {
 }
 // A library's source as another crate's build compiles it: every item that no build with test off
 // reaches (#[cfg(test)], #[test]) blanked, offsets kept.
-const libraryViews = new Map();
-function libraryView(file) {
-  if (libraryViews.has(file)) return libraryViews.get(file);
-  const text = source(file), code = codeOnly(text);
-  let view = text;
-  for (const { path: name, args, start, end } of attributes(text)) {
-    if (name !== "test" && (name !== "cfg" || values(parseCfg(args), { test: false }).yes)) continue;
-    const to = text[start + 1] === "!" ? text.length : itemEnd(code, end);
-    view = view.slice(0, start) + view.slice(start, to).replace(/[^\n]/g, " ") + view.slice(to);
-  }
-  libraryViews.set(file, view);
-  return view;
-}
 const literalReads = new Map();
-function readsOf(crateDir, rootFile, view = source) {
-  const key = `${crateDir} ${rootFile} ${view === source}`;
-  if (literalReads.has(key)) return literalReads.get(key);
-  const files = new Set(), dirs = new Set(), labels = new Set();
-  for (const file of closure(crateDir, rootFile, [], view)) {
-    if (!file.endsWith(".rs")) continue;
-    const text = view(file);
-    const add = (spelled, directory) => {
-      const named = path.posix.normalize(spelled).replace(/\/$/, "");
-      if (named.startsWith("..") || named === "." || crateDir.startsWith(`${named}/`)) return;
-      if (trackedSet.has(named)) files.add(named);
-      else if (trackedDirs.has(named) && directory(named)) dirs.add(named);
-    };
-    for (const [, literal] of text.matchAll(LITERAL)) {
-      if (literal.startsWith("/") || literal.includes("{")) continue;
-      for (const spelled of [literal, path.posix.join(crateDir, literal)]) {
-        add(spelled, named => spelled !== literal || named.includes("/"));
+function readsOf(crateDir, rootFile, view = "raw") {
+  const key = `${crateDir} ${rootFile} ${view}`;
+  return collectInputs(literalReads, key, () => {
+    const arrays = cachedInputs("reads", [crateDir, rootFile, view], () => {
+      const files = new Set(), dirs = new Set(), labels = new Set();
+      for (const file of closure(crateDir, rootFile, [], view)) {
+        if (!file.endsWith(".rs")) continue;
+        const { literals, named } = scan(file)[view];
+        const add = (spelled, directory) => {
+          const named = path.posix.normalize(spelled).replace(/\/$/, "");
+          if (named.startsWith("..") || named === "." || crateDir.startsWith(`${named}/`)) return;
+          if (isTracked(named)) files.add(named);
+          else if (isTrackedDirectory(named) && directory(named)) dirs.add(named);
+        };
+        for (const literal of literals) {
+          if (literal.startsWith("/") || literal.includes("{")) continue;
+          for (const spelled of [literal, path.posix.join(crateDir, literal)]) {
+            add(spelled, named => spelled !== literal || named.includes("/"));
+          }
+        }
+        for (const [reader, literal] of named) {
+          const label = reader === "source_path" && sourceDirectory ? sourceLabel(path.posix.normalize(literal)) : undefined;
+          if (label) labels.add(label);
+          else add(reader === "source_path" ? literal : path.posix.join(crateDir, literal), () => true);
+        }
       }
-    }
-    for (const [, reader, literal] of text.matchAll(NAMED)) {
-      const label = reader === "source_path" && sourceDirectory ? sourceLabel(path.posix.normalize(literal)) : undefined;
-      if (label) labels.add(label);
-      else add(reader === "source_path" ? literal : path.posix.join(crateDir, literal), () => true);
-    }
-  }
-  for (const module of scriptClosure([...files])) {
-    if (generatedFiles[module]) labels.add(generatedFiles[module]);
-    else files.add(module);
-  }
-  const reads = { files, dirs, labels };
-  literalReads.set(key, reads);
-  return reads;
+      for (const module of scriptClosure([...files])) {
+        if (generatedFiles[module]) labels.add(generatedFiles[module]);
+        else files.add(module);
+      }
+      return [[...files], [...dirs], [...labels]];
+    });
+    const [files, dirs, labels] = arrays.map(items => new Set(items));
+    return { files, dirs, labels };
+  });
 }
 // Every directory that holds a tracked file, at any depth.
-const trackedDirs = new Set(tracked.flatMap(file => file.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))));
+const trackedDirs = new Set();
+for (const file of tracked) {
+  for (let end = file.lastIndexOf("/"); end >= 0; end = file.lastIndexOf("/", end - 1)) {
+    const directory = file.slice(0, end);
+    if (trackedDirs.has(directory)) break;
+    trackedDirs.add(directory);
+  }
+}
 // Cargo discovers .cargo/config.toml from a test's working directory, so a test that carries the
 // config also reads every tracked file the config names (the linker wrapper, for instance).
 const cargoConfigInputs = (() => {
@@ -568,14 +724,21 @@ const cargoConfigInputs = (() => {
 // A directory's tracked files, as one filegroup in each package that owns some of them: a glob
 // cannot cross a package boundary, so a directory spanning nested packages has one per package.
 const trees = new Map();
+const directoryLabels = new Map();
+let crateTrees;
 function treeLabels(directory) {
-  const owners = new Set(tracked.filter(file => file.startsWith(`${directory}/`)).map(ownerOf));
-  return [...owners].sort().map(owner => {
+  crateTrees.add(directory);
+  crateInputs?.add("\0prefix:" + directory + "/");
+  if (directoryLabels.has(directory)) return directoryLabels.get(directory);
+  const owners = new Set(pathsWithPrefix(directory + "/").map(ownerOf));
+  const labels = [...owners].sort().map(owner => {
     const rel = owner === directory || owner.startsWith(`${directory}/`) ? "" : within(owner, directory);
     if (!trees.has(owner)) trees.set(owner, new Set());
     trees.get(owner).add(rel);
     return `//${owner}:${rel ? `tree/${rel}` : "tree"}`;
   });
+  directoryLabels.set(directory, labels);
+  return labels;
 }
 // Test-only members of this package: taken by it as dev-dependencies only (another package may take one
 // as a normal dependency, a fuzz harness say). Their helpers name the files this package's tests read.
@@ -604,20 +767,41 @@ function normalLibraries(starts, { procMacros }) {
   }
   return found;
 }
+const libraryReads = new Map();
+function libraryInputs(pkg, view) {
+  const key = pkg.id + " " + view;
+  if (!libraryReads.has(key)) {
+    const outer = crateInputs;
+    crateInputs = undefined;
+    try {
+      const owner = dir(pkg), rootFile = path.relative(root, libOf(pkg).src_path).replaceAll("\\\\", "/");
+      const { files, dirs, labels } = readsOf(owner, rootFile, view);
+      const outside = file => ownerOf(file) !== owner;
+      const reads = view === "raw" ? { files, dirs, labels } : {
+        files: new Set([...files].filter(outside)),
+        dirs: new Set([...dirs].filter(directory => outside(directory + "/"))),
+        labels,
+      };
+      libraryReads.set(key, {
+        reads,
+        key: contentKey([[...reads.files].sort(), [...reads.dirs].sort(), [...reads.labels].sort()]),
+      });
+    } finally { crateInputs = outer; }
+  }
+  return libraryReads.get(key);
+}
 const linkedReads = new Map();
 function linkedLibraryReads(p) {
-  if (linkedReads.has(p.id)) return linkedReads.get(p.id);
-  const found = normalLibraries([p.id, ...devLibraries(p).map(other => other.id)], { procMacros: false });
-  const reads = { files: new Set(), dirs: new Set(), labels: new Set() };
-  for (const id of found) {
-    const other = packages.get(id), own = dir(other), outside = file => ownerOf(file) !== own;
-    const { files, dirs, labels } = readsOf(own, path.relative(root, libOf(other).src_path).replaceAll("\\", "/"), libraryView);
-    for (const file of files) if (outside(file)) reads.files.add(file);
-    for (const directory of dirs) if (outside(`${directory}/`)) reads.dirs.add(directory);
-    for (const label of labels) reads.labels.add(label);
+  if (!linkedReads.has(p.id)) {
+    const found = normalLibraries([p.id, ...devLibraries(p).map(other => other.id)], { procMacros: false });
+    const reads = { files: new Set(), dirs: new Set(), labels: new Set() };
+    for (const id of found) {
+      const other = libraryInputs(packages.get(id), "library").reads;
+      for (const key of Object.keys(reads)) for (const entry of other[key]) reads[key].add(entry);
+    }
+    linkedReads.set(p.id, reads);
   }
-  linkedReads.set(p.id, reads);
-  return reads;
+  return linkedReads.get(p.id);
 }
 // A test that can mount FUSE runs outside the linux-sandbox, whose user namespace strips
 // fusermount3's setuid bit. A package declaring [package.metadata.bazel] mounts-fuse = true mounts;
@@ -713,7 +897,7 @@ const platformRules = [...scriptPlatforms].sort().map(platform => {
 // Rust source in the repository; one with repository-sources = true runs its build script over every
 // file of itself and each first-party package it links (a source stamp, say).
 const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === true;
-const repositorySources = ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()];
+const repositorySources = ["//:rust_sources", ...[...memberDirs].map(d => `//${d}:rust_sources`).sort()];
 const readsLinkedSources = p => p.metadata?.bazel?.["repository-sources"] === true;
 const linkedSources = p => [p.id, ...normalLibraries([p.id], { procMacros: true })]
   .map(id => `//${dir(packages.get(id))}:sources`).sort();
@@ -725,7 +909,7 @@ const sourcesRule = `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs"
 function scriptData(p, key) {
   return (p.metadata?.bazel?.[key] ?? []).flatMap(relative => {
     const named = path.posix.normalize(path.posix.join(dir(p), relative));
-    const files = tracked.filter(file => file === named || file.startsWith(`${named}/`)).sort();
+    const files = [...(isTracked(named) ? [named] : []), ...pathsWithPrefix(named + "/")].sort();
     if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} ${key} names ${relative}, which holds no tracked file`);
     return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
   });
@@ -865,7 +1049,7 @@ function codeOnly(text) {
         else if (text.startsWith("*/", end)) { end += 2; if (!--depth) break; }
         else end++;
       }
-    } else if (text[i] === '"' || (/^b?r#*"/.test(text.slice(i)) && !/\w/.test(text[i - 1] ?? ""))) end = stringEnd(text, i);
+    } else if (text[i] === '"' || ((text[i] === "r" || text[i] === "b") && /^b?r#*"/.test(text.slice(i)) && !/\w/.test(text[i - 1] ?? ""))) end = stringEnd(text, i);
     else if (text[i] === "'" && (text[i + 1] === "\\" || text[i + 2] === "'")) {
       for (end = i + 1; end < text.length && text[end] !== "'"; end += text[end] === "\\" ? 2 : 1);
       end++;
@@ -900,40 +1084,53 @@ for (const dir of LOOM_SPLIT_PACKAGES.filter(dir => fs.existsSync(path.join(root
   const p = [...packages.values()].find(candidate => dir === path.relative(root, path.dirname(candidate.manifest_path)).replaceAll("\\", "/"));
   const lib = p?.targets.find(target => target.kind.some(kind => kind === "lib" || kind === "rlib"));
   if (!lib) throw new Error(`STEP_FAILED bazel-build-files: loom split: LOOM_SPLIT_PACKAGES names ${dir}, which has no library; recovery: correct the list`);
-  const queue = [[path.relative(root, lib.src_path).replaceAll("\\", "/"), []]], seen = new Set();
-  while (queue.length) {
-    const [file, inherited] = queue.pop();
-    if (seen.has(file) || !trackedSet.has(file)) continue;
-    seen.add(file);
-    const text = fs.readFileSync(path.join(root, file), "utf8"), code = codeOnly(text);
-    const fileContext = [...inherited], spans = [], paths = [];
-    for (const { path: name, args, start, end } of attributes(text)) {
-      const inner = text[start + 1] === "!";
-      const tree = name === "cfg" ? parseCfg(args) : name === "test" ? { atom: "test" } : undefined;
-      const named = /^#\[\s*path\s*=\s*"([^"]+)"\s*\]$/.exec(text.slice(start, end));
-      if (named) paths.push({ end, file: named[1] });
-      if (!tree) continue;
-      if (inner) fileContext.push(tree);
-      else spans.push({ start, end: itemEnd(code, end), tree });
+  const validate = () => {
+    const queue = [[path.relative(root, lib.src_path).replaceAll("\\", "/"), []]], seen = new Set();
+    while (queue.length) {
+      const [file, inherited] = queue.pop();
+      if (seen.has(file) || !trackedSet.has(file)) continue;
+      seen.add(file);
+      crateInputs.add(file);
+      const blob = fileKey(file);
+      const { text, code, attrs } = cache("loom-scan", blob, () => syntax(file));
+      const fileContext = [...inherited], spans = [], paths = [];
+      for (const { path: name, args, start, end } of attrs) {
+        const inner = text[start + 1] === "!";
+        const tree = name === "cfg" ? parseCfg(args) : name === "test" ? { atom: "test" } : undefined;
+        const named = /^#\[\s*path\s*=\s*"([^"]+)"\s*\]$/.exec(text.slice(start, end));
+        if (named) paths.push({ end, file: named[1] });
+        if (!tree) continue;
+        if (inner) fileContext.push(tree);
+        else spans.push({ start, end: itemEnd(code, end), tree });
+      }
+      // A #[test] is not its own gate: the module holding it is what a library build must not reach.
+      const contextAt = (offset, self = -1) => [...fileContext, ...spans.filter(span => span.start <= offset && offset < span.end && span.start !== self).map(span => span.tree)];
+      for (const match of code.matchAll(LOOM_FORBIDDEN)) {
+        if (!libraryLoom(contextAt(match.index, match.index))) continue;
+        const line = text.slice(0, match.index).split("\n").length;
+        throw new Error(`STEP_FAILED bazel-build-files: loom split: ${file}:${line} ${match[0]} is Loom code the ${p.name} library build reaches; recovery: keep library Loom code to swaps without unwrap, expect or panic, and put models, verify/check functions and drivers under a separate #[cfg(test)] or in a models test crate`);
+      }
+      const here = path.posix.dirname(file);
+      const stem = /(^|\/)(lib|main|mod)\.rs$/.test(file) ? here : path.posix.join(here, path.posix.basename(file, ".rs"));
+      const inline = inlineModules(code);
+      for (const match of code.matchAll(MOD)) {
+        if (match[2] !== ";") continue;
+        const context = contextAt(match.index);
+        if (!values({ op: "all", args: context }, { test: false }).yes) continue;
+        const named = paths.findLast(attribute => attribute.end <= match.index && !/[;{}]/.test(code.slice(attribute.end, match.index)));
+        const nested = inlineDirs(inline, match.index);
+        const next = named ? [path.posix.normalize(path.posix.join(nested ? `${stem}${nested}` : here, named.file))] : [`${stem}${nested}/${match[1]}.rs`, `${stem}${nested}/${match[1]}/mod.rs`];
+        for (const candidate of next) queue.push([candidate, context]);
+      }
     }
-    // A #[test] is not its own gate: the module holding it is what a library build must not reach.
-    const contextAt = (offset, self = -1) => [...fileContext, ...spans.filter(span => span.start <= offset && offset < span.end && span.start !== self).map(span => span.tree)];
-    for (const match of code.matchAll(LOOM_FORBIDDEN)) {
-      if (!libraryLoom(contextAt(match.index, match.index))) continue;
-      const line = text.slice(0, match.index).split("\n").length;
-      throw new Error(`STEP_FAILED bazel-build-files: loom split: ${file}:${line} ${match[0]} is Loom code the ${p.name} library build reaches; recovery: keep library Loom code to swaps without unwrap, expect or panic, and put models, verify/check functions and drivers under a separate #[cfg(test)] or in a models test crate`);
-    }
-    const here = path.posix.dirname(file);
-    const stem = /(^|\/)(lib|main|mod)\.rs$/.test(file) ? here : path.posix.join(here, path.posix.basename(file, ".rs"));
-    for (const match of code.matchAll(MOD)) {
-      const context = contextAt(match.index);
-      if (!values({ op: "all", args: context }, { test: false }).yes) continue;
-      const named = paths.findLast(attribute => attribute.end <= match.index && !/[;{}]/.test(code.slice(attribute.end, match.index)));
-      const nested = inlineDirs(code, match.index);
-      const next = named ? [path.posix.normalize(path.posix.join(nested ? `${stem}${nested}` : here, named.file))] : [`${stem}${nested}/${match[1]}.rs`, `${stem}${nested}/${match[1]}/mod.rs`];
-      for (const candidate of next) queue.push([candidate, context]);
-    }
-  }
+  };
+  const inputs = new Set();
+  cache("loom", [dir, path.relative(root, lib.src_path), inventoryKey], () => {
+    crateInputs = inputs;
+    try { validate(); }
+    finally { crateInputs = undefined; }
+    return [...inputs].map(file => [file, fileKey(file)]);
+  }, { valid: entry => entry.every(currentInput) });
 }
 // rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks
 // on at every opt-level, and opt as its release profile, with both off: Cargo's defaults. A profile that changes
@@ -966,7 +1163,7 @@ function perTriple(values, render, wasm) {
 
 // Every registry crate's --all-features feature set, pinned by a crate.spec: crate_universe resolves
 // third-party features its own way. Path and patch sources keep their lockfile resolution.
-const currentRegistry = registryInputs(root).inputs;
+const currentRegistry = registry.inputs;
 // Another workspace's module maps SDK crates onto its own universe crates, so each of its registry
 // crates also carries every feature the SDK enables on a semver-compatible version, as one Cargo
 // resolution over both workspaces would.
@@ -1194,8 +1391,12 @@ ${platformSources.map(([platform, sources]) =>
     || p.metadata?.bazel?.["test-narrow-runfiles"]?.includes(target.name);
   const runtimeData = target => {
     const narrow = narrowTestRunfiles(target);
-    const libraries = narrow ? [] : [...(lib ? [p] : []), ...devLibraries(p)];
-    const all = [readsOf(dir(p), repoRelative(target)), ...libraries.map(other => readsOf(dir(other), repoRelative(libOf(other)))), ...(narrow ? [] : [linkedLibraryReads(p)])];
+    const all = [readsOf(dir(p), repoRelative(target))];
+    if (!narrow) {
+      if (lib) all.push(readsOf(dir(p), repoRelative(lib)));
+      for (const other of devLibraries(p)) all.push(libraryInputs(other, "raw").reads);
+      all.push(linkedLibraryReads(p));
+    }
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
     if (files.has(".cargo/config.toml")) for (const file of cargoConfigInputs) files.add(file);
     const labels = new Set([...[...dirs].flatMap(treeLabels), ...all.flatMap(reads => [...reads.labels])]);
@@ -1242,7 +1443,7 @@ ${platformSources.map(([platform, sources]) =>
     // its own target with `privileges`: isolated_test tags it for the privileged leg and runs it under the one wrapper
     // (test-runner privileged.sh) that grants only those. It is never
     // manual: a run that cannot grant them fails the cases, so leaving them is never a hidden skip.
-    renderedTests.add(`${p.name}#${wanted}`);
+    crateTests.add(`${p.name}#${wanted}`);
     const privileged = (p.metadata?.bazel?.privileged?.[wanted] ?? []).map(({ requires = [], cases = [], "exclusive-cpus": exclusiveCpus, env = {} }, i) => {
       const unknown = requires.filter(privilege => !PRIVILEGES.includes(privilege));
       if (!requires.length || !cases.length || unknown.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} privileged.${wanted} group ${i + 1} needs requires (of ${PRIVILEGES.join(", ")}) and cases${unknown.length ? `; unknown ${unknown.join(", ")}` : ""}`);
@@ -1749,20 +1950,42 @@ function checkWasmGraph(name, native, wasm) {
 
 // Bodies first: rendering them records every file another package takes by label.
 const rendered = new Map([...members].map(id => [id, new Set()]));
-const bodies = new Map([...members].map(id => {
-  const pkg = packages.get(id);
-  // Procedural macros execute on the host, including when their consumer targets Wasm.
-  const native = buildFile(pkg);
-  const wasmBuild = wasmNodes.has(id) && !libOf(pkg)?.kind.includes("proc-macro") ? buildFile(pkg, wasmGraph) : undefined;
-  checkWasmGraph(pkg.name, native, wasmBuild);
-  return [dir(pkg), renderBuild(native, wasmBuild)];
-}));
-// A privileged group names a test this package renders, so none of its cases is left unrun.
-for (const id of members) for (const test of Object.keys(packages.get(id).metadata?.bazel?.privileged ?? {})) {
-  if (!renderedTests.has(`${packages.get(id).name}#${test}`)) throw new Error(`STEP_FAILED bazel-build-files: ${packages.get(id).name} privileged.${test} names no test of the package`);
+const rebuilt = [];
+const filesByOwner = Map.groupBy(tracked.filter(file => !file.endsWith("/BUILD.bazel") && file !== "BUILD.bazel"), ownerOf);
+function packageKey(owner) {
+  return contentKey((filesByOwner.get(owner) ?? []).map(file => [file, fileKey(file)]));
+}
+const packageKeys = new Map([...memberDirs].map(owner => [owner, packageKey(owner)]));
+const ownFiles = new Map([...filesByOwner].map(([owner, files]) => [owner, new Set(files)]));
+const relativePath = file => path.relative(root, file).replaceAll("\\\\", "/");
+const rootUrl = pathToFileURL(root).href;
+const stableId = id => id.replace(rootUrl, "file://workspace");
+const sharedKey = contentKey([
+  [...memberDirs], repositoryName, process.platform, process.versions.node, PRIVILEGES,
+  cargo, configEnv, PROFILES, [...harnessTools], [...cargoConfigInputs],
+]);
+function modelKey(pkg) {
+  const id = pkg.id;
+  const graph = [...nodes, wasmNodes].map(byId => {
+    const node = byId.get(id);
+    return node && [node.features, node.deps.map(dep => {
+      const other = packages.get(dep.pkg), lib = libOf(other);
+      const target = !lib ? null : members.has(other.id) ? [label(other), libTarget(other)] :
+        [hubLabel(other.id), byId === wasmNodes && wasmGraph.hubLabel(other.id)];
+      return [stableId(dep.pkg), dep.name, dep.dep_kinds, lib?.kind, lib?.name, target];
+    })];
+  });
+  const sdk = Object.values(pkg.metadata?.sdk ?? {}).flat().map(name => {
+    const other = sdkPackages.get(name), lib = other && libOf(other);
+    return lib && [name, path.relative(sourceDirectory, other.manifest_path), lib.kind, lib.name, libTarget(other)];
+  });
+  return [graph, sdk, workspace.has(id), fileKey(relativePath(pkg.manifest_path)),
+    pkg.targets.map(t => ({ ...t, src_path: relativePath(t.src_path) })),
+    requiredEntry(scriptEnv, id), testTags(pkg), wasm?.testConsumers?.[pkg.name], wasm?.roots.has(pkg.name),
+    readsLinkedSources(pkg) && linkedSources(pkg)];
 }
 // Coverage equals the cargo legs: every target `cargo test --all-features --no-run` builds.
-for (const id of members) {
+function checkCoverage(id) {
   const p = packages.get(id), expected = new Set();
   for (const t of workspace.has(id) ? p.targets : [libOf(p)].filter(Boolean)) {
     // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
@@ -1773,6 +1996,39 @@ for (const id of members) {
   const have = requiredEntry(rendered,id);
   const missing = [...expected].filter(t => !have.has(t)), extra = [...have].filter(t => !expected.has(t));
   if (missing.length || extra.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} renders a different target set than cargo test --all-features (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
+}
+const bodies = new Map([...members].map(id => {
+  const pkg = packages.get(id), owner = dir(pkg);
+  const dev = devLibraries(pkg);
+  const linked = normalLibraries([id, ...dev.map(other => other.id)], { procMacros: false });
+  const key = [sharedKey, owner, modelKey(pkg), packageKeys.get(owner),
+    dev.map(other => libraryInputs(other, "raw").key),
+    [...linked].map(other => libraryInputs(packages.get(other), "library").key),
+    fs.existsSync(path.join(root, owner, "clippy.toml"))];
+  const result = cache("crate", key, () => {
+    rebuilt.push(pkg.name);
+    crateTrees = new Set();
+    crateTests = new Set();
+    crateInputs = new Set();
+    // Procedural macros execute on the host, including when their consumer targets Wasm.
+    const native = buildFile(pkg);
+    const wasmBuild = wasmNodes.has(id) && !libOf(pkg)?.kind.includes("proc-macro") ? buildFile(pkg, wasmGraph) : undefined;
+    checkWasmGraph(pkg.name, native, wasmBuild);
+    checkCoverage(id);
+    const own = ownFiles.get(owner);
+    const inputs = [...crateInputs].filter(file => !own?.has(file));
+    crateInputs = undefined;
+    return { body: renderBuild(native, wasmBuild), ...inputWitnesses(inputs),
+      tests: [...crateTests], trees: [...crateTrees] };
+  }, { valid: currentWitnesses });
+  for (const test of result.tests) renderedTests.add(test);
+  crateTrees = new Set();
+  for (const directory of result.trees) treeLabels(directory);
+  return [owner, result.body];
+}));
+// A privileged group names a test this package renders, so none of its cases is left unrun.
+for (const id of members) for (const test of Object.keys(packages.get(id).metadata?.bazel?.privileged ?? {})) {
+  if (!renderedTests.has(`${packages.get(id).name}#${test}`)) throw new Error(`STEP_FAILED bazel-build-files: ${packages.get(id).name} privileged.${test} names no test of the package`);
 }
 const WINDOWS_TOOLCHAIN_PACKAGE = "toolchains/windows";
 const RUSTFMT_TOOLCHAIN_PACKAGE = "toolchains/rustfmt";
@@ -1938,15 +2194,15 @@ for (const [file, text] of files) {
 for (const [file, text] of files) if (text !== null) files.set(file, text.replace(/\n*$/, "\n"));
 for (const [file, text] of files) if (text !== null) assertCacheable(file, text);
 // A generated file whose package left the workspace is stale.
-for (const file of trackedFiles(root, ["*BUILD.bazel"])) {
+for (const file of tracked.filter(file => file.endsWith("BUILD.bazel"))) {
   if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
 }
 const stale = [];
-for (const [file, text] of files) {
+for (const [file, text] of output ? [] : files) {
   const target = path.join(root, file), current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
   if (current === text) continue;
   stale.push(file);
-  if (mode === "check" || output) continue;
+  if (mode === "check") continue;
   if (text === null) fs.rmSync(target);
   else {
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -1959,6 +2215,9 @@ if (mode === "write" && !output) {
   for (const [file, text] of files) if (text !== null) fs.chmodSync(path.join(root, file), 0o644);
 }
 if (output) fs.writeFileSync(output, JSON.stringify(Object.fromEntries(files)) + "\n");
+if (process.env.BAZEL_GENERATOR_STATS) {
+  fs.writeFileSync(process.env.BAZEL_GENERATOR_STATS, JSON.stringify({ scanned: [...scanned], rebuilt }) + "\n");
+}
 if (mode === "check" && stale.length) {
   throw new Error(`STEP_FAILED bazel-build-files: stale ${stale.join(", ")}; recovery: node scripts/bazel-build-files.mjs write`);
 }

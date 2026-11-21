@@ -288,7 +288,17 @@ export function workspaceProfileMetadata(root, {workspaceOnly = false, sourceRoo
   };
 }
 
+const targetConditions = new Map();
 function targetMatches(cfg, triple) {
+  if (!cfg || cfg === triple) return true;
+  if (!cfg.startsWith('cfg(')) return false;
+  if (!targetConditions.has(triple)) targetConditions.set(triple, new Map());
+  const conditions = targetConditions.get(triple);
+  if (!conditions.has(cfg)) conditions.set(cfg, evaluateTargetCondition(cfg, triple));
+  return conditions.get(cfg);
+}
+
+function evaluateTargetCondition(cfg, triple) {
   const wasm = triple === 'wasm32-unknown-unknown';
   const platform = new Set([
     wasm ? 'wasm' : triple.includes('windows') ? 'windows' : 'unix', `target_os=${JSON.stringify(wasm ? 'unknown' : triple.includes('windows') ? 'windows' : triple.includes('darwin') ? 'macos' : 'linux')}`,
@@ -296,8 +306,6 @@ function targetMatches(cfg, triple) {
     `target_env=${JSON.stringify(wasm ? '' : triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(wasm ? 'wasm' : triple.includes('windows') ? 'windows' : 'unix')}`,
     `target_vendor=${JSON.stringify(triple.includes('darwin') ? 'apple' : triple.includes('windows') ? 'pc' : 'unknown')}`,
   ]);
-  if (!cfg || cfg === triple) return true;
-  if (!cfg.startsWith('cfg(')) return false;
   if (!cfg.endsWith(')')) throw Error(`invalid target condition ${cfg}`);
   return evaluateCfg(cfg.slice(4, -1), (name, value, children) => {
     if (children) throw Error(`unknown target condition ${cfg}`);
@@ -335,14 +343,17 @@ function recordRegistryRequests(input, declaration, features) {
 
 // Inputs to crate_universe come from the current Cargo lock and declarations.
 // The resolved features themselves remain crate_universe's responsibility.
-export function registryInputs(root) {
-  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
-  const universe = bazelResolution(path.join(root, 'cargo-bazel-lock.json'), true) ?? {crates: {}, conditions: {}};
+export function registryInputs(root, {local = workspacePackages(root), resolution} = {}) {
+  const lock = toml(root, 'Cargo.lock');
+  const universe = (resolution === undefined ? bazelResolution(path.join(root, 'cargo-bazel-lock.json'), true) : resolution) ?? {crates: {}, conditions: {}};
   const candidates = (lock.package ?? []).filter(p => p.source?.startsWith('registry+')).map(p => ({
     ...p, features: new Set(), defaultFeatures: false,
   }));
   const resolve = lockDependencyIndex(candidates);
   const inputs = new Set();
+  const byDirectory = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
+  const lockedOwners = new Map();
+  const registryDependencies = new Map();
   for (const triple of ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
     const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
     const reachable = new Set(local.filter(p => p.workspace_member).map(p => p.id));
@@ -350,17 +361,19 @@ export function registryInputs(root) {
       for (const p of local.filter(p => reachable.has(p.id))) {
         const features = enabled.get(p.id);
         for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
-        const locked = lockedOwner(lock, p);
+        if (!lockedOwners.has(p.id)) lockedOwners.set(p.id, lockedOwner(lock, p));
+        const locked = lockedOwners.get(p.id);
         for (const d of p.dependencies) {
           if ((d.kind === 'dev' && !p.workspace_member) || !targetMatches(d.target, triple) ||
               !dependencyEnabled(features, d)) continue;
           if (d.resolved_path) {
-            const dep = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
+            const dep = byDirectory.get(d.resolved_path);
             if (!dep) throw Error(`${p.name}: missing path dependency ${d.name}`);
             add(reachable, dep.id);
             applyRequests(add, enabled.get(dep.id), dep, d, features);
           } else if (d.source?.startsWith('registry+')) {
-            const input = uniqueDependency(p, d, lockedCandidates(resolve, d, locked));
+            if (!registryDependencies.has(d)) registryDependencies.set(d, uniqueDependency(p, d, lockedCandidates(resolve, d, locked)));
+            const input = registryDependencies.get(d);
             inputs.add(input);
             recordRegistryRequests(input, d, features);
           }
@@ -371,8 +384,7 @@ export function registryInputs(root) {
   return {inputs: [...inputs], universe};
 }
 
-export function assertRegistryPinsCurrent(root) {
-  const {inputs, universe} = registryInputs(root);
+export function assertRegistryPinsCurrent(root, {inputs, universe} = registryInputs(root)) {
   const recovery = 'node scripts/repin-bazel.mjs';
   for (const p of inputs) {
     const pinned = universe.crates[`${p.name} ${p.version}`];
@@ -424,10 +436,10 @@ function* pinnedEdges(pinned, universe, triple) {
 // Browser builds start from the published packages, rather than the native
 // all-workspace, all-features test graph. Registry edges and resolved features
 // come from the browser crate-universe lock; local features come from manifests.
-export function workspaceBrowserGraph(root, selections) {
+export function workspaceBrowserGraph(root, selections, local = workspacePackages(root)) {
   root = path.resolve(root);
   const triple = 'wasm32-unknown-unknown';
-  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
+  const lock = toml(root, 'Cargo.lock');
   // The browser hub resolves from its own Cargo lock, which crate_universe writes back on
   // repin. It can name a different transitive version than the native lock, so the browser
   // graph reads it rather than the native lock. A registry package new to the browser
@@ -541,11 +553,11 @@ export function workspaceBrowserGraph(root, selections) {
     workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
 
-export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile, resolution, bazelTargets = []} = {}) {
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile, resolution, bazelTargets = [], local = workspacePackages(root, {sourceRoot, patchConfig, lockFile})} = {}) {
   const allPlatforms = triple === null;
   triple ??= 'x86_64-unknown-linux-gnu';
   root = path.resolve(root);
-  const local = workspacePackages(root, {sourceRoot, patchConfig, lockFile}), lock = lockFile ? toml(sourceRoot, lockFile) : toml(root, 'Cargo.lock');
+  const lock = lockFile ? toml(sourceRoot, lockFile) : toml(root, 'Cargo.lock');
   const universePath = universeFile ? path.resolve(sourceRoot, universeFile) : path.join(root, 'cargo-bazel-lock.json');
   const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
   if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
@@ -561,12 +573,13 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
   const active = (p, d) => dependencyEnabled(enabled.get(p.id), d);
+  const byDirectory = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
   growSets(add => {
     for (const p of local) {
       const features = enabled.get(p.id);
       for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
       for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d) && d.resolved_path)) {
-        const dependency = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
+        const dependency = byDirectory.get(d.resolved_path);
         applyRequests(add, enabled.get(dependency.id), dependency, d, features);
       }
     }
