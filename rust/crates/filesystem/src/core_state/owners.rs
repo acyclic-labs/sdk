@@ -112,6 +112,7 @@ impl LocalCoreStateStore {
             deferral: None,
             inspection: false,
             journal_work: None,
+            journal_cut: Default::default(),
             ownership_anchor: None,
         })
     }

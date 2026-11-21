@@ -1,7 +1,9 @@
 use super::*;
 use crate::{NativeMaterializationWork, NativeTreeMaterializationError};
 mod receipt;
-use receipt::Receipt;
+use receipt::{CachedCut, Receipt};
+
+pub(super) type JournalCut = Arc<Mutex<Option<CachedCut>>>;
 
 impl MaterializationJournalStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -52,12 +54,14 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     &journal.plan.operation_id.into_bytes(),
                 )?;
                 let record_lock = acquire_lock(&mut paths, LockMode::Exclusive)?;
-                let current = read_recoverable::<Receipt>(&paths)?
-                    .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-                if current.0 != Receipt::from(&journal) {
+                let operation = journal.plan.operation_id;
+                let current =
+                    receipt::Log::open(&paths, operation, retained_cut(&namespace.journal_cut))?
+                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+                if current.current != Some(Receipt::from(&journal)) {
                     return Err(NativeTreeMaterializationError::InvalidLayout.into());
                 }
-                drop(current);
+
                 let body_custody = work.claim(
                     std::mem::size_of::<LocalMaterializationActionCompletion>() as u64,
                     0,
@@ -71,34 +75,25 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 let mut receipt = Receipt::from(&journal);
                 let (encoding, encoding_credit, encoding_allocation) =
                     prepare_materialization_encoding(&mut receipt, work)?;
-                // Completion writes and flushes a separate image before its
-                // atomic replacement. The acknowledged current image remains
-                // durable throughout preparation and every incomplete write.
-                let host = crate::native_host::PreparedMaterializationRecord::prepare(
-                    paths.directory(),
-                    Path::new(
-                        paths
-                            .current
-                            .file_name()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    ),
-                    Path::new(
-                        paths
-                            .temporary
-                            .file_name()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    ),
-                    work,
-                    encoding.len(),
-                )?;
+                current.cut_tail(Some(work))?;
+                let host =
+                    PreparedJournalAppend::new(current.file, current.end, encoding.len(), work)?;
+                let identity = current.identity;
                 drop(paths);
-                let Namespace { admission, .. } = namespace;
+                let Namespace {
+                    admission,
+                    journal_cut,
+                    ..
+                } = namespace;
                 Ok(LocalMaterializationActionCompletion {
                     journal: Some(journal),
                     receipt,
                     encoding,
                     encoding_credit,
                     host: Some(host),
+                    journal_cut,
+                    identity,
+                    live_data: current.live_data,
                     record_lock,
                     _admission: admission,
                     _body_custody: body_custody,
@@ -121,8 +116,11 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         self.transaction(move |namespace| {
             let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation.into_bytes())?;
             with_lock(&mut paths, |paths| {
-                Ok(read_recoverable::<Receipt>(paths)?
-                    .is_some_and(|(current, _)| current == expected))
+                Ok(
+                    receipt::Log::open(paths, operation, retained_cut(&namespace.journal_cut))?
+                        .and_then(|log| log.current)
+                        .is_some_and(|current| current == expected),
+                )
             })
         })
         .await
@@ -148,14 +146,15 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         self.transaction(move |namespace| {
             let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
             let stored = with_lock(&mut paths, |paths| {
-                let current = read_recoverable::<Receipt>(paths)?;
-                if current.as_ref().map_or(0, |(journal, _)| journal.revision) != expected_revision
-                {
+                let log =
+                    receipt::Log::open(paths, operation_id, retained_cut(&namespace.journal_cut))?;
+                let current = log.as_ref().and_then(|log| log.current);
+                if current.as_ref().map_or(0, |journal| journal.revision) != expected_revision {
                     return Ok(false);
                 }
                 if current
                     .as_ref()
-                    .is_some_and(|(current, _)| current.history_id != replacement.history_id)
+                    .is_some_and(|current| current.history_id != replacement.history_id)
                 {
                     return Ok(false);
                 }
@@ -164,16 +163,91 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     work.set_original_work(
                         current
                             .as_ref()
-                            .map_or_else(crate::WorkCounters::default, |(journal, _)| journal.work),
+                            .map_or_else(crate::WorkCounters::default, |journal| journal.work),
                     );
                     replacement.work = work.journal_work()?;
                 }
-                receipt::publish(
-                    &namespace,
-                    current.as_ref().map(|(receipt, _)| receipt),
-                    &replacement,
+                let work = paths
+                    .allocation
+                    .as_ref()
+                    .map(|allocation| allocation.work());
+                let (batch, new_data) = receipt::encode(current, &replacement, work)?;
+                let old_data = log.as_ref().map_or(0, |log| log.live_data);
+                let next_receipt = batch.bytes.len() as u64 - new_data;
+                let live_data = old_data
+                    .checked_add(new_data)
+                    .ok_or(LocalCoreStateStoreError::Integrity)?;
+                let live_size = live_data
+                    .checked_add(next_receipt)
+                    .ok_or(LocalCoreStateStoreError::Integrity)?;
+                if log
+                    .as_ref()
+                    .is_some_and(|log| log.end - old_data > live_size)
+                {
+                    drop(log);
+                    let cut = compact_journal(
+                        paths,
+                        operation_id,
+                        live_data,
+                        &batch.bytes,
+                        Receipt::from(&replacement),
+                        work,
+                    )?;
+                    publish_cut(&namespace.journal_cut, cut);
+                    return Ok(true);
+                }
+                let (file, end, identity) = match log {
+                    Some(log) => {
+                        if current.is_none() {
+                            paths.sync()?;
+                        }
+                        log.cut_tail(work)?;
+                        (log.file, log.end, log.identity)
+                    }
+                    None => {
+                        let relative = paths
+                            .directory()
+                            .strip_prefix(&namespace.root)
+                            .map_err(|_| LocalCoreStateStoreError::Integrity)?;
+                        namespace.durable_directory(relative)?;
+                        if let Some(parent) = paths.directory().parent() {
+                            if let Some(work) = work {
+                                let parent =
+                                    crate::native_host::HostRoot::open(parent, &mut &*work)?;
+                                crate::native_host::sync_directory_held(
+                                    &parent.directory(),
+                                    &mut &*work,
+                                )?;
+                            } else {
+                                sync_parent(parent, NativeDurability::Full)?;
+                            }
+                        }
+                        let file = open_log_file(&namespace, paths, work)?;
+                        let identity = receipt::journal_identity(&file, work)?;
+                        (file, 0, identity)
+                    }
+                };
+                let flush = work
+                    .map(|work| {
+                        work.reserve_work(crate::WorkCounters {
+                            durability_operations: 1,
+                            ..Default::default()
+                        })
+                    })
+                    .transpose()?;
+                write_append_batch(end, &batch.bytes, work, |position, bytes| {
+                    acyclic_native_runtime::WriteAt::new(&file, position).write(bytes)
+                })?;
+                let cut = CachedCut::new(
+                    operation_id,
+                    identity,
+                    end + batch.bytes.len() as u64,
+                    live_data,
+                    Receipt::from(&replacement),
+                    &batch.bytes,
                 )?;
-                write_journaled(paths, &Receipt::from(&replacement))?;
+                flush_journal(&file, flush)?;
+                publish_cut(&namespace.journal_cut, cut);
                 Ok(true)
             })?;
             Ok((stored, replacement))
@@ -188,7 +262,10 @@ pub struct LocalMaterializationActionCompletion {
     receipt: Receipt,
     encoding: Vec<u8>,
     encoding_credit: crate::ledger::NativeWorkReservation,
-    host: Option<crate::native_host::PreparedMaterializationRecord>,
+    host: Option<PreparedJournalAppend>,
+    journal_cut: JournalCut,
+    identity: acyclic_native_runtime::FileIdentity,
+    live_data: u64,
     record_lock: OwnerLock,
     _admission: Admission,
     _body_custody: crate::NativeAllocation,
@@ -211,23 +288,39 @@ impl Future for LocalMaterializationActionCompletion {
             journal.work = this._body_custody.work().journal_work()?;
             this.receipt.work = journal.work;
             let capacity = this.encoding.len();
-            let mut writer = this.encoding.as_mut_slice();
-            let encoded = serde_json::to_writer(&mut writer, &this.receipt);
-            let length = capacity - writer.len();
+            let prefix = receipt::FORMAT.prefix_bytes();
+            let mut writer = this
+                .encoding
+                .get_mut(prefix..capacity - acyclic_log_frame::LogFrame::CHECKSUM_BYTES)
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+            let body_capacity = writer.len();
+            let encoded = serde_json::to_writer(&mut writer, &("r", &this.receipt));
+            let length = body_capacity - writer.len();
             this.encoding_credit.record_completed(crate::WorkCounters {
                 bytes_encoded: length as u64,
-                bytes_copied: length as u64,
+                bytes_copied: (prefix + length + acyclic_log_frame::LogFrame::CHECKSUM_BYTES)
+                    as u64,
+                bytes_hashed: (prefix + length + receipt::FORMAT.domain.len()) as u64,
                 ..crate::WorkCounters::UNCHARGED
             })?;
             encoded.map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
-            this.host
+            this.encoding.truncate(prefix + length);
+            receipt::FORMAT.seal(&mut this.encoding, 0)?;
+            let host = this
+                .host
                 .take()
-                .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                .complete(
-                    this.encoding
-                        .get(..length)
-                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                )?;
+                .ok_or(NativeTreeMaterializationError::MissingCustody)?;
+            let end = host.end + this.encoding.len() as u64;
+            let cut = CachedCut::new(
+                journal.plan.operation_id,
+                this.identity,
+                end,
+                this.live_data,
+                this.receipt,
+                &this.encoding,
+            )?;
+            host.complete(&this.encoding)?;
+            publish_cut(&this.journal_cut, cut);
             this.record_lock.unlock()?;
             Ok(journal)
         })())
@@ -276,23 +369,25 @@ fn prepare_materialization_encoding(
     let original_work = journal.work;
     journal.work = crate::WorkBudget::UNBOUNDED;
     let mut count = MaterializationEncodedSize { work, length: 0 };
-    let encoded = serde_json::to_writer(&mut count, journal);
+    let encoded = serde_json::to_writer(&mut count, &("r", &*journal));
     journal.work = original_work;
     encoded?;
-    let mut allocation = work.claim(
-        count.length as u64,
-        u64::from((count.length as u64) != 0),
-        crate::WorkCounters::UNCHARGED,
-    )?;
+    let maximum = usize::try_from(receipt::FORMAT.frame_bytes(count.length as u64).ok_or(
+        NativeTreeMaterializationError::from(crate::WorkError::Overflow),
+    )?)
+    .map_err(|_| NativeTreeMaterializationError::from(crate::WorkError::Overflow))?;
+    let mut allocation = work.claim(maximum as u64, 1, crate::WorkCounters::UNCHARGED)?;
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(count.length)
+        .try_reserve_exact(maximum)
         .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
-    bytes.resize(count.length, 0);
+    bytes.resize(maximum, 0);
     allocation.reconcile_capacity(bytes.capacity() as u64)?;
     let credit = work.reserve_work(crate::WorkCounters {
         bytes_encoded: count.length as u64,
-        bytes_copied: count.length as u64,
+        bytes_copied: maximum as u64,
+        bytes_hashed: (receipt::FORMAT.domain.len() + receipt::FORMAT.prefix_bytes() + count.length)
+            as u64,
         ..crate::WorkCounters::UNCHARGED
     })?;
     Ok((bytes, credit, allocation))
@@ -306,11 +401,14 @@ impl LocalCoreStateStore {
         self.transaction(move |namespace| {
             let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
             with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<Receipt>(paths)?
-                    .map(|(receipt, allocation)| {
-                        receipt::reconstruct(&namespace, operation_id, receipt, allocation)
-                    })
-                    .transpose()?;
+                let work = paths
+                    .allocation
+                    .as_ref()
+                    .map(|allocation| allocation.work());
+                let journal = match receipt::Log::open(paths, operation_id, None)? {
+                    Some(log) => log.load(operation_id, work)?,
+                    None => None,
+                };
 
                 if let Some(allocation) = &paths.allocation {
                     allocation.work().set_original_work(
@@ -340,7 +438,10 @@ pub(super) fn remove_materialization(
 ) -> Result<(), LocalCoreStateStoreError> {
     let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation.into_bytes())?;
     with_lock(&mut paths, |paths| {
-        if let Some((receipt, _)) = read_recoverable::<Receipt>(paths)? {
+        if let Some(receipt) =
+            receipt::Log::open(paths, operation, retained_cut(&namespace.journal_cut))?
+                .and_then(|log| log.current)
+        {
             if !matches!(
                 receipt.phase,
                 crate::MaterializationPhase::Applied | crate::MaterializationPhase::RolledBack
@@ -348,9 +449,138 @@ pub(super) fn remove_materialization(
                 return Err(LocalCoreStateStoreError::MaterializationInProgress);
             }
         }
-        // Retire the reachable receipt before deleting its immutable backing.
-        // Interrupted cleanup can repeat by operation id, even without a receipt.
-        remove_record(paths)?;
-        receipt::remove(namespace, operation)
+        remove_record(paths)
     })
+}
+
+struct PreparedJournalAppend {
+    file: File,
+    end: u64,
+    writes: crate::NativeWorkReservation,
+    flush: crate::NativeWorkReservation,
+}
+
+impl PreparedJournalAppend {
+    fn new(
+        file: File,
+        end: u64,
+        maximum: usize,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, LocalCoreStateStoreError> {
+        Ok(Self {
+            file,
+            end,
+            writes: work.reserve_work(crate::WorkCounters {
+                backend_write_operations: maximum as u64,
+                object_bytes_written: maximum as u64,
+                ..Default::default()
+            })?,
+            flush: work.reserve_work(crate::WorkCounters {
+                durability_operations: 1,
+                ..Default::default()
+            })?,
+        })
+    }
+
+    fn complete(self, bytes: &[u8]) -> Result<(), LocalCoreStateStoreError> {
+        let Self {
+            file,
+            end,
+            writes,
+            flush,
+        } = self;
+        write_append_batch(end, bytes, None, |position, bytes| {
+            writes
+                .record_completed(crate::WorkCounters {
+                    backend_write_operations: 1,
+                    ..Default::default()
+                })
+                .map_err(std::io::Error::other)?;
+            let length = acyclic_native_runtime::WriteAt::new(&file, position).write(bytes)?;
+            writes
+                .record_completed(crate::WorkCounters {
+                    object_bytes_written: length as u64,
+                    ..Default::default()
+                })
+                .map_err(std::io::Error::other)?;
+            Ok(length)
+        })?;
+        flush_journal(&file, Some(flush))
+    }
+}
+
+fn compact_journal(
+    paths: &RecordPaths<'_>,
+    operation: OperationId,
+    live_data: u64,
+    batch: &[u8],
+    receipt: Receipt,
+    work: Option<&crate::NativeMaterializationWork>,
+) -> Result<CachedCut, LocalCoreStateStoreError> {
+    let old =
+        receipt::Log::open(paths, operation, None)?.ok_or(LocalCoreStateStoreError::Integrity)?;
+    let next = match work {
+        Some(work) => {
+            let next = materialization_open_options(
+                &paths.temporary,
+                &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                work,
+            )?;
+            crate::native_host::truncate_file(&next, 0, &mut &*work)?;
+            next
+        }
+        None => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&paths.temporary)?,
+    };
+    let identity = receipt::journal_identity(&next, work)?;
+    old.copy_live_data(&next, work)?;
+    write_append_batch(old.live_data, batch, work, |offset, bytes| {
+        acyclic_native_runtime::WriteAt::new(&next, offset).write(bytes)
+    })?;
+    let flush = work
+        .map(|work| {
+            work.reserve_work(crate::WorkCounters {
+                durability_operations: 1,
+                ..Default::default()
+            })
+        })
+        .transpose()?;
+    flush_journal(&next, flush)?;
+    drop(next);
+    let end = old.live_data + batch.len() as u64;
+    drop(old);
+    paths.rename(
+        &paths.temporary,
+        &paths.current,
+        None,
+        acyclic_native_runtime::RenameMode::Replace,
+    )?;
+    paths.sync()?;
+    CachedCut::new(operation, identity, end, live_data, receipt, batch)
+}
+
+fn flush_journal(
+    file: &File,
+    credit: Option<crate::NativeWorkReservation>,
+) -> Result<(), LocalCoreStateStoreError> {
+    if let Some(credit) = credit {
+        credit.record_completed(crate::WorkCounters {
+            durability_operations: 1,
+            ..Default::default()
+        })?;
+    }
+    acyclic_native_runtime::flush_file_data(file)?;
+    Ok(())
+}
+
+fn retained_cut(cache: &JournalCut) -> Option<CachedCut> {
+    *cache.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn publish_cut(cache: &JournalCut, cut: CachedCut) {
+    *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some(cut);
 }

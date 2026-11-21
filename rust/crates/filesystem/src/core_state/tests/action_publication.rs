@@ -169,8 +169,8 @@ async fn every_prepared_action_write_recovers_and_retries() -> TestResult {
     );
     let writes: u64 = std::fs::read_to_string(baseline.join("writes"))?.parse()?;
     assert!(
-        writes >= 4,
-        "temporary creation, image write, flush and replacement must be covered"
+        writes >= 2,
+        "the receipt append and data flush must both be covered"
     );
     let jobs = (1..=writes + 1)
         .map(|cut| {

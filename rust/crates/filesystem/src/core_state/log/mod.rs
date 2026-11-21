@@ -192,5 +192,11 @@ pub(super) fn crash_point(_label: &str, _flushed: u64) {}
 mod checkpoint;
 mod commit;
 mod replay;
-#[cfg(feature = "test-support")]
-pub(super) use replay::checked_log_frame;
+
+/// Checksums the binary envelope of one compact JSON core-state frame.
+pub(super) const FRAME_FORMAT: acyclic_log_frame::LogFrame = acyclic_log_frame::LogFrame {
+    domain: b"acyclic-core-state-append-v1\0",
+    wide: true,
+    minimum_body: 1,
+    maximum_body: isize::MAX as u64,
+};

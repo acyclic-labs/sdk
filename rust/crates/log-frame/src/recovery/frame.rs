@@ -76,27 +76,50 @@ impl LogFrame {
         Ok(())
     }
 
+    /// Seals a body already encoded in `out` after a reserved length prefix.
+    /// Earlier frames in the buffer remain intact.
+    pub fn seal(&self, out: &mut Vec<u8>, start: usize) -> io::Result<()> {
+        let width = self.prefix_bytes();
+        let body_start = start
+            .checked_add(width)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let tail = out.get(start..).ok_or(io::ErrorKind::InvalidInput)?;
+        let length = tail
+            .len()
+            .checked_sub(width)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let (prefix, _) = self
+            .prefix(length as u64)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let prefix = prefix.get(..width).ok_or(io::ErrorKind::InvalidInput)?;
+        let body = out.get(body_start..).ok_or(io::ErrorKind::InvalidInput)?;
+        let checksum = self.checksum(prefix, body);
+        out.try_reserve(Self::CHECKSUM_BYTES)
+            .map_err(io::Error::other)?;
+        out.get_mut(start..body_start)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .copy_from_slice(prefix);
+        out.extend_from_slice(&checksum);
+        Ok(())
+    }
+
+    /// Splits off one whole checksummed frame, returning its body and the
+    /// remaining log bytes. A torn or damaged prefix returns `None`.
+    #[must_use]
+    pub fn decode_prefix<'a>(&self, bytes: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
+        let width = self.prefix_bytes();
+        let (prefix, tail) = bytes.split_at_checked(width)?;
+        let length = self.body_length(prefix)?;
+        let extent = usize::try_from(self.frame_bytes(length)?).ok()?;
+        let (encoded, rest) = tail.split_at_checked(extent.checked_sub(width)?)?;
+        let (body, checksum) = encoded.split_at_checked(usize::try_from(length).ok()?)?;
+        (checksum == self.checksum(prefix, body)).then_some((body, rest))
+    }
+
     /// Whether a whole frame with a matching checksum starts `bytes`.
     #[must_use]
     pub fn is_valid(&self, bytes: &[u8]) -> bool {
-        let width = self.prefix_bytes();
-        let Some(prefix) = bytes.get(..width) else {
-            return false;
-        };
-        let Some(length) = self.body_length(prefix) else {
-            return false;
-        };
-        let Some(_) = self.frame_bytes(length) else {
-            return false;
-        };
-        let Some((body, tail)) = bytes
-            .get(width..)
-            .and_then(|body| body.split_at_checked(usize::try_from(length).ok()?))
-        else {
-            return false;
-        };
-        tail.get(..Self::CHECKSUM_BYTES)
-            .is_some_and(|checksum| checksum == self.checksum(prefix, body))
+        self.decode_prefix(bytes).is_some()
     }
 
     /// Reads the frame at `reader`'s cursor, `remaining` bytes before the
@@ -153,6 +176,16 @@ mod tests {
             format.encode(&[b"ab", b"cde"], &mut frame).unwrap();
             assert_eq!(Some(frame.len() as u64), format.frame_bytes(5));
             assert!(format.is_valid(&frame));
+            let mut batch = frame.clone();
+            batch.resize(batch.len() + format.prefix_bytes(), 0);
+            batch.extend_from_slice(b"next");
+            format.seal(&mut batch, frame.len()).unwrap();
+            let (body, rest) = format.decode_prefix(&batch).unwrap();
+            assert_eq!(body, b"abcde");
+            assert_eq!(
+                format.decode_prefix(rest),
+                Some((b"next".as_slice(), &[][..]))
+            );
             assert_eq!(
                 format.read(frame.as_slice(), frame.len() as u64).unwrap(),
                 Some(b"abcde".to_vec())

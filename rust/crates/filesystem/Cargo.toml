@@ -276,6 +276,7 @@ notify = { workspace = true }
 dirs = { workspace = true }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 loom = { version = "=0.7.3", optional = true }
+acyclic-log-frame = { version = "=0.2.0", path = "../log-frame" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-native-claim = { version = "=0.2.0", path = "../native-claim" }
 acyclic-process-resources = { version = "=0.2.0", path = "../process-resources" }

@@ -509,6 +509,7 @@ dependencies = [
  "acyclic-fs-work",
  "acyclic-grpc-observability",
  "acyclic-native-claim",
+ "acyclic-log-frame",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",

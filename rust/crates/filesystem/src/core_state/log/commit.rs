@@ -114,55 +114,14 @@ impl CoreLog {
                 .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
                 .transpose()?,
         };
-        if let Some(work) = work {
-            reserve(
-                &mut buffer.bytes,
-                65,
-                work,
-                buffer
-                    .allocation
-                    .as_mut()
-                    .ok_or(LocalCoreStateStoreError::Integrity)?,
-            )?;
-            work.charge(crate::WorkCounters {
-                bytes_copied: 65,
-                ..Default::default()
-            })?;
-        }
-        buffer.bytes.extend_from_slice(&[b' '; 65]);
-        serde_json::to_writer(
-            &mut buffer,
+        buffer.push_frame(
+            FRAME_FORMAT,
             &LogFrame {
                 epoch,
                 sequence,
                 change,
             },
         )?;
-        if let Some(work) = work {
-            work.charge(crate::WorkCounters {
-                bytes_hashed: (buffer.bytes.len() - 65) as u64,
-                ..Default::default()
-            })?;
-        }
-        let checksum = blake3::hash(&buffer.bytes[65..]).to_hex();
-        if let Some(work) = work {
-            let needed = buffer.bytes.len() + 1;
-            reserve(
-                &mut buffer.bytes,
-                needed,
-                work,
-                buffer
-                    .allocation
-                    .as_mut()
-                    .ok_or(LocalCoreStateStoreError::Integrity)?,
-            )?;
-            work.charge(crate::WorkCounters {
-                bytes_copied: 65,
-                ..Default::default()
-            })?;
-        }
-        buffer.bytes[..64].copy_from_slice(checksum.as_bytes());
-        buffer.bytes.push(b'\n');
         Ok(buffer)
     }
 
@@ -174,43 +133,9 @@ impl CoreLog {
         flush: &mut Option<crate::NativeWorkReservation>,
         deferred: bool,
     ) -> Result<(), LocalCoreStateStoreError> {
-        let mut position = 0;
-        while position < buffer.len() {
-            let mut credit = work
-                .map(|work| {
-                    work.reserve_work(crate::WorkCounters {
-                        backend_write_operations: 1,
-                        object_bytes_written: (buffer.len() - position) as u64,
-                        ..Default::default()
-                    })
-                })
-                .transpose()?;
-            let mut recorded = Ok(None);
-            let result = acyclic_native_runtime::write_file_with(&buffer[position..], |bytes| {
-                let result = lease.write(|file| {
-                    acyclic_native_runtime::WriteAt::new(file, self.length + position as u64)
-                        .write(bytes)
-                });
-                let count = result.as_ref().copied().unwrap_or(0);
-                recorded = credit
-                    .as_mut()
-                    .map(|credit| {
-                        credit.record_completed(crate::WorkCounters {
-                            backend_write_operations: 1,
-                            object_bytes_written: count as u64,
-                            ..Default::default()
-                        })
-                    })
-                    .transpose();
-                result
-            });
-            let count = result?;
-            recorded?;
-            if count == 0 {
-                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
-            }
-            position += count;
-        }
+        write_append_batch(self.length, buffer, work, |offset, bytes| {
+            lease.write(|file| acyclic_native_runtime::WriteAt::new(file, offset).write(bytes))
+        })?;
         crash_point("frame written", self.flushed);
         if !deferred {
             let synced = lease.flush(|file| file.flush_data());

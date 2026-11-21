@@ -1,10 +1,5 @@
 use super::*;
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
-mod prepared;
-#[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) use prepared::PreparedMaterializationRecord;
-
 #[cfg(windows)]
 pub(super) fn windows_name_packet<W: NativeHostWork>(
     parent: &impl std::os::windows::io::AsRawHandle,

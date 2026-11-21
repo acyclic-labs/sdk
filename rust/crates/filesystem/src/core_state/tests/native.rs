@@ -377,7 +377,10 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
     let namespace = store.namespace().unwrap();
     let paths = namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap();
     std::fs::create_dir_all(paths.directory()).unwrap();
-    let frame = format!("{} {{}}\n", blake3::hash(b"{}").to_hex());
+    let mut frame = Vec::new();
+    crate::core_state::log::FRAME_FORMAT
+        .encode(&[b"{}"], &mut frame)
+        .unwrap();
     std::fs::write(&paths.current, frame).unwrap();
     let cxl = crate::CancellationToken::new();
     let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();

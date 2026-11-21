@@ -58,8 +58,6 @@ type NativeLeaf = std::ffi::CStr;
 #[cfg(windows)]
 type NativeLeaf = [u16];
 mod record;
-#[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) use record::PreparedMaterializationRecord;
 #[cfg(unix)]
 use record::rename_unix_names_once;
 use record::sync_held_descriptor_once;

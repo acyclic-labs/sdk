@@ -175,12 +175,16 @@ fn check_inner(bytes: &[u8]) -> bool {
     let mut offset = 0;
     while offset < bytes.len() {
         let before = offset;
-        let Ok(Some(frame)) = checked_log_frame(bytes, &mut offset, Some(&work)) else {
+        let Ok(Some(frame)) = checked_log_frame(log::FRAME_FORMAT, bytes, &mut offset, Some(&work))
+        else {
             break;
         };
         if offset <= before || !check_type::<LogFrame<Change>>(frame, &work, |_| 0) {
             return false;
         }
+    }
+    if !check_append_batch(bytes, &work) {
+        return false;
     }
     for length in [0, bytes.len() / 2] {
         let reads = std::cell::Cell::new(0);
@@ -218,6 +222,62 @@ fn check_inner(bytes: &[u8]) -> bool {
         };
     }
     true
+}
+
+fn check_append_batch(bytes: &[u8], work: &crate::NativeMaterializationWork) -> bool {
+    let Ok(allocation) = work.claim(0, 0, crate::WorkCounters::UNCHARGED) else {
+        return false;
+    };
+    let mut batch = LogBuffer {
+        bytes: Vec::new(),
+        allocation: Some(allocation),
+    };
+    if batch.push_frame(log::FRAME_FORMAT, &"accepted").is_err() {
+        return false;
+    }
+    let accepted = batch.bytes.len();
+    let payload = String::from_utf8_lossy(bytes);
+    if batch.push_frame(log::FRAME_FORMAT, &payload).is_err() {
+        return false;
+    }
+    let end = batch.bytes.len();
+    let mut offset = accepted;
+    let Ok(Some(frame)) =
+        checked_log_frame(log::FRAME_FORMAT, &batch.bytes, &mut offset, Some(work))
+    else {
+        return false;
+    };
+    if offset != end
+        || !serde_json::from_slice::<String>(frame).is_ok_and(|decoded| decoded == payload)
+    {
+        return false;
+    }
+    let selector = bytes.iter().take(8).fold(0_usize, |value, byte| {
+        value.rotate_left(8) ^ usize::from(*byte)
+    });
+    let cut = accepted + selector % (end - accepted);
+    let mut offset = 0;
+    let input = &batch.bytes[..cut];
+    if !matches!(
+        checked_log_frame(log::FRAME_FORMAT, input, &mut offset, Some(work)),
+        Ok(Some(b"\"accepted\""))
+    ) || offset != accepted
+        || !matches!(
+            checked_log_frame(log::FRAME_FORMAT, input, &mut offset, Some(work)),
+            Ok(None)
+        )
+        || offset != accepted
+    {
+        return false;
+    }
+    let Some(last) = batch.bytes.last_mut() else {
+        return false;
+    };
+    *last ^= 1;
+    matches!(
+        checked_log_frame(log::FRAME_FORMAT, &batch.bytes, &mut offset, Some(work)),
+        Ok(None)
+    ) && offset == accepted
 }
 
 /// Capture real checkpoint writers and the same checksum writer used by commit.

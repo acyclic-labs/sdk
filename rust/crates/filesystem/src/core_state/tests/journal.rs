@@ -1,5 +1,250 @@
 use super::*;
 
+#[tokio::test]
+async fn materialization_cas_flushes_once_for_a_batch_of_preimages() {
+    use acyclic_native_runtime::testing::Schedule;
+
+    crate::initialize_test_native_io();
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let operation = OperationId::new();
+    let mut journal = materialization_journal(operation);
+    journal.phase = crate::MaterializationPhase::Preparing;
+    journal.plan.edits = (0..3)
+        .map(|index| crate::MaterializationEdit::Install {
+            path: format!("entry-{index}"),
+            image: vec![1],
+        })
+        .collect();
+    let (stored, mut journal) =
+        MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+            .await
+            .unwrap();
+    assert!(stored);
+    journal.preimages = (0..3)
+        .map(|_| crate::MaterializationPreimage {
+            image: vec![2; 64],
+            custody: None,
+        })
+        .collect();
+    let expected = journal.revision;
+    journal.revision += 1;
+    let (schedule, mut events) = Schedule::new();
+    let driver = tokio::spawn(async move {
+        while let Some(boundary) = events.recv().await {
+            boundary.release();
+        }
+    });
+    let started = Instant::now();
+    let (stored, journal) = schedule
+        .scope(MaterializationJournalStore::compare_and_swap(
+            &store, operation, expected, journal,
+        ))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(stored);
+    schedule.drained().await;
+    driver.abort();
+    let calls = schedule.durable_writes();
+    let flushes: Vec<_> = calls.iter().filter(|call| call.flushes).collect();
+    assert_eq!(flushes.len(), 1, "{calls:?}");
+    assert_eq!(flushes[0].operation, "file:sync_data");
+    assert!(!calls.iter().any(|call| call.operation.contains("rename")));
+    eprintln!(
+        "MATERIALIZATION_CAS preimages=3 flushes=1 elapsed_us={}",
+        elapsed.as_micros()
+    );
+    assert_eq!(
+        MaterializationJournalStore::load(&store, operation)
+            .await
+            .unwrap(),
+        Some(journal)
+    );
+}
+
+#[tokio::test]
+async fn materialization_recovers_at_each_batch_frame_cut_and_retries() {
+    use acyclic_native_runtime::testing::{DurableFault, Schedule, drive};
+    crate::initialize_test_native_io();
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let operation = OperationId::new();
+    let mut first = materialization_journal(operation);
+    first.phase = crate::MaterializationPhase::Preparing;
+    first.plan.edits = (0..2)
+        .map(|index| crate::MaterializationEdit::Install {
+            path: format!("entry-{index}"),
+            image: vec![1],
+        })
+        .collect();
+    let (stored, first) =
+        MaterializationJournalStore::compare_and_swap(&store, operation, 0, first)
+            .await
+            .unwrap();
+    assert!(stored);
+    let namespace = store.namespace().unwrap();
+    let paths = namespace
+        .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
+        .unwrap();
+    let accepted = std::fs::metadata(&paths.current).unwrap().len() as usize;
+    let mut second = MaterializationJournalStore::load(&store, operation)
+        .await
+        .unwrap()
+        .unwrap();
+    second.revision += 1;
+    second.preimages = (0..2)
+        .map(|_| crate::MaterializationPreimage {
+            image: vec![2; 64],
+            custody: None,
+        })
+        .collect();
+    let (schedule, mut events) = Schedule::new();
+    let (stored, second) = drive(
+        &schedule,
+        &mut events,
+        |_| {},
+        MaterializationJournalStore::compare_and_swap(&store, operation, first.revision, second),
+    )
+    .await
+    .unwrap();
+    assert!(stored);
+    let write = schedule
+        .durable_writes()
+        .into_iter()
+        .find(|write| write.requested > 0)
+        .unwrap();
+    let full = std::fs::read(&paths.current).unwrap();
+
+    let mut cuts = Vec::new();
+    let mut offset = accepted;
+    while offset < full.len() {
+        let length = FRAME_FORMAT.body_length(&full[offset..]).unwrap();
+        let extent = FRAME_FORMAT.frame_bytes(length).unwrap() as usize;
+        cuts.extend([offset, offset + extent / 2, offset + extent - 1]);
+        offset += extent;
+    }
+    assert_eq!(cuts.len(), 9, "two preimages and one closing receipt");
+    assert_eq!(offset, full.len());
+
+    assert_eq!(write.requested, full.len() - accepted);
+    for cut in cuts {
+        std::fs::write(&paths.current, &full[..accepted]).unwrap();
+        let crashing = LocalCoreStateStore::new(directory.path());
+        let mut replacement = MaterializationJournalStore::load(&crashing, operation)
+            .await
+            .unwrap()
+            .unwrap();
+        replacement.revision = second.revision;
+        for image in &second.preimages {
+            replacement.preimages.push(crate::MaterializationPreimage {
+                image: image.image.clone(),
+                custody: None,
+            });
+        }
+        let (schedule, mut events) = Schedule::new();
+        schedule.cut_at(write.ordinal, DurableFault::Torn(cut - accepted));
+        let failed = drive(
+            &schedule,
+            &mut events,
+            |_| {},
+            MaterializationJournalStore::compare_and_swap(
+                &crashing,
+                operation,
+                first.revision,
+                replacement,
+            ),
+        )
+        .await;
+        assert!(failed.is_err(), "cut at byte {cut} was acknowledged");
+        assert_eq!(std::fs::read(&paths.current).unwrap(), &full[..cut]);
+        let reopened = LocalCoreStateStore::new(directory.path());
+        let mut recovered = MaterializationJournalStore::load(&reopened, operation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered, first, "recovered at byte {cut}");
+        recovered.revision = second.revision;
+        for image in &second.preimages {
+            recovered.preimages.push(crate::MaterializationPreimage {
+                image: image.image.clone(),
+                custody: None,
+            });
+        }
+        assert!(
+            MaterializationJournalStore::compare_and_swap(
+                &reopened,
+                operation,
+                first.revision,
+                recovered
+            )
+            .await
+            .unwrap()
+            .0
+        );
+        let reopened = LocalCoreStateStore::new(directory.path());
+        assert_eq!(
+            MaterializationJournalStore::load(&reopened, operation)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(&second),
+            "retried at byte {cut}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn materialization_compacts_when_receipt_history_outgrows_live_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let operation = OperationId::new();
+    let mut journal = materialization_journal(operation);
+    journal
+        .plan
+        .edits
+        .push(crate::MaterializationEdit::Install {
+            path: "entry".to_owned(),
+            image: vec![1],
+        });
+    journal.preimages.push(crate::MaterializationPreimage {
+        image: vec![2; 64],
+        custody: None,
+    });
+    let namespace = store.namespace().unwrap();
+    let paths = namespace
+        .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
+        .unwrap();
+    let mut previous_length = 0;
+    let mut compacted = false;
+    for expected in 0..8 {
+        journal.revision = expected + 1;
+        let (stored, next) =
+            MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                .await
+                .unwrap();
+        assert!(stored);
+        journal = next;
+        let length = std::fs::metadata(&paths.current).unwrap().len();
+        if length < previous_length {
+            compacted = true;
+            let reopened = LocalCoreStateStore::new(directory.path());
+            assert_eq!(
+                MaterializationJournalStore::load(&reopened, operation)
+                    .await
+                    .unwrap()
+                    .as_ref(),
+                Some(&journal)
+            );
+        }
+        previous_length = length;
+    }
+    assert!(
+        compacted,
+        "obsolete receipts kept growing past the live state"
+    );
+}
+
 async fn native_write_count(image: Vec<u8>) -> u64 {
     let directory = tempfile::tempdir().unwrap();
     let work = crate::NativeMaterializationWork::new(
@@ -96,7 +341,7 @@ async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_saf
 }
 
 #[tokio::test]
-async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
+async fn materialization_journal_with_a_torn_tail_is_discoverable_and_recovered() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let namespace = store.namespace().unwrap();
@@ -121,7 +366,12 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
             .await
             .unwrap();
     assert!(stored);
-    std::fs::rename(&paths.current, &paths.previous).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(&paths.current)
+        .unwrap()
+        .write_all(b"torn")
+        .unwrap();
     assert_eq!(
         store.materialization_operations_async().await.unwrap(),
         [operation]
@@ -136,16 +386,7 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let budget = crate::WorkBudget {
-            source_bytes_read: std::fs::metadata(&paths.current).unwrap().len()
-                + std::fs::read_dir(
-                    directory
-                        .path()
-                        .join("materialization-data-v1")
-                        .join(hex::encode(operation.into_bytes())),
-                )
-                .unwrap()
-                .map(|entry| entry.unwrap().metadata().unwrap().len())
-                .sum::<u64>(),
+            source_bytes_read: std::fs::metadata(&paths.current).unwrap().len(),
             ..native::finite_budget()
         };
         let cxl = crate::CancellationToken::new();
@@ -224,7 +465,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     assert_eq!(
         work.receipt().unwrap().object_bytes_written,
         written,
-        "preparing an atomic replacement must not copy the durable prior image"
+        "preparing an append must not rewrite the durable prefix"
     );
     acyclic_native_runtime::write_all_at(
         &file,
@@ -238,7 +479,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     let completed = completion.await.unwrap();
     assert_eq!(
         work.receipt().unwrap().durability_operations - durability,
-        2
+        1
     );
     assert_eq!(completed.revision, 2);
     assert_eq!(completed.root_identity, root_identity);
@@ -612,12 +853,11 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .unwrap()
                 .is_none()
         );
-        assert!(
-            std::fs::read_dir(directory.path().join("materialization-data-v1"))
-                .unwrap()
-                .next()
-                .is_none()
-        );
+        let namespace = store.namespace().unwrap();
+        let paths = namespace
+            .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
+            .unwrap();
+        assert!(!paths.current.exists());
     }
 }
 

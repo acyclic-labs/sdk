@@ -172,14 +172,16 @@ pub(super) fn rewrite_intact_frame(
         &namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current
     };
     let bytes = std::fs::read(log).unwrap();
-    let line = bytes.strip_suffix(b"\n").unwrap();
-    let mut frame: serde_json::Value = serde_json::from_slice(&line[65..]).unwrap();
+    let (frame, _) = crate::core_state::log::FRAME_FORMAT
+        .decode_prefix(&bytes)
+        .unwrap();
+    let mut frame: serde_json::Value = serde_json::from_slice(frame).unwrap();
     edit(&mut frame);
     let frame = serde_json::to_vec(&frame).unwrap();
-    let mut rewritten = blake3::hash(&frame).to_hex().as_bytes().to_vec();
-    rewritten.push(b' ');
-    rewritten.extend_from_slice(&frame);
-    rewritten.push(b'\n');
+    let mut rewritten = Vec::new();
+    crate::core_state::log::FRAME_FORMAT
+        .encode(&[&frame], &mut rewritten)
+        .unwrap();
     std::fs::write(log, &rewritten).unwrap();
     rewritten
 }
@@ -342,15 +344,10 @@ pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
     let torn = flushed + (bytes.len().saturating_sub(flushed)) / 2;
     bytes.truncate(torn);
     std::fs::write(log, &bytes).unwrap();
-    for line in bytes
-        .get(..flushed)
-        .unwrap_or(&bytes)
-        .split_inclusive(|byte| *byte == b'\n')
-    {
-        let Some(line) = line.strip_suffix(b"\n") else {
-            break;
-        };
-        let frame: LogFrame<Change> = serde_json::from_slice(&line[65..]).unwrap();
+    let mut retained = bytes.get(..flushed).unwrap_or(&bytes);
+    while let Some((frame, rest)) = crate::core_state::log::FRAME_FORMAT.decode_prefix(retained) {
+        retained = rest;
+        let frame: LogFrame<Change> = serde_json::from_slice(frame).unwrap();
         for record in frame.change.0 {
             let key = record.key;
             let paths = key.paths(&namespace).unwrap();

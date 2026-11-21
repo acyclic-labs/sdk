@@ -28,7 +28,7 @@ const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
 const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
-const MATERIALIZATION_FAMILY: &str = "materialization";
+const MATERIALIZATION_FAMILY: &str = "materialization-log-v1";
 const OWNER_LOCK: &str = "owner.lock";
 
 /// One journaled private namespace shared by core control-plane state.
@@ -40,6 +40,7 @@ pub struct LocalCoreStateStore {
     deferral: Option<Arc<AtomicBool>>,
     inspection: bool,
     journal_work: Option<crate::ledger::NativeMaterializationWork>,
+    journal_cut: journal::JournalCut,
     // Last: retained storage owners must outlive the namespace's open WAL and locks.
     ownership_anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
@@ -176,6 +177,7 @@ struct Namespace {
     admission: Admission,
     durability: Durability,
     barrier: Mutex<Option<crate::NativeWorkReservation>>,
+    journal_cut: journal::JournalCut,
     _allocation: Option<crate::ledger::NativeAllocation>,
 }
 
@@ -212,6 +214,7 @@ impl LocalCoreStateStore {
             deferral: None,
             inspection: false,
             journal_work: None,
+            journal_cut: Default::default(),
             ownership_anchor: None,
         }
     }
@@ -227,6 +230,7 @@ impl LocalCoreStateStore {
             deferral: None,
             inspection: false,
             journal_work: None,
+            journal_cut: Default::default(),
             ownership_anchor: None,
         })
     }
@@ -356,6 +360,7 @@ impl LocalCoreStateStore {
             inspection: self.inspection,
             admission,
             barrier: Mutex::default(),
+            journal_cut: self.journal_cut.clone(),
             durability: if deferred {
                 Durability::Deferred
             } else {
@@ -724,6 +729,8 @@ mod residents;
 use residents::{
     AdoptedResident, PreparedChange, PreparedResident, Residents, reserve_retained_slots,
 };
+mod append_log;
+use append_log::*;
 mod log;
 use log::*;
 mod native_io;

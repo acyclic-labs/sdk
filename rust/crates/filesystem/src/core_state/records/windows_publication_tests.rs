@@ -1,5 +1,5 @@
 use super::{
-    LocalCoreStateStore, Path, PathBuf, Publication, read_recoverable, with_lock, write_journaled,
+    LocalCoreStateStore, Path, PathBuf, read_recoverable, with_lock, write_journaled,
     write_record_in,
 };
 
@@ -73,7 +73,7 @@ fn publication_retains_one_directory_through_every_namespace_operation() -> Test
                             } else {
                                 // Restore the previous physical parent opens while
                                 // executing the same writes, renames and barriers.
-                                write_record_in(paths, &42_u64, None, Publication::Recoverable)
+                                write_record_in(paths, &42_u64, None)
                             };
                             probe.publish();
                             result

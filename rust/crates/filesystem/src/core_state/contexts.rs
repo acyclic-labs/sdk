@@ -238,7 +238,7 @@ pub(super) const CONTEXT_CHILDREN_FAMILY: &str = "workspace-context-children-v1"
 pub(super) const CONTEXT_CHILDREN_INDEX_FAMILY: &str = "workspace-context-children-index-v1";
 pub(super) const CONTEXT_CHILD_COUNT_FAMILY: &str = "workspace-context-child-counts-v1";
 pub(super) const LINEAGE_FAMILY: &str = "lineage";
-pub(super) const CORE_LOG_FAMILY: &str = "core-state-log-v1";
+pub(super) const CORE_LOG_FAMILY: &str = "core-state-append-v1";
 /// Commits an owner keeps in its log before writing their records back. Tests
 pub(super) const OWNED_CHECKPOINT: u64 = if cfg!(test) { 3 } else { 256 };
 
