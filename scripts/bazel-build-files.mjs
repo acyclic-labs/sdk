@@ -742,7 +742,7 @@ function treeLabels(directory) {
   return labels;
 }
 // Test-only members of this package: taken by it as dev-dependencies only (another package may take one
-// as a normal dependency, a fuzz harness say). Their helpers name the files this package's tests read.
+// as a normal dependency, a fuzz harness say). Their compiled library names the files this package's tests read.
 function devLibraries(p) {
   const found = new Set();
   for (const byId of nodes) for (const dep of byId.get(p.id)?.deps ?? []) {
@@ -769,16 +769,16 @@ function normalLibraries(starts, { procMacros }) {
   return found;
 }
 const libraryReads = new Map();
-function libraryInputs(pkg, view) {
-  const key = pkg.id + " " + view;
+function libraryInputs(pkg, includeOwn = false) {
+  const key = pkg.id + " " + includeOwn;
   if (!libraryReads.has(key)) {
     const outer = crateInputs;
     crateInputs = undefined;
     try {
       const owner = dir(pkg), rootFile = path.relative(root, libOf(pkg).src_path).replaceAll("\\\\", "/");
-      const { files, dirs, labels } = readsOf(owner, rootFile, view);
+      const { files, dirs, labels } = readsOf(owner, rootFile, "library");
       const outside = file => ownerOf(file) !== owner;
-      const reads = view === "raw" ? { files, dirs, labels } : {
+      const reads = includeOwn ? { files, dirs, labels } : {
         files: new Set([...files].filter(outside)),
         dirs: new Set([...dirs].filter(directory => outside(directory + "/"))),
         labels,
@@ -797,7 +797,7 @@ function linkedLibraryReads(p) {
     const found = normalLibraries([p.id, ...devLibraries(p).map(other => other.id)], { procMacros: false });
     const reads = { files: new Set(), dirs: new Set(), labels: new Set() };
     for (const id of found) {
-      const other = libraryInputs(packages.get(id), "library").reads;
+      const other = libraryInputs(packages.get(id)).reads;
       for (const key of Object.keys(reads)) for (const entry of other[key]) reads[key].add(entry);
     }
     linkedReads.set(p.id, reads);
@@ -1398,7 +1398,7 @@ ${platformSources.map(([platform, sources]) =>
     const all = [readsOf(dir(p), repoRelative(target))];
     if (!narrow) {
       if (lib) all.push(readsOf(dir(p), repoRelative(lib)));
-      for (const other of devLibraries(p)) all.push(libraryInputs(other, "raw").reads);
+      for (const other of devLibraries(p)) all.push(libraryInputs(other, true).reads);
       all.push(linkedLibraryReads(p));
     }
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
@@ -1575,12 +1575,13 @@ ${platformSources.map(([platform, sources]) =>
       ];
       if (lib.test) covered.add(`test ${lib.kind[0]} ${lib.name}`);
       const reads = runtimeData(lib);
+      const narrow = narrowTestRunfiles(lib);
       const unit = lib.test && libUnitTests && !includesLibrary;
       if (!linkedUnits.size) {
-        test(unitName, testOnlySources.length ? unitAttrs() : linkedAttrs(), reads, {}, p.name, false, bazel?.["unit-test-shards"]);
+        test(unitName, testOnlySources.length ? unitAttrs() : linkedAttrs(), reads, {}, p.name, narrow, bazel?.["unit-test-shards"]);
       } else {
         const areas = unit
-          ? [test(`${unitName}_internal`, testOnlySources.length ? unitAttrs() : linkedAttrs(), [...reads, ...testData(p, unitName)], testTools(p, unitName), p.name, false, bazel?.["unit-test-shards"])]
+          ? [test(`${unitName}_internal`, testOnlySources.length ? unitAttrs() : linkedAttrs(), [...reads, ...testData(p, unitName)], testTools(p, unitName), p.name, narrow, bazel?.["unit-test-shards"])]
           : [];
         names.add(unitName);
         unitSuite = { name: unitName, tests: areas };
@@ -2017,8 +2018,8 @@ const bodies = new Map([...members].map(id => {
   const dev = devLibraries(pkg);
   const linked = normalLibraries([id, ...dev.map(other => other.id)], { procMacros: false });
   const key = [sharedKey, owner, modelKey(pkg), packageKeys.get(owner),
-    dev.map(other => libraryInputs(other, "raw").key),
-    [...linked].map(other => libraryInputs(packages.get(other), "library").key),
+    dev.map(other => libraryInputs(other, true).key),
+    [...linked].map(other => libraryInputs(packages.get(other)).key),
     fs.existsSync(path.join(root, owner, "clippy.toml"))];
   const result = cache("crate", key, () => {
     rebuilt.push(pkg.name);

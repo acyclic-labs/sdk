@@ -1250,12 +1250,6 @@ filegroup(
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)
-
-filegroup(
     name = "tree/corpus/access",
     srcs = glob(["corpus/access/**"], allow_empty = True),
     visibility = ["//visibility:public"],

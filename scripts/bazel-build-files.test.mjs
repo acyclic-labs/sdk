@@ -661,6 +661,36 @@ test("another workspace's tests carry the source repository files and the linked
   }
 });
 
+test("dev helpers contribute library runfiles and keep their own test fixtures", () => {
+  const { root, run } = fixture();
+  try {
+    const manifest = join(root, "member/Cargo.toml");
+    writeFileSync(manifest, readFileSync(manifest, "utf8").replace("[dependencies]", "[dev-dependencies]"));
+    const workspace = join(root, "Cargo.toml");
+    writeFileSync(workspace, readFileSync(workspace, "utf8")
+      .replace('members = ["member"]\nexclude = ["local"]', 'members = ["member", "local"]'));
+    mkdirSync(join(root, "custody"));
+    writeFileSync(join(root, "custody/windows.rs"), "// Windows-only implementation\n");
+    writeFileSync(join(root, "local/fixture.txt"), "helper fixture\n");
+    writeFileSync(join(root, "local/src/lib.rs"), [
+      'pub const FIXTURE: &str = "local/fixture.txt";',
+      '#[cfg(test)]',
+      'mod tests;',
+      '',
+    ].join("\n"));
+    writeFileSync(join(root, "local/src/tests.rs"), '#[test]\nfn reads_own_fixture() { let _ = "custody/windows.rs"; }\n');
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    const result = run("write");
+    assert.equal(result.status, 0, result.stderr);
+    const consumer = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    assert.match(consumer, /"\/\/local:fixture\.txt"/);
+    assert.doesNotMatch(consumer, /custody/);
+    assert.match(readFileSync(join(root, "local/BUILD.bazel"), "utf8"), /"\/\/:custody\/windows\.rs"/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the generator refuses multiple integration binaries and repeated roots", () => {
   const { root, run } = fixture();
   const manifest = join(root, "member/Cargo.toml");

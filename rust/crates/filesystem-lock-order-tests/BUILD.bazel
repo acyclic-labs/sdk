@@ -33,10 +33,7 @@ rust_test(
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//proptest-1.12.0",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:.cargo/config.toml",
-        "//:scripts/mold-linker.sh",
-    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     args = [
         "--skip",
         "::full_cloud::",
@@ -79,9 +76,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)

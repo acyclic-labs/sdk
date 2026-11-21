@@ -9,6 +9,9 @@ use prost_types::{
 fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = Compiler::new()?;
     let root = tempfile::tempdir()?;
+    let proto = acyclic_test_support::source_path("")
+        .join("compatibility")
+        .join("proto");
     for (action, admitted) in [
         ("streams/follow", true),
         ("streams/raed", false),
@@ -27,7 +30,7 @@ fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn s
                 &[input],
                 &[
                     root.path().to_owned(),
-                    acyclic_test_support::crate_path!("proto"),
+                    proto.clone(),
                     compiler.includes().to_owned(),
                 ],
             )?;
@@ -51,16 +54,19 @@ fn every_compiled_descriptor_is_byte_identical_to_its_wire_baseline()
 -> Result<(), Box<dyn std::error::Error>> {
     let compiler = Compiler::new()?;
     let root = acyclic_test_support::source_path("");
+    // Cargo.toml declares the exact schema and baseline files under these roots.
+    let crates = root.join("rust").join("crates");
+    let baselines = root.join("compatibility").join("descriptors");
     let output = tempfile::tempdir()?;
     for (family, baseline, protos) in FAMILIES {
         let destination = output.path().join(baseline);
         compiler.descriptor(
-            &root.join("rust/crates").join(crate::protocol_crate(family)),
+            &crates.join(crate::protocol_crate(family)),
             protos,
             &destination,
         )?;
         let actual = std::fs::read(&destination)?;
-        let expected = std::fs::read(root.join("compatibility/descriptors").join(baseline))?;
+        let expected = std::fs::read(baselines.join(baseline))?;
         assert!(
             actual == expected,
             "{family} protocol identity changed: actual {} expected {} first difference {:?}",

@@ -26,6 +26,36 @@ protoc-bin-vendored-macos-x86_64 = "=3.3.0"
 protoc-bin-vendored-macos-aarch_64 = "=3.3.0"
 protoc-bin-vendored-win32 = "=3.3.0"
 
+[package.metadata.bazel]
+test-narrow-runfiles = ["acyclic_proto_build"]
+
+# Exact descriptor roots, local imports, and retained wire baselines.
+# The existing protoc bundle supplies google/protobuf/descriptor.proto.
+[package.metadata.bazel.test-data]
+acyclic_proto_build_test = [
+    "descriptors/actors-v1.bin",
+    "descriptors/auth-v1.bin",
+    "descriptors/filesystem-v2.bin",
+    "descriptors/harness-v2.bin",
+    "descriptors/inference-v1.bin",
+    "descriptors/machines-v1.bin",
+    "descriptors/objects-v1.bin",
+    "descriptors/stream-v1.bin",
+    "proto/harness/v2/resources.proto",
+    "proto/validation/v1/options.proto",
+    "//rust/crates/actors-contract:proto/actors/v1/actors.proto",
+    "//rust/crates/auth:proto/auth/v1/auth.proto",
+    "//rust/crates/filesystem-wire:proto/filesystem/v2/filesystem.proto",
+    "//rust/crates/filesystem-wire:proto/protocol/v1/protocol.proto",
+    "//rust/crates/harness-wire:proto/harness/v2/harness.proto",
+    "//rust/crates/harness-wire:proto/protocol/v1/protocol.proto",
+    "//rust/crates/inference:proto/inference/v1/inference.proto",
+    "//rust/crates/machines:proto/machines/v1/machines.proto",
+    "//rust/crates/objects-core:proto/objects/v1/objects.proto",
+    "//rust/crates/stream-wire:proto/stream/v1/session.proto",
+    "//rust/crates/stream-wire:proto/stream/v1/stream.proto",
+]
+
 # Bazel sets each build-script variable to a vendored file for the configured
 # platform, as `package/path`; any other platform fails to configure.
 [package.metadata.bazel.build-script-env.linux-x86_64]

@@ -73,10 +73,7 @@ rust_test(
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-subscriber-0.3.23",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:.cargo/config.toml",
-        "//:scripts/mold-linker.sh",
-    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     args = [
         "--skip",
         "::full_cloud::",
@@ -147,9 +144,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)

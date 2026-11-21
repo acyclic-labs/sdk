@@ -124,12 +124,7 @@ rust_test(
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/markdown:tests/full_parse.txt",
-        "//rust/crates/markdown:tests/sequence_work.txt",
-        "//rust/crates/markdown:tests/table_width.txt",
-        "//rust/crates/markdown:tests/whitespace.txt",
-    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     args = [
         "--skip",
         "::full_cloud::",
@@ -207,12 +202,7 @@ rust_test(
         "@sdk_crates//url-2.5.8",
         "@sdk_crates//wasm-bindgen-0.2.117",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/markdown:tests/full_parse.txt",
-        "//rust/crates/markdown:tests/sequence_work.txt",
-        "//rust/crates/markdown:tests/table_width.txt",
-        "//rust/crates/markdown:tests/whitespace.txt",
-    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     args = [
         "--skip",
         "::full_cloud::",
@@ -338,9 +328,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)

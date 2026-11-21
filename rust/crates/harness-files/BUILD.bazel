@@ -78,9 +78,7 @@ rust_test(
         "@sdk_crates//uuid-1.29.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
         "//rust/crates/filesystem:src/lib.rs",
-        "//rust/crates/filesystem:tests/codec.rs",
     ],
     args = [
         "--skip",
@@ -126,9 +124,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)

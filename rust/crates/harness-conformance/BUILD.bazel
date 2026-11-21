@@ -90,10 +90,7 @@ rust_test(
     proc_macro_deps = [
         "@sdk_crates//async-trait-0.1.92",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:.cargo/config.toml",
-        "//:scripts/mold-linker.sh",
-    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     args = [
         "--skip",
         "::full_cloud::",
@@ -225,8 +222,6 @@ rust_test(
         "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:.cargo/config.toml",
-        "//:scripts/mold-linker.sh",
         "//rust/crates/harness-conformance:tree/fixtures",
         "//rust/crates/harness-e2e:tree/tests/scenarios",
     ] + [
@@ -314,9 +309,6 @@ rust_test(
         "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:.cargo/config.toml",
-        "//:scripts/mold-linker.sh",
-    ] + [
         ":scenarios",
     ],
     env = {"CARGO_BIN_EXE_scenarios":"$(rootpath :scenarios)"},
@@ -405,12 +397,6 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)
 
 filegroup(
     name = "tree/fixtures",

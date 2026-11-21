@@ -101,12 +101,6 @@ filegroup(
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)
-
-filegroup(
     name = "tree/corpus/streaming",
     srcs = glob(["corpus/streaming/**"], allow_empty = True),
     visibility = ["//visibility:public"],

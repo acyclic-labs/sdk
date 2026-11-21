@@ -101,17 +101,12 @@ rust_test(
         "@sdk_crates//uuid-1.29.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
         "//rust/crates/filesystem:src/lib.rs",
-        "//rust/crates/filesystem:tests/codec.rs",
-        "//rust/crates/harness-core:src/lib.rs",
         "//rust/crates/harness-core:tree",
-        "//rust/crates/harness-fuzz:tree",
         "//rust/crates/harness-fuzz:tree/corpus",
         "//rust/crates/harness-fuzz:tree/corpus/client_diff",
         "//rust/crates/harness-fuzz:tree/corpus/goal_parser",
         "//rust/crates/harness-fuzz:tree/corpus/plan_markdown",
-        "//rust/crates/harness-fuzz:tree/corpus/recorded_invocation",
         "//rust/crates/harness/fuzz-context:tree",
         "//rust/crates/harness/fuzz-native-journal:tree",
         "//rust/crates/harness/fuzz-settings:tree",
@@ -162,9 +157,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree",
-    srcs = glob(["**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)

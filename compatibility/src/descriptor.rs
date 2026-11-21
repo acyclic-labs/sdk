@@ -101,9 +101,12 @@ pub fn canonicalize(bytes: &[u8], roots: &[&str]) -> Result<Vec<u8>, Error> {
             }
         }
         file.merge(unknown.as_slice())?;
-        let is_import = !roots
-            .iter()
-            .any(|root| root.strip_prefix("proto/").unwrap_or(root) == file_name);
+        let is_import = !roots.iter().any(|root| {
+            root.split_once('/')
+                .filter(|(directory, _)| *directory == "proto")
+                .map_or(*root, |(_, relative)| relative)
+                == file_name
+        });
         file.merge([0xd2, 0xf6, 0x03, 4, 8, u8::from(is_import), 24, 0].as_slice())?;
     }
     Ok(set.encode_to_vec())
