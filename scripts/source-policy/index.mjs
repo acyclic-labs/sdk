@@ -765,8 +765,10 @@ export function pollingUnit(file, source, parser = undefined) {
   }
   spans.set(name(i), [i + 2, j]);
  }
- // Inside its own initializer a spelling is the outer name (`let interval = interval(d)`).
- const local = i => { const span = spans.get(name(i)); return name(i) !== stream[i].value && !(span && i >= span[0] && i < span[1]); };
+ // Inside its own initializer a spelling is the outer name (`let interval = interval(d)`). A binding with no
+ // initializer of its own (`let delay: later` in a macro's tokens, a declared-then-assigned name) has no code to
+ // judge, so it keeps its spelling's class: an alias of a timer is a timer.
+ const local = i => { const span = spans.get(name(i)); return name(i) !== stream[i].value && span !== undefined && !(i >= span[0] && i < span[1]); };
  const called = i => stream[i + 1]?.value === '(' || (rust && stream[i + 1]?.value === '!');
  const dataField = i => policyName.test(stream[i].value) && !temporal.test(stream[i].value) && !called(i)
   && (stream[i - 1]?.value === '.' || stream[i - 1]?.value === '?.' || (stream[i + 1]?.value === ':' && stream[i + 2]?.value !== ':'

@@ -402,6 +402,24 @@ test('aliases cannot use an unchanged timer import to conceal a new call', () =>
  }
 });
 
+// Every way Rust aliases a timer name keeps it a timer: destructuring, `use ... as`, a braced use, `extern crate ...
+// as`, and a macro's tokens that bind it (2026-11-21: e40c9080d cleared the macro `let` alias, which turned Cloud's
+// policy_base_test red at the tip).
+test('a Rust alias of a timer name is a timer', () => {
+ const file = 'src/clock.rs';
+ for (const aliased of [
+  'fn run(bound: Bound) { let Bound { delay: later } = bound;\n later(); }',
+  'use std::thread::sleep as later;\n fn run() { later(span()); }',
+  'use std::{thread::sleep as later};\n fn run() { later(span()); }',
+  'extern crate retry as later;\n fn run() { later::run(); }',
+  'bind! { let delay: later };\n fn run() { later(); }',
+  'bind!(delay as later);\n fn run() { later(); }',
+ ]) {
+  assert.ok(newProjectPollingSites(new Map(), new Map([[file, aliased]]))
+   .some(site => site.line === 2 && site.kind === 'timer-or-readiness'), aliased);
+ }
+});
+
 test('comments and Future polling remain distinct from time and readiness rechecks', () => {
  assert.deepEqual(pollingSites(rust, `
  // while sleep timeout retry
