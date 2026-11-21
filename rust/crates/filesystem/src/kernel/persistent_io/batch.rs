@@ -317,7 +317,6 @@ impl<F: Format> PageBatch<'_, F> {
     ) -> Result<(), FsError> {
         let allocations = match accounting {
             KernelAccounting::Standalone { allocations, .. } => Some(allocations),
-            KernelAccounting::BorrowedStandalone { allocations, .. } => Some(&mut **allocations),
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => None,
         };

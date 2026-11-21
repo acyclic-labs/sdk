@@ -45,10 +45,7 @@ where
             publication_hold,
         } = prepared;
         let objects = owner.objects();
-        if matches!(
-            accounting,
-            KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. }
-        ) {
+        if matches!(accounting, KernelAccounting::Standalone { .. }) {
             let checked = before_publication(Some(accounting.remaining().map_err(E::from)?)).await;
             accept_step(accounting, checked.map(|work| ((), work)))?;
         }

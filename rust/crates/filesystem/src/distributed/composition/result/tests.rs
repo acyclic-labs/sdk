@@ -25,6 +25,10 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         let path = StreamPath::new("state/retained-result")?;
         let observed =
             store.authorized_observation(CommitCondition::Absent { path: path.clone() })?;
+        let hold = collection
+            .unswept(&mut work.accounting())
+            .await?
+            .into_hold();
         store.contribute_record(
             &mut commit,
             &observed,
@@ -32,10 +36,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                 kind: crate::distributed::state_record::CompanionKind::OperationOutcome,
                 payload: OwnedBytes::from_static(b"original result"),
             },
-            collection
-                .unswept(&mut work.accounting())
-                .await?
-                .into_hold(),
+            hold,
             &mut work,
         )?;
 

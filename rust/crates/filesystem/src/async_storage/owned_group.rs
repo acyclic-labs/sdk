@@ -100,20 +100,21 @@ impl<G: OwnedAuthorityGuard> OwnedAuthorityGroup<G> {
     pub fn bind<A: AsyncAuthorityStore + 'static>(self, owner: A) -> Option<OwnedAuthorityTask> {
         OwnedAuthorityTask::admit(
             self,
-            |batch, bytes| match RetainedAllocation::claim(
-                bytes,
-                u64::from(bytes != 0),
-                &mut batch
-                    .accounting
-                    .as_mut()
-                    .unwrap_or_else(|| unreachable!("undispatched accounting"))
-                    .borrow(),
-            ) {
-                Ok(credit) => Ok(credit),
-                Err(error) => {
+            |batch, bytes| {
+                // The borrowed accounting returns its ledger when this
+                // statement ends, before a refusal finishes the batch.
+                let claimed = RetainedAllocation::claim(
+                    bytes,
+                    u64::from(bytes != 0),
+                    &mut batch
+                        .accounting
+                        .as_mut()
+                        .unwrap_or_else(|| unreachable!("undispatched accounting"))
+                        .borrow(),
+                );
+                claimed.map_err(|error| {
                     batch.finish(Err(super::work::authority_error(error).into()));
-                    Err(())
-                }
+                })
             },
             |batch| async move { batch.run(owner).await },
         )

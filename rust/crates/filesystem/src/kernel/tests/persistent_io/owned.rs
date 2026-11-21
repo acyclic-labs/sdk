@@ -205,6 +205,7 @@ fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
         Owned::new(page, allocation, bytes)
             .retire(&mut accounting)
             .unwrap();
+        drop(accounting);
         assert_eq!(allocations.live_bytes(), 0);
     }
 }

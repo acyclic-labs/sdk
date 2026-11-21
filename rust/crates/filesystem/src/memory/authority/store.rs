@@ -72,10 +72,10 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
             if native {
                 seal(guard.as_deref_mut(), work).await?;
             }
-            if let Some(value) = self
+            let published = self
                 .publish_create(authority, epoch, plan, &mut work.accounting())
-                .map_err(authority_error)?
-            {
+                .map_err(authority_error)?;
+            if let Some(value) = published {
                 if !native && matches!(value, CreateAuthorityOutcome::Existing(_)) {
                     seal(guard.as_deref_mut(), work).await?;
                 }

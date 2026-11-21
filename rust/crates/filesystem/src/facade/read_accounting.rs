@@ -19,9 +19,6 @@ pub(crate) fn readonly_standalone_live(accounting: &KernelAccounting<'_>) -> Opt
     // provider/index backing may be created or retired by independent owners.
     match accounting {
         KernelAccounting::Standalone { allocations, .. } => Some(allocations.scratch_bytes()),
-        KernelAccounting::BorrowedStandalone { allocations, .. } => {
-            Some(allocations.scratch_bytes())
-        }
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { .. } => None,
     }

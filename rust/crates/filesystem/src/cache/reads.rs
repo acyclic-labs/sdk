@@ -66,7 +66,8 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         };
         let mut local_leaders = BatchLeaders::default();
         for request in requests {
-            let slot = match self.read_plan(request.object_id, &mut work.accounting())? {
+            let plan = self.read_plan(request.object_id, &mut work.accounting())?;
+            let slot = match plan {
                 ReadPlan::Hit(bytes) => BatchSlot::Hit(bytes),
                 ReadPlan::Leader(mut guard) => {
                     let index = prepared.leaders.value.len();

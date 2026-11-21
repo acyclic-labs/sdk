@@ -37,10 +37,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileRangeRead, FsError> {
-        let standalone = matches!(
-            *accounting,
-            KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. }
-        );
+        let standalone = matches!(*accounting, KernelAccounting::Standalone { .. });
         let before = readonly_standalone_live(accounting);
         let result = async {
             #[cfg(not(target_arch = "wasm32"))]

@@ -19,8 +19,7 @@ pub(super) fn lazy_store_write_work() -> WorkCounters {
 
 pub(super) fn cancellation<'a>(ctx: &KernelAccounting<'a>) -> &'a CancellationToken {
     match ctx {
-        KernelAccounting::Standalone { cancellation, .. }
-        | KernelAccounting::BorrowedStandalone { cancellation, .. } => cancellation,
+        KernelAccounting::Standalone { cancellation, .. } => cancellation,
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
     }

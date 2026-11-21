@@ -813,7 +813,7 @@ rust_test(
         "--skip",
         "::full_cloud::",
     ],
-    tags = ["manual","resources:memory:13696"],
+    tags = ["manual","resources:memory:13568"],
 )
 
 isolated_test(

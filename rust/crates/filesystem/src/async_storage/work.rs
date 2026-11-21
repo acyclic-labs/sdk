@@ -242,7 +242,7 @@ impl<'a> AuthorityWork<'a> {
     /// Borrows the original read custody without reconstructing residency.
     pub(crate) fn read_accounting(
         &mut self,
-    ) -> Result<crate::kernel::allocation::KernelAccounting<'_>, ObjectStoreError> {
+    ) -> Result<crate::kernel::allocation::BorrowedKernelAccounting<'_>, ObjectStoreError> {
         if !self.is_native() {
             self.read_budget()?;
         }
@@ -300,14 +300,15 @@ impl<'a> AuthorityWork<'a> {
     }
 
     /// Borrows the caller's original allocation ledger and work allowance.
-    pub fn accounting(&mut self) -> crate::kernel::allocation::KernelAccounting<'_> {
+    pub fn accounting(&mut self) -> crate::kernel::allocation::BorrowedKernelAccounting<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
             return crate::kernel::allocation::KernelAccounting::native(
                 original,
                 self.cancellation,
             )
-            .with_construction(&mut self.construction);
+            .with_construction(&mut self.construction)
+            .into();
         }
         crate::kernel::allocation::KernelAccounting::borrowed_standalone(
             &mut self.allocations,

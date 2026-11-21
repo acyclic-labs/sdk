@@ -79,7 +79,6 @@ pub(super) fn admit_scratch(
 ) -> Result<(), WorkspaceError> {
     let live = match accounting {
         KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-        KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work, .. } => {
             work.live_allocation_bytes().map_err(FsError::from)?

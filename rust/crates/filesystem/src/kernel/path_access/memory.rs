@@ -123,7 +123,6 @@ pub(super) fn release_standalone(
 ) -> Result<(), crate::FsError> {
     let ledger = match accounting {
         KernelAccounting::Standalone { allocations, .. } => allocations,
-        KernelAccounting::BorrowedStandalone { allocations, .. } => &mut **allocations,
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { .. } => return Ok(()),
     };

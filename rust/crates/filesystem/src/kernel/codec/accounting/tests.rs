@@ -21,7 +21,7 @@ fn owned_and_borrowed_standalone_permits_keep_the_exact_header_boundary() {
                     &cancellation,
                 )
             } else {
-                allocation::KernelAccounting::standalone(budget, &cancellation)
+                allocation::KernelAccounting::standalone(budget, &cancellation).into()
             };
             let mut observer = EncodeAccounting::new(&mut accounting);
             let encoded = Encoder::with_exact_capacity(

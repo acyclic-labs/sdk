@@ -61,6 +61,7 @@ impl ObjectSealer for RetainingOpening {
                 retention: ObjectReadRetention::Owned { logical_bytes },
             });
         }
+        drop(work);
         PlainObjects.open(id, stored, context)
     }
 }

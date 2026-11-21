@@ -154,8 +154,9 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     };
     drop(first);
     if cursor.sequence == head.sequence {
+        let facts = Retained::allocate(0, &mut work.accounting())?;
         return Ok(AccountingPage {
-            facts: Retained::allocate(0, &mut work.accounting())?,
+            facts,
             next: cursor,
             watermark_sequence: head.sequence,
             watermark_digest: head.digest,

@@ -418,9 +418,6 @@ impl KernelOwnedAllocation {
         match self {
             KernelOwnedAllocation::Standalone => match accounting {
                 KernelAccounting::Standalone { allocations, .. } => allocations.release(bytes),
-                KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                    allocations.release(bytes)
-                }
                 #[cfg(not(target_arch = "wasm32"))]
                 KernelAccounting::NativeOriginal { .. } => {
                     unreachable!("standalone allocation has standalone custody")

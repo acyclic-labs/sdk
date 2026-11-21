@@ -290,6 +290,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                         crate::FsError::Work(crate::WorkError::BudgetExceeded { .. })
                     ));
                 }
+                drop(admitted);
                 assert_eq!(
                     accounting.spent().unwrap().allocation_operations,
                     before.allocation_operations

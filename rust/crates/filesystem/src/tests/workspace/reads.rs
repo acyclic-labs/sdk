@@ -237,9 +237,6 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
             let prior = RetainedAllocation::claim(29, 0, &mut accounting)?;
             let live = |accounting: &KernelAccounting<'_>| match accounting {
                 KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-                KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                    allocations.live_bytes()
-                }
                 KernelAccounting::NativeOriginal { work, .. } => {
                     work.live_allocation_bytes().unwrap()
                 }

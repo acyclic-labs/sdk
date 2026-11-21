@@ -676,19 +676,70 @@ pub enum KernelAccounting<'a> {
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
     },
-    BorrowedStandalone {
-        construction: crate::collection::ConstructionScope<'a>,
-        allocations: &'a mut AllocationLedger,
-        work: &'a mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &'a crate::CancellationToken,
-    },
     #[cfg(not(target_arch = "wasm32"))]
     NativeOriginal {
         construction: crate::collection::ConstructionScope<'a>,
         work: &'a crate::NativeMaterializationWork,
         cancellation: &'a crate::CancellationToken,
     },
+}
+
+/// A standalone accounting over a caller's ledger and counters, which return
+/// to the caller when it drops. It is not a [`KernelAccounting`] value, so a
+/// lent accounting can never be consumed by a handoff.
+#[doc(hidden)]
+pub struct BorrowedKernelAccounting<'a> {
+    accounting: KernelAccounting<'a>,
+    owner: Option<(&'a mut AllocationLedger, &'a mut WorkCounters)>,
+}
+
+impl<'a> From<KernelAccounting<'a>> for BorrowedKernelAccounting<'a> {
+    fn from(accounting: KernelAccounting<'a>) -> Self {
+        Self {
+            accounting,
+            owner: None,
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for BorrowedKernelAccounting<'a> {
+    type Target = KernelAccounting<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.accounting
+    }
+}
+
+impl std::ops::DerefMut for BorrowedKernelAccounting<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.accounting
+    }
+}
+
+impl<'a> BorrowedKernelAccounting<'a> {
+    pub(crate) fn with_construction(
+        mut self,
+        roots: &'a mut crate::collection::ConstructionRoots,
+    ) -> Self {
+        self.accounting.set_construction(roots);
+        self
+    }
+}
+
+impl Drop for BorrowedKernelAccounting<'_> {
+    fn drop(&mut self) {
+        if let (
+            Some((allocations, work)),
+            KernelAccounting::Standalone {
+                allocations: lent,
+                work: counted,
+                ..
+            },
+        ) = (self.owner.take(), &mut self.accounting)
+        {
+            *allocations = std::mem::take(lent);
+            *work = *counted;
+        }
+    }
 }
 
 mod accounting;

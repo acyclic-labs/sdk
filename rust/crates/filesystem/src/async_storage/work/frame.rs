@@ -48,19 +48,6 @@ impl<'a> AuthorityFrame<'a> {
                 cancellation,
                 construction.roots(),
             )),
-            KernelAccounting::BorrowedStandalone {
-                allocations,
-                work,
-                budget,
-                construction,
-                ..
-            } => Ok(Self::standalone(
-                allocations,
-                work,
-                *budget,
-                cancellation,
-                construction.roots(),
-            )),
         }
     }
 

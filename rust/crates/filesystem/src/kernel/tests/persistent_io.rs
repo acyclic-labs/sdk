@@ -161,6 +161,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     assert_eq!(only_page_name(&first)?, b"cached");
     drop(mutable);
     accounting.release_owned(&mut allocation, bytes)?;
+    drop(accounting);
     assert_eq!(mutation_work.backend_read_operations, 0);
     assert!(mutation_work.bytes_copied >= bytes);
     assert_eq!(mutation_allocations.live_bytes(), 0);
@@ -190,6 +191,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         .err()
         .ok_or("cached mutable page bypassed its allocation budget")?;
     assert!(matches!(denied, crate::FsError::Work(_)));
+    drop(accounting);
     assert_eq!(denied_allocations.live_bytes(), 0);
     Ok(())
 }

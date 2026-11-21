@@ -215,15 +215,6 @@ pub(super) fn completed_blob_backend(
             *work = work.with_backend(measured, allocations.live_bytes())?;
             work.verify(*budget)?;
         }
-        KernelAccounting::BorrowedStandalone {
-            allocations,
-            work,
-            budget,
-            ..
-        } => {
-            **work = work.with_backend(measured, allocations.live_bytes())?;
-            work.verify(*budget)?;
-        }
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { .. } => {
             return Err(BlobBuildError::NativeSourceUnavailable.into());
@@ -239,9 +230,6 @@ pub(super) fn release_blob_bytes(
     // Cleanup is unconditional, including after cancellation or a late denial.
     match accounting {
         KernelAccounting::Standalone { allocations, .. } => {
-            allocations.release(bytes).map_err(build_allocation_error)
-        }
-        KernelAccounting::BorrowedStandalone { allocations, .. } => {
             allocations.release(bytes).map_err(build_allocation_error)
         }
         #[cfg(not(target_arch = "wasm32"))]

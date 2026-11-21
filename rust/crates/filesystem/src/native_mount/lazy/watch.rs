@@ -23,7 +23,6 @@ where
         }
         let cancellation = match &*accounting {
             crate::kernel::KernelAccounting::Standalone { cancellation, .. }
-            | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. }
             | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => {
                 (*cancellation).clone()
             }

@@ -434,7 +434,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// separate record and binding conflicts at the same source path. The
     /// staging volume must admit these names and their resolution suffixes.
     pub fn conflict_file_path(&mut self, key: &ConflictKey) -> Result<String, WorkspaceError> {
-        let bytes = json(key, &mut self.preview.accounting()?)?;
+        let bytes = json(key, &mut *self.preview.accounting()?)?;
         Ok(format!(
             "{}/conflicts/{}",
             self.path,
@@ -480,7 +480,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     crate::kernel::allocation::retained::RetainedAllocation::claim(
                         bytes,
                         u64::from(bytes != 0),
-                        &mut this.preview.accounting()?,
+                        &mut *this.preview.accounting()?,
                     )?,
                 );
                 Ok::<(), WorkspaceError>(())
@@ -647,7 +647,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                             kind,
                             conflict: rendered.value,
                         },
-                        &mut self.preview.accounting()?,
+                        &mut *self.preview.accounting()?,
                     )?,
                 )
             };

@@ -1169,12 +1169,6 @@ fn standalone_parts<'a>(
             budget,
             ..
         } => Some((allocations, work, budget)),
-        KernelAccounting::BorrowedStandalone {
-            allocations,
-            work,
-            budget,
-            ..
-        } => Some((allocations, work, budget)),
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { .. } => None,
     }

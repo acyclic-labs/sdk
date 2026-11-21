@@ -5,7 +5,7 @@ pub mod allocation;
 pub use allocation::retained::NativeAccounting;
 pub(crate) use allocation::retained::retain_decoded_bytes;
 pub use allocation::retained::{Retained, RetainedAllocation};
-pub use allocation::{KernelAccounting, KernelOwnedAllocation};
+pub use allocation::{BorrowedKernelAccounting, KernelAccounting, KernelOwnedAllocation};
 mod attribute;
 mod attribute_access;
 mod attribute_list;

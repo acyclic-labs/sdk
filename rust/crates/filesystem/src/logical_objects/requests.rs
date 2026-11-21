@@ -112,10 +112,6 @@ pub(super) fn record_write(
             *work = work.checked_add(delta)?;
             Ok(())
         }
-        KernelAccounting::BorrowedStandalone { work, .. } => {
-            **work = work.checked_add(delta)?;
-            Ok(())
-        }
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work, .. } => {
             work.record_admitted(delta).map_err(Into::into)

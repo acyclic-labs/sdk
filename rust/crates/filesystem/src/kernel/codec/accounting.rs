@@ -145,9 +145,6 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
                 allocation::KernelAccounting::Standalone { allocations, .. } => {
                     allocations.release(bytes)
                 }
-                allocation::KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                    allocations.release(bytes)
-                }
                 #[cfg(not(target_arch = "wasm32"))]
                 allocation::KernelAccounting::NativeOriginal { .. } => {
                     return Err(crate::WorkError::Overflow.into());

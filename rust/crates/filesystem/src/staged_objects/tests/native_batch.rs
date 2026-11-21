@@ -163,7 +163,8 @@ fn run(
                         .await
                         .map(drop),
                     Mode::Batch => {
-                        match work.accounting().check().map_err(crate::async_storage::object_error) {
+                        let checked = work.accounting().check().map_err(crate::async_storage::object_error);
+                        match checked {
                             Ok(()) => match store.inner.put_many_hashed(&writes, &mut work).await {
                                 Ok(()) => store
                                     .inner

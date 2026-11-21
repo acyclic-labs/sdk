@@ -13,8 +13,7 @@ pub(super) fn name_path_error(error: crate::kernel::NamespacePathError) -> FsErr
 
 pub(super) fn name_cancellation<'a>(accounting: &KernelAccounting<'a>) -> &'a CancellationToken {
     match accounting {
-        KernelAccounting::Standalone { cancellation, .. }
-        | KernelAccounting::BorrowedStandalone { cancellation, .. } => cancellation,
+        KernelAccounting::Standalone { cancellation, .. } => cancellation,
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
     }

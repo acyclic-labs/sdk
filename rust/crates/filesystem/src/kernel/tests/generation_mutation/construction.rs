@@ -232,6 +232,7 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
         generation_error(failure),
         GenerationMutationError::AllocationFailed
     ));
+    drop(accounting);
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }

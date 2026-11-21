@@ -69,7 +69,6 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         use acyclic_fs::kernel::KernelAccounting;
         let work = match accounting {
             KernelAccounting::Standalone { work, .. } => *work,
-            KernelAccounting::BorrowedStandalone { work, .. } => **work,
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => return (result, Ok(())),
         };

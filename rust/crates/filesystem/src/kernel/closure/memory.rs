@@ -12,7 +12,9 @@ pub(super) fn proof_standalone_control_bytes() -> Result<u64, crate::FsError> {
 #[derive(Clone)]
 pub(crate) enum ProofMeter<'a> {
     Standalone {
-        state: RetainedArc<futures::lock::Mutex<crate::kernel::allocation::KernelAccounting<'a>>>,
+        state: RetainedArc<
+            futures::lock::Mutex<crate::kernel::allocation::BorrowedKernelAccounting<'a>>,
+        >,
         cancellation: &'a CancellationToken,
     },
     #[cfg(not(target_arch = "wasm32"))]
@@ -27,22 +29,20 @@ impl<'a> ProofMeter<'a> {
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> Result<Self, crate::FsError> {
-        Self::from_accounting(crate::kernel::allocation::KernelAccounting::standalone(
-            budget,
-            cancellation,
-        ))
+        Self::from_accounting(
+            crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation).into(),
+        )
     }
 
     pub(crate) fn from_accounting(
-        mut accounting: crate::kernel::allocation::KernelAccounting<'a>,
+        mut accounting: crate::kernel::allocation::BorrowedKernelAccounting<'a>,
     ) -> Result<Self, crate::FsError> {
         accounting.check()?;
         let cancellation = accounting.cancellation();
         #[cfg(not(target_arch = "wasm32"))]
-        if let crate::kernel::allocation::KernelAccounting::NativeOriginal { work, .. } = accounting
-        {
+        if let Some(original) = accounting.native_work() {
             return Ok(Self::Native {
-                original: work,
+                original,
                 cancellation,
             });
         }

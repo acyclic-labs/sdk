@@ -90,7 +90,7 @@ impl<T> ReadOwner<T> {
         })
     }
 
-    pub(crate) fn borrow(&mut self) -> (&mut T, KernelAccounting<'_>) {
+    pub(crate) fn borrow(&mut self) -> (&mut T, BorrowedKernelAccounting<'_>) {
         (&mut self.value, self.accounting.borrow())
     }
 }
@@ -142,9 +142,6 @@ impl ReadAccounting {
                 }),
                 cancellation: cancellation.clone(),
             }),
-            KernelAccounting::BorrowedStandalone { .. } => {
-                Err(crate::FsError::AccountingHandoffActive)
-            }
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal {
                 work, cancellation, ..
@@ -155,7 +152,7 @@ impl ReadAccounting {
         }
     }
 
-    fn borrow(&mut self) -> KernelAccounting<'_> {
+    fn borrow(&mut self) -> BorrowedKernelAccounting<'_> {
         match &mut self.state {
             ReadAccountingState::Standalone(state) => KernelAccounting::borrowed_standalone(
                 &mut state.allocations,
@@ -164,7 +161,9 @@ impl ReadAccounting {
                 &self.cancellation,
             ),
             #[cfg(not(target_arch = "wasm32"))]
-            ReadAccountingState::Native(work) => KernelAccounting::native(work, &self.cancellation),
+            ReadAccountingState::Native(work) => {
+                KernelAccounting::native(work, &self.cancellation).into()
+            }
         }
     }
 }
@@ -218,7 +217,7 @@ impl OwnedAccounting {
         }))
     }
 
-    pub(crate) fn borrow(&mut self) -> KernelAccounting<'_> {
+    pub(crate) fn borrow(&mut self) -> BorrowedKernelAccounting<'_> {
         let accounting = match &mut self.state {
             OwnedAccountingState::Standalone(state) => {
                 let StandaloneAccounting {
@@ -236,7 +235,7 @@ impl OwnedAccounting {
             }
             #[cfg(not(target_arch = "wasm32"))]
             OwnedAccountingState::Native(work) => {
-                KernelAccounting::native(work, &self.cancellation)
+                KernelAccounting::native(work, &self.cancellation).into()
             }
         };
         accounting.with_construction(&mut self.construction)
@@ -1135,10 +1134,7 @@ mod tests {
         );
         cancel.cancel();
         match (&accounting, accounting.check()) {
-            (
-                KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. },
-                Err(crate::FsError::Cancelled(_)),
-            ) => {}
+            (KernelAccounting::Standalone { .. }, Err(crate::FsError::Cancelled(_))) => {}
             #[cfg(not(target_arch = "wasm32"))]
             (
                 KernelAccounting::NativeOriginal { .. },
@@ -1174,9 +1170,6 @@ mod tests {
         fn live(accounting: &mut KernelAccounting<'_>) -> Result<u64, crate::FsError> {
             Ok(match accounting {
                 KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-                KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                    allocations.live_bytes()
-                }
                 #[cfg(not(target_arch = "wasm32"))]
                 KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes()?,
             })

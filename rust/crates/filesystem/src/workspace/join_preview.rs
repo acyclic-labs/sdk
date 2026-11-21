@@ -442,7 +442,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         self.owner.borrow().1.cancellation().clone()
     }
 
-    pub(super) fn accounting(&mut self) -> Result<KernelAccounting<'_>, WorkspaceError> {
+    pub(super) fn accounting(
+        &mut self,
+    ) -> Result<crate::kernel::allocation::BorrowedKernelAccounting<'_>, WorkspaceError> {
         let (state, accounting) = self.owner.borrow();
         accounting.check()?;
         if state.failed {

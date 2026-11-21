@@ -4,8 +4,7 @@ impl<'a> KernelAccounting<'a> {
     /// Original caller cancellation, shared by nested kernel operations.
     pub fn cancellation(&self) -> &'a crate::CancellationToken {
         match self {
-            Self::Standalone { cancellation, .. }
-            | Self::BorrowedStandalone { cancellation, .. } => cancellation,
+            Self::Standalone { cancellation, .. } => cancellation,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { cancellation, .. } => cancellation,
         }
@@ -19,7 +18,6 @@ impl<'a> KernelAccounting<'a> {
     pub(super) fn ensure_active(&self) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone { allocations, .. } => allocations.ensure_active(),
-            Self::BorrowedStandalone { allocations, .. } => allocations.ensure_active(),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { .. } => Ok(()),
         }
@@ -114,20 +112,24 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    /// Borrows the caller's accounting state.
+    /// Lends the caller's ledger and counters to one standalone operation;
+    /// they return to the caller when the guard drops.
     #[inline]
     pub fn borrowed_standalone(
         allocations: &'a mut AllocationLedger,
         work: &'a mut WorkCounters,
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
-    ) -> Self {
-        Self::BorrowedStandalone {
-            construction: Default::default(),
-            allocations,
-            work,
-            budget,
-            cancellation,
+    ) -> BorrowedKernelAccounting<'a> {
+        BorrowedKernelAccounting {
+            accounting: Self::Standalone {
+                construction: Default::default(),
+                allocations: std::mem::take(allocations),
+                work: *work,
+                budget,
+                cancellation,
+            },
+            owner: Some((allocations, work)),
         }
     }
 
@@ -148,20 +150,22 @@ impl<'a> KernelAccounting<'a> {
         mut self,
         roots: &'a mut crate::collection::ConstructionRoots,
     ) -> Self {
-        let construction = match &mut self {
-            Self::Standalone { construction, .. }
-            | Self::BorrowedStandalone { construction, .. } => construction,
+        self.set_construction(roots);
+        self
+    }
+
+    pub(super) fn set_construction(&mut self, roots: &'a mut crate::collection::ConstructionRoots) {
+        let construction = match self {
+            Self::Standalone { construction, .. } => construction,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { construction, .. } => construction,
         };
         *construction = crate::collection::ConstructionScope::Borrowed(roots);
-        self
     }
 
     pub(crate) fn construction_roots(&mut self) -> &mut crate::collection::ConstructionRoots {
         match self {
-            Self::Standalone { construction, .. }
-            | Self::BorrowedStandalone { construction, .. } => construction.roots(),
+            Self::Standalone { construction, .. } => construction.roots(),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { construction, .. } => construction.roots(),
         }
@@ -171,10 +175,7 @@ impl<'a> KernelAccounting<'a> {
     pub(crate) fn check(&self) -> Result<(), crate::FsError> {
         self.ensure_active()?;
         match self {
-            Self::Standalone { cancellation, .. }
-            | Self::BorrowedStandalone { cancellation, .. } => {
-                cancellation.check().map_err(Into::into)
-            }
+            Self::Standalone { cancellation, .. } => cancellation.check().map_err(Into::into),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal {
                 work, cancellation, ..
@@ -212,13 +213,6 @@ impl<'a> KernelAccounting<'a> {
                 cancellation,
                 ..
             } => Some((allocations, work, *budget, cancellation)),
-            Self::BorrowedStandalone {
-                allocations,
-                work,
-                budget,
-                cancellation,
-                ..
-            } => Some((allocations, work, *budget, cancellation)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { .. } => None,
         }
@@ -233,19 +227,6 @@ impl<'a> KernelAccounting<'a> {
         self.check()?;
         match self {
             Self::Standalone {
-                allocations,
-                work,
-                budget,
-                ..
-            } => {
-                allocations
-                    .claim_bytes(bytes, operations, work, *budget)
-                    .map_err(|error| {
-                        error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
-                    })?;
-                Ok(KernelOwnedAllocation::Standalone)
-            }
-            Self::BorrowedStandalone {
                 allocations,
                 work,
                 budget,
@@ -273,24 +254,6 @@ impl<'a> KernelAccounting<'a> {
         self.ensure_active()?;
         match self {
             Self::Standalone {
-                allocations,
-                work,
-                budget,
-                cancellation,
-                ..
-            } => {
-                allocations
-                    .record_owned_bytes(bytes, work)
-                    .map_err(|error| {
-                        error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
-                    })?;
-                let verified = work.verify_within(budget).map_err(crate::FsError::from);
-                Ok((
-                    KernelOwnedAllocation::Standalone,
-                    verified.and_then(|()| cancellation.check().map_err(Into::into)),
-                ))
-            }
-            Self::BorrowedStandalone {
                 allocations,
                 work,
                 budget,
@@ -354,30 +317,6 @@ impl<'a> KernelAccounting<'a> {
                 work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
-            (
-                Self::BorrowedStandalone {
-                    allocations,
-                    work,
-                    budget,
-                    cancellation,
-                    ..
-                },
-                KernelOwnedAllocation::Standalone,
-            ) => {
-                if actual >= requested {
-                    allocations
-                        .record_owned_bytes(actual - requested, work)
-                        .map_err(|error| {
-                            error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
-                        })?;
-                } else {
-                    allocations.release(requested - actual).map_err(|error| {
-                        error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
-                    })?;
-                }
-                work.verify_within(budget)?;
-                cancellation.check().map_err(Into::into)
-            }
             #[cfg(not(target_arch = "wasm32"))]
             (
                 Self::NativeOriginal {
@@ -412,9 +351,6 @@ impl<'a> KernelAccounting<'a> {
             (Self::Standalone { allocations, .. }, KernelOwnedAllocation::Standalone) => {
                 allocations.release_owned(bytes)
             }
-            (Self::BorrowedStandalone { allocations, .. }, KernelOwnedAllocation::Standalone) => {
-                allocations.release_owned(bytes)
-            }
             #[cfg(not(target_arch = "wasm32"))]
             (
                 Self::NativeOriginal { work, .. },
@@ -444,16 +380,6 @@ impl<'a> KernelAccounting<'a> {
                 work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
-            Self::BorrowedStandalone {
-                work,
-                budget,
-                cancellation,
-                ..
-            } => {
-                work.try_add_assign(&delta)?;
-                work.verify_within(budget)?;
-                cancellation.check().map_err(Into::into)
-            }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal {
                 work, cancellation, ..
@@ -471,15 +397,6 @@ impl<'a> KernelAccounting<'a> {
         self.ensure_active()?;
         match self {
             Self::Standalone {
-                work,
-                budget,
-                cancellation,
-                ..
-            } => {
-                cancellation.check()?;
-                work.charge(&delta, budget).map_err(Into::into)
-            }
-            Self::BorrowedStandalone {
                 work,
                 budget,
                 cancellation,
@@ -552,15 +469,6 @@ impl<'a> KernelAccounting<'a> {
                 cancellation.check()?;
                 work.charge_items(count, budget).map_err(Into::into)
             }
-            Self::BorrowedStandalone {
-                work,
-                budget,
-                cancellation,
-                ..
-            } => {
-                cancellation.check()?;
-                work.charge_items(count, budget).map_err(Into::into)
-            }
             // Keep native charges on the existing single-leaf admission path.
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { .. } => self.charge(WorkCounters {
@@ -576,15 +484,6 @@ impl<'a> KernelAccounting<'a> {
         self.ensure_active()?;
         match self {
             Self::Standalone {
-                work,
-                budget,
-                cancellation,
-                ..
-            } => {
-                cancellation.check()?;
-                work.admit(&delta, budget).map_err(Into::into)
-            }
-            Self::BorrowedStandalone {
                 work,
                 budget,
                 cancellation,
@@ -612,9 +511,7 @@ impl<'a> KernelAccounting<'a> {
     /// first uses the cache never shrinks the cache.
     pub(crate) fn shared_cache_capacity(&self) -> u64 {
         match self {
-            Self::Standalone { budget, .. } | Self::BorrowedStandalone { budget, .. } => {
-                budget.peak_allocation_bytes / 4
-            }
+            Self::Standalone { budget, .. } => budget.peak_allocation_bytes / 4,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, .. } => work.shared_cache_capacity(),
         }
@@ -625,21 +522,6 @@ impl<'a> KernelAccounting<'a> {
         self.ensure_active()?;
         match self {
             Self::Standalone {
-                work,
-                allocations,
-                budget,
-                cancellation,
-                ..
-            } => {
-                cancellation.check()?;
-                let mut remaining = work.remaining(*budget)?;
-                remaining.peak_allocation_bytes = remaining
-                    .peak_allocation_bytes
-                    .checked_sub(allocations.live_bytes())
-                    .ok_or(WorkError::Overflow)?;
-                Ok(remaining)
-            }
-            Self::BorrowedStandalone {
                 work,
                 allocations,
                 budget,
@@ -689,9 +571,6 @@ impl<'a> KernelAccounting<'a> {
             Self::Standalone { allocations, .. } => {
                 allocations.observation_error.get_or_insert(error);
             }
-            Self::BorrowedStandalone { allocations, .. } => {
-                allocations.observation_error.get_or_insert(error);
-            }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, .. } => {
                 work.with_original_leaf(|state| state.poison_native_original_work());
@@ -707,9 +586,6 @@ impl<'a> KernelAccounting<'a> {
             Self::Standalone {
                 allocations, work, ..
             } => allocations.spent(*work),
-            Self::BorrowedStandalone {
-                allocations, work, ..
-            } => allocations.spent(**work),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, .. } => work.receipt(),
         }
@@ -718,7 +594,7 @@ impl<'a> KernelAccounting<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native_work(&self) -> Option<&'a crate::NativeMaterializationWork> {
         match self {
-            Self::Standalone { .. } | Self::BorrowedStandalone { .. } => None,
+            Self::Standalone { .. } => None,
             Self::NativeOriginal { work, .. } => Some(*work),
         }
     }

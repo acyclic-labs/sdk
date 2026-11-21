@@ -59,7 +59,7 @@ proptest! {
                     .map_err(crate::FsError::from));
             let expected_status = next.as_ref().map(|_| ()).map_err(|error| format!("{error:?}"));
             let updated = next.unwrap_or(expected);
-            for accounting in [&mut standalone, &mut borrowed] {
+            for accounting in [&mut standalone, &mut *borrowed] {
                 prop_assert_eq!(status(accounting.admit(delta)), expected_status.clone());
                 prop_assert_eq!(accounting.spent().unwrap(), expected);
                 prop_assert_eq!(status(accounting.charge(delta)), expected_status.clone());
@@ -67,6 +67,10 @@ proptest! {
             }
             expected = updated;
         }
+        // The guard holds the caller ledger and counters by unique borrow, so
+        // nothing reads them while lent; dropping it returns the lent state.
+        drop(borrowed);
+        prop_assert_eq!(borrowed_work, expected);
         prop_assert_eq!(ledger.live_bytes(), 0);
     }
 }

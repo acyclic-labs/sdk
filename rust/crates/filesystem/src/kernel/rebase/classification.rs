@@ -249,10 +249,6 @@ fn retain_standalone_probe_work(
             *work = work.checked_add(delta)?;
             work.verify(*budget)?;
         }
-        super::allocation::KernelAccounting::BorrowedStandalone { work, budget, .. } => {
-            **work = work.checked_add(delta)?;
-            work.verify(*budget)?;
-        }
         #[cfg(not(target_arch = "wasm32"))]
         super::allocation::KernelAccounting::NativeOriginal { .. } => {
             unreachable!("the standalone adapter cannot wrap an original-native probe")

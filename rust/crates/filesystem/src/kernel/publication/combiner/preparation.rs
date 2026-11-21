@@ -84,6 +84,7 @@ impl<P: PublicationOwner> Job<P> {
             |a, b| independent(a, b, &mut accounting),
             |proposal| Ok(capacity.admit(proposal.admission()?.cost)),
         )?;
+        drop(accounting);
         drop(prepared);
         self.group.signal.notify_waiters();
         Ok(())
