@@ -530,6 +530,7 @@ test("every package exports its sources whatever any manifest sets, and reposito
     assert.equal(run("write").status, 0);
     for (const build of ["BUILD.bazel", "local/BUILD.bazel", "member/BUILD.bazel"]) {
       const text = readFileSync(join(root, build), "utf8");
+      assert.doesNotMatch(text, /source_manifest\(/);
       for (const name of ["rust_sources", "sources"]) assert.ok(text.includes(`filegroup(\n    name = "${name}",`), `${name} in ${build}`);
     }
     const manifest = join(root, "member/Cargo.toml");
@@ -540,6 +541,10 @@ test("every package exports its sources whatever any manifest sets, and reposito
     assert.equal(result.status, 0, result.stderr);
     const member = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
     const script = member.slice(member.indexOf("cargo_build_script("), member.indexOf("\n)\n", member.indexOf("cargo_build_script(")));
+    assert.match(member, /load\("\/\/:source_manifest\.bzl", "source_manifest"\)/);
+    assert.match(member, /source_manifest\(\n    name = "build_script_source_manifest",\n    srcs = \[\n\s*"\/\/local:sources",\n\s*"\/\/member:sources",\n\s*\],\n\)/);
+    assert.match(script, /":build_script_source_manifest",/);
+    assert.match(script, /"SOURCE_MANIFEST":"\$\(execpath :build_script_source_manifest\)"/);
     assert.match(script, /"\/\/local:sources",\n\s*"\/\/member:sources",/);
     assert.match(readFileSync(join(root, "local/BUILD.bazel"), "utf8"),
       /filegroup\(\n    name = "sources",\n    srcs = glob\(\["\*\*"\], exclude = \["target\/\*\*","\*\*\/target\/\*\*","node_modules\/\*\*","\*\*\/node_modules\/\*\*"\], allow_empty = True\),/);

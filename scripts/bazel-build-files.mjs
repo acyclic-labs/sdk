@@ -84,6 +84,7 @@ const LOADS = {
   cargo_build_script: "@rules_rust//cargo:defs.bzl",
   extract_cargo_lints: "@rules_rust//cargo:defs.bzl",
   isolated_test: testRunner,
+  source_manifest: (repositoryName ?? "") + "//:source_manifest.bzl",
   rust_binary: "@rules_rust//rust:defs.bzl",
   rust_library: "@rules_rust//rust:defs.bzl",
   rust_proc_macro: "@rules_rust//rust:defs.bzl",
@@ -1486,15 +1487,27 @@ ${platformSources.map(([platform, sources]) =>
     return name;
   };
   if (script) {
+    const linked = readsLinkedSources(p) ? linkedSources(p) : [];
+    // The native and Wasm build scripts stamp the same checkout sources.
+    const manifest = linked.length ? ":build_script_source_manifest" : undefined;
+    if (manifest && !graph) {
+      rules.push(["source_manifest", [["name", q(manifest.slice(1))], ["srcs", list(linked)]]]);
+    }
     const defaultInputs = p.metadata?.bazel?.["build-script-inputs"] === undefined;
     const extra = extras(script, file => defaultInputs && !file.endsWith(".rs") && !TEST_DIRS.test(file));
+    const scriptEnvironment = ["PACKAGE_ENV"];
+    if (requiredEntry(scriptEnv, p.id).length) {
+      scriptEnvironment.push(platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`]))));
+    }
+    if (manifest) scriptEnvironment.push(q({ SOURCE_MANIFEST: `$(execpath ${manifest})` }));
+    if (graph) scriptEnvironment.push(q({ TARGET: WASM_TRIPLE }));
     rules.push(["cargo_build_script", [
       ["name", q(`build_script${suffix}`)],
       ["crate_root", q(local(script.src_path))],
       ["srcs", list(extra.srcs)],
       rustMemory(extra.rustFiles),
       ["compile_data", plus(defaultInputs ? glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]) : undefined, list(extra.data))],
-      ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...(readsLinkedSources(p) ? linkedSources(p) : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
+      ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...linked, ...(manifest ? [manifest] : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       // A build script is host code: it runs on the exec platform and only reads the target
@@ -1502,7 +1515,7 @@ ${platformSources.map(([platform, sources]) =>
       // variant Wasm-only made an explicitly requested `build_script_wasm` fail under every
       // non-Wasm leg ("incompatible and cannot be built, but was explicitly requested").
       ...common(script).filter(([k]) => k !== "clippy_config" && !(graph && k === "target_compatible_with")),
-      ["build_script_env", (requiredEntry(scriptEnv,p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV") + (graph ? ` | ${q({TARGET: WASM_TRIPLE})}` : "")],
+      ["build_script_env", scriptEnvironment.join(" | ")],
       ...deps(["build"]),
     ]]);
   }
