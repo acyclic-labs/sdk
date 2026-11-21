@@ -160,10 +160,10 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     checkout
         .commit(
             acyclic_fs_format::identity::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {

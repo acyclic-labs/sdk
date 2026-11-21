@@ -93,10 +93,7 @@ where
         checkout
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
                 BOUNDARY_BUDGET,
                 work.cancellation(),
                 |_| async {

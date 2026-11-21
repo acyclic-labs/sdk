@@ -378,10 +378,7 @@ mod tests {
     ) -> Result<(), crate::FsError> {
         edit.commit(
             crate::OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             crate::WorkBudget::UNBOUNDED,
             work.cancellation(),
             |_| async {

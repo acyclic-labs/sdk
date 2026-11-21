@@ -124,10 +124,10 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
         checkout
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                ),
                 WorkCounters::UNBOUNDED,
                 &cancel,
                 |_| async {

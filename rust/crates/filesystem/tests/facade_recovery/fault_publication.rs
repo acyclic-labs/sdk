@@ -54,10 +54,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     .await?;
     (writer.commit(
         OperationId::from_bytes([227; 16]),
-        None,
-        None,
-        None,
-        acyclic_fs::PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, acyclic_fs::PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -165,10 +162,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     let theirs_generation = (theirs.checkpoint(B, &cancellation)).await?.value;
     (theirs.commit(
         OperationId::from_bytes([228; 16]),
-        None,
-        None,
-        None,
-        acyclic_fs::PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, acyclic_fs::PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -281,10 +275,10 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
         control.arm(cut);
         match (checkout.commit(
             operation_id,
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             B,
             &cancellation,
             allow::<FsError>,
@@ -355,10 +349,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     control.arm(1);
     let failure = (checkout.commit(
         operation_id,
-        None,
-        None,
-        None,
-        acyclic_fs::PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, acyclic_fs::PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -389,10 +380,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     control.disable();
     let resolved = (checkout.commit(
         operation_id,
-        None,
-        None,
-        None,
-        acyclic_fs::PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, acyclic_fs::PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,

@@ -455,10 +455,10 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
         let committed = checkout
             .commit(
                 acyclic_fs_format::identity::OperationId::new(),
-                None,
-                None,
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                ),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {

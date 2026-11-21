@@ -53,10 +53,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
     {
-        let (context, evidence, fingerprint_permit) = match context {
-            Some((context, evidence, permit)) => (Some(context), Some(evidence), Some(permit)),
-            None => (None, None, None),
-        };
+        let intent = transaction_intent(context, permit);
         crate::heap_future::in_heap_measured_with_error(
             move |budget| async move {
                 let (outcome, mut work) = if self.requires_rebase {
@@ -64,14 +61,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                         .checkout
                         .retry_stale_commit(
                             self.idempotency_key.operation_id(),
-                            permit,
+                            intent,
                             budget,
                             cancellation,
                             &mut before_publication,
                             None,
-                            context,
-                            evidence,
-                            fingerprint_permit,
                         )
                         .await?;
                     (receipt.value, receipt.work)
@@ -80,10 +74,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                         .checkout
                         .commit_even_if_clean(
                             self.idempotency_key.operation_id(),
-                            context,
-                            evidence,
-                            fingerprint_permit,
-                            permit,
+                            intent,
                             budget,
                             cancellation,
                             &mut before_publication,
@@ -170,22 +161,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let (context, evidence, fingerprint_permit) = match context {
-            Some((context, evidence, permit)) => (Some(context), Some(evidence), Some(permit)),
-            None => (None, None, None),
-        };
+        let intent = transaction_intent(context, permit);
         let outcome = if self.requires_rebase {
             self.checkout
                 .retry_stale_commit_with_native_work(
                     self.idempotency_key.operation_id(),
-                    permit,
+                    intent,
                     original,
                     cancellation,
                     before_publication,
                     None,
-                    context,
-                    evidence,
-                    fingerprint_permit,
                 )
                 .await?
         } else {
@@ -194,14 +179,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 self.checkout
                     .commit_even_if_clean_with_native_work(
                         self.idempotency_key.operation_id(),
-                        permit,
+                        intent,
                         original,
                         cancellation,
                         &mut before_publication,
                         None,
-                        context,
-                        evidence,
-                        fingerprint_permit,
                     )
                     .await?,
             )
@@ -318,4 +300,25 @@ pub enum TransactionRebase<A: 'static, O: 'static> {
         /// Additional conflicts exceeded the retained result bound.
         truncated: bool,
     },
+}
+
+/// A transaction's publication intent, resealing its original operation's
+/// context, evidence and fingerprint permit when it carries them.
+fn transaction_intent(
+    original: Option<(
+        crate::Digest,
+        acyclic_stream::OwnedBytes,
+        crate::PublicationPermit,
+    )>,
+    permit: crate::PublicationPermit,
+) -> crate::kernel::PublicationIntent {
+    match original {
+        Some((context, evidence, fingerprint_permit)) => crate::kernel::PublicationIntent::sealed(
+            Some(context),
+            Some(evidence),
+            Some(fingerprint_permit),
+            permit,
+        ),
+        None => crate::kernel::PublicationIntent::guarded(None, permit),
+    }
 }

@@ -163,10 +163,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     checkout
         .commit(
             OperationId::from_bytes([49; 16]),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &cancellation,
             allow::<FsError>,
@@ -189,10 +186,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     checkout
         .commit(
             OperationId::from_bytes([50; 16]),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &cancellation,
             allow::<FsError>,
@@ -312,10 +306,7 @@ async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::
             checkout
                 .commit(
                     OperationId::from_bytes([51; 16]),
-                    None,
-                    None,
-                    None,
-                    PublicationPermit::Unrestricted,
+                    acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     WorkBudget::UNBOUNDED,
                     &cancellation,
                     allow::<FsError>,

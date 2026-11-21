@@ -536,10 +536,7 @@ where
         let committed = checkout
             .commit(
                 operation,
-                settlement,
-                None,
-                None,
-                permit,
+                acyclic_fs::PublicationIntent::guarded(settlement, permit),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
@@ -696,10 +693,7 @@ where
     let committed = checkout
         .commit(
             capture_operation(operation, phase),
-            settlement,
-            None,
-            None,
-            permit,
+            acyclic_fs::PublicationIntent::guarded(settlement, permit),
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {

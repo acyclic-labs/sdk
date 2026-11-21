@@ -98,6 +98,32 @@ impl PublicationIntent {
             permit,
         }
     }
+
+    /// Creates an intent that reseals an original operation with its context,
+    /// evidence and the permit its retry fingerprint was taken under.
+    pub const fn sealed(
+        operation_context: Option<Digest>,
+        original_evidence: Option<acyclic_stream::OwnedBytes>,
+        fingerprint_permit: Option<PublicationPermit>,
+        permit: PublicationPermit,
+    ) -> Self {
+        Self {
+            preconditions: None,
+            operation_context,
+            original_evidence,
+            original_evidence_reference: None,
+            original_evidence_custody: None,
+            fingerprint_permit,
+            permit,
+        }
+    }
+
+    /// No context, evidence or restriction: a clean checkout has nothing to seal.
+    pub(crate) fn is_unconditional(&self) -> bool {
+        self.permit == PublicationPermit::Unrestricted
+            && self.operation_context.is_none()
+            && self.original_evidence.is_none()
+    }
 }
 
 /// Authenticated base and captured reads of one proposed generation delta.

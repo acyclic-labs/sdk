@@ -290,8 +290,8 @@ pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 use acyclic_fs_native_contract::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
-    GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,
-    decode_generation_export_manifest, encode_generation_export_manifest,
+    GenerationExportManifest, GenerationExportManifestError, PublicationIntent, RebaseConflict,
+    TreeEntry, decode_generation_export_manifest, encode_generation_export_manifest,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use lazy_workspace::SelectedImportPlan;

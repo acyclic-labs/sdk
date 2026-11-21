@@ -166,6 +166,7 @@ pub(crate) use names_unique::ambiguous_folded_name;
 mod namespace;
 mod proof;
 mod publication;
+pub(crate) use publication::PublicationBase;
 mod read;
 mod read_accounting;
 mod reader;

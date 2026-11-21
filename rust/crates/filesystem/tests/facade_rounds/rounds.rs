@@ -47,20 +47,14 @@ async fn completed_round_receipt_custody_does_not_exclude_the_next_batch() -> Te
     let mut b = proposal(&volume, "b", &cancel).await?;
     let mut first = Box::pin(a.commit(
         OperationId::new(),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancel,
         allow::<FsError>,
     ));
     let mut second = Box::pin(b.commit(
         OperationId::new(),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancel,
         allow::<FsError>,
@@ -82,20 +76,14 @@ async fn completed_round_receipt_custody_does_not_exclude_the_next_batch() -> Te
     let outcomes = futures::future::join(
         c.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
         ),
         d.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
@@ -134,20 +122,14 @@ async fn disjoint_proposals_with_different_bases_share_one_append_and_original_r
     let outcomes = futures::future::join(
         stale.commit(
             operation,
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
         ),
         fresh.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
@@ -185,10 +167,7 @@ async fn disjoint_proposals_with_different_bases_share_one_append_and_original_r
             retry
                 .commit(
                     operation,
-                    None,
-                    None,
-                    None,
-                    PublicationPermit::Unrestricted,
+                    acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     B,
                     &cancel,
                     allow::<FsError>
@@ -246,10 +225,7 @@ async fn proposals_beyond_one_provider_transaction_remain_in_batches_without_cal
     let outcomes = futures::future::join_all(proposals.iter_mut().map(|checkout| {
         checkout.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
@@ -313,10 +289,12 @@ async fn evidence_capacity_splits_disjoint_proposals_before_stream_admission() -
     let outcomes = futures::future::join_all(proposals.iter_mut().map(|checkout| {
         checkout.commit(
             OperationId::new(),
-            None,
-            Some(evidence.clone()),
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::sealed(
+                None,
+                Some(evidence.clone()),
+                None,
+                PublicationPermit::Unrestricted,
+            ),
             B,
             &cancel,
             allow::<FsError>,

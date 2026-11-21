@@ -3,10 +3,10 @@
 //! A conditional publication returns its first revision conflict as
 //! [`GitCompatError::Contended`], without rerunning the command against a new head.
 
+use crate::ByteRange;
 use crate::kernel::{FileKind, NamespacePath};
 use crate::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use crate::record_store::{MemoryRecords, next_revision};
-use crate::storage::ByteRange;
 use crate::workspace::customer_path;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

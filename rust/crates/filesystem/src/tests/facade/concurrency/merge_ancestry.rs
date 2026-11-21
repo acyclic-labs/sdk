@@ -175,18 +175,17 @@ async fn publish(
         };
         checkout
             .publish_pending_against_with_native_work(
-                OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
-                checkout
-                    .authority_head
-                    .ok_or(FsError::WritableCheckoutRequiresHead)?,
+                crate::facade::PublicationBase {
+                    operation_id: OperationId::new(),
+                    expected: checkout
+                        .authority_head
+                        .ok_or(FsError::WritableCheckoutRequiresHead)?,
+                    resolved: None,
+                },
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 original,
                 cancel,
                 &mut guard,
-                None,
                 None,
             )
             .await?
@@ -194,10 +193,7 @@ async fn publish(
         checkout
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 cancel,
                 allow::<FsError>,

@@ -522,10 +522,7 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     let outcome = checkout
         .commit(
             acyclic_fs_format::identity::OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {

@@ -358,10 +358,7 @@ async fn combiner_history(
     let lost = original
         .commit(
             retried,
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             cancel,
             allow::<FsError>,

@@ -429,10 +429,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     checkout
         .commit(
             crate::OperationId::new(),
-            None,
-            None,
-            None,
-            crate::PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {

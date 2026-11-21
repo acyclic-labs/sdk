@@ -21,10 +21,7 @@ fn policy_source(bytes: &[u8]) -> Result<MemorySource, Box<dyn std::error::Error
             checkout
                 .commit(
                     OperationId::new(),
-                    None,
-                    None,
-                    None,
-                    PublicationPermit::Unrestricted,
+                    crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     WorkBudget::UNBOUNDED,
                     source.cancellation(),
                     |_| async {

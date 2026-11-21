@@ -658,10 +658,10 @@ impl Fixture {
         let committed = checkout
             .commit::<acyclic_fs::FsError, _, _>(
                 acyclic_fs_format::identity::OperationId::new(),
-                None,
-                None,
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                ),
                 work,
                 &cancel,
                 |_| {

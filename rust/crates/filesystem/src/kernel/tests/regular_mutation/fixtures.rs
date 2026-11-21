@@ -1,4 +1,5 @@
 use super::*;
+use crate::ByteRange;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::deterministic::next as next_generated;
@@ -8,7 +9,6 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::Lifecycle;
-use crate::storage::ByteRange;
 use crate::storage::object_digest;
 use std::io::Cursor;
 

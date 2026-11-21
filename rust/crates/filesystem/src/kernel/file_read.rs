@@ -6,11 +6,11 @@ use super::{
     FilePayload, FileRecord,
 };
 use crate::AsyncObjectStore;
+use crate::ByteRange;
 use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::ByteRange;
 use thiserror::Error;
 
 /// Chunk size for internal comparisons and digests that continue until EOF.

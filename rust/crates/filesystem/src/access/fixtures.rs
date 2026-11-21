@@ -26,10 +26,7 @@ pub async fn publish_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     let result = checkout
         .commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| async {

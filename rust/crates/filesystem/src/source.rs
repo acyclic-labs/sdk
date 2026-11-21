@@ -337,10 +337,10 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .checkout
         .commit_even_if_clean(
             operation_id,
-            Some(operation_context),
-            None,
-            None,
-            crate::PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(
+                Some(operation_context),
+                crate::PublicationPermit::Unrestricted,
+            ),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             &mut |_| async {
@@ -380,10 +380,10 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .checkout
                 .commit_even_if_clean(
                     operation_id,
-                    Some(operation_context),
-                    None,
-                    None,
-                    crate::PublicationPermit::Unrestricted,
+                    crate::PublicationIntent::guarded(
+                        Some(operation_context),
+                        crate::PublicationPermit::Unrestricted,
+                    ),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     &mut |_| async {
@@ -1705,10 +1705,10 @@ mod tests {
             .checkout
             .commit_even_if_clean(
                 source_volume_operation_id(key, operation),
-                Some(source_volume_operation_context(key, operation)),
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(
+                    Some(source_volume_operation_context(key, operation)),
+                    crate::PublicationPermit::Unrestricted,
+                ),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 &mut |_| async {
@@ -1791,10 +1791,10 @@ mod tests {
         let advanced = match unrelated
             .commit_even_if_clean(
                 IdempotencyKey::from_bytes([62; 16]).operation_id(),
-                Some(Digest::from_bytes([62; 32])),
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(
+                    Some(Digest::from_bytes([62; 32])),
+                    crate::PublicationPermit::Unrestricted,
+                ),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 &mut |_| async {
@@ -1914,10 +1914,7 @@ mod tests {
         let advance = unrelated
             .commit_even_if_clean(
                 IdempotencyKey::new().operation_id(),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 &mut |_| async {
@@ -2048,10 +2045,10 @@ mod tests {
         let advanced = match unrelated
             .commit_even_if_clean(
                 IdempotencyKey::from_bytes([78; 16]).operation_id(),
-                Some(Digest::from_bytes([78; 32])),
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(
+                    Some(Digest::from_bytes([78; 32])),
+                    crate::PublicationPermit::Unrestricted,
+                ),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 &mut |_| async {
@@ -2471,13 +2468,13 @@ mod tests {
                 .checkout
                 .commit_even_if_clean(
                     source_volume_operation_id(published_key, SourceOperation::Reconcile),
-                    Some(source_volume_operation_context(
-                        published_key,
-                        SourceOperation::Reconcile,
-                    )),
-                    None,
-                    None,
-                    crate::PublicationPermit::Unrestricted,
+                    crate::PublicationIntent::guarded(
+                        Some(source_volume_operation_context(
+                            published_key,
+                            SourceOperation::Reconcile,
+                        )),
+                        crate::PublicationPermit::Unrestricted,
+                    ),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     &mut |_| async {
@@ -2640,13 +2637,13 @@ mod tests {
                 .checkout
                 .commit_even_if_clean(
                     source_volume_operation_id(completed_key, SourceOperation::Reconcile),
-                    Some(source_volume_operation_context(
-                        completed_key,
-                        SourceOperation::Reconcile,
-                    )),
-                    None,
-                    None,
-                    crate::PublicationPermit::Unrestricted,
+                    crate::PublicationIntent::guarded(
+                        Some(source_volume_operation_context(
+                            completed_key,
+                            SourceOperation::Reconcile,
+                        )),
+                        crate::PublicationPermit::Unrestricted,
+                    ),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     &mut |_| async {

@@ -420,10 +420,10 @@ where
     checkout
         .commit(
             acyclic_fs_format::identity::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| async {

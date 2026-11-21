@@ -185,10 +185,7 @@ async fn whole_file_rewrites_remain_generation_fenced() -> TestResult {
         first
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>
@@ -202,10 +199,7 @@ async fn whole_file_rewrites_remain_generation_fenced() -> TestResult {
         stale
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>

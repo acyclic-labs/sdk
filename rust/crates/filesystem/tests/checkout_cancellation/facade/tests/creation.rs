@@ -140,10 +140,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
         checkout
             .commit(
                 OperationId::from_bytes([138; 16]),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>,

@@ -122,10 +122,7 @@ impl BrowserCheckout {
             .engine
             .commit(
                 operation_id,
-                None,
-                None,
-                None,
-                permit,
+                acyclic_fs::PublicationIntent::guarded(None, permit),
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {

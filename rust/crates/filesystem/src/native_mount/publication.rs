@@ -59,10 +59,7 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
             let receipt = checkout
                 .commit(
                     operation_id,
-                    None,
-                    None,
-                    None,
-                    permit,
+                    crate::PublicationIntent::guarded(None, permit),
                     budget,
                     cancellation,
                     |_| async {
@@ -134,18 +131,21 @@ where
     {
         return Err(T::from(MountSourceError::NativeUnsupported));
     }
+    let intent = crate::kernel::PublicationIntent::sealed(
+        proof.context,
+        proof.evidence,
+        proof.fingerprint_permit,
+        permit,
+    );
     if mode == MutationMode::PrivateOverlay
         && let Some(outcome) = checkout
             .retry_stale_commit_with_native_work(
                 operation_id,
-                permit,
+                intent.clone(),
                 original,
                 cancellation,
                 before_publication,
                 proof.producer,
-                proof.context,
-                proof.evidence.clone(),
-                proof.fingerprint_permit,
             )
             .await?
     {
@@ -164,14 +164,11 @@ where
         let outcome = checkout
             .commit_even_if_clean_with_native_work(
                 operation_id,
-                permit,
+                intent,
                 original,
                 cancellation,
                 before_publication,
                 proof.producer,
-                proof.context,
-                proof.evidence,
-                proof.fingerprint_permit,
             )
             .await?;
         Ok(private_ack(operation_id, outcome))
@@ -179,14 +176,11 @@ where
         let (outcome, allocation) = checkout
             .resume_live_with_native_work(
                 operation_id,
-                permit,
+                intent,
                 original,
                 cancellation,
                 before_publication,
                 proof.producer,
-                proof.context,
-                proof.evidence,
-                proof.fingerprint_permit,
             )
             .await?;
         let ack = live_ack(operation_id, &outcome);

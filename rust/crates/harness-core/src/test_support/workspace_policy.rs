@@ -31,10 +31,10 @@ pub(crate) async fn replace_policy<
     let result = checkout
         .commit::<acyclic_fs::FsError, _, _>(
             acyclic_fs_format::identity::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancel,
             |_| {

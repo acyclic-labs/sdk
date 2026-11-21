@@ -8,6 +8,14 @@ pub(super) struct LastCommit {
     pub(super) head: Head,
 }
 
+/// The authority cut one publication replaces: its retry identity, the head
+/// it expects, and the original durable commit when it resends one.
+pub(crate) struct PublicationBase {
+    pub(crate) operation_id: OperationId,
+    pub(crate) expected: Head,
+    pub(crate) resolved: Option<DurableCommit>,
+}
+
 pub(crate) type PublicationClosure<A, O> =
     crate::kernel::allocation::retained::RetainedArc<Mutex<PublicationCustody<A, O>>>;
 
@@ -81,16 +89,11 @@ pub(crate) struct VerifiedPublication<A: 'static, O: 'static> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
     pub(super) async fn publish_pending_against<E, F, Fut>(
         &mut self,
-        operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
-        expected: Head,
+        base: PublicationBase,
+        intent: PublicationIntent,
         budget: WorkBudget,
         cancellation: &CancellationToken,
         before_publication: &mut F,
-        resolved: Option<DurableCommit>,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
     where
@@ -98,6 +101,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
+        let PublicationBase {
+            operation_id,
+            expected,
+            resolved,
+        } = base;
+        let operation_evidence = intent.original_evidence.clone();
         cancellation
             .check()
             .map_err(|error| OperationFailure::before_work(E::from(FsError::from(error))))?;
@@ -160,10 +169,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     original_evidence_reference: None,
                     original_evidence_custody: None,
                     preconditions,
-                    operation_context,
-                    original_evidence: operation_evidence.clone(),
-                    fingerprint_permit: original_fingerprint_permit,
-                    permit,
+                    ..intent
                 },
                 closure_limits(self.volume.config),
                 Some(&self.volume.fs.inner.publication_proof.inner),
@@ -211,14 +217,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn commit_even_if_clean_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
         before_publication: &mut F,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<LivePublicationObservation, E>
     where
         E: From<FsError> + acyclic_stream::ProviderTask + 'static,
@@ -234,16 +237,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .authority_head
             .ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         self.publish_pending_against_with_native_work(
-            operation_id,
-            operation_context,
-            operation_evidence,
-            original_fingerprint_permit,
-            permit,
-            expected,
+            PublicationBase {
+                operation_id,
+                expected,
+                resolved: None,
+            },
+            intent,
             original,
             cancellation,
             before_publication,
-            None,
             producer_custody,
         )
         .await
@@ -253,10 +255,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn publish_pending_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
         before_publication: &mut F,
@@ -275,11 +274,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .check()
             .map_err(FsError::from)
             .map_err(E::from)?;
-        if !self.has_pending_mutations()
-            && permit == PublicationPermit::Unrestricted
-            && operation_context.is_none()
-            && operation_evidence.is_none()
-        {
+        if !self.has_pending_mutations() && intent.is_unconditional() {
             return self
                 .resolve_clean_commit(operation_id, original, cancellation)
                 .await
@@ -289,16 +284,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .authority_head
             .ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         self.publish_pending_against_with_native_work(
-            operation_id,
-            operation_context,
-            operation_evidence,
-            original_fingerprint_permit,
-            permit,
-            expected,
+            PublicationBase {
+                operation_id,
+                expected,
+                resolved: None,
+            },
+            intent,
             original,
             cancellation,
             before_publication,
-            None,
             producer_custody,
         )
         .await
@@ -307,16 +301,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn publish_pending_against_with_native_work<'a, E, F, Fut>(
         &mut self,
-        operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
-        expected: Head,
+        base: PublicationBase,
+        intent: PublicationIntent,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
         before_publication: &mut F,
-        resolved: Option<DurableCommit>,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> Result<LivePublicationObservation, E>
     where
@@ -324,6 +313,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
+        let PublicationBase {
+            operation_id,
+            expected,
+            resolved,
+        } = base;
+        let operation_evidence = intent.original_evidence.clone();
         cancellation
             .check()
             .map_err(FsError::from)
@@ -373,10 +368,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         original_evidence_reference: None,
                         original_evidence_custody: None,
                         preconditions,
-                        operation_context,
-                        original_evidence: operation_evidence.clone(),
-                        fingerprint_permit: original_fingerprint_permit,
-                        permit,
+                        ..intent
                     },
                     closure_limits(self.volume.config),
                     Some(&self.volume.fs.inner.publication_proof.inner),
@@ -424,14 +416,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn retry_stale_commit_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
         before_publication: &mut F,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<Option<LivePublicationObservation>, E>
     where
         E: From<FsError> + acyclic_stream::ProviderTask + 'static,
@@ -465,16 +454,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )
         .map_err(E::from)?;
         self.publish_pending_against_with_native_work(
-            operation_id,
-            operation_context,
-            operation_evidence,
-            original_fingerprint_permit,
-            permit,
-            expected,
+            PublicationBase {
+                operation_id,
+                expected,
+                resolved: Some(commit),
+            },
+            intent,
             original,
             cancellation,
             before_publication,
-            Some(commit),
             producer_custody,
         )
         .await
@@ -562,14 +550,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn retry_stale_commit<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         budget: WorkBudget,
         cancellation: &CancellationToken,
         before_publication: &mut F,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> crate::MeasuredResult<OperationReceipt<Option<LivePublicationObservation>>, E>
     where
         E: From<FsError> + acyclic_stream::ProviderTask,
@@ -629,17 +614,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     .map_err(|failure| failure.map_error(E::from))?;
                 let retried = self
                     .publish_pending_against(
-                        operation_id,
-                        operation_context,
-                        operation_evidence,
-                        original_fingerprint_permit,
-                        permit,
-                        expected,
+                        PublicationBase {
+                            operation_id,
+                            expected,
+                            resolved: Some(commit),
+                        },
+                        intent,
                         remaining(resolved_work, budget)
                             .map_err(|failure| failure.map_error(E::from))?,
                         cancellation,
                         before_publication,
-                        Some(commit),
                         producer_custody,
                     )
                     .await

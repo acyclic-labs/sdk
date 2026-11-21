@@ -76,10 +76,10 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
         control.arm(cut);
         let outcome = (checkout.commit(
             commit_operation,
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             B,
             &cancellation,
             allow::<FsError>,

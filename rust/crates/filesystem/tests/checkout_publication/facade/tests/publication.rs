@@ -42,20 +42,14 @@ async fn only_serialized_non_pinned_overlays_compose_disjoint_publications() -> 
             create(&mut second, "right", OwnedBytes::from_static(b"R"), &cancel).await?;
             let publish_first = first.commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>,
             );
             let publish_second = second.commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>,
@@ -169,10 +163,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let operation_id = OperationId::from_bytes([9; 16]);
     let committed = (first.commit(
         operation_id,
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -185,10 +176,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     assert!(!first.has_pending_mutations());
     let repeated = (retry.commit(
         operation_id,
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -201,10 +189,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     assert!(!retry.has_pending_mutations());
     let conflict = (stale.commit(
         OperationId::from_bytes([10; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -232,10 +217,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     );
     let clean_failure = (first.commit(
         OperationId::from_bytes([11; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -272,10 +254,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     assert!(!inverse.has_pending_mutations());
     let inverse_commit = (inverse.commit(
         OperationId::from_bytes([16; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -311,10 +290,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     .await?;
     let rejected = (displaced.commit(
         OperationId::from_bytes([0xe2; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -337,10 +313,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     .await?;
     let committed = (owner.commit(
         OperationId::from_bytes([0xe3; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -426,10 +399,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     .await?;
     (writer.commit(
         OperationId::from_bytes([14; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -565,10 +535,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     .await?;
     (remote.commit(
         OperationId::from_bytes([242; 16]),
-        None,
-        None,
-        None,
-        PublicationPermit::Unrestricted,
+        acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         B,
         &cancellation,
         allow::<FsError>,
@@ -581,10 +548,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     assert!(matches!(
         (local.commit(
             OperationId::from_bytes([243; 16]),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancellation,
             allow::<FsError>

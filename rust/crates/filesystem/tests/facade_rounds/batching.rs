@@ -56,10 +56,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
         |(checkout, operation)| {
             checkout.commit(
                 *operation,
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>,
@@ -100,10 +97,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
         let retried = retry
             .commit(
                 operation,
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>,

@@ -68,10 +68,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
         }
         seed.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             budget,
             &cancel,
             allow::<FsError>,
@@ -123,10 +120,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
             other
                 .commit(
                     OperationId::new(),
-                    None,
-                    None,
-                    None,
-                    PublicationPermit::Unrestricted,
+                    acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     budget,
                     &cancel,
                     allow::<FsError>,
@@ -136,10 +130,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
         }
         let publish = merge.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             budget,
             &cancel,
             allow::<FsError>,
@@ -150,10 +141,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
             let (first, second) = futures::join!(
                 other.commit(
                     OperationId::new(),
-                    None,
-                    None,
-                    None,
-                    PublicationPermit::Unrestricted,
+                    acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     budget,
                     &cancel,
                     allow::<FsError>

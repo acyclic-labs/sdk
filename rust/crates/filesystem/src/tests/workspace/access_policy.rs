@@ -35,10 +35,7 @@ pub(super) async fn publish(checkout: &mut MemoryCheckout) -> Result<bool, Box<d
     let result = checkout
         .commit(
             crate::OperationId::new(),
-            None,
-            None,
-            None,
-            crate::PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             allow::<FsError>,

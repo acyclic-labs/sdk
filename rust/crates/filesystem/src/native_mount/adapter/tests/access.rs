@@ -395,10 +395,7 @@ fn native_access_revokes_existing_and_new_handles() -> Result<(), Box<dyn std::e
         editor
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
                 BOUNDARY_BUDGET,
                 work.cancellation(),
                 |_| async {

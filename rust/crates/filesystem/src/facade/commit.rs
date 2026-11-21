@@ -5,10 +5,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub async fn commit<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         budget: WorkBudget,
         cancellation: &CancellationToken,
         mut before_publication: F,
@@ -29,10 +26,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 }
                 self.publish_pending(
                     operation_id,
-                    operation_context,
-                    operation_evidence,
-                    original_fingerprint_permit,
-                    permit,
+                    intent,
                     budget,
                     cancellation,
                     &mut before_publication,
@@ -52,10 +46,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn commit_even_if_clean<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         budget: WorkBudget,
         cancellation: &CancellationToken,
         before_publication: &mut F,
@@ -75,20 +66,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         FsError::MutationNotAllowed,
                     )));
                 }
-                let expected = self.authority_head.ok_or_else(|| {
-                    OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead))
-                })?;
+                let base = self.head_publication_base(operation_id)?;
                 self.publish_pending_against(
-                    operation_id,
-                    operation_context,
-                    operation_evidence,
-                    original_fingerprint_permit,
-                    permit,
-                    expected,
+                    base,
+                    intent,
                     budget,
                     cancellation,
                     before_publication,
-                    None,
                     producer_custody,
                 )
                 .await
@@ -105,10 +89,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(super) async fn publish_pending<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         budget: WorkBudget,
         cancellation: &CancellationToken,
         before_publication: &mut F,
@@ -118,32 +99,29 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
-        if !self.has_pending_mutations()
-            && permit == PublicationPermit::Unrestricted
-            && operation_context.is_none()
-            && operation_evidence.is_none()
-        {
+        if !self.has_pending_mutations() && intent.is_unconditional() {
             return self
                 .resolve_clean_commit(operation_id, budget, cancellation)
                 .await
                 .map_err(|failure| failure.map_error(E::from));
         }
+        let base = self.head_publication_base(operation_id)?;
+        self.publish_pending_against(base, intent, budget, cancellation, before_publication, None)
+            .await
+    }
+
+    /// A fresh publication of `operation_id` against this checkout's head.
+    fn head_publication_base<E: From<FsError>>(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<PublicationBase, OperationFailure<E>> {
         let expected = self.authority_head.ok_or_else(|| {
             OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead))
         })?;
-        self.publish_pending_against(
+        Ok(PublicationBase {
             operation_id,
-            operation_context,
-            operation_evidence,
-            original_fingerprint_permit,
-            permit,
             expected,
-            budget,
-            cancellation,
-            before_publication,
-            None,
-            None,
-        )
-        .await
+            resolved: None,
+        })
     }
 }

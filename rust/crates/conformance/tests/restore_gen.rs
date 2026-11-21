@@ -80,10 +80,7 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
         let committed = checkout
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 WorkBudget::UNBOUNDED,
                 &cancel,
                 |_| async {

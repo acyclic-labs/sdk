@@ -51,18 +51,17 @@ async fn native_group_seals_each_member_with_its_original_ledger() -> TestResult
                 };
                 checkout
                     .publish_pending_against_with_native_work(
-                        OperationId::new(),
-                        None,
-                        None,
-                        None,
-                        PublicationPermit::Unrestricted,
-                        checkout
-                            .authority_head
-                            .ok_or(FsError::WritableCheckoutRequiresHead)?,
+                        crate::facade::PublicationBase {
+                            operation_id: OperationId::new(),
+                            expected: checkout
+                                .authority_head
+                                .ok_or(FsError::WritableCheckoutRequiresHead)?,
+                            resolved: None,
+                        },
+                        crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                         original,
                         cancel,
                         &mut guard,
-                        None,
                         None,
                     )
                     .await
@@ -163,10 +162,7 @@ async fn withdrawal_proposal(
     Ok(checkout
         .commit(
             operation,
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             cancel,
             allow::<FsError>,
@@ -335,7 +331,7 @@ mod property {
                     proposals.push(checkout);
                 }
                 let outcomes = futures::future::join_all(proposals.iter_mut().map(|checkout| {
-                    checkout.commit(OperationId::new(), None, None, None, PublicationPermit::Unrestricted, B, &cancel, allow::<FsError>)
+                    checkout.commit(OperationId::new(), crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted), B, &cancel, allow::<FsError>)
                 })).await;
                 let mut committed = Vec::new();
                 for (index, outcome) in outcomes.into_iter().enumerate() {

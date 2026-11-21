@@ -676,10 +676,10 @@ mod tests {
         let publication = writer
             .commit::<acyclic_fs::FsError, _, _>(
                 acyclic_fs_format::identity::OperationId::new(),
-                None,
-                None,
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                ),
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| {

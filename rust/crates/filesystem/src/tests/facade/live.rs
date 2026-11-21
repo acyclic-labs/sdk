@@ -60,13 +60,10 @@ async fn original_guarded_live_conflict_requires_explicit_rebase() -> TestResult
     let conflict = local
         .resume_live_with_native_work(
             OperationId::from_bytes([212; 16]),
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             &original,
             &cancel,
             &mut guard,
-            None,
-            None,
-            None,
             None,
         )
         .await?;
@@ -82,13 +79,10 @@ async fn original_guarded_live_conflict_requires_explicit_rebase() -> TestResult
     let outcome = local
         .resume_live_with_native_work(
             OperationId::from_bytes([212; 16]),
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             &original,
             &cancel,
             &mut guard,
-            None,
-            None,
-            None,
             None,
         )
         .await?;

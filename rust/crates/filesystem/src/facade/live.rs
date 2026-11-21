@@ -157,14 +157,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn resume_live_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,
-        permit: PublicationPermit,
+        intent: PublicationIntent,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
         before_publication: &mut F,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
     ) -> Result<(LiveMutationOutcome, crate::NativeAllocation), E>
     where
         E: From<FsError> + acyclic_stream::ProviderTask + 'static,
@@ -192,14 +189,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let outcome = match self
             .retry_stale_commit_with_native_work(
                 operation_id,
-                permit,
+                intent.clone(),
                 original,
                 cancellation,
                 before_publication,
                 producer_custody,
-                operation_context,
-                operation_evidence.clone(),
-                original_fingerprint_permit,
             )
             .await?
         {
@@ -207,10 +201,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             None => {
                 self.publish_pending_with_native_work(
                     operation_id,
-                    operation_context,
-                    operation_evidence,
-                    original_fingerprint_permit,
-                    permit,
+                    intent,
                     original,
                     cancellation,
                     before_publication,
@@ -257,10 +248,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     ) -> FsResult<LiveMutationOutcome> {
         self.publish_pending(
             operation_id,
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             budget,
             cancellation,
             &mut |_| async {

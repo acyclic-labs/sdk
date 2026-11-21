@@ -103,10 +103,10 @@ impl NativeCheckout {
         let receipt = checkout
             .commit(
                 operation_id,
-                None,
-                None,
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationIntent::guarded(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                ),
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
                 |_| async {

@@ -66,10 +66,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     assert!(
         (read_only.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancellation,
             allow::<FsError>
@@ -95,10 +92,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     assert!(
         (clean.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancellation,
             allow::<FsError>

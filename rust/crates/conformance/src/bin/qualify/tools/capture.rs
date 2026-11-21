@@ -112,10 +112,10 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
     checkout
         .commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             WorkCounters::UNBOUNDED,
             &cancel,
             |_| async {
@@ -185,10 +185,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             checkout
                 .commit(
                     OperationId::new(),
-                    None,
-                    None,
-                    None,
-                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::PublicationIntent::guarded(None, acyclic_fs::PublicationPermit::Unrestricted),
                     WorkCounters::UNBOUNDED,
                     &cancel,
                     |_| async {
@@ -386,10 +383,10 @@ pub(super) async fn capture_and_commit(
     let commit = checkout
         .commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+            ),
             WorkCounters::UNBOUNDED,
             &cancel,
             |_| async {

@@ -49,10 +49,7 @@ pub async fn commit_head(
     let outcome = checkout
         .commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             cancel,
             allow::<FsError>,

@@ -146,6 +146,7 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_construction(
         mut self,
         roots: &'a mut crate::collection::ConstructionRoots,

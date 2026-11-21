@@ -187,10 +187,7 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
     editor
         .commit(
             crate::OperationId::new(),
-            None,
-            None,
-            None,
-            crate::PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             move |_| {

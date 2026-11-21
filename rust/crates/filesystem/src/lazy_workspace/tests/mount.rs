@@ -494,10 +494,7 @@ async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_public
     checkout
         .commit(
             crate::OperationId::new(),
-            None,
-            None,
-            None,
-            crate::PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             allow_publication,
@@ -664,10 +661,7 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
             checkout
                 .commit_even_if_clean(
                     key.operation_id(),
-                    None,
-                    None,
-                    None,
-                    crate::PublicationPermit::Unrestricted,
+                    crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     &mut allow_publication,
@@ -763,10 +757,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         checkout
             .commit_even_if_clean(
                 key.operation_id(),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
                 WorkBudget::UNBOUNDED,
                 &cancel,
                 &mut allow_publication,

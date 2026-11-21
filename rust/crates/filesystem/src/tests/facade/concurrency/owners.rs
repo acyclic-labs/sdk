@@ -205,16 +205,15 @@ pub(super) async fn submit_proposal<
             |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<_, FsError>(()));
         rejected
             .publish_pending_against_with_native_work(
-                operation,
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
-                expected,
+                crate::facade::PublicationBase {
+                    operation_id: operation,
+                    expected: expected,
+                    resolved: None,
+                },
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 &original,
                 cancel,
                 &mut seal,
-                None,
                 None,
             )
             .await?
@@ -222,16 +221,15 @@ pub(super) async fn submit_proposal<
         let mut seal = allow::<FsError>;
         rejected
             .publish_pending_against(
-                operation,
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
-                expected,
+                crate::facade::PublicationBase {
+                    operation_id: operation,
+                    expected: expected,
+                    resolved: None,
+                },
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 cancel,
                 &mut seal,
-                None,
                 None,
             )
             .await?
@@ -265,10 +263,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
     winner
         .commit(
             operation,
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
@@ -360,10 +355,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
         remote
             .commit(
                 OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>
@@ -378,10 +370,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
             stale
                 .commit(
                     operation,
-                    None,
-                    None,
-                    None,
-                    PublicationPermit::Unrestricted,
+                    crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                     B,
                     &cancel,
                     allow::<FsError>
@@ -396,10 +385,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
         retry
             .commit(
                 operation,
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>
@@ -499,20 +485,14 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
     let outcomes = futures::future::join(
         a.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
         ),
         b.commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             &cancel,
             allow::<FsError>,
@@ -870,16 +850,18 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
                     };
                     checkout
                         .publish_pending_against_with_native_work(
-                            OperationId::new(),
-                            None,
-                            None,
-                            None,
-                            PublicationPermit::Unrestricted,
-                            base,
+                            crate::facade::PublicationBase {
+                                operation_id: OperationId::new(),
+                                expected: base,
+                                resolved: None,
+                            },
+                            crate::PublicationIntent::guarded(
+                                None,
+                                PublicationPermit::Unrestricted,
+                            ),
                             original,
                             client,
                             &mut seal,
-                            None,
                             None,
                         )
                         .await
@@ -1200,10 +1182,7 @@ async fn successor_chained_after_a_recovered_retry_commits() -> TestResult {
         original
             .commit(
                 retried,
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                 B,
                 &cancel,
                 allow::<FsError>

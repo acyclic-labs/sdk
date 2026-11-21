@@ -169,10 +169,7 @@ async fn seed_volume(
     let base = match seed
         .commit(
             OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             B,
             cancel,
             allow::<FsError>,
@@ -201,10 +198,10 @@ async fn measure(
                 match checkout
                     .commit(
                         operation,
-                        None,
-                        None,
-                        None,
-                        PublicationPermit::Unrestricted,
+                        acyclic_fs::PublicationIntent::guarded(
+                            None,
+                            PublicationPermit::Unrestricted,
+                        ),
                         B,
                         cancel,
                         allow::<FsError>,

@@ -67,10 +67,7 @@ async fn command_final_join(revoke: bool, guarded: bool) -> Result<(), Box<dyn s
         checkout
             .commit(
                 crate::OperationId::new(),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
+                crate::PublicationIntent::guarded(None, crate::PublicationPermit::Unrestricted),
                 crate::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {

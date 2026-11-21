@@ -60,16 +60,15 @@ async fn native_batch_preserves_the_failing_members_typed_error_and_publishes_no
                 };
                 checkout
                     .publish_pending_against_with_native_work(
-                        OperationId::new(),
-                        None,
-                        None,
-                        None,
-                        PublicationPermit::Unrestricted,
-                        base,
+                        crate::facade::PublicationBase {
+                            operation_id: OperationId::new(),
+                            expected: base,
+                            resolved: None,
+                        },
+                        crate::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
                         original,
                         cancel,
                         &mut seal,
-                        None,
                         None,
                     )
                     .await

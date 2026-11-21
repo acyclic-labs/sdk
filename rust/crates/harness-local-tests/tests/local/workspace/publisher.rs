@@ -1206,10 +1206,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
     checkout
         .commit(
             acyclic_fs_format::identity::OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
+            acyclic_fs::PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             budget,
             &cancellation,
             |_| {
