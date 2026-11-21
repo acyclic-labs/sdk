@@ -73,8 +73,9 @@ fn authenticate(
     root: &AuthorityRoot,
 ) -> Result<acyclic_auth::verify::VerifiedCapability, JsValue> {
     let value = serde_json::to_value(scope).map_err(error)?;
-    let encoded = value["workload"]
-        .as_str()
+    let encoded = value
+        .get("workload")
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| error("missing workload"))?;
     let bytes = acyclic_auth::credential::capability_from_text(encoded).map_err(error)?;
     use acyclic_stream::UnixMillisClock as _;

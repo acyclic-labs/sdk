@@ -26,8 +26,8 @@ struct Hosted {
     provider: ProviderOwner<dyn StreamProvider>,
 }
 
-fn failure(method: &str, error: JsValue) -> acyclic_harness_suite::conformance::Failure {
-    if let Ok(code) = js_sys::Reflect::get(&error, &JsValue::from_str("code"))
+fn failure(method: &str, error: &JsValue) -> acyclic_harness_suite::conformance::Failure {
+    if let Ok(code) = js_sys::Reflect::get(error, &JsValue::from_str("code"))
         && let Some(code) = code.as_string()
         && let Some(error) = StreamError::from_code(&code)
     {
@@ -44,10 +44,10 @@ async fn invoke(port: &JsValue, method: &str, args: &[JsValue]) -> SuiteResult<J
     let array: js_sys::Array = args.iter().collect();
     let pending = function
         .apply(port, &array)
-        .map_err(|error| failure(method, error))?;
+        .map_err(|error| failure(method, &error))?;
     wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&pending))
         .await
-        .map_err(|error| failure(method, error))
+        .map_err(|error| failure(method, &error))
 }
 
 pub async fn open(

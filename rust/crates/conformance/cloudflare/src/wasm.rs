@@ -102,7 +102,56 @@ pub async fn qualify_journal_deadline(
         {
             return Err(StreamError::InvalidResponse);
         }
-        if !retry {
+        if retry {
+            // The same key was not spent by the expired acceptance before restart.
+            let outcome = provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: Some(DEADLINE),
+                    ..request.clone()
+                })
+                .await?;
+            if !matches!(outcome, CommitOutcome::Committed(_)) || admissions.get() != 1 {
+                return Err(StreamError::InvalidResponse);
+            }
+            let CommitOutcome::Committed(receipt) = &outcome else {
+                return Err(StreamError::InvalidResponse);
+            };
+            let issued = receipt.revision.clone();
+            drop(provider);
+            let reopened = JournalStream::open_with_clock(
+                journal,
+                JournalStreamLimits::default(),
+                clock.clone(),
+            )
+            .await?;
+            let applied = reopened
+                .wait_applied(&acyclic_stream::RevisionCut::of(issued.clone()))
+                .await?;
+            if !applied.same_authority(&issued) || applied.index < issued.index {
+                return Err(StreamError::InvalidResponse);
+            }
+            let foreign = acyclic_stream::AppliedRevisions::in_process().at(0);
+            if !matches!(
+                reopened
+                    .wait_applied(&acyclic_stream::RevisionCut::of(foreign))
+                    .now_or_never(),
+                Some(Err(StreamError::RevisionForeign))
+            ) {
+                return Err(StreamError::InvalidResponse);
+            }
+            if reopened
+                .commit(CommitRequest {
+                    deadline_unix_millis: Some(0),
+                    ..request
+                })
+                .await?
+                != outcome
+                || reopened.tail(path).await? != 1
+                || admissions.get() != 1
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+        } else {
             // The same physical acceptance succeeds before expiry. Its distinct
             // identity leaves the original expired request unspent for restart.
             let control = StreamPath::new("deadline/control")?;
@@ -154,55 +203,6 @@ pub async fn qualify_journal_deadline(
             if !matches!(reopened.tail(path).await, Err(StreamError::NotFound))
                 || reopened.inspect_idempotency(key).await?.is_some()
                 || reopened.tail(control).await? != 1
-            {
-                return Err(StreamError::InvalidResponse);
-            }
-        } else {
-            // The same key was not spent by the expired acceptance before restart.
-            let outcome = provider
-                .commit(CommitRequest {
-                    deadline_unix_millis: Some(DEADLINE),
-                    ..request.clone()
-                })
-                .await?;
-            if !matches!(outcome, CommitOutcome::Committed(_)) || admissions.get() != 1 {
-                return Err(StreamError::InvalidResponse);
-            }
-            let CommitOutcome::Committed(receipt) = &outcome else {
-                return Err(StreamError::InvalidResponse);
-            };
-            let issued = receipt.revision.clone();
-            drop(provider);
-            let reopened = JournalStream::open_with_clock(
-                journal,
-                JournalStreamLimits::default(),
-                clock.clone(),
-            )
-            .await?;
-            let applied = reopened
-                .wait_applied(&acyclic_stream::RevisionCut::of(issued.clone()))
-                .await?;
-            if !applied.same_authority(&issued) || applied.index < issued.index {
-                return Err(StreamError::InvalidResponse);
-            }
-            let foreign = acyclic_stream::AppliedRevisions::in_process().at(0);
-            if !matches!(
-                reopened
-                    .wait_applied(&acyclic_stream::RevisionCut::of(foreign))
-                    .now_or_never(),
-                Some(Err(StreamError::RevisionForeign))
-            ) {
-                return Err(StreamError::InvalidResponse);
-            }
-            if reopened
-                .commit(CommitRequest {
-                    deadline_unix_millis: Some(0),
-                    ..request
-                })
-                .await?
-                != outcome
-                || reopened.tail(path).await? != 1
-                || admissions.get() != 1
             {
                 return Err(StreamError::InvalidResponse);
             }
@@ -316,7 +316,7 @@ impl Backend for Qualification {
         })
     }
 
-    fn handler(&self, handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
+    fn handler(&self, handler: ProviderOwner<dyn Handler>) -> Result<ProviderOwner<dyn Handler>> {
         conformance::remote(handler)
     }
 }
