@@ -1486,10 +1486,7 @@ async fn admitted_close_fixture<P: StreamProvider + ?Sized + 'static>(
 > {
     let (connection, inbox, last, open, frames) = close_fixture(sockets, label).await?;
     let shared = &sockets.shared;
-    assert!(matches!(
-        shared.commit_open(&connection, &open).await?,
-        Some(_)
-    ));
+    assert!(shared.commit_open(&connection, &open).await?.is_some());
     shared
         .lock(&connection)
         .sockets
@@ -2138,10 +2135,13 @@ async fn accepted_open_retries_uncertain_durability_without_closing() -> TestRes
         let (release, entered) = provider.pause_write(true)?;
         release.send(()).map_err(|_| "lost Open release")?;
         *provider.durability_fault.lock().unwrap() = Some(error);
-        assert!(matches!(
-            sockets.shared.commit_open(&connection, &open).await?,
-            Some(_)
-        ));
+        assert!(
+            sockets
+                .shared
+                .commit_open(&connection, &open)
+                .await?
+                .is_some()
+        );
         entered.await?;
         assert_eq!(provider.replays.load(Ordering::Acquire), 1);
         assert_eq!(records(&sockets.shared.store, &inbox).await?.len(), 1);
