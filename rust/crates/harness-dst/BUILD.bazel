@@ -81,17 +81,6 @@ rust_test(
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//uuid-1.29.0",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:.cargo/config.toml",
-        "//:scripts/mold-linker.sh",
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "//rust/crates/filesystem:src/lib.rs",
-        "//rust/crates/filesystem:tests/codec.rs",
-        "//rust/crates/harness-core:src/lib.rs",
-        "//rust/crates/harness-core:tree",
-        "//rust/crates/harness-fuzz:tree",
-        "//rust/crates/harness-fuzz:tree/corpus/recorded_invocation",
-    ],
     args = [
         "--skip",
         "::full_cloud::",

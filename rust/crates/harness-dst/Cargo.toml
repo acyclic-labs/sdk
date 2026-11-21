@@ -11,6 +11,8 @@ description = "Deterministic simulation tests for the Acyclic harness"
 
 [package.metadata.bazel]
 integration-test-shards = 12
+# DST worlds create their fixtures in temporary directories.
+test-narrow-runfiles = ["main"]
 
 [[test]]
 name = "main"
