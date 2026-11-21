@@ -25,7 +25,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-s3-http:acyclic_fs_s3_http",

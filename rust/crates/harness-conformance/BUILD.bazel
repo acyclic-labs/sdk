@@ -70,7 +70,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
@@ -143,7 +143,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness_conformance",
     ] + [
@@ -193,7 +193,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_harness_conformance",
     ] + [
@@ -282,7 +282,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_harness_conformance",
     ] + [
@@ -379,7 +379,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness_conformance",
     ] + [

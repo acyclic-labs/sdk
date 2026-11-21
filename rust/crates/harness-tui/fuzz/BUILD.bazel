@@ -27,7 +27,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -60,7 +60,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -93,7 +93,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -126,7 +126,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -159,7 +159,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -192,7 +192,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -224,7 +224,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -257,7 +257,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -290,7 +290,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",
@@ -323,7 +323,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui-term:acyclic_harness_tui_term",

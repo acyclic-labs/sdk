@@ -96,7 +96,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//axum-0.8.9",
@@ -152,7 +152,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_plugin_identity",
     ] + select({

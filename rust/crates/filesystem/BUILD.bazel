@@ -258,7 +258,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV,
     deps = [
         "@sdk_crates//icu_casemap-2.3.0",
@@ -589,7 +589,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":build_script",
     ] + select({
@@ -896,7 +896,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1109,7 +1109,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1263,7 +1263,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1364,7 +1364,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1444,7 +1444,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1540,7 +1540,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1616,7 +1616,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1737,7 +1737,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1795,7 +1795,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_fs",
     ] + [
@@ -1859,7 +1859,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_fs",
     ] + [
@@ -1926,7 +1926,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_fs",
     ] + [
@@ -1989,7 +1989,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_fs",
     ] + [
@@ -2047,7 +2047,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_fs",
     ] + [
@@ -2121,7 +2121,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
 )
@@ -2146,7 +2146,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
 )
@@ -2171,7 +2171,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
 )
@@ -2196,7 +2196,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
 )
@@ -2221,7 +2221,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
 )
@@ -2247,7 +2247,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = SEPARATE_DEPS,
     proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
 )
@@ -2274,7 +2274,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
     deps = [
         "@sdk_crates//icu_casemap-2.3.0",

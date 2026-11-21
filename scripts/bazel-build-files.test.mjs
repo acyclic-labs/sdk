@@ -152,8 +152,11 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     const member = join(root, "member/Cargo.toml");
     const local = join(root, "local/Cargo.toml");
     writeFileSync(workspace, readFileSync(workspace, "utf8") +
-      '\n[workspace.lints.rust]\ndead_code = "deny"\nunused = { level = "warn", priority = -1 }\n');
+      '\n[workspace.lints.rust]\ndead_code = "deny"\nunused = { level = "warn", priority = -1 }\n\n[workspace.lints.clippy]\nprint_stdout = "deny"\ntodo = "deny"\nunwrap_used = { level = "deny", priority = 1 }\n' +
+      '\n[workspace.metadata.bin-lints.clippy]\nprint_stdout = "allow"\n\n[workspace.metadata.test-lints.clippy]\nunwrap_used = "allow"\n');
     writeFileSync(member, readFileSync(member, "utf8") + '\n[lints]\nworkspace = true\n');
+    writeFileSync(join(root, "member/src/main.rs"), "fn main() {}\n");
+    writeFileSync(join(root, "member/build.rs"), "fn main() {}\n");
     writeFileSync(local, readFileSync(local, "utf8") + '\n[lints.rust]\nunsafe_code = "forbid"\n');
     assert.equal(run("write").status, 0);
     execFileSync("git", ["add", "-A"], { cwd: root });
@@ -168,6 +171,15 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     const buildFile = readFileSync(join(root, "BUILD.bazel"), "utf8");
     assert.match(buildFile, /name = "workspace_lints",[\s\S]*?"unused": "warn",[\s\S]*?"dead_code": "deny"/,
       "the workspace group precedes its higher-priority lint");
+    // A library takes the workspace's lints, a binary or build script the bin-lints over them, and a test
+    // the test-lints over them; an override keeps the lint's priority, so it still sorts last.
+    const lints = name => buildFile.slice(buildFile.indexOf(`name = "${name}",`), buildFile.indexOf("\n)", buildFile.indexOf(`name = "${name}",`)));
+    assert.match(lints("workspace_lints"), /"print_stdout": "deny",\s*"todo": "deny",\s*"unwrap_used": "deny"/);
+    assert.match(lints("workspace_bin_lints"), /"print_stdout": "allow",\s*"todo": "deny",\s*"unwrap_used": "deny"/);
+    assert.match(lints("workspace_test_lints"), /"print_stdout": "deny",\s*"todo": "deny",\s*"unwrap_used": "allow"/);
+    const ruleOf = kind => memberBuild.slice(memberBuild.indexOf(`${kind}(`), memberBuild.indexOf("\n)", memberBuild.indexOf(`${kind}(`)));
+    const configs = { rust_library: "workspace_lints", rust_binary: "workspace_bin_lints", cargo_build_script: "workspace_bin_lints", rust_test: "workspace_test_lints" };
+    for (const [kind, config] of Object.entries(configs)) assert.match(ruleOf(kind), new RegExp(`lint_config = "//:${config}"`), kind);
     const platformStart = buildFile.indexOf('platform(\n    name = "linux_musl",');
     assert.notEqual(platformStart, -1, "linux_musl platform is generated");
     const platformBlock = buildFile.slice(platformStart, buildFile.indexOf("\n)\n", platformStart) + 3);

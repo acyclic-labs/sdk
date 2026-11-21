@@ -37,7 +37,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV,
     deps = [
         "@sdk_crates//serde_json-1.0.154",
@@ -114,7 +114,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/stream-wire:acyclic_stream_wire",
@@ -179,7 +179,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_harness_client",
         ":build_script",
@@ -265,7 +265,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
     deps = [
         "@sdk_crates//serde_json-1.0.154",

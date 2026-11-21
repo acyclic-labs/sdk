@@ -44,7 +44,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV,
 )
 
@@ -165,7 +165,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-format:acyclic_fs_format",
@@ -267,7 +267,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -372,7 +372,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -587,7 +587,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -812,7 +812,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -980,7 +980,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1148,7 +1148,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1316,7 +1316,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1484,7 +1484,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1653,7 +1653,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1822,7 +1822,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1990,7 +1990,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -2159,7 +2159,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -2327,7 +2327,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -2497,7 +2497,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
 )
 

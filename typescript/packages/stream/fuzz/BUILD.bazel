@@ -26,7 +26,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
@@ -61,7 +61,7 @@ rust_binary(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     deps = [
         "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",

@@ -34,7 +34,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV,
 )
 
@@ -91,7 +91,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//alacritty_terminal-0.26.0",
@@ -208,7 +208,7 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_test_lints",
     deps = [
         ":acyclic_harness_tui",
         ":build_script",
@@ -285,7 +285,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
         "--check-cfg=cfg(runtime_tests)",
     ],
-    lint_config = "//:workspace_lints",
+    lint_config = "//:workspace_bin_lints",
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
 )
 

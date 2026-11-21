@@ -124,8 +124,17 @@ function checkCfgFlags(manifest, features) {
     ...Object.values(table).flatMap(lint => lint["check-cfg"] ?? []).map(cfg => `--check-cfg=${cfg}`)];
 }
 
-function workspaceLintLevels(group) {
-  const entries = Object.entries(cargo.workspace?.lints?.[group] ?? {}).sort(([a, left], [b, right]) =>
+// A package that inherits the workspace's lints compiles each target under one of three configs: a
+// library under [workspace.lints] itself, a binary, bench, example or build script under it with
+// [workspace.metadata.bin-lints] over it, and any other test under it with [workspace.metadata.test-lints]
+// over it. An override sets a lint's level and keeps that lint's priority.
+const BIN_KINDS = ["bin", "bench", "example", "custom-build"];
+const LINT_CONFIGS = [["workspace_lints", {}], ["workspace_bin_lints", cargo.workspace?.metadata?.["bin-lints"] ?? {}],
+  ["workspace_test_lints", cargo.workspace?.metadata?.["test-lints"] ?? {}]];
+function workspaceLintLevels(group, overrides = {}) {
+  const table = { ...cargo.workspace?.lints?.[group] };
+  for (const [name, level] of Object.entries(overrides[group] ?? {})) table[name] = typeof table[name] === "object" ? { ...table[name], level } : level;
+  const entries = Object.entries(table).sort(([a, left], [b, right]) =>
     (left.priority ?? 0) - (right.priority ?? 0) || (a < b ? -1 : 1));
   return entries.length ? starlarkDict(entries.map(([name, lint]) =>
     [name, typeof lint === "string" ? lint : lint.level])) : undefined;
@@ -1146,7 +1155,7 @@ ${platformSources.map(([platform, sources]) =>
     ["crate_features", features],
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg, ...extraFlags])],
-    ["lint_config", q(inheritedLints ? "//:workspace_lints" : ":lints")],
+    ["lint_config", q(!inheritedLints ? ":lints" : target.kind.some(kind => BIN_KINDS.includes(kind)) ? "//:workspace_bin_lints" : "//:workspace_lints")],
     ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : q(bazel?.["target-compatible-with"])],
   ];
   // Rendered dependencies of one target.
@@ -1453,7 +1462,9 @@ function renderBuild(native, wasm) {
     `PACKAGE_ENV = ${q(native.env)}\n`,
     ...native.bindings.map(([name, value]) => `\n${name} = ${value}\n`),
   ];
-  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
+  // A test that is no binary, bench or example (common() gave it the library's config) takes the test config.
+  const testLints = attrs => attrs.map(attr => attr?.[0] === "lint_config" && attr[1] === q("//:workspace_lints") ? [attr[0], q("//:workspace_test_lints")] : attr);
+  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, kind === "rust_test" ? testLints(attrs) : attrs)}`).join("") + sourcesRule;
 }
 
 // Every universe crate is a spec with exactly Cargo's resolved feature set, which names "default"
@@ -1881,13 +1892,13 @@ const files = new Map([
   ["BUILD.bazel", `${HEADER}
 ${windowsToolchainHeld ? 'load("@rules_cc//cc:defs.bzl", "cc_toolchain")\n' : ""}load("@rules_rust//rust:defs.bzl", "rust_lint_config")
 ${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}
-${rule("rust_lint_config", [
-    ["name", q("workspace_lints")],
-    ["rustc", workspaceLintLevels("rust")],
-    ["clippy", workspaceLintLevels("clippy")],
-    ["rustdoc", workspaceLintLevels("rustdoc")],
+${LINT_CONFIGS.map(([name, overrides]) => rule("rust_lint_config", [
+    ["name", q(name)],
+    ["rustc", workspaceLintLevels("rust", overrides)],
+    ["clippy", workspaceLintLevels("clippy", overrides)],
+    ["rustdoc", workspaceLintLevels("rustdoc", overrides)],
     ["visibility", list(["//:__subpackages__"])],
-  ])}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsToolchainHeld ? windowsCcToolchain() : ""}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
+  ])).join("\n\n")}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsToolchainHeld ? windowsCcToolchain() : ""}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   ...(windowsToolchainHeld ? [[`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
