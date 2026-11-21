@@ -1,7 +1,7 @@
 //! Physical browser operations retain their original funding through settlement.
 use crate::async_storage::object_error;
 use crate::kernel::allocation::{
-    KernelAccounting,
+    BorrowedKernelAccounting,
     retained::{Retained, RetainedAllocation},
 };
 use crate::{CancellationToken, ObjectStoreError, WorkCounters};
@@ -22,7 +22,7 @@ type RawBuffer = Retained<Result<JsValue, JsValue>>;
 pub async fn blob_bytes(
     blob: &Blob,
     length: u64,
-    accounting: &RefCell<KernelAccounting<'_>>,
+    accounting: &RefCell<BorrowedKernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<OwnedBytes, ObjectStoreError> {
     let capacity = usize::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
@@ -84,7 +84,7 @@ pub fn blob_length(blob: &Blob) -> Result<u64, ObjectStoreError> {
 /// A dropped caller stops delivery while the one submitted producer settles.
 pub async fn promise(
     start: impl FnOnce() -> Result<js_sys::Promise, ObjectStoreError>,
-    accounting: &RefCell<KernelAccounting<'_>>,
+    accounting: &RefCell<BorrowedKernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<Result<JsValue, JsValue>, ObjectStoreError> {
     let Retained { value, allocation } =
@@ -96,7 +96,7 @@ pub async fn promise(
 async fn retained_promise(
     start: impl FnOnce() -> Result<js_sys::Promise, ObjectStoreError>,
     length: u64,
-    accounting: &RefCell<KernelAccounting<'_>>,
+    accounting: &RefCell<BorrowedKernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<RawBuffer, ObjectStoreError> {
     let payload =
@@ -127,7 +127,7 @@ async fn retained_promise(
 pub async fn complete<F: Future + 'static>(
     start: impl FnOnce() -> Result<F, ObjectStoreError>,
     work: WorkCounters,
-    accounting: &RefCell<KernelAccounting<'_>>,
+    accounting: &RefCell<BorrowedKernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<F::Output, ObjectStoreError>
 where
@@ -157,7 +157,7 @@ where
 
 async fn wait<T>(
     completion: &Completion<T, RetainedAllocation>,
-    accounting: &RefCell<KernelAccounting<'_>>,
+    accounting: &RefCell<BorrowedKernelAccounting<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<(), ObjectStoreError> {
     let mut result = std::pin::pin!(completion.result());

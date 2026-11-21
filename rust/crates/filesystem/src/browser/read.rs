@@ -1,7 +1,7 @@
 //! Browser adapters share the original ledger and the Objects batch driver.
 use crate::async_storage::{admit_read_batch, object_error};
 use crate::kernel::allocation::{
-    KernelAccounting,
+    BorrowedKernelAccounting,
     retained::{Retained, RetainedAllocation},
 };
 use crate::{
@@ -18,7 +18,7 @@ pub trait Reader {
     fn read(
         &self,
         request: &ObjectReadRequest,
-        accounting: &RefCell<KernelAccounting<'_>>,
+        accounting: &RefCell<BorrowedKernelAccounting<'_>>,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<ObjectRead, ObjectStoreError>>;
 }

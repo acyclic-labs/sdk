@@ -146,7 +146,9 @@ impl acyclic_fs::browser::Reader for OpfsAcceleratedObjectStore {
     async fn read(
         &self,
         request: &ObjectReadRequest,
-        accounting: &std::cell::RefCell<acyclic_fs::kernel::allocation::KernelAccounting<'_>>,
+        accounting: &std::cell::RefCell<
+            acyclic_fs::kernel::allocation::BorrowedKernelAccounting<'_>,
+        >,
         cancellation: &CancellationToken,
     ) -> Result<ObjectRead, ObjectStoreError> {
         accounting

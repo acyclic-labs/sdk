@@ -2,7 +2,9 @@
 #![cfg(target_arch = "wasm32")]
 
 use acyclic_fs::kernel::RetainedAllocation;
-use acyclic_fs::kernel::allocation::{AllocationLedger, KernelAccounting};
+use acyclic_fs::kernel::allocation::{
+    AllocationLedger, BorrowedKernelAccounting, KernelAccounting,
+};
 use futures::FutureExt;
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
@@ -49,7 +51,7 @@ extern "C" {
     fn release(this: &HeldBlob) -> js_sys::Promise;
 }
 
-fn live(accounting: &RefCell<KernelAccounting<'_>>) -> u64 {
+fn live(accounting: &RefCell<BorrowedKernelAccounting<'_>>) -> u64 {
     accounting
         .borrow_mut()
         .standalone_parts()
