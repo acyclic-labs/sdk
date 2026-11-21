@@ -100,6 +100,7 @@ node_test(
         "//:scripts/bazel-build-files.mjs",
         "//:scripts/bazel-build-files.test.mjs",
         "//:scripts/bazel-executables.mjs",
+        "//:scripts/bazel-generator-cache.mjs",
         "//:scripts/check-bazel-lockfile.mjs",
         "//:scripts/generate-stream-token-operations.mjs",
         "//:scripts/jsonc.mjs",
@@ -111,7 +112,7 @@ node_test(
         "//rust/crates/test-runner:privileges.txt",
     ],
     entry = "scripts/bazel-build-files.test.mjs",
-    name_pattern = "a patched crate uses crate-universe spokes",
+    name_pattern = "a changed blob is scanned once|a patched crate uses crate-universe spokes",
 )
 
 node_test(
