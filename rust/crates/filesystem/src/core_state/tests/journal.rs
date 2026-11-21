@@ -506,8 +506,32 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .unwrap();
         assert!(stored);
         journal.reserve_preimages(count).unwrap();
+        // One durable commit per measured step, plus one that seeds the
+        // history between them: the step at the end of the history is
+        // measured against the step at its start, and across plan sizes.
         let mut first = None;
-        for index in 0..count {
+        let mut stored_preimages = 0;
+        for index in [0, count - 1] {
+            while journal.preimages.len() < index {
+                let (image, custody) = work.copy_bytes(&[255; 64]).unwrap();
+                journal
+                    .append_funded_preimage(crate::MaterializationPreimage {
+                        image,
+                        custody: Some(custody),
+                    })
+                    .unwrap();
+            }
+            if journal.preimages.len() > stored_preimages {
+                let expected = journal.revision;
+                journal.revision += 1;
+                let (stored, updated) = MaterializationJournalStore::compare_and_swap(
+                    &store, operation, expected, journal,
+                )
+                .await
+                .unwrap();
+                assert!(stored);
+                journal = updated;
+            }
             let (image, custody) = work.copy_bytes(&[255; 64]).unwrap();
             let before = work.receipt().unwrap();
             assert!(store.matches(&journal).await.unwrap());
@@ -525,6 +549,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                     .unwrap();
             assert!(stored);
             journal = updated;
+            stored_preimages = journal.preimages.len();
             let after = work.receipt().unwrap();
             let delta = (
                 after.source_bytes_read - before.source_bytes_read,
