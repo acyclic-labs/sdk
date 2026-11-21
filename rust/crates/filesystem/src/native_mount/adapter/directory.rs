@@ -12,6 +12,8 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
+        let maximum_entries =
+            maximum_entries.min(self.checkout.config.limits.maximum_directory_page_entries);
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
