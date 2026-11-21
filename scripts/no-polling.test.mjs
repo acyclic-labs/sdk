@@ -402,6 +402,25 @@ test('aliases cannot use an unchanged timer import to conceal a new call', () =>
  }
 });
 
+// A disposition pins its site's own function, signature to closing brace, and nothing wider: an edit to another
+// function of the file keeps it, an edit to the disposed function reopens it (2026-11-21: Cloud's svc-batch edit to
+// transport.rs register reopened the Endpoint::backoff disposition and 17 sites behind it).
+test('a disposition holds across an edit to another function and reopens on an edit to its own', () => {
+ const file = 'src/cell/transport.rs';
+ const source = (register, backoff) => `impl Endpoint {\n fn register(&self, id: u64) {${register} self.peers.insert(id); }\n`
+  + ` fn backoff(&self) -> Instant {\n let delay = self.retry.lock().unwrap().delay();${backoff}\n Instant::now() + delay\n }\n}\n`;
+ const before = new Map([[file, source('', '')]]);
+ const pinned = sources => projectPollingSites(sources).find(site => site.file === file && site.function === 'backoff').fingerprint;
+ const disposition = [{file, classification: 'transient-transport-backoff', producer: 'Endpoint::backoff',
+  terminal: 'a success clears it', negativeControl: 'any other dial failure is no cooldown', fingerprint: pinned(before)}];
+ const elsewhere = new Map([[file, source(' self.seen.fetch_add(1, Relaxed);', '')]]);
+ assert.equal(pinned(elsewhere), pinned(before));
+ assert.deepEqual(newProjectPollingSites(before, elsewhere, disposition), []);
+ const own = new Map([[file, source('', '\n let delay = delay.min(Backoff::new(ceiling).delay());')]]);
+ assert.notEqual(pinned(own), pinned(before));
+ assert.ok(newProjectPollingSites(before, own, disposition).length > 0, 'an edit to the disposed function reopens it');
+});
+
 // A disposed Rust function is its disposition's, body and all: what only reaches it (a caller in its module tree, the
 // test calling it, an unchanged or a new plain field) is no finding, and a new timer anywhere still is (2026-11-21:
 // Cloud's voter cooldown cap reported 10 sites behind one disposed transport backoff).

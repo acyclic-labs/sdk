@@ -285,9 +285,10 @@ export function projectPollingSites(sources, {historical = false, dispositions =
    const kept = item => !own.has(item) && !bodies.some(body => item.startsWith(body));
    const functions = new Set(gone.flatMap(site => site.function ? [site.function] : []));
    unit.sites = unit.sites.flatMap(site => {
-    const origins = site.origins.filter(kept);
+    // A timer spelled at the site itself keeps its origin: a second copy of a disposed timer is a timer of its own.
+    const origins = site.origins.filter(item => site.own.includes(item) || kept(item));
     return disposed.has(file + ':' + site.fingerprint) || functions.has(site.scope) || !origins.length ? []
-     : [{...site, origins, own: site.own.filter(kept)}];
+     : [{...site, origins}];
    });
   }
   sites.push(...unit.sites);

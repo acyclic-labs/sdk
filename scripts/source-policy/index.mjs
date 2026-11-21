@@ -710,26 +710,30 @@ export function pollingUnit(file, source, parser = undefined) {
  const futurePoll = i => directPoll(i) || steps.has(i) || predicateWait(i) || (taskPoll && stream[i]?.value === 'Poll')
   || (rust && stepping.has(stream[i]?.value) && stream[i - 1]?.value !== '.'
   && !(stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':'));
- // A changed producer/condition elsewhere in the source unit must reopen the
- // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
  // A timer's origin is its spelling in its enclosing named function (`fn`, `function`; the file for a top-level one),
  // never its position: an edit elsewhere in the file leaves every origin, and so every chain, as it was.
- const within = new Array(stream.length);
+ // A site's own text (`span`) is its innermost named function, signature to closing brace, or for a top-level site its
+ // top-level statement: a disposition pins exactly that, so an edit elsewhere in the file keeps it and an edit to the
+ // disposed function reopens it (2026-11-21: an edit to another function of transport.rs reopened Endpoint::backoff).
+ const within = new Array(stream.length), span = new Array(stream.length);
  {
-  const scopes = [''];
-  let pending, nesting = 0, at = 0;
+  const scopes = [{name: ''}];
+  let pending, from, nesting = 0, at = 0, statement = 0;
+  const own = (a, b) => { for (let j = a; j <= b; j++) span[j] ??= [a, b]; };
   for (let i = 0; i < stream.length; i++) {
    const t = stream[i];
-   within[i] = scopes[scopes.length - 1];
-   if (t.kind === 'word' && (t.value === 'fn' || t.value === 'function') && stream[i + 1]?.kind === 'word') { pending = stream[i + 1].value; at = nesting; }
+   within[i] = scopes[scopes.length - 1].name;
+   if (t.kind === 'word' && (t.value === 'fn' || t.value === 'function') && stream[i + 1]?.kind === 'word') { pending = stream[i + 1].value; from = i; at = nesting; }
    else if (t.kind !== 'punctuation') continue;
    else if (t.value === '(' || t.value === '[') nesting++;
    else if (t.value === ')' || t.value === ']') nesting--;
-   else if (t.value === '{') { scopes.push(pending ?? scopes[scopes.length - 1]); pending = undefined; }
-   else if (t.value === '}') { if (scopes.length > 1) scopes.pop(); }
+   else if (t.value === '{') { scopes.push(pending === undefined ? {name: scopes[scopes.length - 1].name} : {name: pending, from}); pending = undefined; }
+   else if (t.value === '}') { const scope = scopes.length > 1 ? scopes.pop() : undefined; if (scope?.from !== undefined) own(scope.from, i); }
    else if (t.value === ';' && nesting === at) pending = undefined;
+   if (scopes.length === 1 && nesting === 0 && (t.value === ';' || t.value === '}')) { own(statement, i); statement = i + 1; }
   }
+  own(statement, stream.length - 1);
  }
  const origin = i => file + ':' + within[i] + ':' + (stream[i].kind === 'word' ? '' : stream[i].kind + ':') + stream[i].value;
  const aliases = new Map();
@@ -886,10 +890,16 @@ export function pollingUnit(file, source, parser = undefined) {
   const kind = kindAt(j);
   return kind === 'timer-or-readiness' ? reaches.get(name(j)) ?? [] : kind === 'embedded-timer-or-retry' || kind === 'indirect-timer-or-call' ? [origin(j)] : [];
  };
- const sites = [];
+ const sites = [], copies = new Map();
  for (const [i, kind] of found.sort((x, y) => x[0] - y[0])) {
   const t = stream[i];
-  const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
+  // Its own text, and which copy of that text it is: a second identical statement is a site of its own, never disposed
+  // by the disposition of the first.
+  const [from, to] = span[i];
+  const text = JSON.stringify([kind, i - from, stream.slice(from, to + 1).map(u => [u.kind, u.value])]);
+  const copy = copies.get(text) ?? 0;
+  copies.set(text, copy + 1);
+  const fingerprint = createHash('sha256').update(JSON.stringify([text, copy])).digest('hex');
   const site = {file, line: t.line, kind, fingerprint, start: t.start, token: t.value};
   const origins = new Set(), own = new Set();
   if (kind === 'loop') {
