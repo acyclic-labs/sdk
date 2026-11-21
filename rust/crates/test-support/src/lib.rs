@@ -54,7 +54,7 @@ pub mod scale;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 /// Successful allocations and net live storage within a measurement scope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,7 +88,27 @@ thread_local! {
     static COUNTER: Cell<Option<AllocationInfo>> = const { Cell::new(None) };
     static FIRST_ALLOCATION: Cell<Option<Option<usize>>> = const { Cell::new(None) };
 }
-struct FirstAllocationScope(Option<Option<usize>>);
+// Measurement scopes open on any thread. While none is, an allocation reads
+// this one shared word and no thread-local state, so a binary that installs
+// the counting allocator pays nothing on allocations nobody measures.
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// One open measurement scope, counted in [`ACTIVE`] for its whole extent,
+/// unwinding included. Its thread-local state is installed after it opens and
+/// restored before it closes, so every allocation the scope measures observes it.
+struct Active;
+impl Active {
+    fn open() -> Self {
+        ACTIVE.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+impl Drop for Active {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+// Fields drop in order: the thread-local state is restored, then the scope closes.
+struct FirstAllocationScope(Option<Option<usize>>, Active);
 impl Drop for FirstAllocationScope {
     fn drop(&mut self) {
         if let Some(first) = &mut self.0 {
@@ -104,13 +124,15 @@ pub fn first_allocation(run: impl FnOnce()) -> Option<usize> {
         INSTALLED.load(Ordering::Relaxed),
         "acyclic_test_support::first_allocation needs `acyclic_test_support::counting_allocator!();` at this binary's crate root"
     );
-    let scope = FirstAllocationScope(FIRST_ALLOCATION.replace(Some(None)));
+    let active = Active::open();
+    let scope = FirstAllocationScope(FIRST_ALLOCATION.replace(Some(None)), active);
     run();
     let first = FIRST_ALLOCATION.get().flatten();
     drop(scope);
     first
 }
-struct Scope(Option<AllocationInfo>);
+// Fields drop in order: the thread-local state is restored, then the scope closes.
+struct Scope(Option<AllocationInfo>, Active);
 impl Drop for Scope {
     fn drop(&mut self) {
         if let Some(parent) = &mut self.0 {
@@ -131,7 +153,8 @@ pub fn measure<T>(run: impl FnOnce() -> T) -> AllocationInfo<T> {
         INSTALLED.load(Ordering::Relaxed),
         "acyclic_test_support::measure needs `acyclic_test_support::counting_allocator!();` at this binary's crate root"
     );
-    let scope = Scope(COUNTER.replace(Some(AllocationInfo::default())));
+    let active = Active::open();
+    let scope = Scope(COUNTER.replace(Some(AllocationInfo::default())), active);
     let output = run();
     let result = COUNTER.get().unwrap_or_default();
     drop(scope);
@@ -176,6 +199,9 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 fn record(pointer: *mut u8, size: usize, allocate: bool) -> *mut u8 {
     if !INSTALLED.load(Ordering::Relaxed) {
         INSTALLED.store(true, Ordering::Relaxed);
+    }
+    if ACTIVE.load(Ordering::Relaxed) == 0 {
+        return pointer;
     }
     if !pointer.is_null() && allocate && FIRST_ALLOCATION.get() == Some(None) {
         FIRST_ALLOCATION.set(Some(Some(size)));

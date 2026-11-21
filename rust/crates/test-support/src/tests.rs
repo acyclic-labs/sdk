@@ -155,6 +155,30 @@ fn scopes_restore_after_unwind_and_isolate_threads() {
     assert_eq!(FIRST_ALLOCATION.get(), None);
 }
 
+/// While no measurement scope is open anywhere, an allocation reads no
+/// thread-local state: scope state planted without opening a scope stays
+/// exactly as planted. Each case runs in its own process, so no other
+/// thread's scope is open.
+#[test]
+fn allocations_outside_every_scope_read_no_thread_local() {
+    use std::hint::black_box;
+    let planted = AllocationInfo::default();
+    COUNTER.set(Some(planted));
+    FIRST_ALLOCATION.set(Some(None));
+    drop(black_box(Box::new([0u8; 33])));
+    assert_eq!(COUNTER.replace(None), Some(planted));
+    assert_eq!(FIRST_ALLOCATION.replace(None), Some(None));
+    // The same allocation inside a scope is measured.
+    assert_eq!(
+        measure(|| drop(black_box(Box::new([0u8; 33])))).bytes_total,
+        33
+    );
+    assert_eq!(
+        first_allocation(|| drop(black_box(Box::new([0u8; 33])))),
+        Some(33)
+    );
+}
+
 struct ReturnedStorage<'a> {
     bytes: Box<[u8]>,
     drops: &'a Cell<usize>,
