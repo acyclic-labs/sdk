@@ -33,6 +33,7 @@ pub use journal_provider::{JournalStream, JournalStreamLimits};
 #[cfg(not(target_arch = "wasm32"))]
 mod local;
 mod memory;
+mod observation_lock;
 mod replicated;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};

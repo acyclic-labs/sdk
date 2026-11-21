@@ -4,7 +4,8 @@ pub struct MemoryStream {
     // Lock order: LocalStream visibility -> publication -> state -> watch internals.
     // Publication owns ordering across durable I/O; state guards only visible facts.
     publication: Arc<Mutex<()>>,
-    state: Arc<RwLock<State>>,
+    state: Arc<crate::observation_lock::ObservationLock<State>>,
+    unreserved_reads: bool,
     /// The one applied-revision authority of this incarnation; advanced under
     /// the state write guard after each publication.
     pub(crate) revisions: Arc<crate::AppliedRevisions>,
@@ -57,7 +58,10 @@ impl MemoryStream {
     ) -> Self {
         Self {
             publication: Arc::new(Mutex::new(())),
-            state: Arc::new(RwLock::new(State::default())),
+            state: Arc::new(crate::observation_lock::ObservationLock::new(
+                State::default(),
+            )),
+            unreserved_reads: false,
             revisions: Arc::new(crate::AppliedRevisions::in_process()),
             operation_claims: Arc::new(crate::OperationClaims::default()),
             limits,
@@ -70,6 +74,16 @@ impl MemoryStream {
             retain_pending_read: false,
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_unreserved_reads(mut self, unreserved: bool) -> Self {
+        self.unreserved_reads = unreserved;
+        self
+    }
+
+    async fn read_state(&self) -> impl std::ops::Deref<Target = State> + '_ {
+        self.state.read_with(self.unreserved_reads).await
+    }
+
     /// Installs this ledger's authority-side time rule. Every new write, an
     /// append, commit or prepared publication alike, is decided by
     /// [`admit_commit`] with its own authority time before anything is
@@ -155,8 +169,11 @@ impl MemoryStream {
             ..Self::default()
         }
     }
+}
 
-    pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl MemoryStream {
+    pub(crate) async fn hold_state_writer(&self) -> impl Send + '_ {
         self.state.write().await
     }
 }

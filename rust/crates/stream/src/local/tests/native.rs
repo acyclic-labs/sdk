@@ -32,9 +32,9 @@ async fn lease_replays_pin_success_across_visibility_and_publication_waits()
         let request = plain_append(root.clone());
         let original = provider.commit(request.clone()).await?;
         let gate = if at_publication {
-            provider.inner.publication.write().await
+            futures::future::Either::Left(provider.inner.publication.write().await)
         } else {
-            provider.inner.visibility.write().await
+            futures::future::Either::Right(provider.inner.visibility.write().await)
         };
         let meter = Arc::new(Meter::local());
         let (observed, examined) = tokio::sync::oneshot::channel();

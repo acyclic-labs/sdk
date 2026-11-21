@@ -54,7 +54,7 @@ impl MemoryStream {
         if cursor.end.is_some() {
             return Ok(true);
         }
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
         drop(state);
         let path = snapshot.as_ref();
@@ -131,7 +131,7 @@ impl MemoryStream {
     ) -> Result<PreparedFollow<I>, StreamError> {
         // Keep the observed cut stable through registration. The registry
         // serializes its own updates, so other readers can share this guard.
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
         let selection = follow_selection(

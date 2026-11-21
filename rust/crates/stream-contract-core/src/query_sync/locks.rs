@@ -298,6 +298,19 @@ impl<T> RwLock<T> {
             _permit: permit,
         }
     }
+    /// Attempts shared modeled ownership without waiting.
+    pub fn try_read(&self) -> Result<Guard<'_, tokio::sync::RwLockReadGuard<'_, T>>, ()> {
+        let permit = self.gate.take(false).ok_or(())?;
+        let data = self
+            .data
+            .try_read()
+            .unwrap_or_else(|_| unreachable!("modeled try-read ownership disagrees"));
+        Ok(Guard {
+            data,
+            _permit: permit,
+        })
+    }
+
     /// Attempts exclusive modeled ownership without waiting.
     pub fn try_write(
         &self,

@@ -11,7 +11,7 @@ struct LocalInner {
     visibility: RwLock<()>,
     // Accepted readers use only this fence. It ends after the frame is written,
     // before compaction performs device work under the outer visibility fence.
-    publication: RwLock<()>,
+    publication: ObservationLock<()>,
     /// Ordered and device-flushed cuts, published together under the journal lock.
     synced: watch::Sender<SyncProgress>,
     // Lock order: visibility -> publication -> journal -> failure watch. No failure borrow

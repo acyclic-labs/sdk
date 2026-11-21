@@ -56,11 +56,12 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
                 limits.memory,
                 clock,
                 commit_clock.clone(),
-            ),
+            )
+            .with_unreserved_reads(true),
             commit_clock,
             journal: Arc::new(Mutex::new(journal)),
             visibility: RwLock::new(()),
-            publication: RwLock::new(()),
+            publication: ObservationLock::new(()),
             synced: watch::channel(SyncProgress {
                 ordered: 0,
                 flushed: Some(0),

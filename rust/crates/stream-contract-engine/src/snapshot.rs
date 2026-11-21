@@ -37,6 +37,12 @@ pub trait Snapshot: crate::ProviderTask + SnapshotSend + 'static {
     fn read(
         &mut self,
     ) -> impl Future<Output = Result<Self::Output, crate::StreamError>> + crate::ProviderTask;
+    /// Reads on a worker whose executor owns every pending acquisition.
+    fn read_retained(
+        &mut self,
+    ) -> impl Future<Output = Result<Self::Output, crate::StreamError>> + crate::ProviderTask {
+        self.read()
+    }
 }
 
 pub fn read<S: Snapshot>(
@@ -69,7 +75,7 @@ async fn read_owned<S: Snapshot>(
     }
     #[cfg(loom)]
     if retain_pending {
-        let result = state.read().await;
+        let result = state.read_retained().await;
         return (state, result);
     }
     let ready = poll_fn(|cx| {

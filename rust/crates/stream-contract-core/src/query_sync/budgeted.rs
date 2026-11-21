@@ -67,6 +67,11 @@ impl<T> RwLock<T> {
         Acquire::new(self.0.read())
     }
 
+    /// Attempts immediate shared ownership without registering a waiter.
+    pub fn try_read(&self) -> Result<impl std::ops::Deref<Target = T> + '_, Busy> {
+        self.0.try_read().map_err(|_| Busy)
+    }
+
     /// Acquires exclusive ownership.
     pub fn write(&self) -> impl Future<Output = impl std::ops::DerefMut<Target = T> + '_> + '_ {
         Acquire::new(self.0.write())

@@ -102,4 +102,23 @@ impl crate::snapshot::Snapshot for Box<LocalProgress> {
             })
             .await?
     }
+
+    async fn read_retained(&mut self) -> Result<Option<crate::FollowUpdate>, StreamError> {
+        let state = &mut **self;
+        let provider = state
+            .provider
+            .inner
+            .provider
+            .clone()
+            .with_unreserved_reads(false);
+        state
+            .provider
+            .retained_snapshot(provider.next_follow_update(
+                &state.path,
+                &mut state.cursor,
+                &mut state.anchor,
+                &state.filter,
+            ))
+            .await?
+    }
 }

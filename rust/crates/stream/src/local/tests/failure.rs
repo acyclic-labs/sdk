@@ -474,21 +474,57 @@ async fn an_abandoned_prepare_cannot_hold_the_visibility_fence_from_a_cut()
     drop(held);
     // Every later visibility writer still completes: the persistence cut,
     // then a mutation, each waiting on the fence the abandoned caller entered.
-    struct Passthrough;
-    impl PersistenceCut for Passthrough {
-        fn admit(&self) -> bool {
-            true
-        }
-        fn acknowledge(&self) -> bool {
-            true
-        }
-        fn crashed(&self, _: Result<(), CutSimulationError>) {
-            unreachable!("an admitting cut never crashes");
-        }
-    }
     stream.cut_persistence(Arc::new(Passthrough)).await?;
     deferring_durability(stream.append(super::keyed_append("after-abandon", 0)?)).await?;
     drop(prepare);
     assert_eq!(stream.tail(StreamPath::new("after-abandon")?).await?, 1);
+    Ok(())
+}
+
+struct Passthrough;
+impl PersistenceCut for Passthrough {
+    fn admit(&self) -> bool {
+        true
+    }
+    fn acknowledge(&self) -> bool {
+        true
+    }
+    fn crashed(&self, _: Result<(), CutSimulationError>) {
+        unreachable!("an admitting cut never crashes");
+    }
+}
+
+#[tokio::test]
+async fn an_abandoned_accepted_read_cannot_hold_publication_or_a_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    for queued in [false, true] {
+        let root = tempfile::tempdir()?;
+        let stream = LocalStream::open(root.path(), Default::default()).await?;
+        let path = StreamPath::new("after-read")?;
+        let held = if queued {
+            futures::future::Either::Left(stream.inner.publication.write().await)
+        } else {
+            futures::future::Either::Right(stream.inner.provider.hold_state_writer().await)
+        };
+        let mut read = Box::pin(stream.tail(path.clone()));
+        // Exercise both a reader waiting to enter a publication cut and a
+        // reader already parked inside the provider's future.
+        assert!(futures::poll!(&mut read).is_pending());
+        if !queued {
+            assert!(
+                stream.inner.publication.try_write().is_ok(),
+                "parked provider read retained publication",
+            );
+        }
+        drop(held);
+        assert!(
+            stream.inner.publication.try_write().is_ok(),
+            "unpolled reader reserved publication after the writer left",
+        );
+        deferring_durability(stream.append(super::keyed_append("after-read", 0)?)).await?;
+        stream.cut_persistence(Arc::new(Passthrough)).await?;
+        assert_eq!(stream.tail(path).await?, 1);
+        assert_eq!(read.await?, 1, "resumed read must observe the accepted cut");
+    }
     Ok(())
 }

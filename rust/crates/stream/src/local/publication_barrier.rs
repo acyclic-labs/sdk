@@ -8,8 +8,14 @@ impl LocalStream {
         entered: tokio::sync::oneshot::Sender<()>,
         release: tokio::sync::oneshot::Receiver<()>,
     ) {
-        let _publication = self.inner.publication.write().await;
-        let _ = entered.send(());
-        let _ = release.await;
+        let stream = self.worker();
+        // The explicit release signal controls the test, even while the
+        // future observing this barrier is parked.
+        let _ = spawn(async move {
+            let _publication = stream.inner.publication.write().await;
+            let _ = entered.send(());
+            let _ = release.await;
+        })
+        .await;
     }
 }

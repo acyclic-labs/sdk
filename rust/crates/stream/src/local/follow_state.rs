@@ -31,6 +31,25 @@ impl crate::snapshot::Snapshot for Box<FollowState> {
             })
             .await?
     }
+
+    async fn read_retained(&mut self) -> Result<Option<crate::Record>, StreamError> {
+        let state = &mut **self;
+        let provider = state
+            .provider
+            .inner
+            .provider
+            .clone()
+            .with_unreserved_reads(false);
+        state
+            .provider
+            .retained_snapshot(provider.next_checked_record(
+                &state.path,
+                &mut state.cursor,
+                &mut state.anchor,
+                &state.filter,
+            ))
+            .await?
+    }
 }
 impl FollowState {
     async fn wait(&mut self) -> Result<(), StreamError> {

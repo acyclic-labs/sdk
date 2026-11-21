@@ -225,7 +225,7 @@ impl MemoryStream {
     /// Whether each path lies in a lease's subtree.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn ephemeral_mask(&self, paths: &[StreamPath]) -> Vec<bool> {
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         paths
             .iter()
             .map(|path| state.ephemeral.root_of(path.as_str()).is_some())

@@ -163,13 +163,13 @@ impl LocalStream {
         Ok(Self {
             handle: Some(handle),
             inner: Arc::new(LocalInner {
-                provider,
+                provider: provider.with_unreserved_reads(true),
                 durability: limits.durability,
                 commit_clock,
                 replica_clock: Arc::new(crate::replicated::ReplicaClock::default()),
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
-                publication: RwLock::new(()),
+                publication: ObservationLock::new(()),
                 synced: watch::channel(progress).0,
                 failed,
                 revision: watch::channel(0).0,
@@ -785,16 +785,50 @@ impl LocalStream {
         async move {
             self.check_available()?;
             let mut failed = self.inner.failed.subscribe();
+            let mut provider = std::pin::pin!(read);
             let read = std::pin::pin!(async {
-                let _visibility = self.inner.publication.read().await;
-                self.check_available()?;
-                Ok(read.await)
+                loop {
+                    let mut fence = Some(self.inner.publication.read_with(true).await);
+                    self.check_available()?;
+                    // Poll only at an accepted cut. The provider examines live
+                    // state synchronously under its own read guard and retains
+                    // an immutable snapshot for any subsequent async work.
+                    // Release publication even if the provider poll parks.
+                    if let Some(value) = std::future::poll_fn(|cx| {
+                        let Some(fence) = fence.take() else {
+                            return std::task::Poll::Ready(None);
+                        };
+                        let result = provider.as_mut().poll(cx);
+                        drop(fence);
+                        result.map(Some)
+                    })
+                    .await
+                    {
+                        return Ok(value);
+                    }
+                }
             });
             let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
             match futures::future::select(unavailable, read).await {
                 futures::future::Either::Left((error, _)) => Err(error),
                 futures::future::Either::Right((result, _)) => result,
             }
+        }
+    }
+    // Independently dispatched snapshot workers can take fair reservations.
+    // Their executor continues polling them when a consumer stops observing.
+    async fn retained_snapshot<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+        self.check_available()?;
+        let mut failed = self.inner.failed.subscribe();
+        let read = std::pin::pin!(async {
+            let _publication = self.inner.publication.read().await;
+            self.check_available()?;
+            Ok(read.await)
+        });
+        let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+        match futures::future::select(unavailable, read).await {
+            futures::future::Either::Left((error, _)) => Err(error),
+            futures::future::Either::Right((result, _)) => result,
         }
     }
 }

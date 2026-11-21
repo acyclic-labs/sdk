@@ -34,7 +34,7 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
         };
         let mut follow = ManuallyDrop::new(follow);
         let held = if memory {
-            futures::future::Either::Left(block_on(provider.inner.provider.model_hold_writer()))
+            futures::future::Either::Left(block_on(provider.inner.provider.hold_state_writer()))
         } else {
             futures::future::Either::Right(block_on(provider.inner.publication.write()))
         };

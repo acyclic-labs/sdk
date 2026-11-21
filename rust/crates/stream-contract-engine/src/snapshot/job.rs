@@ -167,7 +167,7 @@ impl<S: Snapshot> Job<S> {
             return;
         };
         let result = {
-            let mut read = std::pin::pin!(state.read());
+            let mut read = std::pin::pin!(state.read_retained());
             // Abandonment is checked before every read poll, so a job whose
             // consumer is gone never enters, or stays queued on, a lock.
             poll_fn(|cx| {

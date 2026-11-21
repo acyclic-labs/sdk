@@ -81,7 +81,7 @@ impl MemoryStream {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         Ok(self
             .replay_in(&state, idempotency_key.as_bytes())?
             .map(|(digest, result, index, _)| IdempotencyObservation {
@@ -98,7 +98,7 @@ impl MemoryStream {
     ) -> Result<RecordStream, StreamError> {
         self.revisions.wait(&request.request().at_least).await?;
         let request = request.into_request();
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let path = state
             .paths
             .get(&request.path)
@@ -121,8 +121,7 @@ impl MemoryStream {
         &self,
         commit_id: CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
-        self.state
-            .read()
+        self.read_state()
             .await
             .find_commit(&commit_id, |items| {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -216,7 +215,7 @@ impl MemoryStream {
         _work: CaptureWork<'_>,
         allocation: &mut Allocation,
     ) -> Result<(), StreamError> {
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let applied = self.revisions.at(state.decision);
         let index = if let Some(at) = &request.at {
             if !at.same_authority(&applied) {
@@ -1232,7 +1231,7 @@ impl MemoryStream {
             return Ok(Err(error));
         }
         let request = request.into_request();
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let path = inspect(&meter, || state.paths.get(&request.path))?;
         let Some(path) = path else {
             return Ok(Err(StreamError::NotFound));
@@ -1282,7 +1281,7 @@ impl MemoryStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> crate::NativeStreamResult<u64> {
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let value = inspect(&meter, || state.tail(&path))?;
         Ok(value
             .ok_or(StreamError::NotFound)
@@ -1293,7 +1292,7 @@ impl MemoryStream {
         key: IdempotencyKey,
         meter: Arc<dyn NativeReadMeter>,
     ) -> crate::NativeStreamResult<Option<IdempotencyObservation>> {
-        let state = self.state.read().await;
+        let state = self.read_state().await;
         let replay = inspect(&meter, || {
             state.lookup_replay(key.as_bytes(), |items| meter.examine(items, 0))
         })??;

@@ -20,7 +20,7 @@ impl<'a, R, F> Install<'a, R> for F where
 {
 }
 use crate::preparation::commit_identity;
-use crate::query_sync::{Mutex, RwLock};
+use crate::query_sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::request::normalize_commit;
 #[cfg(test)]

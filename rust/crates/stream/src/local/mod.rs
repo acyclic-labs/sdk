@@ -12,6 +12,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 
+use crate::observation_lock::ObservationLock;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 #[cfg(test)]
 #[cfg(not(loom))]

@@ -62,32 +62,44 @@ impl LocalStream {
     /// mutation fence, so a concurrent writer cannot escape either boundary.
     ///
     /// Returns [`StreamError::AlreadyExists`] if a cut is already installed,
-    /// or the provider's failure when the prefix cannot be flushed. Losing the
-    /// provider ends a pending fence wait; dropping this future releases it.
+    /// or the provider's failure when the prefix cannot be flushed. Once
+    /// submitted, a worker owns the fence. Dropping the caller cancels a
+    /// pending installation.
     pub async fn cut_persistence(&self, cut: Arc<dyn PersistenceCut>) -> Result<(), StreamError> {
         self.check_available()?;
-        let mut failed = self.inner.failed.subscribe();
-        let installation = std::pin::pin!(async {
-            let _visibility = self.inner.visibility.write().await;
-            self.check_available()?;
-            if self.inner.persistence_cut.get().is_some() {
-                return Err(StreamError::AlreadyExists);
-            }
-            self.seal_accepted().await?;
-            {
-                let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
-                journal.flushed = journal.bytes;
-            }
-            self.inner
-                .persistence_cut
-                .set(cut)
-                .map_err(|_| StreamError::AlreadyExists)
-        });
-        let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
-        match futures::future::select(unavailable, installation).await {
-            futures::future::Either::Left((error, _)) => Err(error),
-            futures::future::Either::Right((result, _)) => result,
-        }
+        let stream = self.worker();
+        let (cancel, canceled) = tokio::sync::oneshot::channel::<()>();
+        let result = self
+            .retained(self.work.as_deref(), async move {
+                let installation = std::pin::pin!(async {
+                    let _visibility = stream.inner.visibility.write().await;
+                    stream.check_available()?;
+                    if stream.inner.persistence_cut.get().is_some() {
+                        return Err(StreamError::AlreadyExists);
+                    }
+                    stream.seal_accepted().await?;
+                    {
+                        let mut journal = stream
+                            .inner
+                            .journal
+                            .lock()
+                            .map_err(|_| stream.inner.poison())?;
+                        journal.flushed = journal.bytes;
+                    }
+                    stream
+                        .inner
+                        .persistence_cut
+                        .set(cut)
+                        .map_err(|_| StreamError::AlreadyExists)
+                });
+                match futures::future::select(canceled, installation).await {
+                    futures::future::Either::Left(_) => Err(StreamError::Unavailable),
+                    futures::future::Either::Right((result, _)) => result,
+                }
+            })
+            .await;
+        drop(cancel);
+        result?
     }
 
     /// Power loss: discard every journal byte of this epoch not yet flushed,
