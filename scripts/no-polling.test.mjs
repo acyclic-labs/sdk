@@ -276,6 +276,29 @@ test('a function named retry that runs its action once is no retry; one that rep
   assert.ok(pollingSites(script, source).length, source);
 });
 
+// A name is no timer; calls are (2026-11-21: Cloud's svc/trust/core/src/transport.rs test
+// `an_aggregate_retries_only_when_every_branch_is_transport` and virtio's `select: u32` parameter had no timer).
+test('a declared, parameter or closure name is no timer or retry; its body\'s calls decide', () => {
+ const named = '#[test]\nfn an_aggregate_retries_only_when_every_branch_is_transport() {\n'
+  + '    let lost = || io::Error::from(io::ErrorKind::ConnectionReset);\n'
+  + '    let mixed = Failures::pair("sweep", ("first", lost()), ("second", refused()));\n'
+  + '    assert!(!transient(&mixed));\n}\n';
+ for (const source of [named,
+  'fn feature_page(features: u64, select: u32) -> u32 { match select { 0 => features as u32, _ => 0 } }\nfn width(x: u32) -> u32 { x }\n',
+  'async fn transcript(links: Links) { let send = |link, delay| async move { if delay { links.hold(link).await } }; send(1, true).await; }\n',
+  'async fn either(mut rx: Receiver<u8>, mut other: Receiver<u8>) -> u8 { tokio::select! { v = rx.recv() => v, w = other.recv() => w } }\n'])
+  assert.deepEqual(pollingSites(rust, source), [], source);
+ for (const source of ['function pollUntilReady() { return 1; }', 'class RetryPolicy {}', 'function setIntervalWidth(x) { return x; }'])
+  assert.deepEqual(pollingSites(script, source), [], source);
+ // Negative controls: a timer in the body, a select arm that sleeps to recheck, and a call of a policy name still are.
+ for (const source of [named.replace('    assert!(!transient(&mixed));\n', '    std::thread::sleep(d);\n'),
+  'async fn wait(mut rx: Receiver<u8>) { loop { tokio::select! { _ = tokio::time::sleep(d) => recheck(), _ = rx.recv() => break } } }\n',
+  'fn delay(d: Duration) { std::thread::sleep(d) }\n'])
+  assert.ok(pollingSites(rust, source).length, source);
+ for (const source of ['function pollUntilReady() { return setTimeout(f, 1); }', 'await retry(() => fetch(url));'])
+  assert.ok(pollingSites(script, source).length, source);
+});
+
 test('a local fn that only steps a future is a future poll; a loop waiting on an awaited event is not polling', () => {
  const step = 'use std::task::{Context, Poll};\nfn poll<F: Future>(future: Pin<&mut F>, wakes: &Arc<Wakes>) -> Poll<F::Output> {\n'
   + '    future.poll(&mut Context::from_waker(&Waker::from(wakes.clone())))\n}\n';

@@ -33,6 +33,13 @@ const embeddedTimer = spelling => embeddedCandidate(spelling.replace(embeddedDea
 const timerLines = value => value.split(/\r?\n/).map(line => line.trim())
  .filter(line => embeddedTimer(line) || embeddedTimer(escapedSpelling(line))).join('\n') || value;
 const loop = new Set(['for', 'while', 'loop', 'do']);
+// A name is no timer: what code does is its calls. A declared name (`fn an_aggregate_retries_only_when_...`, `class
+// RetryPolicy`), a parameter, field or closure argument (`select: u32`, `|link, delay|`) and each plain use of such a
+// binding are names; a function whose name is a timer spelling is a timer only where its body calls one (2026-11-21:
+// Cloud's transport.rs test `an_aggregate_retries_only_when_every_branch_is_transport` had no timer and no loop, and
+// virtio's `fn feature_page(features: u64, select: u32)` made every `u32` in its file a timer-or-readiness site).
+const declaring = new Set(['fn', 'function', 'func', 'class', 'struct', 'enum', 'trait', 'interface', 'mod', 'union']);
+const bodied = new Set(['fn', 'function', 'func']);
 // A clock read makes a loop around it a deadline or recheck loop; alone it is a measurement.
 // A loop that subscribes (a watch, follow or subscription, list-then-watch resync included) waits on events: a clock
 // or deadline in it bounds that wait. A sleep or other timer in it still makes it polling (2026-11-21: Cloud's
@@ -793,10 +800,39 @@ export function pollingUnit(file, source, parser = undefined) {
   inert.set(name(i), quiet);
   return quiet;
  };
- const candidate = (t, i) => t.kind === 'word' && !futurePoll(i) && !dataField(i)
+ const declared = i => stream[i - 1]?.kind === 'word' && declaring.has(stream[i - 1].value);
+ // A binding a signature, a field or a closure introduces: `name: Type` after `(`, `,`, `{` or `|` (`::` is a path, a
+ // timer type such as `tick: Interval` keeps its own rule below), or a closure argument closed by `|`.
+ const parameter = i => stream[i].kind === 'word' && ['(', ',', '{', '|'].includes(stream[i - 1]?.value)
+  && ((stream[i + 1]?.value === ':' && stream[i + 2]?.value !== ':' && !temporal.test(stream[i + 2]?.value ?? ''))
+   || (rust && stream[i + 1]?.value === '|'));
+ // A destructuring pattern (`let Bound { delay: later } = bound`) renames a field: its binding aliases the field, so
+ // its field stays what it is.
+ const pattern = i => {
+  for (let j = i - 1, depth = 0; j >= 0; j--) {
+   const value = stream[j].value;
+   if (closing.has(value)) depth++;
+   else if (opening.has(value) && depth-- === 0) return value === '{' && ['let', 'const', 'var'].includes(stream[j - 2]?.value);
+  }
+  return false;
+ };
+ const parameters = new Set(stream.flatMap((t, i) => parameter(i) && !pattern(i) ? [t.value] : []));
+ const named = i => declared(i) || (parameter(i) && !pattern(i)) || (parameters.has(stream[i].value) && !called(i));
+ // A select macro (`tokio::select!`, `futures::select!`) waits on its arms' events; an arm that is a timer is that timer.
+ const selectMacro = i => rust && stream[i].value === 'select' && stream[i + 1]?.value === '!';
+ const spelled = (t, i) => t.kind === 'word' && !futurePoll(i) && !dataField(i) && !selectMacro(i)
   && ((temporal.test(t.value) && !local(i)) || (policyName.test(t.value) && !inertPolicy(i)));
+ const candidate = (t, i) => spelled(t, i) && !named(i);
  // A timer spelling is its own origin; a name bound to or aliasing one reaches each origin it can hold.
  const timers = stream.map((t, i) => candidate(t, i) && !deadlineWord.test(t.value));
+ // A function spelled as a timer is one, its disposition's site, only where its body calls a timer.
+ for (let i = 0; i < stream.length; i++) {
+  if (!declared(i) || !bodied.has(stream[i - 1].value) || !spelled(stream[i], i) || deadlineWord.test(stream[i].value)) continue;
+  let open = i + 1;
+  while (open < stream.length && stream[open].value !== '{' && stream[open].value !== ';') open++;
+  const close = closeOf.get(open) ?? open;
+  for (let j = open + 1; j < close && !timers[i]; j++) timers[i] = timers[j];
+ }
  const forbidden = new Set(), reaches = new Map();
  const seed = (binding, i) => {
   forbidden.add(binding);
