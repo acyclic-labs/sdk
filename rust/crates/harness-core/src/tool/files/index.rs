@@ -3,9 +3,11 @@ use super::*;
 use crate::{OperationId, runtime::PrivateContent};
 
 // A page size splits work; it places no bound on a source or its ordinal count.
-const ENTRIES: u64 = 256;
-const HEADER: usize = 16;
-const BYTES: usize = HEADER + ENTRIES as usize * 8;
+const SLOTS: usize = 256;
+const ENTRIES: u64 = SLOTS as u64;
+/// Header words: the page's first ordinal, then the terminal flag and padding.
+const HEADER: usize = 2;
+const BYTES: u64 = (HEADER + SLOTS) as u64 * 8;
 
 #[derive(Clone, Copy)]
 pub(super) enum Projection {
@@ -28,37 +30,43 @@ impl Projection {
     }
 }
 
+/// Little-endian words: the header, then one byte position per entry.
 struct Page {
-    bytes: [u8; BYTES],
+    words: [[u8; 8]; HEADER + SLOTS],
     count: usize,
 }
 
 impl Page {
     fn new(first: u64) -> Self {
         let mut page = Self {
-            bytes: [0; BYTES],
+            words: [[0; 8]; HEADER + SLOTS],
             count: 0,
         };
-        page.bytes[..8].copy_from_slice(&first.to_le_bytes());
+        page.words[0] = first.to_le_bytes();
         page
     }
 
     fn first(&self) -> u64 {
-        word(&self.bytes[..8])
+        u64::from_le_bytes(self.words[0])
     }
 
     fn full(&self) -> bool {
-        self.count == ENTRIES as usize
+        self.count == SLOTS
     }
 
     fn reset(&mut self, first: u64) {
-        self.bytes[..8].copy_from_slice(&first.to_le_bytes());
-        self.bytes[8] = 0;
+        self.words[0] = first.to_le_bytes();
+        self.words[1][0] = 0;
         self.count = 0;
     }
 
     fn terminal(&self) -> bool {
-        self.bytes[8] != 0
+        self.words[1][0] != 0
+    }
+
+    /// Replaces the page's first position, its origin.
+    fn set_origin(&mut self, position: u64) {
+        self.words[HEADER] = position.to_le_bytes();
     }
 
     fn append(&mut self, ordinal: u64, position: u64, terminal: bool) -> bool {
@@ -66,23 +74,23 @@ impl Page {
             return false;
         }
         debug_assert_eq!(ordinal, self.first() + self.count as u64);
-        debug_assert!(!self.full());
-        let start = HEADER + self.count * 8;
-        self.bytes[start..start + 8].copy_from_slice(&position.to_le_bytes());
+        let Some(slot) = self.words.get_mut(HEADER + self.count) else {
+            return true;
+        };
+        *slot = position.to_le_bytes();
         self.count += 1;
-        self.bytes[8] = u8::from(terminal);
+        self.words[1][0] = u8::from(terminal);
         self.full()
     }
 
     fn encoded(&self) -> &[u8] {
-        &self.bytes[..HEADER + self.count * 8]
+        // `count` never exceeds the slot count, so the prefix is the whole
+        // page at most.
+        self.words
+            .get(..HEADER + self.count)
+            .unwrap_or(&self.words)
+            .as_flattened()
     }
-}
-
-fn word(bytes: &[u8]) -> u64 {
-    let mut word = [0; 8];
-    word.copy_from_slice(bytes);
-    u64::from_le_bytes(word)
 }
 
 fn cursor(
@@ -93,23 +101,29 @@ fn cursor(
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(u64, u64)> {
     let invalid = || executor::rejection(work, "ordinal index differs from its source");
-    if bytes.len() < HEADER + 8
-        || bytes.len() > BYTES
-        || (bytes.len() - HEADER) % 8 != 0
-        || word(&bytes[..8]) != first
-        || bytes[8] > 1
-        || bytes[9..HEADER].iter().any(|byte| *byte != 0)
+    let (words, remainder) = bytes.as_chunks::<8>();
+    let Some(([stored, [flag, padding @ ..]], entries)) = words.split_first_chunk::<HEADER>()
+    else {
+        return Err(invalid());
+    };
+    if !remainder.is_empty()
+        || entries.len() > SLOTS
+        || u64::from_le_bytes(*stored) != first
+        || *flag > 1
+        || padding.iter().any(|byte| *byte != 0)
     {
         return Err(invalid());
     }
-    let count = (bytes.len() - HEADER) / 8;
-    let terminal = bytes[8] != 0;
-    if !terminal && count != ENTRIES as usize {
+    let Some(last) = entries.last() else {
+        return Err(invalid());
+    };
+    let terminal = *flag != 0;
+    if !terminal && entries.len() != SLOTS {
         return Err(invalid());
     }
     let mut previous = None;
-    for bytes in bytes[HEADER..].chunks_exact(8) {
-        let position = word(bytes);
+    for entry in entries {
+        let position = u64::from_le_bytes(*entry);
         if position > source_length || previous.is_some_and(|previous| previous >= position) {
             return Err(invalid());
         }
@@ -119,9 +133,15 @@ fn cursor(
     if terminal && previous != Some(source_length) {
         return Err(invalid());
     }
-    let selected = relative.min(count as u64 - 1);
-    let start = HEADER + selected as usize * 8;
-    Ok((first + selected, word(&bytes[start..start + 8])))
+    // An ordinal past the page selects its last entry.
+    let (selected, entry) = match usize::try_from(relative)
+        .ok()
+        .and_then(|index| entries.get(index))
+    {
+        Some(entry) => (relative, entry),
+        None => (entries.len() as u64 - 1, last),
+    };
+    Ok((first + selected, u64::from_le_bytes(*entry)))
 }
 
 /// No registry or idle state: source identity and page number address the
@@ -173,7 +193,7 @@ impl<'a> OrdinalIndex<'a> {
             .scope()
             .limits()
             .file_bytes
-            .is_some_and(|maximum| maximum < BYTES as u64)
+            .is_some_and(|maximum| maximum < BYTES)
         {
             return Ok(None);
         }
@@ -238,10 +258,7 @@ impl<'a> OrdinalIndex<'a> {
         work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<(u64, u64)>> {
-        let Some(bytes) = self
-            .observe(self.operation(first)?, BYTES as u64, io)
-            .await?
-        else {
+        let Some(bytes) = self.observe(self.operation(first)?, BYTES, io).await? else {
             return Ok(None);
         };
         let selected = cursor(&bytes, first, ordinal, self.logical_end, work)?;
@@ -338,7 +355,7 @@ impl<'a> OrdinalIndex<'a> {
         if self.page.first() != 0 || self.page.count != 1 || position > self.source_length {
             return Err(executor::rejection(self.work(), "invalid ordinal origin"));
         }
-        self.page.bytes[HEADER..HEADER + 8].copy_from_slice(&position.to_le_bytes());
+        self.page.set_origin(position);
         self.origin = position;
         Ok(())
     }
@@ -404,11 +421,11 @@ impl<'a> OrdinalIndex<'a> {
     pub fn finish(&mut self, ordinal: u64, position: u64) -> Result<()> {
         self.end(position)?;
         if ordinal == 0 && self.page.first() == 0 && self.page.count == 1 {
-            self.page.bytes[HEADER..HEADER + 8].copy_from_slice(&position.to_le_bytes());
+            self.page.set_origin(position);
         } else {
             self.record(ordinal, position)?;
         }
-        self.page.bytes[8] = 1;
+        self.page.words[1][0] = 1;
         Ok(())
     }
 
@@ -487,7 +504,7 @@ mod checks {
             prop_assert_eq!(cursor(page.encoded(), first, first + positions.len() as u64, source_length, None).unwrap(),
                 (first + positions.len() as u64 - 1, source_length));
             prop_assert!(cursor(page.encoded(), first, first, source_length - 1, None).is_err());
-            page.bytes[HEADER + 8..HEADER + 16].copy_from_slice(&0u64.to_le_bytes());
+            page.words[HEADER + 1] = 0u64.to_le_bytes();
             prop_assert!(cursor(page.encoded(), first, first, source_length, None).is_err());
         }
     }

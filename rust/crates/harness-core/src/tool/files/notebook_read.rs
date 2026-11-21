@@ -30,20 +30,21 @@ impl Document {
     const BYTES: usize = 40;
     fn decode(bytes: &[u8], length: u64, work: acyclic_fs::NativeWork<'_>) -> Result<Self> {
         let invalid = || executor::rejection(work, "notebook index differs from its source");
-        if bytes.len() != Self::BYTES || &bytes[..8] != b"nbcells1" {
+        let (words, []) = bytes.as_chunks::<8>() else {
+            return Err(invalid());
+        };
+        let [magic, stored, origin, end, count] = words else {
+            return Err(invalid());
+        };
+        if magic != b"nbcells1" {
             return Err(invalid());
         }
-        let word = |start| {
-            let mut word = [0; 8];
-            word.copy_from_slice(&bytes[start..start + 8]);
-            u64::from_le_bytes(word)
-        };
         let document = Self {
-            origin: word(16),
-            end: word(24),
-            count: word(32),
+            origin: u64::from_le_bytes(*origin),
+            end: u64::from_le_bytes(*end),
+            count: u64::from_le_bytes(*count),
         };
-        if word(8) != length
+        if u64::from_le_bytes(*stored) != length
             || document.origin == 0
             || document.origin > document.end
             || document.end >= length
@@ -55,13 +56,14 @@ impl Document {
     }
     fn encode(&self, length: u64) -> [u8; Self::BYTES] {
         let mut bytes = [0; Self::BYTES];
-        bytes[..8].copy_from_slice(b"nbcells1");
-        for (slot, word) in
-            bytes[8..]
-                .chunks_exact_mut(8)
-                .zip([length, self.origin, self.end, self.count])
+        let words = [length, self.origin, self.end, self.count].map(u64::to_le_bytes);
+        for (slot, word) in bytes
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(std::iter::once(*b"nbcells1").chain(words))
         {
-            slot.copy_from_slice(&word.to_le_bytes());
+            *slot = word;
         }
         bytes
     }
@@ -283,6 +285,31 @@ impl Selection {
     }
 }
 
+/// Records the scan's pending ordinal boundaries in the index, when one is kept.
+async fn record_boundaries(
+    index: Option<&mut super::index::OrdinalIndex<'_>>,
+    selection: &mut Selection,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    let origin = selection.origin_pending.take();
+    let boundary = selection.boundary.take();
+    let Some(index) = index else {
+        return Ok(());
+    };
+    if let Some(origin) = origin {
+        index.origin(origin)?;
+    }
+    if let Some((ordinal, position, terminal)) = boundary {
+        if terminal {
+            index.finish(ordinal, position)?;
+        } else {
+            index.record(ordinal, position)?;
+        }
+        index.publish(io).await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn read(
     context: &ToolContext,
     input: &ReadFileInput,
@@ -416,10 +443,14 @@ pub(super) async fn read(
             Ok(())
         })?;
         let mut consumed = 0;
-        while consumed < window.bytes.len() {
+        while let Some(remaining) = window
+            .bytes
+            .get(consumed..)
+            .filter(|remaining| !remaining.is_empty())
+        {
             let count = crate::executor::with_history_io(io, |history| {
                 cursor.feed(
-                    &window.bytes[consumed..],
+                    remaining,
                     bounds,
                     code,
                     &mut |event| {
@@ -435,42 +466,25 @@ pub(super) async fn read(
                 return Err(executor::rejection(work, "JSON range made no progress"));
             }
             consumed += count;
-            if let Some(origin) = selection.origin_pending.take() {
-                if let Some(index) = &mut index {
-                    index.origin(origin)?;
-                }
-            }
-            if let Some((ordinal, position, terminal)) = selection.boundary.take() {
-                if let Some(index) = &mut index {
-                    if terminal {
-                        index.finish(ordinal, position)?;
-                    } else {
-                        index.record(ordinal, position)?;
-                    }
-                    index.publish(io).await?;
-                }
-            }
+            record_boundaries(index.as_mut(), &mut selection, io).await?;
             if let Some((start, end, key)) = selection.pending() {
                 let extra;
-                let bytes = match start.checked_sub(position).zip(end.checked_sub(position)) {
-                    Some((start, end)) if end <= window.bytes.len() as u64 => {
-                        &window.bytes[start as usize..end as usize]
-                    }
-                    _ => {
-                        extra = window
-                            .next(
-                                context,
-                                &input.path,
-                                acyclic_fs::ByteRange {
-                                    offset: start,
-                                    length: end - start,
-                                },
-                                work,
-                                io,
-                            )
-                            .await?;
-                        &extra
-                    }
+                let bytes = if let Some(bytes) = window.resident(position, start..end) {
+                    bytes
+                } else {
+                    extra = window
+                        .next(
+                            context,
+                            &input.path,
+                            acyclic_fs::ByteRange {
+                                offset: start,
+                                length: end - start,
+                            },
+                            work,
+                            io,
+                        )
+                        .await?;
+                    &extra
                 };
                 selection.supply(bytes, key, work)?;
             }
@@ -508,21 +522,21 @@ pub(super) async fn read(
             "cell operations require nbformat v4 and an existing cell offset",
         ));
     }
-    if !selection.warm {
-        if let Some(index) = &index {
-            let document = Document {
-                origin: selection
-                    .array_origin
-                    .ok_or_else(|| executor::rejection(work, "notebook array origin is missing"))?,
-                end: selection
-                    .array_end
-                    .ok_or_else(|| executor::rejection(work, "notebook array end is missing"))?,
-                count: total,
-            };
-            index
-                .publish_metadata(&document.encode(window.source.byte_length()), io)
-                .await?;
-        }
+    if !selection.warm
+        && let Some(index) = &index
+    {
+        let document = Document {
+            origin: selection
+                .array_origin
+                .ok_or_else(|| executor::rejection(work, "notebook array origin is missing"))?,
+            end: selection
+                .array_end
+                .ok_or_else(|| executor::rejection(work, "notebook array end is missing"))?,
+            count: total,
+        };
+        index
+            .publish_metadata(&document.encode(window.source.byte_length()), io)
+            .await?;
     }
     let empty = selection
         .empty
@@ -539,8 +553,11 @@ pub(super) async fn read(
     let outputs = super::notebook_outputs::retain(
         context,
         input,
-        &window,
-        (&version, position),
+        super::notebook_outputs::Scanned {
+            window: &window,
+            version: &version,
+            position,
+        },
         &selection.outputs.payloads,
         media_budget,
         work,
@@ -565,13 +582,8 @@ pub(super) async fn read(
     let length = (selected_end - start)
         .min(budget.saturating_add(3))
         .min(quantum);
-    if let Some(relative) = start.checked_sub(position)
-        && relative + length <= window.bytes.len() as u64
-    {
-        let bytes = window
-            .bytes
-            .bytes()
-            .slice(relative as usize..(relative + length) as usize);
+    if let Some(range) = window.resident_range(position, start..start + length) {
+        let bytes = window.bytes.bytes().slice(range);
         *window.bytes.bytes_mut() = bytes;
     } else {
         window.bytes = window

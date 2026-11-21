@@ -99,7 +99,9 @@ fn long_line_advice_keeps_addressable_ends_within_the_original_allocation() -> R
     ] {
         // Negative control: retaining the former full-line presentation alone
         // would exceed the invocation's entire peak allocation allowance.
-        assert!(source.len() > budget.peak_allocation_bytes as usize);
+        assert!(
+            u64::try_from(source.len()).is_ok_and(|bytes| bytes > budget.peak_allocation_bytes)
+        );
         let custody = allocation(Some(&work), 0)?;
         let error = rejection(&source, needle, &custody)?;
         let text = error.to_string();
@@ -133,7 +135,9 @@ fn portable_and_native_miss_search_do_not_multiply_file_and_needle_lengths() -> 
     let needle = "b".repeat(10_000);
     let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     budget.items_examined = 2_000_000;
-    assert!(source.len() * needle.len() > budget.items_examined as usize);
+    assert!(
+        u64::try_from(source.len() * needle.len()).is_ok_and(|items| items > budget.items_examined)
+    );
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

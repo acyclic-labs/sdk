@@ -159,8 +159,11 @@ pub(super) async fn read(
     loop {
         edit::scan_source(&hold, window.bytes.len() as u64)?;
         let mut consumed = 0;
-        while consumed < window.bytes.len() || (window.bytes.is_empty() && consumed == 0) {
-            let remaining = &window.bytes[consumed..];
+        while let Some(remaining) = window
+            .bytes
+            .get(consumed..)
+            .filter(|remaining| !remaining.is_empty() || consumed == 0)
+        {
             // One scan both selects the view and records ordinal boundaries. A
             // full index page yields to its original publication before continuing.
             let selection = selector.select(remaining, position, |ordinal, position| {
@@ -285,7 +288,7 @@ mod checks {
                 let mut consumed = 0;
                 while consumed < bytes.len() {
                     let selection = selector.select(&bytes[consumed..], position, |line, byte| {
-                        assert_eq!(source.as_bytes()[byte as usize - 1], b'\n');
+                        assert_eq!(byte.checked_sub(1).and_then(|last| window::span(source.as_bytes(), last..byte)), Some(b"\n".as_slice()));
                         Ok(line % page_lines == 0)
                     }).unwrap();
                     selected.extend_from_slice(&bytes[consumed + selection.interval.start..consumed + selection.interval.end]);

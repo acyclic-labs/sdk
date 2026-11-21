@@ -798,17 +798,15 @@ impl FileTool {
         let _hold = io.map(|io| io.take_native_custody(retained)).transpose()?;
         #[cfg(target_arch = "wasm32")]
         let _ = retained;
-        match receipt {
-            Some(receipt) => self
-                .batch_result(receipt, &relative, work)
-                .map(|(result, custody)| (Some(result), custody)),
-            None => {
-                #[cfg(not(target_arch = "wasm32"))]
-                let custody = io.map(|io| io.take_native_custody(0)).transpose()?;
-                #[cfg(target_arch = "wasm32")]
-                let custody = None;
-                Ok((None, custody))
-            }
+        if let Some(receipt) = receipt {
+            self.batch_result(receipt, &relative, work)
+                .map(|(result, custody)| (Some(result), custody))
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            let custody = io.map(|io| io.take_native_custody(0)).transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let custody = None;
+            Ok((None, custody))
         }
     }
 

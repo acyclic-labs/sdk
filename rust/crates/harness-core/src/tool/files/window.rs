@@ -17,6 +17,17 @@ enum WindowHold<'io> {
     },
 }
 
+/// The bytes at `range` of `bytes`, for offsets carried as source `u64`s.
+pub(super) fn span(bytes: &[u8], range: std::ops::Range<u64>) -> Option<&[u8]> {
+    bytes.get(span_range(bytes.len(), range)?)
+}
+
+fn span_range(length: usize, range: std::ops::Range<u64>) -> Option<std::ops::Range<usize>> {
+    let start = usize::try_from(range.start).ok()?;
+    let end = usize::try_from(range.end).ok()?;
+    (start <= end && end <= length).then_some(start..end)
+}
+
 pub(super) fn custody(
     io: Option<&crate::executor::PreparationIo>,
     retained: u64,
@@ -31,6 +42,24 @@ pub(super) fn custody(
 }
 
 impl<'io> Window<'io> {
+    /// The in-memory range holding source bytes `source`, when this window,
+    /// which begins at source offset `position`, already covers all of them.
+    pub fn resident_range(
+        &self,
+        position: u64,
+        source: std::ops::Range<u64>,
+    ) -> Option<std::ops::Range<usize>> {
+        span_range(
+            self.bytes.len(),
+            source.start.checked_sub(position)?..source.end.checked_sub(position)?,
+        )
+    }
+
+    /// The resident bytes of source range `source`; see [`Self::resident_range`].
+    pub fn resident(&self, position: u64, source: std::ops::Range<u64>) -> Option<&[u8]> {
+        self.bytes.get(self.resident_range(position, source)?)
+    }
+
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,

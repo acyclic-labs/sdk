@@ -140,7 +140,9 @@ pub fn parse_document<'a>(
             }
             FileChange::Add {
                 path,
-                body: &patch[start..offset],
+                body: patch
+                    .get(start..offset)
+                    .ok_or_else(|| invalid(meter, "added file body is not whole lines"))?,
             }
         } else if line.starts_with("*** Delete File: ") {
             FileChange::Delete {
@@ -188,7 +190,9 @@ pub fn parse_document<'a>(
             FileChange::Update {
                 path,
                 move_to,
-                diff: &patch[start..offset],
+                diff: patch
+                    .get(start..offset)
+                    .ok_or_else(|| invalid(meter, "patch update body is not whole lines"))?,
             }
         } else {
             return Err(invalid(

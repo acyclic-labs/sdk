@@ -1,6 +1,12 @@
 use super::*;
 use proptest::prelude::*;
 
+fn test_span(source: &str, start: u64, end: u64) -> Result<&str> {
+    super::super::window::span(source.as_bytes(), start..end)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .ok_or_else(|| executor::rejection(None, "notebook span is outside the source"))
+}
+
 fn discover(source: &str, offset: u64, limit: Option<u64>, chunk: usize) -> Result<Selection> {
     let mut cursor = JsonSpans::default();
     let mut selected = Selection::new(offset, limit, u64::MAX);
@@ -22,7 +28,7 @@ fn discover(source: &str, offset: u64, limit: Option<u64>, chunk: usize) -> Resu
             assert!(count > 0);
             consumed += count;
             if let Some((start, end, key)) = selected.pending() {
-                selected.supply(&source.as_bytes()[start as usize..end as usize], key, None)?;
+                selected.supply(test_span(source, start, end)?.as_bytes(), key, None)?;
             }
         }
     }
@@ -48,10 +54,13 @@ proptest! {
         prop_assert_eq!(selected.count, cells.len() as u64);
         prop_assert_eq!(selected.format, Some(4));
         prop_assert!(selected.seen_cells);
-        let expected: Vec<_> = cells.iter().skip(offset as usize).take(limit.unwrap_or(u64::MAX) as usize).cloned().collect();
+        let skip = usize::try_from(offset).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let take = limit.map(usize::try_from).transpose()
+            .map_err(|error| TestCaseError::fail(error.to_string()))?.unwrap_or(cells.len());
+        let expected: Vec<_> = cells.iter().skip(skip).take(take).cloned().collect();
         let expected_count = expected.len() as u64;
         if let Some((start, end)) = selected.interval {
-            let text = format!("[{}]", &source[start as usize..end as usize]);
+            let text = format!("[{}]", test_span(&source, start, end).map_err(|error| TestCaseError::fail(error.to_string()))?);
             prop_assert_eq!(serde_json::from_str::<Vec<Value>>(&text).unwrap(), expected);
         } else {
             prop_assert!(expected.is_empty());
@@ -75,14 +84,14 @@ proptest! {
             warm.total = Some(cells.len() as u64);
             warm.array_end = Some(end);
             let bounds = JsonBounds { maximum_bytes: Some(source.len() as u64),maximum_items: None,maximum_depth:128 };
-            for bytes in source.as_bytes()[start as usize..].chunks(chunk) {
+            for bytes in test_span(&source, start, source.len() as u64).map_err(|error| TestCaseError::fail(error.to_string()))?.as_bytes().chunks(chunk) {
                 let mut consumed = 0;
                 while consumed < bytes.len() && !warm.done {
                     let count = cursor.feed(&bytes[consumed..], bounds, None, &mut |_| Ok(()), &mut |event| warm.event(event,None)).unwrap();
                     prop_assert!(count > 0);
                     consumed += count;
                     if let Some((start, end, key)) = warm.pending() {
-                        warm.supply(&source.as_bytes()[start as usize..end as usize], key, None).unwrap();
+                        warm.supply(test_span(&source, start, end).map_err(|error| TestCaseError::fail(error.to_string()))?.as_bytes(), key, None).unwrap();
                     }
                 }
                 if warm.done { break; }
@@ -119,7 +128,7 @@ proptest! {
         for (index, payload) in selection.outputs.payloads.iter().enumerate() {
             prop_assert_eq!(payload.cell, offset + index as u64 / 2);
             prop_assert_eq!(payload.output, index as u64 % 2);
-            let value: Value = serde_json::from_str(&source[payload.start as usize..payload.end as usize]).unwrap();
+            let value: Value = serde_json::from_str(test_span(&source, payload.start, payload.end).map_err(|error| TestCaseError::fail(error.to_string()))?).unwrap();
             if payload.output == 0 {
                 prop_assert_eq!(value, json!(encoded));
                 prop_assert_eq!(payload.media, super::super::notebook_outputs::Media::Png);

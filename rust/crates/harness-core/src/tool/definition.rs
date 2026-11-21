@@ -145,32 +145,41 @@ impl ToolDefinition {
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         if let Some(format) = self.input_schema.get("x-harness-freeform") {
-            let format_valid =
-                format
-                    .as_object()
-                    .is_some_and(|fields| match format["type"].as_str() {
-                        Some("text") => fields.len() == 1,
-                        Some("grammar") => {
-                            fields.len() == 3
-                                && matches!(format["syntax"].as_str(), Some("lark" | "regex"))
-                                && format["definition"]
-                                    .as_str()
-                                    .is_some_and(|text| !text.is_empty())
-                        }
-                        _ => false,
-                    });
+            let format_valid = format.as_object().is_some_and(|fields| {
+                match fields.get("type").and_then(Value::as_str) {
+                    Some("text") => fields.len() == 1,
+                    Some("grammar") => {
+                        fields.len() == 3
+                            && matches!(
+                                fields.get("syntax").and_then(Value::as_str),
+                                Some("lark" | "regex")
+                            )
+                            && fields
+                                .get("definition")
+                                .and_then(Value::as_str)
+                                .is_some_and(|text| !text.is_empty())
+                    }
+                    _ => false,
+                }
+            });
             // Custom input has exactly one canonical representation. Its raw
             // text is moved into this field by the shared stream decoder.
+            let schema = &self.input_schema;
             if !format_valid
-                || self.input_schema["type"] != "object"
-                || self.input_schema["properties"]
-                    .as_object()
+                || schema.get("type").and_then(Value::as_str) != Some("object")
+                || schema
+                    .get("properties")
+                    .and_then(Value::as_object)
                     .is_none_or(|fields| fields.len() != 1)
-                || self.input_schema["properties"]["input"]["type"] != "string"
-                || self.input_schema["required"]
-                    .as_array()
-                    .is_none_or(|fields| fields.len() != 1 || fields[0] != "input")
-                || self.input_schema["additionalProperties"] != false
+                || schema
+                    .pointer("/properties/input/type")
+                    .and_then(Value::as_str)
+                    != Some("string")
+                || schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .is_none_or(|fields| !matches!(fields.as_slice(), [only] if only == "input"))
+                || schema.get("additionalProperties") != Some(&Value::Bool(false))
             {
                 return Err(crate::store::guarded_boundary(
                     work,
@@ -245,7 +254,7 @@ impl ToolDefinition {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Result<crate::model::ToolResultContent>> {
-        return self.check_scoped_projection(value, limits, io);
+        self.check_scoped_projection(value, limits, io)
     }
 
     pub(crate) fn check_projection_schema(

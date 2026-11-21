@@ -98,10 +98,10 @@ async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> R
                 .stage(OperationId::new(), "pending", b"published", media, "ready")
                 .await?;
             let result = pending.await?;
-            if selection.is_none() {
-                assert_eq!(result.value["text"], "published");
+            if let Some(selection) = selection {
+                assert_eq!(result.value["media"], selection);
             } else {
-                assert_eq!(result.value["media"], selection.unwrap());
+                assert_eq!(result.value["text"], "published");
             }
         }
     }
@@ -199,7 +199,15 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
 
 #[tokio::test]
 async fn effective_projections_keep_the_original_selection_after_head_advances() -> Result<()> {
-    let cases: [(&str, &[u8], &[u8], &str, Option<Value>, Option<&str>); 8] = [
+    type ProjectionCase = (
+        &'static str,
+        &'static [u8],
+        &'static [u8],
+        &'static str,
+        Option<Value>,
+        Option<&'static str>,
+    );
+    let cases: [ProjectionCase; 8] = [
         ("skills/text", b"original", b"changed!", "text/plain", None, Some("original")),
         ("skills/lines", b"original\nsecond\n", b"changed!\nsecond\n", "text/plain",
             Some(json!({"kind":"lines","offset":0,"limit":1})), Some("original\n")),
@@ -341,14 +349,15 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                         text.unwrap()
                     );
                     assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
-                    let denied = ToolContext::new(
-                        Arc::new(context.task().scoped(
-                            Capabilities::default(),
-                            context.effective_scope().limits().clone(),
-                        )?),
-                        invocation.operation_id,
-                        &invocation.call_id,
-                    )?;
+                    let denied =
+                        ToolContext::new(
+                            Arc::new(context.task().scoped(
+                                Capabilities::default(),
+                                context.effective_scope().limits(),
+                            )?),
+                            invocation.operation_id,
+                            &invocation.call_id,
+                        )?;
                     assert_eq!(
                         tool.executor
                             .execute(invocation.clone(), Some(denied))
@@ -543,7 +552,7 @@ async fn effective_layers_preserve_fallback_suppression_and_version_authority() 
         let denied = ToolContext::new(
             Arc::new(context.task().scoped(
                 Capabilities::new([home_grant, "tool:call:read".into()]),
-                context.effective_scope().limits().clone(),
+                context.effective_scope().limits(),
             )?),
             invocation.operation_id,
             &invocation.call_id,

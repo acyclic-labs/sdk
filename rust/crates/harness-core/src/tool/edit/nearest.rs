@@ -36,28 +36,42 @@ fn normalized_match(
     let mut starts = Vec::new();
     reserve_vec(work, &mut prefix, pattern.len())?;
     reserve_vec(work, &mut starts, pattern.len())?;
-    prefix.resize(pattern.len(), 0usize);
-    starts.resize(pattern.len(), 0usize);
-    for i in 1..pattern.len() {
+    // `prefix[i]` is the longest proper border of `pattern[..=i]`. Every
+    // border is shorter than its prefix, so each lookup is in range; a
+    // missing entry would only restart the automaton, never admit a match.
+    let border = |prefix: &[usize], matched: usize| {
+        matched
+            .checked_sub(1)
+            .and_then(|last| prefix.get(last))
+            .copied()
+            .unwrap_or(0)
+    };
+    prefix.push(0usize);
+    for character in pattern.iter().skip(1) {
         charge(work, 0, 1)?;
-        let mut k = prefix[i - 1];
-        while k > 0 && pattern[k] != pattern[i] {
+        let mut k = border(&prefix, prefix.len());
+        while k > 0 && pattern.get(k) != Some(character) {
             charge(work, 0, 1)?;
-            k = prefix[k - 1];
+            k = border(&prefix, k);
         }
-        prefix[i] = k + usize::from(pattern[k] == pattern[i]);
+        prefix.push(k + usize::from(pattern.get(k) == Some(character)));
     }
+    starts.resize(pattern.len(), 0usize);
     let mut matched = 0;
     for (position, (start, character, end)) in normalized(source).enumerate() {
         charge(work, 0, 1)?;
-        starts[position % pattern.len()] = start;
-        while matched > 0 && pattern[matched] != character {
-            charge(work, 0, 1)?;
-            matched = prefix[matched - 1];
+        if let Some(slot) = starts.get_mut(position % pattern.len()) {
+            *slot = start;
         }
-        matched += usize::from(pattern[matched] == character);
+        while matched > 0 && pattern.get(matched) != Some(&character) {
+            charge(work, 0, 1)?;
+            matched = border(&prefix, matched);
+        }
+        matched += usize::from(pattern.get(matched) == Some(&character));
         if matched == pattern.len() {
-            return Ok(Some(starts[(position + 1 - matched) % pattern.len()]..end));
+            return Ok(starts
+                .get((position + 1 - matched) % pattern.len())
+                .map(|start| *start..end));
         }
     }
     Ok(None)
@@ -94,7 +108,7 @@ struct Window {
 
 impl Window {
     fn update(&mut self, line: &str, add: bool, work: &acyclic_fs::NativeCustody) -> Result<()> {
-        let search = self.grams.len().max(1).ilog2() as u64 + 2;
+        let search = u64::from(self.grams.len().max(1).ilog2()) + 2;
         charge(work, 0, (line.len() as u64).saturating_mul(2 * search))?;
         grams(line, |key| {
             if add {
@@ -102,8 +116,9 @@ impl Window {
             } else {
                 self.total -= 1;
             }
-            if let Ok(index) = self.grams.binary_search_by_key(&key, |gram| gram.key) {
-                let gram = &mut self.grams[index];
+            if let Ok(index) = self.grams.binary_search_by_key(&key, |gram| gram.key)
+                && let Some(gram) = self.grams.get_mut(index)
+            {
                 let before = gram.expected.min(gram.actual);
                 if add {
                     gram.actual += 1;
@@ -133,7 +148,7 @@ fn closest(
         && let Some(start) = source.find(char::is_whitespace)
     {
         let end = start
-            + source[start..]
+            + text_range(source, start.., work)?
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .take(needle.chars().count())
@@ -165,7 +180,7 @@ fn ranked_window(
     charge(
         work,
         0,
-        (inventory.len() as u64).saturating_mul(inventory.len().max(1).ilog2() as u64 + 1),
+        (inventory.len() as u64).saturating_mul(u64::from(inventory.len().max(1).ilog2()) + 1),
     )?;
     inventory.sort_unstable_by_key(|gram| gram.key);
     let expected = inventory.len();
@@ -215,12 +230,13 @@ fn ranked_window(
         }
     }
     let mut selected = best.2;
+    let text = text_range(source, selected.clone(), work)?;
     if !needle.ends_with('\n') {
-        if source[selected.clone()].ends_with("\r\n") {
+        if text.ends_with("\r\n") {
             if selected.len() > 2 {
                 selected.end -= 2;
             }
-        } else if selected.len() > 1 && source[selected.clone()].ends_with('\n') {
+        } else if selected.len() > 1 && text.ends_with('\n') {
             selected.end -= 1;
         }
     }
@@ -262,19 +278,18 @@ impl fmt::Display for Diagnostic<'_> {
             .rev()
             .nth(width - 1)
             .map_or(0, |(offset, _)| offset);
-        if head_end >= tail_start {
-            write!(f, "{:?}", self.actual)?;
-        } else {
-            write!(
+        match (self.actual.get(..head_end), self.actual.get(tail_start..)) {
+            (Some(head), Some(tail)) if head_end < tail_start => write!(
                 f,
                 "{:?}; [actual UTF-8 bytes {}..{} omitted; read the same file with range {{\"start\":{},\"end\":{}}}]; + {:?}",
-                &self.actual[..head_end],
+                head,
                 self.bytes.start + head_end,
                 self.bytes.start + tail_start,
                 self.bytes.start + head_end,
                 self.bytes.start + tail_start,
-                &self.actual[tail_start..]
-            )?;
+                tail
+            )?,
+            _ => write!(f, "{:?}", self.actual)?,
         }
         if self.attempted != self.actual && quotes(self.attempted).eq(quotes(self.actual)) {
             f.write_str("; escaped-quote mismatch")?;
@@ -312,12 +327,12 @@ pub(super) fn rejection(
     // All search buffers are gone before the refusal retains its presentation.
     drop(scratch);
     charge(work, 0, source.len() as u64 + needle.len() as u64)?;
-    let first = source[..bytes.start]
+    let first = text_range(source, ..bytes.start, work)?
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count()
         + 1;
-    let actual = &source[bytes.clone()];
+    let actual = text_range(source, bytes.clone(), work)?;
     let last = first
         + actual
             .strip_suffix('\n')
@@ -327,7 +342,7 @@ pub(super) fn rejection(
             .count();
     let diagnostic = Diagnostic {
         attempted: needle,
-        actual: &source[bytes.clone()],
+        actual,
         bytes,
         lines: first..last,
     };

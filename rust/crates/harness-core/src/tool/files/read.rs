@@ -161,8 +161,7 @@ impl FileTool {
         let start = input.range.map_or(0, |range| range.start);
         let count = input
             .range
-            .map(|range| range.end.checked_sub(range.start))
-            .unwrap_or(Some(u64::MAX))
+            .map_or(Some(u64::MAX), |range| range.end.checked_sub(range.start))
             .ok_or_else(|| invalid("read range is reversed; use start <= end"))?;
         let window =
             crate::tool::output::view_bytes(context.effective_scope().limits().render_bytes)
@@ -190,7 +189,7 @@ impl FileTool {
             range.end.min(window.source.byte_length())
         });
         if input.range.is_none() && input.selection.is_none() {
-            let media = crate::model::image_media_type(&bytes)
+            let media = crate::model::image_media_type(bytes)
                 .map(|_| ReadSelection::Image {
                     detail: crate::model::ImageDetail::Auto,
                 })
@@ -219,10 +218,12 @@ impl FileTool {
             work,
         )?;
         text_result(
-            window.source,
-            source,
+            TextPage {
+                file: window.source,
+                source,
+                interval: (start, end),
+            },
             &input.path,
-            (start, end),
             context.is_self_projection(&input.path, io)?,
             context.effective_scope().limits().render_bytes,
             work,
@@ -266,11 +267,20 @@ impl FileTool {
     }
 }
 
-fn text_result(
+/// Source text at a byte interval of its file.
+struct TextPage<'a> {
     file: FileReadSource,
-    source: &str,
-    path: &str,
+    source: &'a str,
     interval: (u64, u64),
+}
+
+fn text_result(
+    TextPage {
+        file,
+        source,
+        interval,
+    }: TextPage<'_>,
+    path: &str,
     self_projection: bool,
     maximum: Option<u64>,
     work: acyclic_fs::NativeWork<'_>,
@@ -370,10 +380,10 @@ pub(super) fn page_text<'a>(
     if !empty && truncated {
         match std::str::from_utf8(bytes) {
             Ok(text) => Ok(text),
-            Err(error) if error.error_len().is_none() => {
-                std::str::from_utf8(&bytes[..error.valid_up_to()])
-                    .map_err(|_| rejection(work, "file read requires UTF-8 content"))
-            }
+            Err(error) if error.error_len().is_none() => bytes
+                .get(..error.valid_up_to())
+                .and_then(|valid| std::str::from_utf8(valid).ok())
+                .ok_or_else(|| rejection(work, "file read requires UTF-8 content")),
             Err(_) => Err(rejection(work, "file read requires UTF-8 content")),
         }
     } else {
@@ -394,8 +404,9 @@ mod checks {
             let mut cursor = 0;
             let mut assembled = String::new();
             loop {
-                let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &source[cursor..], file.path(),
-                    (cursor as u64, source.len() as u64), false, Some(maximum), None, None).unwrap();
+                let page = TextPage { file: FileReadSource::Content(file.clone()), source: &source[cursor..],
+                    interval: (cursor as u64, source.len() as u64) };
+                let (result, _hold) = text_result(page, file.path(), false, Some(maximum), None, None).unwrap();
                 let invocation = ToolInvocation {
                     operation_id:crate::OperationId::new(),call_id:"page".into(),name:"read".into(),
                     arguments:serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":cursor,"end":source.len()}}),
@@ -412,7 +423,7 @@ mod checks {
                     prop_assert!(result.value["page"].get("next").is_none());
                     break;
                 }
-                let next = result.value["page"]["next"].as_u64().unwrap() as usize;
+                let next = usize::try_from(result.value["page"]["next"].as_u64().unwrap()).map_err(|error| TestCaseError::fail(error.to_string()))?;
                 prop_assert!(next > cursor, "page failed to advance");
                 prop_assert_eq!(next, cursor + shown.len());
                 cursor = next;
@@ -424,7 +435,8 @@ mod checks {
             let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny,
                 "page":{"start":0,"end":tiny.len(),"offset":0,"total":tiny.len(),"eof":true}}});
             let credit = serde_json::to_vec(&exact).unwrap().len() as u64;
-            let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &tiny, file.path(), (0,tiny.len() as u64), false, Some(credit), None, None).unwrap();
+            let page = TextPage { file: FileReadSource::Content(file.clone()), source: &tiny, interval: (0, tiny.len() as u64) };
+            let (result, _hold) = text_result(page, file.path(), false, Some(credit), None, None).unwrap();
             prop_assert_eq!(result.value["text"].as_str().unwrap(), tiny.as_str());
             prop_assert_eq!(&result.value["page"], &exact["value"]["page"]);
         }

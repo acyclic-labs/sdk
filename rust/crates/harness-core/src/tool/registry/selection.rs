@@ -18,7 +18,7 @@ impl ToolRegistry {
             },
             _ => self.get(name, None, io)?,
         };
-        Ok(selected.map(|tool| tool.executor.capability().map(Arc::as_ref).unwrap_or(tool)))
+        Ok(selected.map(|tool| tool.executor.capability().map_or(tool, Arc::as_ref)))
     }
 
     pub(crate) fn pin_model_definitions(
@@ -84,7 +84,10 @@ impl ToolRegistry {
                 selected.push((definition.name.as_str(), definition.revision.as_str()));
             }
             selected.sort_unstable_by(|a, b| a.0.cmp(b.0));
-            if selected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            if selected
+                .windows(2)
+                .any(|pair| matches!(pair, [a, b] if a.0 == b.0))
+            {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Conflict,
@@ -94,12 +97,13 @@ impl ToolRegistry {
             for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
                 let replacement = match selected
                     .binary_search_by(|(candidate, _)| candidate.cmp(&name.as_str()))
+                    .ok()
+                    .and_then(|index| selected.get(index))
                 {
-                    Ok(index) => ModelSelection::Revision(crate::executor::stock_string_copy(
-                        selected[index].1,
-                        io,
-                    )?),
-                    Err(_) => ModelSelection::Hidden,
+                    Some((_, revision)) => {
+                        ModelSelection::Revision(crate::executor::stock_string_copy(revision, io)?)
+                    }
+                    None => ModelSelection::Hidden,
                 };
                 let old_bytes = match selection {
                     ModelSelection::Revision(revision) => revision.capacity(),
@@ -159,7 +163,7 @@ impl ToolRegistry {
             .selected
             .get(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
-        if (natives.len() == 1 && natives[0] == name)
+        if matches!(natives, [only] if *only == name)
             || matches!(selection, ModelSelection::Native { names, .. } if names.iter().map(String::as_str).eq(natives.iter().copied()))
         {
             return Ok(());
@@ -312,7 +316,7 @@ impl ToolRegistry {
         definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         if definitions
             .windows(2)
-            .any(|pair| pair[0].name == pair[1].name)
+            .any(|pair| matches!(pair, [a, b] if a.name == b.name))
         {
             return Err(Error::Conflict("tool sources overlap".into()));
         }
@@ -355,7 +359,7 @@ impl ToolRegistry {
         definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         if definitions
             .windows(2)
-            .any(|pair| pair[0].name == pair[1].name)
+            .any(|pair| matches!(pair, [a, b] if a.name == b.name))
         {
             return Err(Error::Conflict("tool sources overlap".into()));
         }

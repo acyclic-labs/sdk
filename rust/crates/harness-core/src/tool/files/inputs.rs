@@ -320,10 +320,10 @@ mod codec_tests {
     use proptest::prelude::*;
 
     fn round_trip<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
-        value: T,
+        value: &T,
     ) {
-        let encoded = serde_json::to_vec(&value).unwrap();
-        assert_eq!(serde_json::from_slice::<T>(&encoded).unwrap(), value);
+        let encoded = serde_json::to_vec(value).unwrap();
+        assert_eq!(&serde_json::from_slice::<T>(&encoded).unwrap(), value);
     }
 
     proptest! {
@@ -342,9 +342,9 @@ mod codec_tests {
             let file = FileRef::new(volume, path.clone(), "version".into(),
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             let version = super::super::version::encode_version(&file, None).unwrap().0;
-            round_trip(ReadFileInput { path: path.clone(), wait: false, include_body: false, version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
-            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
-            round_trip(WriteFileInput { path, content: text, if_version: None });
+            round_trip(&ReadFileInput { path: path.clone(), wait: false, include_body: false, version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
+            round_trip(&EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
+            round_trip(&WriteFileInput { path, content: text, if_version: None });
         }
     }
 }

@@ -44,7 +44,7 @@ pub enum ReadResult {
     /// A bounded immutable host file query.
     Diagnostic(DiagnosticReadResult),
     /// File bytes and their original source.
-    File(ReadFileResult),
+    File(Box<ReadFileResult>),
     /// Namespace entries at one immutable generation.
     Directory(DirectoryReadResult),
 }
@@ -119,13 +119,13 @@ pub(super) async fn read(
     let selected = after
         .map(|cursor| decode_cursor(cursor, work))
         .transpose()?;
-    if let Some((cursor, _)) = &selected {
-        if &cursor.volume != volume || cursor.path != path {
-            return Err(executor::rejection(
-                work,
-                "directory cursor belongs to another selection",
-            ));
-        }
+    if let Some((cursor, _)) = &selected
+        && (&cursor.volume != volume || cursor.path != path)
+    {
+        return Err(executor::rejection(
+            work,
+            "directory cursor belongs to another selection",
+        ));
     }
     // Native enumeration is sorted only inside each bounded page. Replaying an
     // entry position must retain that page's partition, even with new row credit.

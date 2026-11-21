@@ -82,7 +82,9 @@ pub(super) async fn read(
         .ok_or_else(|| {
             executor::rejection(work, "render credit cannot hold a diagnostic file page")
         })?;
-    let shown = crate::tools::bounds::prefix(&result.text, budget as usize).len();
+    let shown =
+        crate::tools::bounds::prefix(&result.text, usize::try_from(budget).unwrap_or(usize::MAX))
+            .len();
     if shown == 0 && !result.text.is_empty() {
         return Err(executor::rejection(
             work,
@@ -115,7 +117,7 @@ fn validate_input(input: &ReadFileInput, work: acyclic_fs::NativeWork<'_>) -> Re
 
 pub(super) fn project(
     input: &ReadFileInput,
-    target: (crate::agent::AgentPath, [u8; 32]),
+    target: &(crate::agent::AgentPath, [u8; 32]),
     result: &ToolResult,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {

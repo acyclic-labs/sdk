@@ -10,7 +10,7 @@ pub(crate) fn view_bytes(maximum: Option<u64>) -> u64 {
     maximum.map_or(VIEW_BYTES, |maximum| maximum.min(VIEW_BYTES))
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SpillRef<'a> {
     #[schemars(length(min = 1))]
@@ -288,10 +288,7 @@ fn render(
     let text = std::str::from_utf8(encoded)
         .map_err(|_| Error::tool_rejected("tool projection is not UTF-8 JSON"))?;
     let empty = SpillView {
-        output_spill: SpillRef {
-            path: source.path,
-            version: source.version,
-        },
+        output_spill: source,
         text: "",
         omitted_bytes: u64::MAX,
     };
@@ -328,10 +325,7 @@ fn render(
     let budget = if media.is_some() { budget / 2 } else { budget };
     let shown = crate::tools::bounds::prefix(text, usize::try_from(budget).unwrap_or(usize::MAX));
     let view = SpillView {
-        output_spill: SpillRef {
-            path: source.path,
-            version: source.version,
-        },
+        output_spill: source,
         text: shown,
         omitted_bytes: (text.len() - shown.len()) as u64,
     };

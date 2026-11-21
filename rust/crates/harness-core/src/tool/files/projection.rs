@@ -102,8 +102,23 @@ enum MediaPart<'a> {
     File {
         file: &'a FileRef,
         #[schemars(with = "Value")]
-        policy: NativePolicy,
+        policy: FilePolicy<'a>,
     },
+}
+
+/// A file part's native policy, derived from the file when serialized.
+struct FilePolicy<'a> {
+    file: &'a FileRef,
+    intent: crate::model::NativeMediaIntent,
+}
+
+impl Serialize for FilePolicy<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        policy(self.file, self.intent.clone()).serialize(serializer)
+    }
 }
 
 #[derive(Serialize)]
@@ -191,7 +206,7 @@ fn output_part(file: &FileRef) -> MediaPart<'_> {
     };
     MediaPart::File {
         file,
-        policy: policy(file, intent),
+        policy: FilePolicy { file, intent },
     }
 }
 
@@ -267,7 +282,7 @@ impl Serialize for MediaParts<'_> {
             };
             parts.serialize_element(&MediaPart::File {
                 file,
-                policy: policy(file, intent),
+                policy: FilePolicy { file, intent },
             })?;
         }
         for output in self.outputs {
@@ -297,7 +312,7 @@ impl ToolProjection for FileProjection {
                 if let Some(target) =
                     crate::agent::Diagnostic::query_target(&input.0.path).map_err(Error::from)?
                 {
-                    return super::diagnostic_query::project(&input.0, target, result, work);
+                    return super::diagnostic_query::project(&input.0, &target, result, work);
                 }
                 if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
                     return super::directory::project(

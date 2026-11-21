@@ -10,14 +10,13 @@ fn work() -> acyclic_fs::NativeMaterializationWork {
     .unwrap()
 }
 
-fn assert_recoverable(error: Error, original: &acyclic_fs::NativeMaterializationWork) {
+fn assert_recoverable(error: &Error, original: &acyclic_fs::NativeMaterializationWork) {
     assert!(!error.is_native_failure(), "{error:?}");
     assert!(!error.leaves_effect_uncertain());
     let io = crate::executor::PreparationIo::from_native_work(original).unwrap();
-    let cause = crate::executor::with_history_io(Some(&io), |history| {
-        ToolFailureCause::of(&error, history)
-    })
-    .unwrap();
+    let cause =
+        crate::executor::with_history_io(Some(&io), |history| ToolFailureCause::of(error, history))
+            .unwrap();
     assert!(cause.is_canonical());
     let content =
         crate::executor::tool_failure_content(ToolFailureKind::ExecutorRejected, &cause, Some(&io))
@@ -49,7 +48,7 @@ proptest! {
             Err(error) => {
                 prop_assert!(expected.is_none());
                 prop_assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
-                assert_recoverable(error, &original);
+                assert_recoverable(&error, &original);
             }
         }
         prop_assert_eq!(original.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
@@ -79,7 +78,7 @@ proptest! {
                 (Ok(()), Ok(())) => (),
                 (Err(portable), Err(native)) => {
                     prop_assert_eq!(portable.code(), native.code());
-                    assert_recoverable(native, &original);
+                    assert_recoverable(&native, &original);
                 }
                 pair => prop_assert!(false, "different outcomes: {pair:?}"),
             }
@@ -92,7 +91,7 @@ proptest! {
 fn the_former_boundary_classification_and_real_budget_exhaustion_cannot_be_settled() {
     let original = work();
     let error = executor::read_text(&[0xa9], true, Some(&original)).unwrap_err();
-    assert_recoverable(error, &original);
+    assert_recoverable(&error, &original);
     // Negative control: restore the former production classification, keeping the exact cause.
     let broken = Error::NativeBoundary {
         code: crate::wire::ErrorCode::Invalid,
@@ -131,7 +130,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
         };
         let result = FileTool::Read.preflight(&scope, None, &invocation, Some(&original));
         if rejected {
-            assert_recoverable(result.unwrap_err(), &original);
+            assert_recoverable(&result.unwrap_err(), &original);
         } else {
             result?;
         }
@@ -155,7 +154,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
             .preflight(&ungranted, None, &invocation, Some(&original))
             .unwrap_err();
         assert!(error.is_tool_failure());
-        assert_recoverable(error, &original);
+        assert_recoverable(&error, &original);
     }
     Ok(())
 }

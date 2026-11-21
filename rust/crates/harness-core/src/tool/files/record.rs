@@ -35,7 +35,7 @@ impl RecordResult {
 #[serde(untagged)]
 pub enum WriteResult {
     /// A replaceable volume file.
-    File(FileResult),
+    File(Box<FileResult>),
     /// An append-only execution observation.
     Record(RecordResult),
 }
@@ -208,7 +208,9 @@ fn decode_reports<'a>(
                 &mut records.result.reports,
                 count,
             )?;
-            let bytes = &content.as_bytes()[start as usize..end as usize];
+            let bytes = super::window::span(content.as_bytes(), start..end).ok_or_else(|| {
+                super::executor::rejection(work, "feedback report span exceeds its source")
+            })?;
             let report: feedback::Report = if let Some(io) = io {
                 let (report, hold) = io.decode(
                     std::marker::PhantomData::<feedback::Report>,

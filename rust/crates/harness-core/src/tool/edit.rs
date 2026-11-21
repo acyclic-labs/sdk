@@ -343,23 +343,21 @@ fn replace_into(
         return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
     charge(work, 0, source.len() as u64)?;
-    let (start, count) = if replace_all {
+    let count = if replace_all {
         let mut matches = source.match_indices(old_text);
-        let (start, _) = match matches.next() {
-            Some(found) => found,
-            None => return Err(nearest::rejection(source, old_text, work)?),
-        };
-        (start, 1 + matches.count())
+        if matches.next().is_none() {
+            return Err(nearest::rejection(source, old_text, work)?);
+        }
+        1 + matches.count()
     } else {
-        let start = match source.find(old_text) {
-            Some(start) => start,
-            None => return Err(nearest::rejection(source, old_text, work)?),
+        let Some(start) = source.find(old_text) else {
+            return Err(nearest::rejection(source, old_text, work)?);
         };
         // Unique replacement rejects overlapping matches too. Advancing one
         // complete character preserves UTF-8 and finds every later start.
         let next_start = start + old_text.chars().next().map_or(0, char::len_utf8);
         charge(work, 0, (source.len() - next_start) as u64)?;
-        if let Some(next) = source[next_start..].find(old_text) {
+        if let Some(next) = text_range(source, next_start.., work)?.find(old_text) {
             // The original uniqueness search already found the second start.
             // Count only the unconsumed suffix for the native diagnostic;
             // successful edits retain their original search/copy work.
@@ -371,14 +369,17 @@ fn replace_into(
                 (1, first_end)
             };
             charge(work, 0, (source.len() - remaining) as u64)?;
-            let occurrences = found + source[remaining..].match_indices(old_text).count();
+            let occurrences = found
+                + text_range(source, remaining.., work)?
+                    .match_indices(old_text)
+                    .count();
             return Err(if occurrences > 1 {
                 EditRejection::error(occurrences)
             } else {
                 conflict(work, "exact edit text has overlapping matches")
             });
         }
-        (start, 1)
+        1
     };
     let output_bytes = source
         .len()
@@ -399,21 +400,29 @@ fn replace_into(
     reserve_string(work, output, output_bytes)?;
     output.clear();
     charge(work, (output_bytes) as u64, 0)?;
-    let mut cursor = 0;
-    if replace_all {
+    let pieces = if replace_all {
         charge(work, 0, source.len() as u64)?;
-        for (position, _) in source.match_indices(old_text) {
-            output.push_str(&source[cursor..position]);
-            output.push_str(new_text);
-            cursor = position + old_text.len();
-        }
+        usize::MAX
     } else {
-        output.push_str(&source[..start]);
-        output.push_str(new_text);
-        cursor = start + old_text.len();
+        2
+    };
+    for (index, piece) in source.splitn(pieces, old_text).enumerate() {
+        if index > 0 {
+            output.push_str(new_text);
+        }
+        output.push_str(piece);
     }
-    output.push_str(&source[cursor..]);
     Ok(())
+}
+
+/// Borrows a byte range of `text`, refusing one that splits a character.
+fn text_range<'a>(
+    text: &'a str,
+    range: impl std::slice::SliceIndex<str, Output = str>,
+    work: &acyclic_fs::NativeCustody,
+) -> Result<&'a str> {
+    text.get(range)
+        .ok_or_else(|| invalid(work, "edit offset is not on a character boundary"))
 }
 
 #[cfg(test)]

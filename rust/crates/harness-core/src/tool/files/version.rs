@@ -3,6 +3,11 @@ use super::*;
 const AUTHORED: &str = "authored-path-v2:";
 
 /// Exercises both real decoders and the original native result custody.
+///
+/// # Panics
+///
+/// Panics when an admitted version fails the codec check; this is the fuzz
+/// target's failure signal.
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub fn check_version(input: &[u8]) {
     let Ok(version) = std::str::from_utf8(input) else {

@@ -307,6 +307,13 @@ fn convert_cell(
     let mut previous_end = None;
     let mut last_field: Option<usize> = None;
     let mut cursor = JsonSpans::default();
+    // Span offsets lie within the cell's own text, so each converts losslessly.
+    let local = |offset: u64| {
+        usize::try_from(offset)
+            .ok()
+            .filter(|offset| *offset <= raw.get().len())
+            .ok_or_else(|| executor::rejection(work, "notebook cell span exceeds its source"))
+    };
     let mut event = |event| -> Result<bool> {
         match event {
             SpanEvent::Key {
@@ -314,14 +321,17 @@ fn convert_cell(
                 start,
                 end,
             } => {
+                let (start, end) = (local(start)?, local(end)?);
                 if let Some(last) = last_field.take()
-                    && let Some(field) = fields[last].as_mut()
+                    && let Some(Some(field)) = fields.get_mut(last)
                 {
-                    field.next = Some(origin + start as usize);
+                    field.next = Some(origin + start);
                 }
                 let label = decode(
                     std::marker::PhantomData::<crate::executor::json::BorrowedText<'_>>,
-                    &raw.get()[start as usize..end as usize],
+                    raw.get().get(start..end).ok_or_else(|| {
+                        executor::rejection(work, "notebook cell key splits a character")
+                    })?,
                     work,
                 )?;
                 let field = match label.0.as_ref() {
@@ -331,7 +341,7 @@ fn convert_cell(
                     "attachments" => Some(3),
                     _ => None,
                 };
-                key = field.map(|field| (field, origin + start as usize));
+                key = field.map(|field| (field, origin + start));
             }
             SpanEvent::End {
                 depth: 1,
@@ -339,20 +349,21 @@ fn convert_cell(
                 end,
                 ..
             } => {
+                let (start, end) = (local(start)?, local(end)?);
                 if let Some((field, key)) = key.take() {
-                    if fields[field].is_some() {
+                    let Some(slot @ None) = fields.get_mut(field) else {
                         return Err(executor::rejection(work, "duplicate notebook cell field"));
-                    }
-                    fields[field] = Some(CellField {
+                    };
+                    *slot = Some(CellField {
                         key,
-                        start: origin + start as usize,
-                        end: origin + end as usize,
+                        start: origin + start,
+                        end: origin + end,
                         previous: previous_end,
                         next: None,
                     });
                     last_field = Some(field);
                 }
-                previous_end = Some(origin + end as usize);
+                previous_end = Some(origin + end);
             }
             _ => {}
         }
@@ -392,10 +403,11 @@ fn convert_cell(
         )
     };
     if kind == "code" {
-        for (slot, field, replacement) in [(1, fields[1], "[]"), (2, fields[2], "null")] {
-            if let Some(field) = field {
-                substitutions[slot] = Some((field.start, field.end, replacement));
-            }
+        if let Some(field) = fields[1] {
+            substitutions[1] = Some((field.start, field.end, "[]"));
+        }
+        if let Some(field) = fields[2] {
+            substitutions[2] = Some((field.start, field.end, "null"));
         }
         let missing = match (fields[1].is_none(), fields[2].is_none()) {
             (true, true) => ",\"outputs\":[],\"execution_count\":null",
@@ -519,7 +531,7 @@ pub(super) fn edit<'a>(
         return Err(error);
     }
     let index = index
-        .or_else(|| match target {
+        .or(match target {
             NotebookCell::Index { index, id: None }
                 if *index == count
                     && !after

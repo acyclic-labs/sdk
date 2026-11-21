@@ -260,19 +260,28 @@ fn path(
     Ok((format!("projections/v1/notebook-output/{operation}"), None))
 }
 
+/// A scanned source window with its source version identity and its offset.
+pub(super) struct Scanned<'a, 'io> {
+    pub window: &'a super::window::Window<'io>,
+    pub version: &'a str,
+    pub position: u64,
+}
+
 /// The source identity and exact MIME interval name the original publication
 /// receipt. Mutable path heads are never consulted to reuse an output.
 pub(super) async fn retain(
     context: &ToolContext,
     input: &ReadFileInput,
-    window: &super::window::Window<'_>,
-    source: (&str, u64),
+    Scanned {
+        window,
+        version,
+        position,
+    }: Scanned<'_, '_>,
     spans: &[Payload],
     budget: u64,
     work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Retained> {
-    let (version, position) = source;
     let mut retained = Retained {
         values: Vec::new(),
         remaining: budget,
@@ -353,10 +362,8 @@ pub(super) async fn retain(
             file
         } else {
             let extra;
-            let bytes = if let Some(relative) = payload.start.checked_sub(position)
-                && relative + length <= window.bytes.len() as u64
-            {
-                &window.bytes[relative as usize..(relative + length) as usize]
+            let bytes = if let Some(bytes) = window.resident(position, payload.start..payload.end) {
+                bytes
             } else {
                 extra = window
                     .next(
