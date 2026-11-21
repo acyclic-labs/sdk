@@ -2,10 +2,6 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-#[macro_use]
-#[path = "support/unbounded.rs"]
-mod unbounded;
-
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;

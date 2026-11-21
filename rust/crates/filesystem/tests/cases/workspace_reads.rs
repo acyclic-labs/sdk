@@ -4,9 +4,8 @@ use acyclic_fs_work::performance::WorkBudget;
 use bytes::Bytes;
 use std::error::Error;
 
-#[macro_use]
-#[path = "../support/unbounded.rs"]
-mod unbounded;
+#[path = "../support/allow_publication.rs"]
+mod allow_publication;
 #[path = "../support/transaction.rs"]
 mod transaction;
 use transaction::commit;

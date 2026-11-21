@@ -9,8 +9,7 @@ use acyclic_fs_format::{
     object_reference::{ObjectId, ObjectKind},
 };
 
-#[path = "../../../support/portable_metadata.rs"]
-mod fixture;
+use crate::portable_metadata as fixture;
 use fixture::metadata;
 
 #[test]

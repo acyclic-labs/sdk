@@ -10,6 +10,7 @@ use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::test_support::{checkout_defaults, memory_checkout};
 #[path = "../../../tests/support/checkout_fixture.rs"]
 mod checkout_fixture;
 use checkout_fixture::{config, path, path_parts, writable_pinned};

@@ -5,14 +5,6 @@
     reason = "test fixtures use explicit fatal assertions for impossible setup failures"
 )]
 
-#[macro_use]
-#[path = "support/unbounded.rs"]
-mod unbounded;
-
-#[macro_use]
-#[path = "support/provider_receipt.rs"]
-mod provider_receipt;
-
 use acyclic_stream::MemoryStream;
 use std::collections::BTreeSet;
 use std::sync::Arc;

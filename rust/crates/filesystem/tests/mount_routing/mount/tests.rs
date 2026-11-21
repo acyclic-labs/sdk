@@ -4,8 +4,12 @@ use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::mount::{MountError, MountedCheckout, MountedView};
 use acyclic_fs::path::PortablePath;
 
+#[path = "../../support/checkout_defaults.rs"]
+mod checkout_defaults;
 #[path = "../../support/mount_checkout.rs"]
 mod fixture;
+#[path = "../../support/memory_checkout.rs"]
+mod memory_checkout;
 use fixture::{checkout, checkout_with_config, open_checkout, volume};
 
 #[tokio::test]

@@ -3,6 +3,26 @@
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
 
+#[path = "support/codec_association.rs"]
+mod codec_association;
+#[path = "support/codec_page_limit.rs"]
+mod codec_page_limit;
+#[path = "support/codec_properties.rs"]
+mod codec_properties;
+#[cfg(feature = "test-support")]
+#[path = "support/export_manifest.rs"]
+mod export_manifest;
+#[cfg(feature = "test-support")]
+#[path = "support/put_object.rs"]
+mod object;
+#[path = "support/portable_metadata.rs"]
+mod portable_metadata;
+#[cfg(feature = "test-support")]
+use object::put_object;
+#[cfg(feature = "test-support")]
+#[path = "support/tree_objects.rs"]
+mod tree_objects;
+
 use acyclic_fs_native_contract::NativeRootIdentity;
 
 #[cfg(feature = "test-support")]

@@ -28,6 +28,8 @@ mod unbounded;
 #[cfg(test)]
 #[path = "../tests/support/transaction.rs"]
 mod transaction_fixture;
+#[cfg(test)]
+use test_support::allow_publication;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;

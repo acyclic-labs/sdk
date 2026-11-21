@@ -1,7 +1,5 @@
-#[path = "../../../support/codec_association.rs"]
-mod codec_association;
-#[path = "../../../support/codec_properties.rs"]
-mod codec_properties;
+use crate::codec_association;
+use crate::codec_properties;
 
 mod properties {
     use super::codec_association::association;

@@ -1,13 +1,8 @@
 use acyclic_fs::{CancellationToken, VolumeConfig};
 
-#[path = "checkout_defaults.rs"]
-mod checkout_defaults;
-pub(super) use checkout_defaults::config;
-pub(super) use checkout_defaults::writable_pinned;
+pub(super) use super::checkout_defaults::{config, writable_pinned};
 
-#[path = "memory_checkout.rs"]
-mod memory_checkout;
-pub(super) use memory_checkout::{TestCheckout, TestResult, open_checkout, volume};
+pub(super) use super::memory_checkout::{TestCheckout, TestResult, open_checkout, volume};
 
 pub(super) async fn checkout() -> TestResult<TestCheckout> {
     checkout_with_config(config()).await

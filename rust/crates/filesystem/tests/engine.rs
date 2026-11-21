@@ -3,6 +3,15 @@
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
 
+#[cfg(not(loom))]
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+#[cfg(not(loom))]
+#[macro_use]
+#[path = "support/provider_receipt.rs"]
+mod provider_receipt;
+
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod computed_folds;
 #[cfg(not(loom))]

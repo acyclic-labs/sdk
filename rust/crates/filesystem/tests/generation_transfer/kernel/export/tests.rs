@@ -10,8 +10,7 @@ use acyclic_fs_format::{
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
-#[path = "../../../support/export_manifest.rs"]
-mod fixture;
+use crate::export_manifest as fixture;
 use fixture::manifest;
 
 #[tokio::test]

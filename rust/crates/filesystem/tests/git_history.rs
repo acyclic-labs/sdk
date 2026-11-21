@@ -3,6 +3,8 @@
 #[macro_use]
 #[path = "support/unbounded.rs"]
 mod unbounded;
+#[path = "support/allow_publication.rs"]
+mod allow_publication;
 #[path = "support/git_history.rs"]
 mod fixtures;
 #[path = "git_history/git_compat/mod.rs"]

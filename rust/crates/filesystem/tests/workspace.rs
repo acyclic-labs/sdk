@@ -3,6 +3,18 @@
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
 
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+#[path = "support/allow_publication.rs"]
+mod allow_publication;
+#[path = "support/workspace.rs"]
+mod fixtures;
+#[path = "support/selected_budget.rs"]
+mod selected_budget;
+#[path = "support/transaction.rs"]
+mod transaction;
+
 #[path = "workspace_append.rs"]
 mod workspace_append;
 #[path = "workspace_context_contracts.rs"]

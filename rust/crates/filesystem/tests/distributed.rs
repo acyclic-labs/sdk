@@ -1,13 +1,5 @@
 //! Black-box conformance for canonical distributed adapters over public memory providers.
 
-#[macro_use]
-#[path = "support/unbounded.rs"]
-mod unbounded;
-
-#[macro_use]
-#[path = "support/provider_receipt.rs"]
-mod provider_receipt;
-
 use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;

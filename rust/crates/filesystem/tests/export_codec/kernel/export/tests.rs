@@ -7,8 +7,7 @@ use acyclic_fs_format::{
     object_reference::{GenerationId, ObjectId, ObjectStorage},
 };
 
-#[path = "../../../support/export_manifest.rs"]
-mod fixture;
+use crate::export_manifest as fixture;
 use fixture::manifest;
 
 const VERSION_OFFSET: usize = b"acyclic-fs-generation-export-v1\0".len();

@@ -1,7 +1,5 @@
+pub use super::checkout_defaults::{config, writable_pinned};
 use acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath};
-#[path = "checkout_defaults.rs"]
-mod checkout_defaults;
-pub use checkout_defaults::{config, writable_pinned};
 
 /// Builds a namespace path with one UTF-8 component.
 pub fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {

@@ -12,6 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 #[path = "../../tests/support/allow_publication.rs"]
 pub(crate) mod allow_publication;
+#[path = "../../tests/support/checkout_defaults.rs"]
+pub(crate) mod checkout_defaults;
+#[path = "../../tests/support/memory_checkout.rs"]
+pub(crate) mod memory_checkout;
 
 #[cfg(any(target_os = "linux", windows))]
 pub(crate) fn mount_test_compiler() -> std::io::Result<std::path::PathBuf> {

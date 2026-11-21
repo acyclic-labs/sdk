@@ -1,19 +1,11 @@
 use acyclic_fs_work::performance::WorkBudget;
 
-#[path = "../../../support/allow_publication.rs"]
-mod allow_publication;
-#[path = "../../../support/checkout_fixture.rs"]
-mod checkout_fixture;
-#[path = "../../../support/checkout_tracking.rs"]
-mod checkout_tracking;
+use crate::checkout_fixture;
+use crate::tracking_fixture as checkout_tracking;
 mod creation;
-#[path = "../../../support/volume_fixture.rs"]
-mod fixtures;
+use crate::fixtures;
 mod profiles;
 mod special;
-#[path = "../../../support/volume_commit.rs"]
-mod volume_commit;
-
-use allow_publication::allow;
+use crate::volume_commit;
 
 const B: WorkBudget = WorkBudget::UNBOUNDED;

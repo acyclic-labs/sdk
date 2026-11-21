@@ -4,7 +4,10 @@ use acyclic_fs::storage::{ObjectId, ObjectKind};
 
 #[path = "../../../tests/support/extent_objects.rs"]
 mod extent_objects;
-pub(crate) use extent_objects::{put_extent_page, put_object};
+pub(crate) use extent_objects::put_extent_page;
+#[path = "../../../tests/support/put_object.rs"]
+mod object;
+pub(crate) use object::put_object;
 
 #[path = "../../../tests/support/generation_objects.rs"]
 mod generation_objects;

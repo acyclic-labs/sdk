@@ -2,9 +2,7 @@ use acyclic_fs::AsyncObjectStore;
 use acyclic_fs::kernel::{CanonicalDecodeError, ExtentPage, encode_extent_page};
 use acyclic_fs_format::object_reference::{ObjectId, ObjectKind};
 
-#[path = "put_object.rs"]
-mod object;
-pub(crate) use object::put_object;
+use super::put_object;
 
 pub(crate) async fn put_extent_page<S: AsyncObjectStore>(
     store: &S,

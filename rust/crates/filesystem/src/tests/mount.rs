@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::test_support::{checkout_defaults, memory_checkout};
 #[path = "../../tests/support/mount_checkout.rs"]
 mod fixture;
 use fixture::checkout;

@@ -4,6 +4,8 @@ use acyclic_fs_work::performance::WorkBudget;
 
 #[path = "../../filesystem/tests/support/allow_publication.rs"]
 mod allow_publication;
+#[path = "../../filesystem/tests/support/checkout_defaults.rs"]
+mod checkout_defaults;
 #[path = "../../filesystem/tests/support/checkout_fixture.rs"]
 mod checkout_fixture;
 #[path = "../../filesystem/tests/support/checkout_live_fixture.rs"]
@@ -15,6 +17,8 @@ mod checkout_serialized;
 pub mod faults;
 #[path = "../../filesystem/tests/support/volume_fixture.rs"]
 mod fixtures;
+#[path = "../../filesystem/tests/support/memory_checkout.rs"]
+mod memory_checkout;
 mod publication;
 #[path = "../../filesystem/tests/support/volume_commit.rs"]
 mod volume_commit;

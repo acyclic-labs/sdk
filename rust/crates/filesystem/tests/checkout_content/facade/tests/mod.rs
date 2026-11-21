@@ -1,18 +1,13 @@
 use acyclic_fs_work::performance::WorkBudget;
 
-#[path = "../../../support/allow_publication.rs"]
-mod allow_publication;
-#[path = "../../../support/checkout_fixture.rs"]
-mod checkout_fixture;
+use crate::allow_publication;
+use crate::checkout_fixture;
 mod content;
 mod detached;
-#[path = "../../../support/volume_fixture.rs"]
-mod fixtures;
+use crate::fixtures;
 mod identity;
-#[path = "../../../support/volume_commit.rs"]
-mod volume_commit;
-#[path = "../../../support/volume_read.rs"]
-mod volume_read;
+use crate::volume_commit;
+use crate::volume_read;
 
 use allow_publication::allow;
 

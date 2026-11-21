@@ -6,8 +6,7 @@ use acyclic_stream::OwnedBytes;
 use super::B;
 use super::checkout_fixture::{path, writable_pinned};
 
-#[path = "memory_checkout.rs"]
-mod memory_checkout;
+use super::memory_checkout;
 pub use memory_checkout::{TestCheckout, TestResult, TestVolume, open_checkout};
 
 /// Creates an in-memory volume and a pinned writable checkout.

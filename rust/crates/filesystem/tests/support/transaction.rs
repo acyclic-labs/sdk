@@ -4,9 +4,7 @@ use acyclic_fs::{
 };
 use acyclic_fs_work::performance::WorkBudget;
 
-#[path = "allow_publication.rs"]
-mod allow_publication;
-pub(crate) use allow_publication::allow;
+pub(crate) use super::allow_publication::allow;
 
 pub(crate) async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,

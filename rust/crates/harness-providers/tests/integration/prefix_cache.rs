@@ -267,7 +267,7 @@ fn executors(
         |_| false,
         extra
             .iter()
-            .map(|name| crate::prefix_cache_cases::integration_helpers::echo_tool(name))
+            .map(|name| crate::integration_helpers::echo_tool(name))
             .collect(),
     )?;
     let limits = Limits::default();

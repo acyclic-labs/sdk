@@ -1,9 +1,5 @@
 //! Immutable filesystem composition over the canonical Objects v1 provider.
 
-#[macro_use]
-#[path = "support/provider_receipt.rs"]
-mod provider_receipt;
-
 use acyclic_objects::{Blobs, Delete, MemoryObjects};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
