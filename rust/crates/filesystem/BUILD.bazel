@@ -1150,7 +1150,6 @@ rust_test(
     crate_root = "tests/codec.rs",
     srcs = [
         "src/async_storage/contract.rs",
-        "src/windows_usn_codec.rs",
         "tests/blob_io.rs",
         "tests/blob_io/kernel/blob/mod.rs",
         "tests/blob_io/kernel/blob/tests.rs",

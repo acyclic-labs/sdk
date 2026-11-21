@@ -1,19 +1,17 @@
 mod tests {
-    use crate::{
-        NativeRootIdentity,
-        native_checkpoint::codec::{WindowsUsnCheckpoint, WindowsUsnError},
-    };
+    use crate::NativeRootIdentity;
+    use acyclic_fs::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError, seed};
+
     #[test]
     fn checkpoint_encoding_is_canonical_versioned_and_bounded() {
-        let checkpoint = WindowsUsnCheckpoint {
-            root_identity: NativeRootIdentity::from_bytes([7; 16]),
-            journal_id: 19,
-            next_usn: 23,
-        };
-        let bytes = checkpoint.to_bytes();
+        let bytes = seed();
         assert!(matches!(
             WindowsUsnCheckpoint::from_bytes(&bytes),
-            Ok(decoded) if decoded == checkpoint
+            Ok(checkpoint)
+                if checkpoint.root_identity() == NativeRootIdentity::from_bytes([7; 16])
+                    && checkpoint.journal_id() == 19
+                    && checkpoint.next_usn() == 23
+                    && checkpoint.to_bytes() == bytes
         ));
         let truncated = bytes.get(..39).expect("checkpoint length");
         assert!(matches!(
