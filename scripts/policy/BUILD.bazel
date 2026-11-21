@@ -229,3 +229,10 @@ node_test(
     ],
     entry = "scripts/qualify-rustfmt.test.mjs",
 )
+
+node_test(
+    name = "test_selection_test",
+    srcs = ["test-selection.test.mjs"],
+    entry = "scripts/policy/test-selection.test.mjs",
+    name_pattern = "the shared Node runner",
+)
