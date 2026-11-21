@@ -269,98 +269,66 @@ pub(super) struct Incarnation {
     pub crashed: Option<InjectedStorageFault>,
 }
 
-thread_local! {
-    /// Live world slots on this test thread, keyed by case and seed. Reusing
-    /// the first free slot makes a repeated world use the same absolute path.
-    static WORLD_SLOTS: std::cell::RefCell<
-        std::collections::BTreeMap<(String, u64), Vec<bool>>,
-    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-}
-
-/// A world directory whose absolute path is a function of its case, seed,
-/// slot and process, never of the host's random temporary name. Model requests
-/// announce that path, so a random name would make an otherwise identical
-/// replay differ; the process identity keeps concurrent processes apart.
-struct WorldDirectory {
+/// A world directory whose absolute path is a function of its case, seed and
+/// slot alone, never of its process or of the host's random temporary name.
+/// Model requests and workspace announcements carry that path, so any other
+/// name would make an otherwise identical world differ between processes.
+/// The slot is the first whose lock file this world takes, one non-blocking
+/// try per slot in order; the world holds it until it drops or its process
+/// dies. Two live worlds never share a directory, in one process or two, and
+/// a world run after another of its case and seed takes the same path.
+pub(super) struct WorldDirectory {
     path: std::path::PathBuf,
-    key: (String, u64),
-    slot: usize,
-}
-
-/// A process's start nonce, so two processes that reuse a pid still name
-/// different world directories.
-fn process_nonce() -> u64 {
-    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *NONCE.get_or_init(|| {
-        let nanos = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(elapsed) => elapsed.as_nanos(),
-            Err(_) => 0,
-        };
-        let pid = u64::from(std::process::id());
-        let mut hash = blake3::Hasher::new();
-        hash.update(&pid.to_le_bytes());
-        hash.update(&nanos.to_le_bytes());
-        let bytes = hash.finalize();
-        let mut nonce = [0; 8];
-        nonce.copy_from_slice(&bytes.as_bytes()[..8]);
-        u64::from_le_bytes(nonce)
-    })
+    // Held for the world's lifetime: closing it frees the slot.
+    _slot: std::fs::File,
 }
 
 impl WorldDirectory {
-    fn new(seed: u64) -> std::io::Result<Self> {
-        let key = (
-            format!(
-                "{}:{:?}",
-                std::thread::current().name().unwrap_or("dst"),
-                std::thread::current().id()
-            ),
-            seed,
-        );
-        let slot = WORLD_SLOTS.with(|slots| {
-            let mut slots = slots.borrow_mut();
-            let used = slots.entry(key.clone()).or_default();
-            if let Some((slot, free)) = used.iter_mut().enumerate().find(|(_, used)| !**used) {
-                *free = true;
-                slot
-            } else {
-                used.push(true);
-                used.len() - 1
-            }
-        });
-        let digest = blake3::hash(format!("{}:{}:{slot}", key.0, key.1).as_bytes());
+    pub(super) fn new(seed: u64) -> std::io::Result<Self> {
+        Self::named(std::thread::current().name().unwrap_or("dst"), seed)
+    }
+
+    fn named(case: &str, seed: u64) -> std::io::Result<Self> {
         let root = if Path::new("/dev/shm").is_dir() {
             std::path::PathBuf::from("/dev/shm")
         } else {
             std::env::temp_dir()
         };
-        let path = root.join(format!(
-            "acyclic-dst-{}-{}-{}",
-            std::process::id(),
-            process_nonce(),
-            format_args!("{:.16}", digest.to_hex().as_str())
-        ));
-        if path.exists() {
-            std::fs::remove_dir_all(&path)?;
+        let mut slot = 0_u64;
+        loop {
+            let digest = blake3::hash(format!("{case}:{seed}:{slot}").as_bytes());
+            let path = root.join(format!("acyclic-dst-{:.16}", digest.to_hex().as_str()));
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(path.with_extension("lock"))?;
+            match lock.try_lock() {
+                Ok(()) => {
+                    // A holder that died left its directory; none of it
+                    // reaches this world.
+                    match std::fs::remove_dir_all(&path) {
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                            return Err(error);
+                        }
+                        _ => {}
+                    }
+                    std::fs::create_dir(&path)?;
+                    return Ok(Self { path, _slot: lock });
+                }
+                Err(std::fs::TryLockError::WouldBlock) => slot += 1,
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
         }
-        std::fs::create_dir(&path)?;
-        Ok(Self { path, key, slot })
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.path
     }
 }
 
 impl Drop for WorldDirectory {
     fn drop(&mut self) {
-        WORLD_SLOTS.with(|slots| {
-            if let Some(used) = slots.borrow_mut().get_mut(&self.key)
-                && let Some(used) = used.get_mut(self.slot)
-            {
-                *used = false;
-            }
-        });
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
@@ -862,17 +830,109 @@ pub(super) fn failed(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// The case a [`world_directory_holder`] process holds, when set.
+const HOLD_CASE: &str = "ACYCLIC_DST_HOLD_CASE";
+
+/// Holds a world of the case `HOLD_CASE` names, with a file left in it, for
+/// another process: it reports the path on stdout and holds the world until
+/// its stdin closes. Without `HOLD_CASE` it holds nothing.
 #[test]
-fn world_directories_name_their_process() {
-    let directory = WorldDirectory::new(0).expect("world directory");
-    let name = directory
-        .path()
-        .file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .expect("world directory name");
-    let process = format!("-{}-", std::process::id());
+fn world_directory_holder() {
+    use std::io::{Read, Write};
+    let Ok(case) = std::env::var(HOLD_CASE) else {
+        return;
+    };
+    let world = WorldDirectory::named(&case, 0).expect("held world directory");
+    std::fs::write(world.path().join("left"), b"held").expect("held file");
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "HELD {}", world.path().display()).expect("report held path");
+    stdout.flush().expect("report held path");
+    std::io::stdin()
+        .read_to_end(&mut Vec::new())
+        .expect("hold until released");
+}
+
+/// A [`world_directory_holder`] process holding a world of `case`.
+struct Holder {
+    process: std::process::Child,
+    /// The rest of its output, read to its end once it is released.
+    output: std::io::BufReader<std::process::ChildStdout>,
+    /// The path it holds.
+    held: std::path::PathBuf,
+}
+
+/// Starts a [`Holder`] of `case`, returned once it has reported its world.
+fn hold_in_another_process(case: &str) -> std::result::Result<Holder, String> {
+    use std::io::BufRead;
+    let name = module_path!()
+        .split_once("::")
+        .map_or(module_path!(), |(_, test)| test);
+    let mut holder = std::process::Command::new(std::env::current_exe().map_err(failed)?)
+        .args([
+            &format!("{name}::world_directory_holder"),
+            "--exact",
+            "--nocapture",
+        ])
+        .env(HOLD_CASE, case)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(failed)?;
+    let stdout = holder.stdout.take().ok_or("holder has no stdout")?;
+    let mut output = std::io::BufReader::new(stdout);
+    let mut line = String::new();
+    let held = loop {
+        line.clear();
+        if output.read_line(&mut line).map_err(failed)? == 0 {
+            return Err("holder exited without reporting its world".into());
+        }
+        if let Some(held) = line.trim_end().strip_prefix("HELD ") {
+            break std::path::PathBuf::from(held);
+        }
+    };
+    Ok(Holder {
+        process: holder,
+        output,
+        held,
+    })
+}
+
+/// Two live worlds of one case and seed never share a directory, whether they
+/// live in one process or in two.
+#[test]
+fn live_world_directories_never_share_a_directory() {
+    let case = "live-world-directories";
+    let first = WorldDirectory::named(case, 0).expect("first world directory");
+    let second = WorldDirectory::named(case, 0).expect("second world directory");
+    assert_ne!(first.path(), second.path());
+    let mut holder = hold_in_another_process("held-world-directories").expect("holder");
+    let mine = WorldDirectory::named("held-world-directories", 0).expect("world directory");
+    assert_ne!(mine.path(), holder.held);
     assert!(
-        name.contains(&process),
-        "world directory {name} does not name process {process}"
+        holder.held.join("left").exists(),
+        "the holder's world was disturbed"
+    );
+    drop(holder.process.stdin.take());
+    std::io::Read::read_to_end(&mut holder.output, &mut Vec::new()).expect("holder output");
+    assert!(holder.process.wait().expect("holder exit").success());
+}
+
+/// A slot whose holder died starts empty: what the dead world left is removed
+/// before the next world of its case and seed uses the path.
+#[test]
+fn world_directories_drop_what_a_dead_holder_left() {
+    let case = "dead-world-directories";
+    let mut holder = hold_in_another_process(case).expect("holder");
+    holder.process.kill().expect("kill holder");
+    holder.process.wait().expect("holder exit");
+    let held = holder.held;
+    let world = WorldDirectory::named(case, 0).expect("world directory");
+    assert_eq!(world.path(), held);
+    assert_eq!(
+        std::fs::read_dir(world.path())
+            .expect("world directory")
+            .count(),
+        0,
+        "a dead holder's files reached the next world"
     );
 }

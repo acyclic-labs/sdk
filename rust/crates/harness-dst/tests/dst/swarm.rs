@@ -573,6 +573,10 @@ fn run_metered(seed: u64, plan: &[Step], measured: bool) -> std::result::Result<
     })
 }
 
+/// One seeded world, in its case and seed's world directory. A world whose
+/// counts must repeat another's runs after it, never alongside it: a
+/// concurrent world of the same case and seed takes another slot, so its
+/// announced path, and the counts that follow from it, differ.
 fn run_world(
     seed: u64,
     plan: &[Step],
@@ -584,7 +588,7 @@ fn run_world(
     let world = || {
         runtime.block_on(async {
             tokio::time::pause();
-            let directory = temporary_directory().map_err(|e| e.to_string())?;
+            let directory = oracle::WorldDirectory::new(seed).map_err(|e| e.to_string())?;
             let mut driver = driver::Driver::new(seed, None);
             // The driver's simulated deadline fails a swarm that stops making
             // progress, instead of hanging.

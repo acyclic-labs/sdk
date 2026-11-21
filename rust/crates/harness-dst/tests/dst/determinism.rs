@@ -244,6 +244,8 @@ fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> Stri
     walk("trace", left, right)
 }
 
+/// Its replays run one after another, never alongside each other, so each
+/// takes the same world slot and announces the same path.
 fn world(seed: u64) -> std::result::Result<bool, String> {
     let class = class(seed);
     let world_seed = seed % WORLDS.len() as u64;
