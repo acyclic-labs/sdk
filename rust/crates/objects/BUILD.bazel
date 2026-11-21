@@ -21,7 +21,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/grpc_context_tests.rs","src/grpc_revision_tests.rs","src/grpc_tests.rs","src/http/tests.rs","src/http_context_tests.rs","src/local/outcome_tests.rs","src/s3/tests.rs","src/s3/tests/**","src/tests.rs","src/tests/**","src/bin/objects-rpc-inventory.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    tags = ["resources:memory:384"],
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -426,7 +426,7 @@ rust_test(
         "--skip",
         "s3::capability::",
     ],
-    tags = ["manual","resources:memory:640"],
+    tags = ["manual","resources:memory:768"],
 )
 
 isolated_test(
@@ -1205,7 +1205,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/grpc_context_tests.rs","src/grpc_revision_tests.rs","src/grpc_tests.rs","src/http/tests.rs","src/http_context_tests.rs","src/local/outcome_tests.rs","src/s3/tests.rs","src/s3/tests/**","src/tests.rs","src/tests/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    tags = ["resources:memory:384"],
+    tags = ["resources:memory:512"],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,

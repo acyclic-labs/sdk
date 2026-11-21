@@ -133,6 +133,30 @@ pub trait Medium: acyclic_stream_contract::ProviderPlatform {
     /// Reads complete bytes and their original key-bound provider version.
     /// Absence supplies no conditional fact.
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError>;
+    /// [`Medium::create`] of every entry as one medium operation, outcomes in
+    /// entry order. Entries are independent and may apply in any order; a
+    /// key repeated in `entries` is created once. A medium with native
+    /// batched writes makes the batch one physical write; this default
+    /// creates every entry concurrently.
+    async fn create_many(
+        &self,
+        entries: Vec<(String, OwnedBytes)>,
+    ) -> Vec<Result<bool, MediumError>> {
+        futures::future::join_all(
+            entries
+                .into_iter()
+                .map(|(key, bytes)| async move { self.create(&key, bytes).await }),
+        )
+        .await
+    }
+    /// [`Medium::observe`] of every key as one medium operation, outcomes in
+    /// key order. This default observes every key concurrently.
+    async fn observe_many(
+        &self,
+        keys: Vec<String>,
+    ) -> Vec<Result<Option<Observed<'_>>, MediumError>> {
+        futures::future::join_all(keys.into_iter().map(|key| self.observe(key))).await
+    }
     /// Replaces the observed key only while its provider version still matches,
     /// atomically against every other write and removal. A successful write
     /// returns its own successor fact without another read. No durability

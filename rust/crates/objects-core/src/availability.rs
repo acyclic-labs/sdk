@@ -242,12 +242,41 @@ impl<'a> Restoration<'a> {
             outcome: RestorationOutcome::Indeterminate,
         };
         let result = write.await;
-        restoration.outcome = match &result {
-            Ok(true) => RestorationOutcome::Restored,
-            Ok(false) | Err(crate::MediumError::Failed(_)) => RestorationOutcome::NoEffect,
-            Err(crate::MediumError::Ambiguous(_)) => RestorationOutcome::Indeterminate,
-        };
+        restoration.outcome = RestorationOutcome::of(&result);
         result
+    }
+
+    /// [`Restoration::write`] of one batched write of each digest's payload,
+    /// outcomes in digest order. Every digest is indeterminate until the
+    /// batch's own result classifies it.
+    pub async fn write_many(
+        source: &'a AvailabilitySource,
+        digests: Vec<Digest>,
+        write: impl Future<Output = Vec<Result<bool, crate::MediumError>>>,
+    ) -> Vec<Result<bool, crate::MediumError>> {
+        let mut restorations: Vec<Self> = digests
+            .into_iter()
+            .map(|digest| Self {
+                source,
+                digest,
+                outcome: RestorationOutcome::Indeterminate,
+            })
+            .collect();
+        let results = write.await;
+        for (restoration, result) in restorations.iter_mut().zip(&results) {
+            restoration.outcome = RestorationOutcome::of(result);
+        }
+        results
+    }
+}
+
+impl RestorationOutcome {
+    fn of(result: &Result<bool, crate::MediumError>) -> Self {
+        match result {
+            Ok(true) => Self::Restored,
+            Ok(false) | Err(crate::MediumError::Failed(_)) => Self::NoEffect,
+            Err(crate::MediumError::Ambiguous(_)) => Self::Indeterminate,
+        }
     }
 }
 

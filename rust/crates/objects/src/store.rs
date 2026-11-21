@@ -553,6 +553,33 @@ fn medium(error: MediumError) -> Error {
     Error::caused(ErrorCode::Unavailable, Cause::new("objects.medium", reason)).with_source(error)
 }
 
+/// One member of [`Account::publish_blobs`].
+struct Member {
+    digest: Digest,
+    payload: OwnedBytes,
+    wanted: Envelope,
+    step: Step,
+}
+
+/// Where a batch member stands in the protocol.
+enum Step {
+    /// Takes the one-by-one protocol: its envelope existed.
+    Single,
+    /// This batch created the envelope; the batch carries it on.
+    Created(Envelope),
+    /// This batch created the envelope; an earlier member it references was
+    /// not complete, so it finishes one by one after that member.
+    Deferred(Envelope),
+    Done(Result<Put, Error>),
+}
+
+#[derive(Clone, Copy)]
+enum Admission {
+    Batched,
+    Deferred,
+    Missing,
+}
+
 /// A conditional write's unknown outcome means this actor's work may no
 /// longer be its own.
 fn moved(error: MediumError) -> Error {
@@ -1398,6 +1425,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 Adopted::Lost => return Err(ErrorCode::Conflict.into()),
             }
         };
+        self.publish_version(digest, envelope, payload, created)
+            .await
+    }
+
+    /// Indexes the references of `envelope`'s version of `digest`, then
+    /// writes its payload unless complete; `created` when this put created
+    /// the envelope.
+    async fn publish_version(
+        &self,
+        digest: Digest,
+        envelope: Envelope,
+        payload: OwnedBytes,
+        created: bool,
+    ) -> Result<Put, Error> {
         let verified = Verified {
             digest,
             length: envelope.length,
@@ -1453,6 +1494,416 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             return Ok(Some(false));
         }
         Err(ErrorCode::Conflict.into())
+    }
+
+    /// Publishes `requests` in order, each as [`Account::publish`] would,
+    /// with one medium operation per protocol step for the whole batch: every
+    /// envelope, then every index key, then the children's admission, then
+    /// the payloads, one wave per level of in-batch references. So a batch
+    /// costs medium operations by its depth, not one per key.
+    ///
+    /// The protocol's guarantees hold per member. A payload is written only
+    /// after its index keys exist and every child is admitted: a child
+    /// outside the batch must be alive and complete now; a child this batch
+    /// created earlier in order has its payload written in an earlier wave,
+    /// and a parent whose such child did not complete is deferred, so no
+    /// parent's payload lands before its child's. The collection exclusion the caller holds keeps such a
+    /// child from being condemned meanwhile, and every created version is
+    /// tracked before any of its keys is visible. A member whose envelope
+    /// already exists, or whose in-batch child was not batched, takes the
+    /// one-by-one protocol after the batch, in order.
+    async fn publish_blobs(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+        window: usize,
+    ) -> Vec<Result<Put, Error>> {
+        let issued = match self.issued().await {
+            Ok(issued) => issued,
+            Err(error) => return requests.iter().map(|_| Err(error.clone())).collect(),
+        };
+        let mut outcomes = Vec::with_capacity(requests.len());
+        let mut requests = requests.into_iter();
+        // `window` bounds the working state; a chunk's children in earlier
+        // chunks are complete before it starts.
+        loop {
+            let chunk: Vec<_> = requests.by_ref().take(window.max(1)).collect();
+            if chunk.is_empty() {
+                return outcomes;
+            }
+            outcomes.extend(self.publish_chunk(chunk, issued).await);
+        }
+    }
+
+    /// The bytes [`Account::publish_blobs`] holds beyond `requests` at once:
+    /// the largest chunk's member states, keys and lookup entries.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn publication_bytes(
+        &self,
+        requests: &[(crate::Sealed, Vec<Digest>)],
+        window: usize,
+    ) -> usize {
+        let sample = Digest::of(&[]);
+        let version = [0; 16];
+        let entry = std::mem::size_of::<(String, OwnedBytes)>();
+        let lookup = 2 * std::mem::size_of::<(Digest, usize)>() + std::mem::size_of::<usize>();
+        let member = std::mem::size_of::<Member>()
+            + 2 * entry
+            + self.envelope_key(&sample).len()
+            + self.payload_key(&sample, &version).len()
+            + lookup;
+        let reference = entry
+            + self
+                .index_key(&sample, &Self::envelope_tag(&sample, &version))
+                .len()
+            + lookup;
+        requests
+            .chunks(window.max(1))
+            .map(|chunk| {
+                chunk.iter().fold(0usize, |bytes, (_, references)| {
+                    bytes
+                        .saturating_add(member)
+                        .saturating_add(references.len().saturating_mul(reference))
+                })
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Publishes one chunk of [`Account::publish_blobs`].
+    async fn publish_chunk(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+        issued: &Issued,
+    ) -> Vec<Result<Put, Error>> {
+        let mut members: Vec<Member> = requests
+            .into_iter()
+            .map(|(body, references)| {
+                let digest = Digest::sealed(&body);
+                let payload = body.into_bytes();
+                let length = payload.len() as u64;
+                Member {
+                    digest,
+                    payload,
+                    wanted: Envelope {
+                        kind: Kind::Blob,
+                        length,
+                        stored: length,
+                        references: canonical(references),
+                        sha256: None,
+                        // Assigned below.
+                        version: [0; 16],
+                        dying: None,
+                        condemned: 0,
+                    },
+                    step: Step::Single,
+                }
+            })
+            .collect();
+        self.create_envelopes(&mut members).await;
+        self.index_references(&mut members).await;
+        self.admit_children(&mut members).await;
+        self.write_payloads(&mut members).await;
+        let mut outcomes = Vec::with_capacity(members.len());
+        for member in members {
+            let outcome = match member.step {
+                Step::Done(outcome) => outcome,
+                Step::Single => {
+                    self.publish(member.digest, member.payload, member.wanted)
+                        .await
+                }
+                Step::Created(envelope) | Step::Deferred(envelope) => {
+                    self.publish_version(member.digest, envelope, member.payload, true)
+                        .await
+                }
+            };
+            outcomes.push(outcome.map(|put| issued.committed(put)));
+        }
+        outcomes
+    }
+
+    /// Creates every member's envelope under a fresh version in one medium
+    /// operation; a member whose envelope exists stays single.
+    async fn create_envelopes(&self, members: &mut [Member]) {
+        let mut entries = Vec::with_capacity(members.len());
+        let mut sent = Vec::with_capacity(members.len());
+        for (index, member) in members.iter_mut().enumerate() {
+            let fresh = version().and_then(|version| {
+                let fresh = Envelope {
+                    version,
+                    ..member.wanted.clone()
+                };
+                let bytes = fresh.encode()?;
+                Ok((fresh, bytes))
+            });
+            match fresh {
+                Ok((fresh, bytes)) => {
+                    self.track(&member.digest, &fresh);
+                    entries.push((self.envelope_key(&member.digest), bytes.into()));
+                    sent.push(index);
+                    member.step = Step::Created(fresh);
+                }
+                Err(error) => member.step = Step::Done(Err(error)),
+            }
+        }
+        let created = self.medium.create_many(entries).await;
+        for (index, created) in sent.into_iter().zip(created) {
+            let Some(member) = members.get_mut(index) else {
+                continue;
+            };
+            let Step::Created(fresh) = &member.step else {
+                continue;
+            };
+            match created {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.untrack(&member.digest, &fresh.version);
+                    member.step = Step::Single;
+                }
+                Err(MediumError::Ambiguous(_)) => member.step = Step::Done(Ok(Put::Unknown)),
+                Err(error) => member.step = Step::Done(Err(medium(error))),
+            }
+        }
+    }
+
+    /// Creates the index key of every reference of every created member in
+    /// one medium operation.
+    async fn index_references(&self, members: &mut [Member]) {
+        let mut entries = Vec::new();
+        let mut owners = Vec::new();
+        for (index, member) in members.iter().enumerate() {
+            if let Step::Created(envelope) = &member.step {
+                let tag = Self::envelope_tag(&member.digest, &envelope.version);
+                for child in &envelope.references {
+                    entries.push((self.index_key(child, &tag), OwnedBytes::new()));
+                    owners.push(index);
+                }
+            }
+        }
+        if entries.is_empty() {
+            return;
+        }
+        let created = self.medium.create_many(entries).await;
+        for (index, created) in owners.into_iter().zip(created) {
+            let Err(error) = created else {
+                continue;
+            };
+            if let Some(member) = members.get_mut(index)
+                && matches!(member.step, Step::Created(_))
+            {
+                let error = moved(error);
+                member.step = Step::Done(if error.code == ErrorCode::OutcomeUnknown {
+                    Ok(Put::Unknown)
+                } else {
+                    Err(error)
+                });
+            }
+        }
+    }
+
+    /// Admits every created member's children, observing those outside the
+    /// batch in one medium operation. A member whose child is an earlier
+    /// member that is not complete is deferred to the one-by-one protocol.
+    async fn admit_children(&self, members: &mut [Member]) {
+        let mut first: HashMap<Digest, usize> = HashMap::new();
+        for (index, member) in members.iter().enumerate() {
+            first.entry(member.digest).or_insert(index);
+        }
+        let mut outside: Vec<Digest> = Vec::new();
+        let mut seen = HashSet::new();
+        for (index, member) in members.iter().enumerate() {
+            if let Step::Created(envelope) = &member.step {
+                for child in &envelope.references {
+                    let batched = first.get(child).is_some_and(|&earlier| {
+                        earlier < index
+                            && members
+                                .get(earlier)
+                                .is_some_and(|member| matches!(member.step, Step::Created(_)))
+                    });
+                    if !batched && seen.insert(*child) {
+                        outside.push(*child);
+                    }
+                }
+            }
+        }
+        let alive = match self.alive_many(&outside).await {
+            Ok(alive) => outside.into_iter().zip(alive).collect::<HashMap<_, _>>(),
+            Err(error) => {
+                for member in members.iter_mut() {
+                    if matches!(member.step, Step::Created(_)) {
+                        member.step = Step::Done(Err(error.clone()));
+                    }
+                }
+                return;
+            }
+        };
+        for index in 0..members.len() {
+            let Some(Step::Created(envelope)) = members.get(index).map(|member| &member.step)
+            else {
+                continue;
+            };
+            let mut admitted = Admission::Batched;
+            for child in &envelope.references {
+                let earlier = first.get(child).copied().filter(|&earlier| earlier < index);
+                let child_batched = earlier.is_some_and(|earlier| {
+                    members
+                        .get(earlier)
+                        .is_some_and(|member| matches!(member.step, Step::Created(_)))
+                });
+                if child_batched || alive.get(child).copied().unwrap_or(false) {
+                    continue;
+                }
+                if earlier.is_some() {
+                    admitted = Admission::Deferred;
+                } else {
+                    admitted = Admission::Missing;
+                    break;
+                }
+            }
+            let Some(member) = members.get_mut(index) else {
+                continue;
+            };
+            match (admitted, std::mem::replace(&mut member.step, Step::Single)) {
+                (Admission::Deferred, Step::Created(envelope)) => {
+                    member.step = Step::Deferred(envelope);
+                }
+                (Admission::Missing, _) => {
+                    member.step = Step::Done(Err(ErrorCode::MissingReference.into()));
+                }
+                (_, step) => member.step = step,
+            }
+        }
+    }
+
+    /// Writes the admitted members' payloads, one medium operation per
+    /// wave: a wave holds the members whose children in this batch all
+    /// completed in earlier waves, so no payload lands before its children's.
+    /// Each payload is classified for availability as
+    /// [`Account::write_payload`] classifies one.
+    async fn write_payloads(&self, members: &mut [Member]) {
+        let mut first: HashMap<Digest, usize> = HashMap::new();
+        for (index, member) in members.iter().enumerate() {
+            first.entry(member.digest).or_insert(index);
+        }
+        loop {
+            let mut entries = Vec::new();
+            let mut digests = Vec::new();
+            let mut sent = Vec::new();
+            for index in 0..members.len() {
+                let Some(Step::Created(envelope)) = members.get(index).map(|member| &member.step)
+                else {
+                    continue;
+                };
+                let mut ready = true;
+                let mut failed = false;
+                for child in &envelope.references {
+                    let Some(&earlier) = first.get(child).filter(|&&earlier| earlier < index)
+                    else {
+                        continue;
+                    };
+                    match members.get(earlier).map(|member| &member.step) {
+                        Some(Step::Done(Ok(Put::Created { .. }))) => {}
+                        Some(Step::Created(_)) => ready = false,
+                        // Admitted while that member was batched, it did not
+                        // complete: the one-by-one protocol decides.
+                        _ => failed = true,
+                    }
+                }
+                let Some(member) = members.get_mut(index) else {
+                    continue;
+                };
+                if failed {
+                    if let Step::Created(envelope) =
+                        std::mem::replace(&mut member.step, Step::Single)
+                    {
+                        member.step = Step::Deferred(envelope);
+                    }
+                } else if ready {
+                    // A child sent in this wave is still created, so its
+                    // parent waits for the next.
+                    let Step::Created(envelope) = &member.step else {
+                        continue;
+                    };
+                    let payload = std::mem::replace(&mut member.payload, OwnedBytes::new());
+                    entries.push((self.payload_key(&member.digest, &envelope.version), payload));
+                    digests.push(member.digest);
+                    sent.push(index);
+                }
+            }
+            if entries.is_empty() {
+                return;
+            }
+            let written = crate::availability::Restoration::write_many(
+                &self.state.availability,
+                digests,
+                self.medium.create_many(entries),
+            )
+            .await;
+            for (index, written) in sent.into_iter().zip(written) {
+                let Some(member) = members.get_mut(index) else {
+                    continue;
+                };
+                let Step::Created(envelope) = &member.step else {
+                    continue;
+                };
+                let verified = Verified {
+                    digest: member.digest,
+                    length: envelope.length,
+                    revision: None,
+                };
+                let outcome = match written {
+                    Ok(true) => Ok(()),
+                    // A fresh version's payload key exists only once complete.
+                    Ok(false) => match self.complete(&member.digest, envelope).await {
+                        Ok(true) => Ok(()),
+                        Ok(false) => Err(ErrorCode::Conflict.into()),
+                        Err(error) => Err(error),
+                    },
+                    Err(MediumError::Ambiguous(_)) => {
+                        member.step = Step::Done(Ok(Put::Unknown));
+                        continue;
+                    }
+                    Err(error) => Err(medium(error)),
+                };
+                if outcome.is_ok() {
+                    self.completed(&member.digest, &envelope.version, true);
+                }
+                member.step = Step::Done(outcome.map(|()| Put::Created { verified }));
+            }
+        }
+    }
+
+    /// Whether each of `digests` is a blob no collection condemned: its
+    /// envelope stored and live and its payload complete. One observation of
+    /// every envelope; the completeness reads select no bytes.
+    async fn alive_many(&self, digests: &[Digest]) -> Result<Vec<bool>, Error> {
+        if digests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys = digests
+            .iter()
+            .map(|digest| self.envelope_key(digest))
+            .collect();
+        let observed = self.medium.observe_many(keys).await;
+        if observed.len() != digests.len() {
+            return Err(invalid());
+        }
+        let mut alive = Vec::with_capacity(digests.len());
+        for (digest, observed) in digests.iter().zip(observed) {
+            let Some(observed) = observed.map_err(medium)? else {
+                alive.push(false);
+                continue;
+            };
+            let envelope = match Envelope::decode_admitted(&observed.bytes, self) {
+                Ok(envelope) => envelope,
+                Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => {
+                    alive.push(false);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            alive.push(envelope.dying.is_none() && self.complete(digest, &envelope).await?);
+        }
+        Ok(alive)
     }
 
     /// Adopts the stored envelope of `digest` for a put of `wanted`, reviving
@@ -1639,6 +2090,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         )
     }
 
+    /// [`Account::publish_blobs`] under the collection exclusion.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn put_batch_inner(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+        window: usize,
+    ) -> Vec<Result<Put, Error>> {
+        if let Err(error) = self.issued().await {
+            return requests.into_iter().map(|_| Err(error.clone())).collect();
+        }
+        let _gate = self.state.gate.read().await;
+        self.publish_blobs(requests, window).await
+    }
+
     pub(crate) async fn put_inner(
         &self,
         body: crate::Sealed,
@@ -1787,18 +2252,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             return requests.into_iter().map(|_| Err(error.clone())).collect();
         }
         let _gate = self.state.gate.read().await;
-        let mut outcomes = Vec::with_capacity(requests.len());
-        let driven = crate::batch::drive(
-            requests.into_iter(),
-            crate::BATCH_WINDOW,
-            |_| Ok::<_, std::convert::Infallible>(()),
-            |(body, references)| self.publish_blob(body, references),
-            |put| outcomes.push(put),
-        )
-        .await;
-        let Ok(()) = driven;
+        let mut outcomes = self.publish_blobs(requests, crate::BATCH_WINDOW).await;
         crate::provider::flush_puts(self, &mut outcomes).await;
         outcomes
+    }
+
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        if let Err(error) = self.issued().await {
+            return requests.into_iter().map(|_| Err(error.clone())).collect();
+        }
+        let _gate = self.state.gate.read().await;
+        self.publish_blobs(requests, crate::BATCH_WINDOW).await
     }
 
     async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
@@ -1810,11 +2277,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 self.issued().await?;
                 self.flush_blobs(only, Vec::new()).await?;
                 // A blob collected since its put is not durable however flushed.
-                for digest in only.into_iter().flatten() {
-                    match self.blob(digest).await? {
-                        Some(envelope) if envelope.dying.is_none() => {}
-                        _ => return Err(ErrorCode::MissingReference.into()),
-                    }
+                let only = only.unwrap_or_default();
+                if self.alive_many(only).await?.contains(&false) {
+                    return Err(ErrorCode::MissingReference.into());
                 }
                 Ok(())
             }

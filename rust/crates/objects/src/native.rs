@@ -87,15 +87,11 @@ impl<'a> Metered<'a> {
         self.charge(bytes.with_guard(allocation, Arc::clone(&self.meter)))
     }
 
-    /// The meter's refusal behind `error`, else the engine's error.
+    /// The meter's refusal behind `error`, else the engine's error. A
+    /// refusal is the meter's, shared by every member of a batch over it.
     fn cause(&self, error: crate::Error) -> NativeObjectsError {
-        match self
-            .refusal
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            Some(refusal) => refusal.into(),
+        match &*self.refusal.lock().unwrap_or_else(PoisonError::into_inner) {
+            Some(refusal) => std::io::Error::new(refusal.kind(), refusal.to_string()).into(),
             None => NativeObjectsError::from(NativeObjectsCause::Service(error)),
         }
     }
@@ -121,6 +117,71 @@ impl Medium for Metered<'_> {
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         self.admit_write(true)?;
         self.inner.remove(key).await
+    }
+
+    async fn create_many(
+        &self,
+        entries: Vec<(String, OwnedBytes)>,
+    ) -> Vec<Result<bool, MediumError>> {
+        // Each entry is admitted as its own write; the admitted ones reach
+        // the medium as one operation.
+        let mut admitted = Vec::with_capacity(entries.len());
+        let mut outcomes: Vec<Option<Result<bool, MediumError>>> =
+            Vec::with_capacity(entries.len());
+        for entry in entries {
+            match self.admit_write(false) {
+                Ok(()) => {
+                    admitted.push(entry);
+                    outcomes.push(None);
+                }
+                Err(error) => outcomes.push(Some(Err(error))),
+            }
+        }
+        let mut created = self.inner.create_many(admitted).await.into_iter();
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| {
+                    created.next().unwrap_or_else(|| {
+                        Err(MediumError::Failed(std::io::ErrorKind::InvalidData.into()))
+                    })
+                })
+            })
+            .collect()
+    }
+
+    async fn observe_many(
+        &self,
+        keys: Vec<String>,
+    ) -> Vec<Result<Option<Observed<'_>>, MediumError>> {
+        let mut admitted = Vec::with_capacity(keys.len());
+        let mut outcomes: Vec<Option<Result<Option<Observed<'_>>, MediumError>>> =
+            Vec::with_capacity(keys.len());
+        for key in keys {
+            match self.charge(self.meter.admit_read(0)) {
+                Ok(()) => {
+                    admitted.push(key);
+                    outcomes.push(None);
+                }
+                Err(error) => outcomes.push(Some(Err(error))),
+            }
+        }
+        let mut observed = self.inner.observe_many(admitted).await.into_iter();
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| {
+                    let mut observed = observed.next().unwrap_or_else(|| {
+                        Err(MediumError::Failed(std::io::ErrorKind::InvalidData.into()))
+                    })?;
+                    if let Some(observed) = &mut observed {
+                        observed.bytes = self.retain_read(std::mem::take(&mut observed.bytes))?;
+                        self.hold(observed.observation.version_bytes())?;
+                    }
+                    Ok(observed)
+                })
+            })
+            .collect()
     }
 
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
@@ -411,7 +472,8 @@ pub fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     put_window(account, requests, meter, crate::BATCH_WINDOW)
 }
 
-/// [`put_batch`] with `window` members in flight.
+/// [`put_batch`] published `window` members at a time, each chunk a
+/// constant number of medium operations, every write admitted by `meter`.
 pub fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
@@ -422,25 +484,20 @@ pub fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     let batch_meter = Arc::clone(meter);
     native_future(meter, async move {
         // An unpolled frame keeps the whole request. Once started, declare
-        // funding first so the iterator also retires before it on withdrawal.
+        // funding first so the requests also retire before it on withdrawal.
         let _custody;
         let (requests, custody) = requests.split();
         _custody = custody;
         let meter = &batch_meter;
         let mut results = results(requests.len(), meter)?;
-        crate::batch::drive(
-            requests.into_iter(),
-            window,
-            |bytes| ReadAllocation::new(meter, bytes),
-            |(body, references)| async move {
-                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
-                let account = account.over(&medium);
-                checked(&medium, account.put_inner(body, references).await)
-                    .map(|put| ObjectsPutReceipt::new(put, None))
-            },
-            |put| results.0.push(put),
-        )
-        .await?;
+        let _working = ReadAllocation::new(meter, account.publication_bytes(&requests, window))?;
+        let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+        let account = account.over(&medium);
+        for put in account.put_batch_inner(requests, window).await {
+            results
+                .0
+                .push(checked(&medium, put).map(|put| ObjectsPutReceipt::new(put, None)));
+        }
         ObjectsBatch::new(results.0, results.1)
     })
 }

@@ -431,6 +431,50 @@ impl Shared {
         Ok(slot.sequence)
     }
 
+    /// Appends the frames of `entries`, every key absent and distinct, as one
+    /// physical write, then indexes each in order with its own sequence. A
+    /// torn write leaves a frame prefix, which replay reads as it reads
+    /// separately appended frames.
+    fn put_many(&self, log: &mut Log, entries: &[(&str, &[u8])]) -> Result<(), MediumError> {
+        self.usable().map_err(failed)?;
+        let mut frames = Vec::new();
+        let mut lengths = Vec::with_capacity(entries.len());
+        for &(key, value) in entries {
+            let frame = encode(PUT, key, value).map_err(failed)?;
+            lengths.push(frame.len() as u64);
+            frames.extend_from_slice(&frame);
+        }
+        log.written
+            .checked_add(entries.len() as u64)
+            .ok_or_else(|| {
+                failed(std::io::Error::other(
+                    "local mutation sequence exhausted; recovery: reopen the medium",
+                ))
+            })?;
+        let start = log.end;
+        self.stop_on_error(acyclic_native_runtime::persistence_syscall(|| {
+            acyclic_native_runtime::write_all_at(&log.file, start, &frames, None)
+        }))
+        .map_err(MediumError::Ambiguous)?;
+        log.end += frames.len() as u64;
+        let mut frame = start;
+        let mut index = self.index();
+        for (&(key, value), bytes) in entries.iter().zip(lengths) {
+            log.written += 1;
+            let slot = Slot {
+                frame,
+                bytes,
+                value: frame + value_offset(key),
+                length: value.len() as u64,
+                sequence: log.written,
+            };
+            log.live += bytes;
+            index.insert(key.to_owned(), Entry::new(key, slot, value));
+            frame += bytes;
+        }
+        Ok(())
+    }
+
     fn remove(&self, log: &mut Log, key: &str) -> Result<bool, MediumError> {
         if self.slot(key).is_none() {
             return Ok(false);
@@ -660,6 +704,56 @@ impl LocalMedium {
         .and_then(std::convert::identity)
         .map_err(failed)
     }
+
+    /// [`LocalMedium::read_value`] of every key, whole, as one blocking
+    /// operation: the slots are paired with their log under one lock, then read.
+    async fn read_values(
+        &self,
+        keys: Vec<String>,
+    ) -> Vec<Result<Option<(OwnedBytes, u64, String)>, MediumError>> {
+        let count = keys.len();
+        let shared = Arc::clone(&self.shared);
+        let address = keys.as_ptr() as usize;
+        let read = blocking(self, "read", address, move || {
+            let located: Vec<_> = {
+                let log = shared.log();
+                keys.into_iter()
+                    .map(|key| {
+                        let slot = shared.slot(&key);
+                        (key, slot.map(|slot| (Arc::clone(&log.file), slot)))
+                    })
+                    .collect()
+            };
+            located
+                .into_iter()
+                .map(|(key, slot)| {
+                    let Some((file, slot)) = slot else {
+                        return Ok(None);
+                    };
+                    let range = slot.range(None)?;
+                    let count = usize::try_from(range.end - range.start)
+                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+                    let mut bytes = vec![0; count];
+                    #[cfg(test)]
+                    shared.counts.read.fetch_add(1, Ordering::Relaxed);
+                    acyclic_native_runtime::persistence_syscall(|| {
+                        read_exact_at(&file, slot.value + range.start, &mut bytes)
+                    })?;
+                    Ok(Some((OwnedBytes::from(bytes), slot.sequence, key)))
+                })
+                .collect::<Vec<std::io::Result<_>>>()
+        })
+        .await;
+        match read {
+            Ok(values) => values
+                .into_iter()
+                .map(|value| value.map_err(failed))
+                .collect(),
+            Err(error) => (0..count)
+                .map(|_| Err(failed(std::io::Error::new(error.kind(), error.to_string()))))
+                .collect(),
+        }
+    }
 }
 
 impl LocalMedium {
@@ -817,6 +911,18 @@ fn failed(error: std::io::Error) -> MediumError {
     MediumError::Failed(error)
 }
 
+/// The same outcome class for another key of one failed batch.
+fn copy_error(error: &MediumError) -> MediumError {
+    match error {
+        MediumError::Ambiguous(cause) => {
+            MediumError::Ambiguous(std::io::Error::new(cause.kind(), cause.to_string()))
+        }
+        MediumError::Failed(cause) => {
+            MediumError::Failed(std::io::Error::new(cause.kind(), cause.to_string()))
+        }
+    }
+}
+
 #[cfg(all(test, feature = "test-support"))]
 mod outcome_tests;
 
@@ -878,6 +984,110 @@ impl Medium for LocalMedium {
                     .source
                     .issue(key, ObservedVersion::Sequence(sequence)),
             }))
+    }
+
+    async fn create_many(
+        &self,
+        entries: Vec<(String, OwnedBytes)>,
+    ) -> Vec<Result<bool, MediumError>> {
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let shared = Arc::clone(&self.shared);
+        let address = entries.as_ptr() as usize;
+        let count = entries.len();
+        let created = blocking(self, "create", address, move || {
+            let mut log = shared.log();
+            let mut seen = std::collections::HashSet::with_capacity(entries.len());
+            let created: Vec<bool> = entries
+                .iter()
+                .map(|(key, _)| shared.slot(key).is_none() && seen.insert(key.as_str()))
+                .collect();
+            let fresh: Vec<(&str, &[u8])> = entries
+                .iter()
+                .zip(&created)
+                .filter(|(_, created)| **created)
+                .map(|((key, bytes), _)| (key.as_str(), &bytes[..]))
+                .collect();
+            let written = if fresh.is_empty() {
+                Ok(())
+            } else {
+                shared.put_many(&mut log, &fresh)
+            };
+            (created, written)
+        })
+        .await;
+        match created {
+            Ok((created, Ok(()))) => created.into_iter().map(Ok).collect(),
+            // A refused write had no effect on keys that already existed.
+            Ok((created, Err(error))) => created
+                .into_iter()
+                .map(|created| {
+                    if created {
+                        Err(copy_error(&error))
+                    } else {
+                        Ok(false)
+                    }
+                })
+                .collect(),
+            Err(error) => (0..count)
+                .map(|_| {
+                    Err(MediumError::Ambiguous(std::io::Error::new(
+                        error.kind(),
+                        error.to_string(),
+                    )))
+                })
+                .collect(),
+        }
+    }
+
+    async fn observe_many(
+        &self,
+        keys: Vec<String>,
+    ) -> Vec<Result<Option<Observed<'_>>, MediumError>> {
+        let mut outcomes = Vec::with_capacity(keys.len());
+        let mut logged = Vec::new();
+        for key in keys {
+            outcomes.push(match self.shared.indexed(&key, None) {
+                Err(error) => Some(Err(failed(error))),
+                Ok(Indexed::Absent) => Some(Ok(None)),
+                Ok(Indexed::Held(bytes, sequence)) => Some(Ok(Some(Observed {
+                    bytes,
+                    observation: self
+                        .shared
+                        .source
+                        .issue(key, ObservedVersion::Sequence(sequence)),
+                }))),
+                Ok(Indexed::Logged) => {
+                    logged.push(key);
+                    None
+                }
+            });
+        }
+        let mut read = if logged.is_empty() {
+            Vec::new()
+        } else {
+            self.read_values(logged).await
+        }
+        .into_iter();
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| {
+                    read.next()
+                        .unwrap_or_else(|| Err(failed(std::io::ErrorKind::InvalidData.into())))
+                        .map(|value| {
+                            value.map(|(bytes, sequence, key)| Observed {
+                                bytes,
+                                observation: self
+                                    .shared
+                                    .source
+                                    .issue(key, ObservedVersion::Sequence(sequence)),
+                            })
+                        })
+                })
+            })
+            .collect()
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {

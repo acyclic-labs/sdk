@@ -2369,6 +2369,20 @@ impl Medium for Counting {
         }
         Ok(result)
     }
+    async fn create_many(
+        &self,
+        entries: Vec<(String, OwnedBytes)>,
+    ) -> Vec<Result<bool, MediumError>> {
+        self.count("create_many");
+        self.inner.create_many(entries).await
+    }
+    async fn observe_many(
+        &self,
+        keys: Vec<String>,
+    ) -> Vec<Result<Option<Observed<'_>>, MediumError>> {
+        self.count("observe_many");
+        self.inner.observe_many(keys).await
+    }
 
     async fn replace<'a>(
         &'a self,
@@ -3957,6 +3971,60 @@ async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
         parent.err().map(|error| error.code),
         Some(ErrorCode::MissingReference)
     );
+    Ok(())
+}
+
+/// A batch publishes with medium operations by its depth, however many
+/// members and references it holds: one envelope write, one index write, one
+/// observation of outside children, then one payload write per level.
+#[tokio::test]
+async fn a_batch_costs_medium_operations_by_depth_not_size()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::new(Counting::new(MemoryMedium::default()));
+    let blobs = store.account(b"batch")?;
+    let outside = blobs.put(vec![0; 8].into(), Vec::new()).await?;
+    let outside = outside.verified().ok_or("outside blob")?.digest;
+    let batch = |seed: u8, leaves: usize, chain: usize| {
+        // Leaves holding the outside blob, a parent holding every leaf, then
+        // a chain of `chain` members above it.
+        let mut requests = Vec::new();
+        let mut held = Vec::new();
+        for leaf in 0..leaves {
+            let body = OwnedBytes::from(vec![seed, 0, leaf as u8, (leaf >> 8) as u8]);
+            held.push(Digest::of(&body));
+            requests.push((body, vec![outside]));
+        }
+        for level in 0..=chain {
+            let body = OwnedBytes::from(vec![seed, 1, level as u8]);
+            let digest = Digest::of(&body);
+            requests.push((body, std::mem::take(&mut held)));
+            held.push(digest);
+        }
+        sealed(requests)
+    };
+    let cost = async |requests| -> Result<_, Box<dyn std::error::Error>> {
+        store.medium().take();
+        for put in blobs.put_batch_sealed(requests).await {
+            assert!(matches!(put?, Put::Created { .. }));
+        }
+        let cost = store.medium().take();
+        assert!(!cost.contains_key("create"), "{cost:?}");
+        assert!(!cost.contains_key("observe"), "{cost:?}");
+        Ok(cost)
+    };
+    let small = cost(batch(1, 1, 0)).await?;
+    let wide = cost(batch(2, crate::BATCH_WINDOW - 1, 0)).await?;
+    assert_eq!(small, wide, "members add no medium operations");
+    // Envelopes, index keys, and the two payload levels.
+    assert_eq!(small.get("create_many"), Some(&4), "{small:?}");
+    assert_eq!(small.get("observe_many"), Some(&1), "{small:?}");
+    // Each level adds one payload write.
+    let deep = cost(batch(3, 1, 2)).await?;
+    assert_eq!(deep.get("create_many"), Some(&6), "{deep:?}");
+    // Negative control: one put per member costs a create per key.
+    store.medium().take();
+    blobs.put(vec![9; 8].into(), vec![outside]).await?;
+    assert_eq!(store.medium().take().get("create"), Some(&3));
     Ok(())
 }
 
