@@ -97,7 +97,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Remove {
-                path: path,
+                path,
                 expected_file_id: (expected).map_or(
                     acyclic_fs_format::metadata::MetadataField::Unavailable,
                     acyclic_fs_format::metadata::MetadataField::Value,
@@ -118,9 +118,9 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Rename {
-                source: source,
-                destination: destination,
-                replace: replace,
+                source,
+                destination,
+                replace,
             }],)
         )?;
         mutation_value(receipt.work)
@@ -137,8 +137,8 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Link {
-                source: source,
-                destination: destination,
+                source,
+                destination,
             }],)
         )?;
         mutation_value(receipt.work)

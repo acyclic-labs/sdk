@@ -78,18 +78,20 @@ impl OpfsAcceleratedObjectStore {
         object_id: ObjectId,
         operation: impl FnOnce(&str) -> T,
     ) -> Result<T, ObjectStoreError> {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
+        const fn hex_digit(nibble: u8) -> u8 {
+            if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'a' + nibble - 10
+            }
+        }
         let mut key = [b'0'; 66];
         key[0] = b'0' + object_id.kind.canonical_tag();
         key[1] = b':';
-        for (byte, pair) in object_id
-            .digest
-            .as_bytes()
-            .iter()
-            .zip(key[2..].chunks_exact_mut(2))
-        {
-            pair[0] = HEX[usize::from(byte >> 4)];
-            pair[1] = HEX[usize::from(byte & 15)];
+        let (pairs, _) = key[2..].as_chunks_mut::<2>();
+        for (byte, [high, low]) in object_id.digest.as_bytes().iter().zip(pairs) {
+            *high = hex_digit(byte >> 4);
+            *low = hex_digit(byte & 15);
         }
         let key = std::str::from_utf8(&key).map_err(|_| ObjectStoreError::Corrupt)?;
         Ok(operation(key))

@@ -156,7 +156,7 @@ pub(in crate::bindings) fn encode_merge_preparation(
         } => ("conflicted", None, conflicts, truncated),
     };
     ts(BrowserMergePreparationResult {
-        status: status,
+        status,
         generation_id: generation.map(|value| value.to_bytes().to_vec().into()),
         conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
         truncated,
