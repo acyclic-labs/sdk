@@ -897,7 +897,7 @@ pub async fn request_ledger<P: StreamProvider + ?Sized>(
     let suite = Isolated::new(provider, root, "request-ledger")?;
     let actor = suite.spawn("bound", &["emit", "emit"]).await?;
     let requests = crate::guest::Requests::default();
-    let handler = std::sync::Arc::new(BindsRequests {
+    let handler = acyclic_stream::ProviderOwner::new(BindsRequests {
         package: Package::new().map_err(|_| Error::Invalid("conformance package"))?,
         requests: requests.clone(),
         admitted: std::sync::Mutex::new(Vec::new()),
@@ -1060,7 +1060,9 @@ impl<P: StreamProvider + ?Sized> Isolated<P> {
         Ok(crate::local::Runtime::new(
             crate::guest::Requests::default(),
             Store::new(self.store.provider().clone(), self.store.root().clone()),
-            std::sync::Arc::new(Package::new().map_err(|_| Error::Invalid("conformance package"))?),
+            acyclic_stream::ProviderOwner::new(
+                Package::new().map_err(|_| Error::Invalid("conformance package"))?,
+            ),
             clock,
         ))
     }

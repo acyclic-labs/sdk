@@ -327,7 +327,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     /// ownership when several hosts share the same state root.
     scope: Option<(AccountId, NamespaceId)>,
     scheduling_shards: BTreeSet<u16>,
-    handler: Arc<dyn Handler>,
+    handler: acyclic_stream::ProviderOwner<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: PerClass<ReadySet<ActorReference>>,
     actors: Shards<SyncMutex<HashMap<ActorReference, ProviderShared<Slot>>>>,
@@ -357,7 +357,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub fn new(
         requests: crate::guest::Requests,
         store: Store<P>,
-        handler: Arc<dyn Handler>,
+        handler: acyclic_stream::ProviderOwner<dyn Handler>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         let shards = store.scheduling_shards;

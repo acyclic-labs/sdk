@@ -33,7 +33,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         requests: crate::guest::Requests,
         store: Store<P>,
         actor: ActorReference,
-        handler: Arc<dyn Handler>,
+        handler: acyclic_stream::ProviderOwner<dyn Handler>,
         clock: Arc<dyn Clock>,
         limits: RuntimeLimits,
     ) -> Self {

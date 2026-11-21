@@ -135,7 +135,7 @@ async fn publication_seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
         crate::guest::Requests::default(),
         Store::new(provider, root),
         actor.clone(),
-        Arc::new(Package::new(
+        acyclic_stream::ProviderOwner::new(Package::new(
             CodeSha256::new(vec![1; 32])?,
             ActorLimits::new(10_000, 4096, 4096)?,
         )),
