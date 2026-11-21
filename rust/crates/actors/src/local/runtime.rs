@@ -341,7 +341,9 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     unplaced: Option<Arc<dyn PlacementRequests>>,
     limits: RuntimeLimits,
     admission: PerClass<Option<tokio::sync::Semaphore>>,
-    completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
+    /// The live host's completion producer. A dropped host closes it, so a
+    /// later [`Self::run`] restarts the host and claims a fresh producer.
+    completions: SyncMutex<Option<tokio::sync::mpsc::Sender<Completion>>>,
     subscriptions: SyncMutex<subscriptions::Subscriptions>,
     requests: crate::guest::Requests,
     /// Set once this host has paged every interest marker of its shards.
@@ -377,7 +379,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             unplaced: None,
             limits: RuntimeLimits::default(),
             admission: PerClass::new(|| None),
-            completions: OnceLock::new(),
+            completions: SyncMutex::new(None),
             subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
             requests,
             restored: tokio::sync::watch::Sender::new(false),
@@ -921,7 +923,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// One handoff credit backpressures requests; cancellation retires the
     /// original request without waiting for a delivery or an idle cut.
     pub async fn complete(&self) -> Result<(), Error> {
-        let completions = self.completions.get().ok_or(Error::CompletionStopped)?;
+        let completions = self
+            .completions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or(Error::CompletionStopped)?;
         let (send, receive) = tokio::sync::oneshot::channel();
         completions
             .send(send)
@@ -938,7 +945,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// alarms from one timer. Per-actor failures go to `report`; the input
     /// stays queued. Creating this future claims its completion producer;
     /// dropping it, including before the first poll, refuses pending and late
-    /// completion requests with [`Error::CompletionStopped`].
+    /// completion requests with [`Error::CompletionStopped`]. While one host
+    /// lives a second is refused the same way; once it is dropped, the next
+    /// call restarts the host.
     pub fn run(
         &self,
         report: impl Fn(&ActorReference, &Error),
@@ -946,13 +955,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // Transfer acknowledgement custody when the future is CREATED: dropping
         // it must refuse observers even if the executor never polls it.
         let mut completions = Err(Error::CompletionStopped);
-        self.completions.get_or_init(|| {
+        let mut producer = self
+            .completions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if producer
+            .as_ref()
+            .is_none_or(tokio::sync::mpsc::Sender::is_closed)
+        {
             // One handoff credit: a backpressured caller retains its request,
             // so cancelling it cannot leave unbounded queued acknowledgements.
             let (send, receive) = tokio::sync::mpsc::channel(1);
             completions = Ok(receive);
-            send
-        });
+            *producer = Some(send);
+        }
+        drop(producer);
         self.run_owned(report, completions)
     }
 

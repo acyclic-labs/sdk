@@ -122,6 +122,13 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
                 runtime.complete().await,
                 Err(Error::CompletionStopped)
             ));
+            // A dropped host restarts: the next run claims a fresh producer.
+            let mut restarted =
+                Box::pin(runtime.run(|_, error| panic!("unexpected delivery: {error}")));
+            observe_while_running(restarted.as_mut(), async {
+                runtime.complete().await.map_err(Into::into)
+            })
+            .await?;
             continue;
         }
         // The dispatcher has already restored an EMPTY root. Creation must
@@ -227,7 +234,13 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         let mut cancelled = Box::pin(runtime.complete());
         assert!(futures::poll!(cancelled.as_mut()).is_pending());
         observe_while_running(serving.as_mut(), async {
-            let _handoff = runtime.completions.get().unwrap().reserve().await?;
+            let producer = runtime
+                .completions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .expect("the serving host holds its producer");
+            let _handoff = producer.reserve().await?;
             Ok(())
         })
         .await?;
