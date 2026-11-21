@@ -3,18 +3,21 @@ import {createRequire} from 'node:module';
 const require = createRequire(import.meta.url);
 let ts;
 
-// This is a conservative source rule, not a liveness proof. Loops require an
-// exact finite-work or producer-event disposition. In particular, changing a
-// helper's spelling does not exempt the loop or its underlying timer reference.
+// This is a conservative source rule, not a liveness proof. A loop is polling
+// when its condition or body reaches a clock or a timer wait (a sleep, interval,
+// timeout, readiness recheck, clock read), or when it spins on an empty body:
+// iteration and blocking reads on an fd or channel are not polling (2026-11-21:
+// 411 of 538 Cloud findings were `for queue in &self.queues`). The loop is the
+// one finding, naming the timer that made it polling. Changing a helper's
+// spelling does not exempt the loop or its underlying timer reference.
 // Case-insensitive candidates cover PowerShell in both sources and child programs.
 const temporal = /^(?:sleep(?:_(?:for|until)|Ex|ConditionVariable(?:CS|SRW))?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_(?:for|until|timeout(?:_while|_ms)?)|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil|(?:sqlite3_)?busy_(?:timeout|handler)|PeriodicReader|with_batch_exporter|with_scheduled_delay|(?:http2_)?keep_?alive_interval|set_tcp_keepalive)$/i;
 const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
 const loop = new Set(['for', 'while', 'loop', 'do']);
-const embeddedLoop = new RegExp('\\b(?:' + [...loop].join('|') + ')\\b', 'i');
-const embeddedKind = spelling => embeddedCandidate(spelling) ? 'embedded-timer-or-retry'
- : embeddedLoop.test(spelling) ? 'embedded-loop' : undefined;
+// A clock read makes a loop around it a deadline or recheck loop; alone it is a measurement.
+const clock = /^(?:now|elapsed|Instant|SystemTime|monotonic|perf_counter|hrtime|Stopwatch|GetTickCount(?:64)?|QueryPerformanceCounter|clock_gettime|deadline)$/;
 const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
 const opening = new Set(['(', '[', '{']);
 const closing = new Set([')', ']', '}']);
@@ -401,21 +404,13 @@ export function sameRustImportLayout(file, before, after) {
  catch (error) { if (error instanceof SourceSyntaxError) return false; throw error; }
 }
 
-// Recognize finite iteration, casts, and typed bindings in Rust syntax. Macro
+// Recognize casts, typed bindings and `for` in types in Rust syntax. Macro
 // and attribute bodies may use other grammars, so their candidates stay intact.
 function rustSyntax(stream) {
- const finite = new Set(), typed = new Set(), casts = new Set(), typeFor = new Set();
- const syntax = {finite, typed, casts, typeFor};
+ const typed = new Set(), casts = new Set(), typeFor = new Set();
+ const syntax = {typed, casts, typeFor};
  const ends = new Map(), stack = [];
  const pairs = new Map([['(', ')'], ['[', ']'], ['{', '}']]);
- const decimalEnd = start => {
-  let end = start, offset = stream[start]?.start;
-  while (stream[end]?.kind === 'punctuation' && stream[end].start === offset && /^[0-9]$/.test(stream[end].value)) {
-   end++;
-   offset++;
-  }
-  return end;
- };
  for (let i = 0; i < stream.length; i++) {
   if (stream[i].kind !== 'punctuation') continue;
   const value = stream[i].value;
@@ -479,64 +474,99 @@ function rustSyntax(stream) {
   }
   if (value !== 'for') continue;
   if (stream[i + 1]?.value === '<' && stream[i + 2]?.value === "'") typeFor.add(i);
-  let at = i + 1;
-  if (stream[at]?.value === 'ref') at++;
-  if (stream[at]?.value === 'mut') at++;
-  if (stream[at]?.value === '(') at = (ends.get(at) ?? at) + 1;
-  else if (stream[at]?.kind === 'word' && /^[A-Za-z_]\w*$/.test(stream[at].value)) at++;
-  else continue;
-  if (stream[at]?.value !== 'in') continue;
-  at++;
-  const left = decimalEnd(at);
-  if (left > at && stream[left]?.value === '.' && stream[left + 1]?.value === '.') {
-   const start = left + (stream[left + 2]?.value === '=' ? 3 : 2);
-   const right = decimalEnd(start);
-   if (right > start && stream[right]?.value === '{') finite.add(i);
-  }
-  if (stream[at]?.value === '&') {
-   at++;
-   if (stream[at]?.value === 'mut') at++;
-  }
-  // Iterator adapters can change termination. Require the array itself.
-  const arrayEnd = ends.get(at);
-  if (stream[at]?.value === '[' && arrayEnd !== undefined && stream[arrayEnd + 1]?.value === '{') finite.add(i);
  }
  return syntax;
 }
 
-// Recognize finite JavaScript iteration. `for...of` and `for...in` walk a
-// finite iterable/object; a classic `for` is finite when its comparison and
-// step move the same way. `while`, `do...while` and `for (;;)` stay candidates.
-function scriptSyntax(parsed, stream) {
- const finite = new Set();
- const starts = new Map();
- for (let i = 0; i < stream.length; i++) if (stream[i].value === 'for') starts.set(stream[i].start, i);
- const step = node => {
-  if (!node) return 0;
-  if (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node))
-   return node.operator === ts.SyntaxKind.PlusPlusToken ? 1 : node.operator === ts.SyntaxKind.MinusMinusToken ? -1 : 0;
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) return 1;
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken) return -1;
-  return 0;
- };
- const direction = node => {
-  if (!node || !ts.isBinaryExpression(node)) return 0;
-  const kind = node.operatorToken.kind;
-  return kind === ts.SyntaxKind.LessThanToken || kind === ts.SyntaxKind.LessThanEqualsToken ? 1
-   : kind === ts.SyntaxKind.GreaterThanToken || kind === ts.SyntaxKind.GreaterThanEqualsToken ? -1 : 0;
- };
+// Each JavaScript loop statement's keyword start, its end offset and whether its
+// body is empty (a spin). A do-while's `while` starts no loop of its own.
+function scriptLoops(parsed) {
+ const loops = new Map();
  const visit = node => {
-  if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
-   const at = starts.get(node.getStart(parsed));
-   if (at !== undefined) finite.add(at);
-  } else if (ts.isForStatement(node)) {
-   const at = starts.get(node.getStart(parsed));
-   if (at !== undefined && direction(node.condition) !== 0 && direction(node.condition) === step(node.incrementor)) finite.add(at);
+  if (ts.isIterationStatement(node, false)) {
+   const body = node.statement;
+   loops.set(node.getStart(parsed), {end: node.end, empty: ts.isEmptyStatement(body) || (ts.isBlock(body) && !body.statements.length)});
   }
   ts.forEachChild(node, visit);
  };
  visit(parsed);
- return {finite};
+ return loops;
+}
+
+// Each loop keyword's extent in the token stream: index -> {end, empty}, the last
+// token of its header and body and whether the body is empty. A keyword that
+// starts no loop (a shell `do`, a do-while's `while`) has none.
+function loopExtents(file, source, stream, scriptForms, typeFor) {
+ const out = new Map();
+ if (scriptForms) {
+  const at = new Map(stream.map((t, i) => [t.start, i]));
+  for (const [start, {end, empty}] of scriptForms) {
+   const i = at.get(start);
+   if (i === undefined) continue;
+   let last = i;
+   while (last + 1 < stream.length && stream[last + 1].start < end) last++;
+   out.set(i, {end: last, empty});
+  }
+  return out;
+ }
+ const close = new Map(), stack = [], enclosing = new Array(stream.length);
+ const pairs = {'(': ')', '[': ']', '{': '}'};
+ for (let i = 0; i < stream.length; i++) {
+  const t = stream[i];
+  enclosing[i] = stack[stack.length - 1];
+  if (t.kind !== 'punctuation') continue;
+  if (pairs[t.value]) stack.push(i);
+  else if (closing.has(t.value) && stack.length && pairs[stream[stack[stack.length - 1]].value] === t.value) close.set(stack.pop(), i);
+ }
+ const word = (i, ...values) => stream[i]?.kind === 'word' && values.includes(stream[i].value);
+ const lineEnd = i => { let j = i; while (j + 1 < stream.length && stream[j + 1].line === stream[i].line) j++; return j; };
+ if (/\.(?:sh|bash)$/.test(file)) {
+  for (let i = 0; i < stream.length; i++) {
+   if (!word(i, 'while', 'until', 'for', 'select')) continue;
+   let j = i + 1;
+   while (j < stream.length && !word(j, 'do')) j++;
+   let depth = 0, end = lineEnd(i);
+   for (; j < stream.length; j++) {
+    if (word(j, 'do')) depth++;
+    else if (word(j, 'done') && --depth === 0) { end = j; break; }
+   }
+   out.set(i, {end, empty: false});
+  }
+  return out;
+ }
+ if (file.endsWith('.py')) {
+  const column = i => stream[i].start - source.lastIndexOf('\n', stream[i].start - 1) - 1;
+  for (let i = 0; i < stream.length; i++) {
+   if (!word(i, 'for', 'while')) continue;
+   if (enclosing[i] !== undefined) { out.set(i, {end: close.get(enclosing[i]) ?? lineEnd(i), empty: false}); continue; } // a comprehension
+   let end = lineEnd(i);
+   while (end + 1 < stream.length && column(end + 1) > column(i)) end = lineEnd(end + 1);
+   out.set(i, {end, empty: false});
+  }
+  return out;
+ }
+ const doWhile = new Set();
+ for (let i = 0; i < stream.length; i++) {
+  if (!word(i, ...loop) || typeFor?.has(i) || doWhile.has(i)) continue;
+  let end = lineEnd(i), empty = false;
+  for (let j = i + 1; j < stream.length; j++) {
+   const t = stream[j];
+   if (t.kind !== 'punctuation') continue;
+   if (t.value === '(' || t.value === '[') { j = close.get(j) ?? j; continue; }
+   if (t.value === '{' && close.has(j)) {
+    end = close.get(j);
+    empty = end === j + 1 && stream[i].value !== 'for';
+    if (stream[i].value === 'do' && word(end + 1, 'while')) {
+     doWhile.add(end + 1);
+     if (stream[end + 2]?.value === '(' && close.has(end + 2)) end = close.get(end + 2);
+    }
+    break;
+   }
+   if (t.value === ';' || t.value === '}') { end = j; break; }
+  }
+  out.set(i, {end, empty});
+ }
+ return out;
 }
 
 const futureTrait = new Set(['Future']);
@@ -600,7 +630,7 @@ export function pollingUnit(file, source, parser = undefined) {
   aliases.get(from).add(to);
  };
  const rustForms = rust ? rustSyntax(stream) : undefined;
- const scriptForms = parsed?.parsed ? scriptSyntax(parsed.parsed, stream) : undefined;
+ const scriptForms = parsed?.parsed ? scriptLoops(parsed.parsed) : undefined;
  const bindings = [];
  let depth = 0;
  let braceDepth = 0;
@@ -621,6 +651,9 @@ export function pollingUnit(file, source, parser = undefined) {
    // fields and other ambiguous colons still propagate alias candidates.
    if (!rustForms?.typed.has(i) && stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word')
     edge(name(i), name(i + 2));
+   // A binding of a timer's type is that timer: a loop waiting on a passed `tick: Interval` reaches it.
+   if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word' && temporal.test(stream[i + 2].value))
+    edge(name(i + 2), name(i));
    if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: name(i), depth, braceDepth, line: t.line});
   }
   if (t.kind === 'punctuation' && opening.has(t.value)) depth++;
@@ -634,17 +667,45 @@ export function pollingUnit(file, source, parser = undefined) {
    if (!forbidden.has(alias)) { forbidden.add(alias); queue.push(alias); }
   }
  }
- const sites = [];
- for (let i = 0; i < stream.length; i++) {
+ const kindAt = i => {
   const t = stream[i];
-  const kind = t.kind === 'indirection' || t.kind === 'module-load' ? 'indirect-timer-or-call'
-   : t.kind === 'word' && loop.has(t.value) && !(rustForms ?? scriptForms)?.typeFor?.has(i) && !(rustForms ?? scriptForms)?.finite.has(i) ? 'loop'
+  return t.kind === 'indirection' || t.kind === 'module-load' ? 'indirect-timer-or-call'
    : t.kind === 'word' && !futurePoll(i) && forbidden.has(name(i)) ? 'timer-or-readiness'
-   : t.kind === 'literal' ? embeddedKind(t.value) ?? embeddedKind(escapedSpelling(t.value))
+   : t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ? 'embedded-timer-or-retry'
    : undefined;
-  if (!kind) continue;
+ };
+ // Each timer or clock belongs to its innermost loop, which it makes polling: that loop is the one finding, and names
+ // it. A timer outside every loop is its own finding; a clock outside every loop is a measurement.
+ const extents = loopExtents(file, source, stream, scriptForms, rustForms?.typeFor);
+ const reasons = new Map(), active = [], found = [];
+ const directTimer = i => {
+  const token = stream[i];
+  return token.kind === 'literal' || temporal.test(token.value) || clock.test(token.value);
+ };
+ for (let i = 0; i < stream.length; i++) {
+  while (active.length && extents.get(active[active.length - 1]).end < i) active.pop();
+  const kind = kindAt(i), owner = active[active.length - 1];
+  const timer = kind === 'timer-or-readiness' || kind === 'embedded-timer-or-retry'
+   || (stream[i].kind === 'word' && clock.test(stream[i].value));
+  if (timer && owner !== undefined) {
+   const previous = reasons.get(owner);
+   if (previous === undefined || previous < 0 || (!directTimer(previous) && directTimer(i))) reasons.set(owner, i);
+  }
+  else if (kind) found.push([i, kind]);
+  if (extents.has(i)) { active.push(i); if (extents.get(i).empty) reasons.set(i, -1); }
+ }
+ for (const i of reasons.keys()) found.push([i, 'loop']);
+ const sites = [];
+ for (const [i, kind] of found.sort((x, y) => x[0] - y[0])) {
+  const t = stream[i];
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
-  sites.push({file, line: t.line, kind, fingerprint, start: t.start});
+  const site = {file, line: t.line, kind, fingerprint, start: t.start};
+  if (kind === 'loop') {
+   const by = reasons.get(i);
+   site.timer = by < 0 ? 'an empty body (spin)' : stream[by].value;
+   site.timerLine = by < 0 ? t.line : stream[by].line;
+  }
+  sites.push(site);
  }
  return {stream, fingerprint: unit, sites, parsed: parsed?.parsed};
 }

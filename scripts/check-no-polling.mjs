@@ -40,7 +40,7 @@ export async function checkNoPolling(args, {cwd = process.cwd(), env = process.e
    const beforeSources = gitBatchSources(unique, original);
    const refused = newProjectPollingSites(beforeSources, afterSources, dispositions, {inScope: sourceInScope});
    if (refused.length) {
-    for (const site of refused) logger.error(`step=no-polling file=${site.file}:${site.line} kind=${site.kind} fingerprint=${site.fingerprint}`);
+    for (const site of refused) logger.error(`step=no-polling file=${site.file}:${site.line} kind=${site.kind}${site.timer ? ` timer=${site.timer}@${site.timerLine}` : ""} fingerprint=${site.fingerprint}`);
     throw new Error('remove each new wait/retry, or record its exact producer, terminal and negative control under the repository rule');
    }
    logger.log('No new unclassified polling sites');

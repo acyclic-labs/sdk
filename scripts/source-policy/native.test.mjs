@@ -94,8 +94,8 @@ test('a timer alias reaches only its own binding scope', () => {
  // An undeclared name (a field, a parameter, a type) keeps its file-wide identity.
  const field = 'fn a(s: &mut S) { s.wait = interval(d); } fn b(s: &S) { s.wait.tick(); }';
  assert.ok(named(field).some(site => site.startsWith('wait@') && Number(site.split('@')[1]) > field.indexOf('fn b')));
- // A timer handed to another function is still caught there: by its type, and by the loop that waits on it.
+ // A timer handed to another function is still caught there: by its type, and the loop waiting on it is polling.
  const passed = 'fn a() { let tick = interval(d); run(tick); } fn run(tick: Interval) { loop { tick.tick().await; } }';
  const callee = pollingSites('scope.rs', passed).filter(site => site.start > passed.indexOf('fn run'));
- assert.deepEqual(callee.map(site => site.kind), ['timer-or-readiness', 'loop']);
+ assert.deepEqual(callee.map(site => site.kind), ['timer-or-readiness', 'timer-or-readiness', 'loop']);
 });

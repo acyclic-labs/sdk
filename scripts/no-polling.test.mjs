@@ -66,7 +66,7 @@ test('C# verbatim pipe paths preserve timer refusals and unchanged source analys
 test('PowerShell casing preserves wait, loop and alias review', () => {
  // Deliberately bad source edits; no external PowerShell output is fabricated.
  const file = 'scripts/control.ps1';
- for (const source of ['START-SLEEP -Seconds 1', 'Start-S`leep -Seconds 1', 'Start-`Sleep -Seconds 1', 'WHILE (-not $ready) { Step }']) {
+ for (const source of ['START-SLEEP -Seconds 1', 'Start-S`leep -Seconds 1', 'Start-`Sleep -Seconds 1', 'WHILE (-not $ready) { START-SLEEP -Seconds 1; Step }']) {
   assert.ok(newPollingSites(file, '', source).length, source);
  }
  const original = '$Pause = [System.Threading.Thread]::Sleep';
@@ -92,25 +92,45 @@ test('YAML plain scalar hashes preserve later flow settings', () => {
  }
 });
 
-test('embedded host loops without timers require exact review', () => {
+test('a loop is polling only where its condition or body reaches a timer or clock, and is one finding naming it', () => {
+ // 2026-11-21: Cloud's virtio finish_reset iteration and blocking reads were 411 of 538 findings.
+ for (const [file, source] of [
+  [rust, 'fn finish_reset(&mut self) { for queue in &self.queues { queue.reset(); } self.status = 0; }'],
+  [rust, 'fn serve(r: impl BufRead) { loop { let mut l = String::new(); if r.read_line(&mut l)? == 0 { break; } consume(l); } }'],
+  [rust, 'fn accept(listener: TcpListener) { for stream in listener.incoming() { handle(stream?); } }'],
+  [rust, 'fn drain(rx: Receiver<E>) { while let Ok(event) = rx.recv() { consume(event); } }'],
+  [script, 'for (const item of items) { consume(item); } while (queue.length) consume(queue.shift());'],
+  ['scripts/control.sh', 'for f in *.txt; do wc -l "$f"; done\nwhile read -r line; do echo "$line"; done < input'],
+  ['scripts/control.py', 'for line in sys.stdin:\n    print(line)\nsleep_note = 1\n'],
+ ]) assert.deepEqual(pollingSites(file, source), [], source);
+ for (const [file, source, line, timer] of [
+  [rust, 'fn wait() {\n loop {\n  if ready() { break; }\n  std::thread::sleep(d);\n }\n}', 2, 'sleep'],
+  [rust, 'async fn recheck() {\n let mut tick = tokio::time::interval(d);\n loop {\n  tick.tick().await;\n  probe();\n }\n}', 3, 'tick'],
+  [rust, 'fn until() {\n while Instant::now() < deadline { step(); }\n}', 2, 'Instant'],
+  [script, 'async function wait() {\n while (!ready()) {\n  await new Promise(r => setTimeout(r, 10));\n }\n}', 2, 'setTimeout'],
+  ['scripts/control.sh', 'echo start\nuntil curl -sf "$u"; do\n sleep 1\ndone', 2, 'sleep'],
+  ['scripts/control.py', 'import time\nwhile not ready():\n    time.sleep(.01)\n', 2, 'sleep'],
+  [rust, 'fn spin() {\n while !ready() {}\n}', 2, 'an empty body (spin)'],
+ ]) {
+  const loops = pollingSites(file, source).filter(site => site.kind === 'loop');
+  assert.deepEqual(loops.map(site => [site.line, site.timer]), [[line, timer]], source);
+  // Once: the timer that made the loop polling is not a second finding.
+  assert.ok(!pollingSites(file, source).some(site => site.line > line && site.line <= loops[0].timerLine && site.kind !== 'loop'), source);
+ }
+ // A timer outside every loop is still its own finding; a clock outside every loop is a measurement.
+ assert.deepEqual(pollingSites(rust, 'fn f() { std::thread::sleep(d); }').map(site => site.kind), ['timer-or-readiness']);
+ assert.deepEqual(pollingSites(rust, 'fn f() { let t = Instant::now(); work(); record(t.elapsed()); }'), []);
+});
+
+test('embedded host loops are polling only with a timer', () => {
  const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-scripts.json', import.meta.url), 'utf8'));
  for (const {source, program} of captured.records) {
-  assert.ok(pollingSites('scripts/control.sh', program).some(site => site.kind === 'loop'));
+  assert.ok(!pollingSites('scripts/control.sh', program).some(site => site.kind === 'loop'), program);
+  assert.ok(pollingSites('scripts/control.sh', program.replace(/\bstep\b/, 'sleep 1; step')).some(site => site.kind === 'loop'), program);
   for (const extension of ['yaml', 'yml']) {
    const file = `scripts/control.${extension}`;
-   const sites = pollingSites(file, source);
-   assert.ok(sites.some(site => site.kind === 'embedded-loop'), source);
-   const accepted = sites.map(site => disposition(site, 'finite-work', 'original finite input',
-    'input exhausted', 'replace finite input with readiness probe'));
-   assert.deepEqual(newPollingSites(file, '', source, accepted), []);
-   assert.ok(newPollingSites(file, '', source.replace('ready', 'otherReady'), accepted).length);
-  }
-  for (const file of [script, rust, 'scripts/control.py', 'scripts/control.ps1']) {
-   const wrapped = file.endsWith('.rs') ? `fn child() { command.arg(r#"${program}"#); }`
-    : file.endsWith('.py') ? 'compile(' + JSON.stringify(program) + ', "child", "exec")'
-    : file.endsWith('.ps1') ? "Invoke-Expression '" + program + "'"
-    : 'runHost(' + JSON.stringify(program) + ')';
-   assert.ok(pollingSites(file, wrapped).some(site => site.kind === 'embedded-loop'), wrapped);
+   assert.deepEqual(pollingSites(file, source), [], source);
+   assert.ok(pollingSites(file, source.replace(/\bstep\b/, 'sleep 1; step')).some(site => site.kind === 'embedded-timer-or-retry'), source);
   }
  }
  assert.deepEqual(pollingSites('scripts/control.yaml', '# while ! ready; do step; done\nvalue: ordinary'), []);
@@ -124,7 +144,6 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'use tokio::time::sleep as pause; async fn wait() { pause(duration).await; }',
   'fn wait() { let pause = std::thread::sleep; pause(duration); }',
   'fn wait() { while !ready() {} }',
-  'fn wait() { loop { if registry_probe() { break; } } }',
   'async fn wait() { tokio::task::yield_now().await; }',
   'fn wait() { child.try_wait(); }',
   'fn wait() { changed.wait_timeout(state, duration); }',
@@ -159,8 +178,8 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'const atomic = Atomics; atomic.wait(state, 0, 0, 10);',
   'const wait = Atomics.wait; wait(state, 0, 0, 10);',
   "const pause = scheduler['y' + 'ield']; pause();",
-  'while (!await ready()) await tick();',
-  'for (let attempt = 0; attempt < 3; attempt++) await probe();',
+  'while (!await ready()) await Bun.sleep(10);',
+  'for (let attempt = 0; attempt < 3; attempt++) { await Bun.sleep(10); await probe(); }',
   'await page.waitForFunction(() => ready);',
   'const unused = `hello ${setInterval(probe, 1)}`;',
   "const unused = /[//]/; setTimeout(probe, 1);",
@@ -173,7 +192,7 @@ test('new direct and indirect readiness mutations are rejected', () => {
   "const generate = new Function('return ' + name); generate()();",
   "const helper = await import(chosenModule); await helper.settle();",
   "const helper = require(chosenModule); helper.settle();",
-  'async function bypass() { while (!await registry()) await pause(); } await bypass();',
+  'async function bypass() { while (!await registry()) await Bun.sleep(10); } await bypass();',
  ]) assert.ok(newPollingSites(script, '', source).length, source);
 });
 
@@ -407,15 +426,15 @@ test('legitimate deadline and transport sites require exact typed dispositions',
  assert.ok(newPollingSites(rust, '', mixed.replace('-1', '25'), mixedDisposition).length);
 });
 
-test('event and finite-work loops have no file or helper exemption', () => {
- const source = 'loop { let event = receiver.recv()?; consume(event); }';
+test('a polling loop has no file or helper exemption', () => {
+ const source = 'loop { let event = receiver.recv_timeout(d)?; consume(event); }';
  const site = pollingSites(rust, source).find(site => site.kind === 'loop');
- assert.ok(site);
- const accepted = [disposition(site, 'event-wait', 'original operation sender', 'RecvError on sender drop', 'drop the original sender before receive')];
+ assert.equal(site?.timer, 'recv_timeout');
+ const accepted = [disposition(site, 'caller-deadline', 'original operation sender', 'RecvError on sender drop', 'drop the original sender before receive')];
  assert.deepEqual(newPollingSites(rust, '', source, accepted), []);
- assert.ok(newPollingSites(rust, '', source.replace('receiver.recv()?', 'registry_ready()'), accepted).length);
+ assert.ok(newPollingSites(rust, '', source.replace('consume(event)', 'consume(event); std::thread::sleep(d)'), accepted).length);
  const distant = 'loop { let values = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]; receiver.recv()?; }';
- assert.ok(newPollingSites(rust, distant, distant.replace('receiver.recv()?', 'ready()')).length);
+ assert.ok(newPollingSites(rust, distant, distant.replace('receiver.recv()?', 'std::thread::sleep(d)')).length);
  assert.throws(() => newPollingSites(rust, '', source, [{...accepted[0], file: 'rust/crates/*', fingerprint: '*'}]), /invalid exact/);
 });
 

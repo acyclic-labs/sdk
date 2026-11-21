@@ -61,12 +61,12 @@ export function fuzz(data, analyze = sourcePolicy.pollingSites) {
  assert.ok(analyze('lib/storage/control.' + (sqlitePolicy.startsWith('sqlite3_') ? 'c' : 'rs'), sqliteSource).length, sqliteSource);
  assert.ok(analyze('scripts/control.mjs', 'runHost(' + JSON.stringify(sqliteSource) + ')')
   .some(site => site.kind === 'embedded-timer-or-retry'), sqliteSource);
- for (const program of [`while ! ${word}; do step; done`, `for item in ${word}; do step; done`]) {
+ for (const program of [`while ! ${word}; do sleep 1; done`, `for item in ${word}; do step; sleep 1; done`]) {
   for (const [file, source] of [
    ['scripts/control.yaml', 'run: |\n  ' + program],
    ['scripts/control.yml', 'run: ' + JSON.stringify(program)],
    ['scripts/control.mjs', 'runHost(' + JSON.stringify(program) + ')'],
-  ]) assert.ok(analyze(file, source).some(site => site.kind === 'embedded-loop'), source);
+  ]) assert.ok(analyze(file, source).some(site => site.kind === 'embedded-timer-or-retry'), source);
  }
  const settings = `settings: [${word}\u00a0#owner's"fragment, {timeout: 1}]`;
  assert.deepEqual(analyze('scripts/control.yaml', settings).map(site => site.start), [settings.indexOf('timeout')]);

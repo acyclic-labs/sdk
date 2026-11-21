@@ -89,17 +89,17 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['(?:rs|[cm]?[jt]s|', '(?:[cm]?[jt]s|', 'control.rs', ''],
   ['throw new SourceSyntaxError(', 'throw new Error(', 'control.ts', '}'],
   ['const malformed = message => new SourceSyntaxError(', 'const malformed = message => new Error(', 'control.ps1', '<#'],
-  ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
-   'sites.push({file, line: 0, kind, fingerprint, start: t.start});', 'control.ts', 'Bun.sleep(1);'],
-  ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
-   'sites.push({file, line: t.line, kind, fingerprint, start: -1});', 'control.ts', 'Bun.sleep(1);'],
-  ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
-   "sites.push({file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start});", 'control.ts', 'Bun.sleep(1);'],
+  ['const site = {file, line: t.line, kind, fingerprint, start: t.start};',
+   'const site = {file, line: 0, kind, fingerprint, start: t.start};', 'control.ts', 'Bun.sleep(1);'],
+  ['const site = {file, line: t.line, kind, fingerprint, start: t.start};',
+   'const site = {file, line: t.line, kind, fingerprint, start: -1};', 'control.ts', 'Bun.sleep(1);'],
+  ['const site = {file, line: t.line, kind, fingerprint, start: t.start};',
+   "const site = {file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start};", 'control.ts', 'Bun.sleep(1);'],
  ]) {
   const parser = await mutant('./source-policy/index.mjs', original, replacement);
   assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser.source), {name: 'AssertionError'});
  }
- const lexer = await mutant('./source-policy/index.mjs', 'embeddedCandidate(spelling) ?', 'false ?');
+ const lexer = await mutant('./source-policy/index.mjs', "t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ?", 'false ?');
  assert.throws(() => targets.fuzz(Buffer.from('original'), lexer.source.pollingSites), {name: 'AssertionError'});
  const graph = await mutant('./source-policy/project.mjs',
   'if (!unresolved && !component?.hazardous) continue;', 'if (!unresolved) continue;');
@@ -110,7 +110,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), collation),
   {name: 'AssertionError', message: /snapshot enumeration/});
  const baseline = await mutant('./source-policy/project.mjs',
-  'projectPollingSites(before, {historical: true})', '[]');
+  'projectPollingSites(historical, {historical: true})', '[]');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), baseline),
   {name: 'AssertionError', message: /shadowed source changed the exact runtime dependency/});
  const resolution = await mutant('./source-policy/project.mjs',
@@ -126,11 +126,10 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'false', 1, /lost runtime module initialization/],
   ['node.expression.kind === ts.SyntaxKind.ImportKeyword', 'false', 2, /lost runtime module initialization/],
   ["node.expression.text === 'require'", 'false', 3, /lost runtime module initialization/],
-  ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'ts.isImportEqualsDeclaration(node)', 0, /type-only import executed/],
+  ['ts.isImportEqualsDeclaration(node) && !node.isTypeOnly', 'ts.isImportEqualsDeclaration(node)', 0, /missing executable token position/],
  ]) {
   const load = await mutant('./source-policy/project.mjs', original, replacement);
-  assert.throws(() => targets.fuzzProject(Buffer.from([seed]), load),
-   {name: 'AssertionError', message});
+  assert.throws(() => targets.fuzzProject(Buffer.from([seed]), load), message);
  }
  const policy = await mutant('./source-policy/index.mjs',
   "|| typeof item.producer !== 'string' || !item.producer.trim()", '|| false');
@@ -156,15 +155,15 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), manifest),
   {name: 'AssertionError', message: /SourceSyntaxError/});
  const layout = await mutant('./source-policy/project.mjs',
-  'if (/(?:^|\\/)package\\.json$/.test(file)) {',
-  'if (/^typescript\\/packages\\/[^/]+\\/package\\.json$/.test(file)) {');
+  'if (/(?:^|\\/)package\\.json$/.test(file)) {\n    let manifest;',
+  'if (/^typescript\\/packages\\/[^/]+\\/package\\.json$/.test(file)) {\n    let manifest;');
  assert.throws(() => targets.fuzzProject(Buffer.from([0]), layout),
   {name: 'AssertionError', message: /repository layout/});
  for (const [original, replacement, seed, expected] of [
   ['if (historical && error instanceof SourceSyntaxError) continue;',
    'if (error instanceof SourceSyntaxError) continue;', '}',
    {name: 'AssertionError', message: /Missing expected exception \(SourceSyntaxError\)/}],
-  ['projectPollingSites(before, {historical: true})', 'projectPollingSites(before)', [0],
+  ['projectPollingSites(historical, {historical: true})', 'projectPollingSites(before)', [0],
    {name: 'SourceSyntaxError', message: /lib\/helper\.ts/}],
  ]) {
   const refusal = await mutant('./source-policy/project.mjs', original, replacement);
