@@ -60,7 +60,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
             };
             provider.await_publication(completed).await?;
             assert_eq!(
-                provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).flushed_sequence,
+                provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).flush_group.progress.flushed,
                 Some(1)
             );
             assert!(!writing.is_finished());
@@ -103,7 +103,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
                 {
                     let journal = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
                     assert_eq!((journal.appended, journal.bytes), (2, before + bytes));
-                    assert_eq!(journal.flushed_sequence, Some(1));
+                    assert_eq!(journal.flush_group.progress.flushed, Some(1));
                 }
                 provider.await_publication(2).await?;
                 assert_eq!(

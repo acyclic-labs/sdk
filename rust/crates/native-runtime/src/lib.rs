@@ -135,7 +135,7 @@ pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;
 pub use file_lock::{FileLock, FileLockMode};
 mod log_flush;
-pub use log_flush::LogFlush;
+pub use log_flush::{LogFlush, LogFlushGroup, LogFlushPermit, LogFlushProgress};
 mod recovery;
 pub use acyclic_native_file::directory::remove_child_directory;
 pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};

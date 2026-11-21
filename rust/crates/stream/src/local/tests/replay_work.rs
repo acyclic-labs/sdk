@@ -96,7 +96,9 @@ async fn a_normal_replay_flushes_its_original_deferred_frame()
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .synced,
+            .flush_group
+            .progress
+            .ordered,
         0
     );
     assert_eq!(stream.commit(request).await?, first);
@@ -106,7 +108,7 @@ async fn a_normal_replay_flushes_its_original_deferred_frame()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     assert_eq!(journal.appended, 1);
-    assert_eq!(journal.synced, 1);
+    assert_eq!(journal.flush_group.progress.ordered, 1);
     Ok(())
 }
 
@@ -126,7 +128,9 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .synced,
+            .flush_group
+            .progress
+            .ordered,
         0
     );
     assert_eq!(stream.append(append.clone()).await?, appended);
@@ -137,7 +141,9 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .synced,
+            .flush_group
+            .progress
+            .ordered,
         1
     );
 
@@ -156,7 +162,9 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .synced,
+            .flush_group
+            .progress
+            .ordered,
         1
     );
     assert_eq!(stream.fork(fork.clone()).await?, forked);
@@ -167,7 +175,9 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .synced,
+            .flush_group
+            .progress
+            .ordered,
         2
     );
 

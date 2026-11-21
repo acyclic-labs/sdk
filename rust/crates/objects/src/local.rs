@@ -27,7 +27,7 @@ use crate::{
     Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
 };
 use acyclic_log_frame::LogFrame;
-use acyclic_native_runtime::{LogFlush, PersistenceKey, spawn_persistence};
+use acyclic_native_runtime::{LogFlush, LogFlushPermit, PersistenceKey, spawn_persistence};
 use acyclic_stream_contract::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -291,7 +291,19 @@ pub(crate) struct Counts {
 
 impl Shared {
     fn close(&mut self) -> std::io::Result<()> {
-        self.sync()?;
+        self.usable()?;
+        let log = self.log.get_mut().unwrap_or_else(PoisonError::into_inner);
+        let file = Arc::clone(&log.file);
+        let written = log.written;
+        let result = self.flush.flush_unique(
+            || Ok((written, file)),
+            |file| {
+                #[cfg(test)]
+                self.counts.flushed.fetch_add(1, Ordering::Relaxed);
+                sync_log_file(&file, self.durability)
+            },
+        );
+        self.stop_on_error(result)?;
         if !*self.recovered.get_mut() {
             std::fs::remove_file(self.root.join(OPEN))?;
             self.sync_directory()?;
@@ -339,11 +351,7 @@ impl Shared {
     fn sync_file(&self, file: &std::fs::File) -> std::io::Result<()> {
         #[cfg(test)]
         self.counts.flushed.fetch_add(1, Ordering::Relaxed);
-        if cfg!(target_vendor = "apple") {
-            acyclic_native_runtime::sync_file(file, native(self.durability), None)
-        } else {
-            acyclic_native_runtime::sync_data(file, native(self.durability))
-        }
+        sync_log_file(file, self.durability)
     }
 
     fn sync_directory(&self) -> std::io::Result<()> {
@@ -377,8 +385,8 @@ impl Shared {
 
     /// Makes every write appended before it durable with one data flush; a
     /// flush with nothing new is free.
-    fn sync(&self) -> std::io::Result<()> {
-        self.flush.flush(
+    fn sync(&self, permit: LogFlushPermit) -> std::io::Result<()> {
+        permit.flush(
             || {
                 self.usable()?;
                 let log = self.log();
@@ -563,6 +571,14 @@ impl Shared {
         drop(replaced);
         self.flush.publish(log.written);
         Ok(())
+    }
+}
+
+fn sync_log_file(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()> {
+    if cfg!(target_vendor = "apple") {
+        acyclic_native_runtime::sync_file(file, native(durability), None)
+    } else {
+        acyclic_native_runtime::sync_data(file, native(durability))
     }
 }
 
@@ -1148,8 +1164,9 @@ impl Medium for LocalMedium {
 
     /// One data flush covers every write so far, whichever keys are named.
     async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
+        let permit = self.shared.flush.admit().await;
         let shared = Arc::clone(&self.shared);
-        blocking(self, "flush", 0, move || shared.sync())
+        blocking(self, "flush", 0, move || shared.sync(permit))
             .await
             .and_then(std::convert::identity)
             .map_err(MediumError::Ambiguous)

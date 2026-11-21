@@ -24,7 +24,7 @@ async fn append(provider: &LocalStream, record: &'static [u8]) -> Result {
 /// Journal bytes the device holds: everything only while every frame is synced.
 fn synced_bytes(provider: &LocalStream) -> Option<u64> {
     let journal = provider.inner.journal.lock().ok()?;
-    (journal.flushed_sequence == Some(journal.appended)).then_some(journal.bytes)
+    (journal.flush_group.progress.flushed == Some(journal.appended)).then_some(journal.bytes)
 }
 
 /// Drops the provider and keeps only the journal bytes the device confirmed.
@@ -357,7 +357,7 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
         append(&provider, b"ordered approval").await?;
         {
             let mut journal = provider.inner.journal.lock().map_err(|_| "journal")?;
-            journal.flushed_sequence = None;
+            journal.flush_group.progress.flushed = None;
         }
         provider
             .inner

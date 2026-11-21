@@ -31,9 +31,11 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         limits,
         appended: 0,
         required: 0,
-        synced: 0,
-        flushed_sequence: Some(0),
-        syncing: false,
+        flush_group: {
+            let mut group = acyclic_native_runtime::LogFlushGroup::default();
+            group.progress.publish(0, Durability::Full);
+            group
+        },
         root: PathBuf::new(),
         torn_tail: None,
         // The model journal has no root and no incarnation record to forget.
@@ -264,7 +266,7 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let journal = stream.inner.journal.lock().map_err(|_| "journal lock")?;
         assert_eq!(journal.appended, 2);
         assert_eq!(journal.required, 0);
-        assert_eq!(journal.synced, 0);
+        assert_eq!(journal.flush_group.progress.ordered, 0);
         assert!(journal.bytes > HEADER_BYTES as u64);
         Ok(())
     });

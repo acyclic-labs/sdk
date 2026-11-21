@@ -68,7 +68,9 @@ fn owned_frame_batches_reopen_in_order_and_release_original_work()
                         .journal
                         .lock()
                         .unwrap_or_else(|poison| poison.into_inner())
-                        .flushed_sequence,
+                        .flush_group
+                        .progress
+                        .flushed,
                     Some(1)
                 );
                 release.send(())?;

@@ -11,10 +11,10 @@ enum SyncCompletion {
     Flushed(DeviceFlushed),
 }
 
-#[derive(Clone, Copy, Default)]
-struct SyncProgress {
-    ordered: u64,
-    flushed: Option<u64>,
+use acyclic_native_runtime::LogFlushProgress as SyncProgress;
+
+trait SyncCompletionFor {
+    fn completion(self, through: u64, durability: LocalDurability) -> Option<SyncCompletion>;
 }
 
 // The submitted producer owns the flush cut even after its caller leaves.
@@ -33,15 +33,13 @@ impl Drop for FlushOwner {
     }
 }
 
-impl SyncProgress {
+impl SyncCompletionFor for SyncProgress {
     fn completion(self, through: u64, durability: LocalDurability) -> Option<SyncCompletion> {
-        match durability {
-            LocalDurability::FullFlush if self.flushed.is_some_and(|cut| cut >= through) => {
-                Some(SyncCompletion::Flushed(DeviceFlushed))
-            }
-            LocalDurability::Barrier if self.ordered >= through => Some(SyncCompletion::Ordered),
-            _ => None,
-        }
+        self.covers(through, native_durability(durability))
+            .then_some(match durability {
+                LocalDurability::FullFlush => SyncCompletion::Flushed(DeviceFlushed),
+                LocalDurability::Barrier => SyncCompletion::Ordered,
+            })
     }
 }
 

@@ -156,8 +156,8 @@ impl LocalStream {
         commit_clock.unpin();
         let (failed, _) = watch::channel(None);
         let progress = SyncProgress {
-            ordered: journal.synced,
-            flushed: journal.flushed_sequence,
+            ordered: journal.flush_group.progress.ordered,
+            flushed: journal.flush_group.progress.flushed,
         };
         let handle = journal.claim.handle();
         Ok(Self {
@@ -309,14 +309,17 @@ impl LocalStream {
         let written;
         let (target, file, durability) = {
             let journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
-            if journal.synced >= journal.appended {
+            if journal.flush_group.progress.ordered >= journal.appended {
                 return Ok(());
             }
             #[cfg(feature = "test-support")]
             {
                 written = (journal.epoch, journal.bytes);
             }
-            span.record("batch_len", journal.appended - journal.synced);
+            span.record(
+                "batch_len",
+                journal.appended - journal.flush_group.progress.ordered,
+            );
             (
                 journal.appended,
                 journal.file.lease().map_err(|error| {
@@ -566,7 +569,7 @@ impl LocalStream {
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
             if !reserved
-                && journal.synced < journal.appended
+                && journal.flush_group.progress.ordered < journal.appended
                 && let Some(work) = &self.work
             {
                 work.reserve_durability(1)?;
@@ -586,7 +589,9 @@ impl LocalStream {
         let target = {
             let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
             if journal
-                .flushed_sequence
+                .flush_group
+                .progress
+                .flushed
                 .is_some_and(|cut| cut >= journal.appended)
             {
                 return Ok(());
@@ -630,24 +635,23 @@ impl LocalStream {
             }
             let lead = {
                 let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
-                let progress = SyncProgress {
-                    ordered: journal.synced,
-                    flushed: journal.flushed_sequence,
-                };
-                if progress.completion(sequence, durability).is_some() || journal.syncing {
-                    None
-                } else {
+                if journal
+                    .flush_group
+                    .claim(sequence, native_durability(durability))
+                {
                     let file = match journal.file.lease() {
                         Ok(file) => file,
                         Err(error) => {
+                            journal.flush_group.release();
                             drop(journal);
                             return Err(self
                                 .inner
                                 .fail(LocalStreamFailure::io("lease_flush", &error)));
                         }
                     };
-                    journal.syncing = true;
                     Some((file, durability))
+                } else {
+                    None
                 }
             };
             match lead {

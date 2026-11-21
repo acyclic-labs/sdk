@@ -86,7 +86,8 @@ pub(crate) fn verify_barrier(broken: bool) {
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .syncing = true;
+            .flush_group
+            .claim(2, Durability::Barrier);
         let ordering = loom::thread::spawn({
             let stream = stream.clone();
             move || {
@@ -95,7 +96,7 @@ pub(crate) fn verify_barrier(broken: bool) {
                     .journal
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner());
-                journal.syncing = false;
+                journal.flush_group.release();
                 stream
                     .inner
                     .publish_synced(&mut journal, 2, SyncCompletion::Ordered);

@@ -112,14 +112,12 @@ impl LocalInner {
         } else {
             completion
         };
-        journal.synced = journal.synced.max(target);
-        if matches!(completion, SyncCompletion::Flushed(_)) {
-            journal.flushed_sequence = Some(journal.flushed_sequence.unwrap_or(0).max(target));
-        }
-        let synced = SyncProgress {
-            ordered: journal.synced,
-            flushed: journal.flushed_sequence,
+        let strength = match completion {
+            SyncCompletion::Flushed(_) => Durability::Full,
+            SyncCompletion::Ordered => Durability::Barrier,
         };
+        journal.flush_group.progress.publish(target, strength);
+        let synced = journal.flush_group.progress;
         self.synced.send_modify(|published| *published = synced);
     }
 
@@ -152,7 +150,11 @@ impl LocalInner {
                 self.poison();
                 return None;
             };
-            (journal.appended, journal.synced, journal.bytes)
+            (
+                journal.appended,
+                journal.flush_group.progress.ordered,
+                journal.bytes,
+            )
         };
         let flushed = match &work {
             Some(work) => file.flush(|file| work.sync(|| sync_file_data(file, durability))),
@@ -184,7 +186,7 @@ impl LocalInner {
             self.poison();
             return None;
         };
-        journal.syncing = false;
+        journal.flush_group.release();
         match flushed {
             Ok(completion) => self.publish_synced(&mut journal, target, completion),
             Err(error) => {

@@ -43,7 +43,7 @@ fn race<const REQUIRE: bool>() {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         assert_eq!(journal.appended, 1);
-        assert_eq!(journal.synced, 1);
+        assert_eq!(journal.flush_group.progress.ordered, 1);
         drop(journal);
         drop(stream);
         drop(std::mem::ManuallyDrop::into_inner(keeper));

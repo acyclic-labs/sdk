@@ -69,9 +69,7 @@ impl Journal {
             limits,
             appended: 0,
             required: 0,
-            synced: 0,
-            flushed_sequence: None,
-            syncing: false,
+            flush_group: Default::default(),
             root: root.to_path_buf(),
             torn_tail: None,
             volatile: false,
@@ -149,7 +147,7 @@ impl Journal {
             lease.flush(|file| sync_file_data(file, self.limits.durability))?,
             SyncCompletion::Flushed(_)
         ) {
-            self.flushed_sequence = Some(0);
+            self.flush_group.progress.flushed = Some(0);
         }
         Ok(())
     }
@@ -229,8 +227,8 @@ impl Journal {
         self.operations = 0;
         self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         // The header was synchronized after the snapshot holding every frame.
-        self.synced = self.appended;
-        self.flushed_sequence = Some(self.appended);
+        self.flush_group.progress.ordered = self.appended;
+        self.flush_group.progress.flushed = Some(self.appended);
         #[cfg(feature = "test-support")]
         {
             self.flushed = self.bytes;
@@ -311,6 +309,6 @@ impl Journal {
     #[cfg(test)]
     #[cfg(not(loom))]
     fn unflushed(&self) -> bool {
-        self.appended > self.synced
+        self.appended > self.flush_group.progress.ordered
     }
 }

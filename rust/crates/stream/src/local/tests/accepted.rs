@@ -78,7 +78,9 @@ fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
                 .journal
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
-                .flushed_sequence,
+                .flush_group
+                .progress
+                .flushed,
             Some(1),
             "a post-I/O cut certified an unflushed write"
         );
@@ -157,7 +159,9 @@ fn a_queued_flush_covers_the_worker_cut_instead_of_the_submitter_cut()
                 .journal
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
-                .flushed_sequence,
+                .flush_group
+                .progress
+                .flushed,
             Some(2),
             "a write queued before physical I/O required a second full flush"
         );

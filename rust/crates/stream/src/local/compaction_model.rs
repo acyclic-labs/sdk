@@ -199,7 +199,10 @@ pub(crate) fn verify(fault: u8) {
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        assert_eq!((journal.appended, journal.synced), (3, 2));
+        assert_eq!(
+            (journal.appended, journal.flush_group.progress.ordered),
+            (3, 2)
+        );
         assert_eq!(*provider.inner.revision.borrow(), 3);
     });
 }
