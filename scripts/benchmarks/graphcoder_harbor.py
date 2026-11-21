@@ -46,7 +46,8 @@ class GraphCoder(BaseInstalledAgent):
         if self.mcp_servers:
             raise ValueError("this benchmark adapter does not project task MCP servers")
         self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens,
-                                        adapter=adapter, providers=providers)
+                                        adapter=adapter, providers=providers,
+                                        counters=self.artifact.token_counters())
         # The run's compaction policy also applies to spawned workers.
         self.compaction = all(entry["token_counter"] is not None
                               for entry in self.provider_catalog.values())

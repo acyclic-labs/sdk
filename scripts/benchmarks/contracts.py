@@ -6,6 +6,8 @@ import hashlib
 import json
 import re
 import shlex
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -42,6 +44,16 @@ class Artifact:
             raise ValueError(f"expected a regular graphcoder build artifact; received {binary}")
         return cls(binary.read_bytes(), sha256, source_sha)
 
+    def token_counters(self):
+        """Query the same verified bytes that Harbor will upload."""
+        with tempfile.TemporaryDirectory(prefix="graphcoder-contracts-") as directory:
+            binary = Path(directory) / "graphcoder"
+            binary.write_bytes(self.contents)
+            binary.chmod(0o700)
+            result = subprocess.run([str(binary), "contracts", "--json"],
+                                    cwd=directory, env={}, check=True, capture_output=True)
+        return json.loads(result.stdout)
+
     def install_command(self, destination: str) -> str:
         """Verify the uploaded bytes before making the destination executable."""
         path = shlex.quote(destination)
@@ -54,7 +66,7 @@ class Artifact:
 
 
 def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int,
-            *, adapter: str | None = None, providers: list[dict] | None = None):
+            *, counters: dict, adapter: str | None = None, providers: list[dict] | None = None):
     """Root and additional models, with explicit endpoints and no credentials.
 
     Each providers entry takes the same model_name, base_url, context_tokens,
@@ -66,7 +78,7 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
     for selection in [dict(model_name=model_name, base_url=base_url,
                            context_tokens=context_tokens, output_tokens=output_tokens,
                            adapter=adapter), *(providers or [])]:
-        provider, entry = _provider(**selection)
+        provider, entry = _provider(**selection, counters=counters)
         if provider in result:
             previous = result[provider]
             if any(previous[key] != value for key, value in entry.items() if key != "models"):
@@ -80,7 +92,7 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
 
 
 def _provider(model_name: str, base_url: str, context_tokens: int, output_tokens: int,
-              *, adapter: str | None = None):
+              *, counters: dict, adapter: str | None = None):
     if not isinstance(model_name, str) or "/" not in model_name:
         raise ValueError("model_name must be provider/model")
     provider, model = model_name.split("/", 1)
@@ -103,9 +115,6 @@ def _provider(model_name: str, base_url: str, context_tokens: int, output_tokens
         # Proxy routing is more specific than the model's provider alias.
         adapter = next((families[part] for part in reversed(url.path.split("/"))
                         if part in families), families.get(provider, "responses"))
-    # The Rust stock catalog consumes these same definitions; no Python copy.
-    counters = json.loads((Path(__file__).resolve().parents[2] /
-                          "rust/crates/harness-provider-core/src/token_counters.json").read_text())
     if adapter not in counters:
         raise ValueError(f"unknown adapter: {adapter}")
     return provider, {

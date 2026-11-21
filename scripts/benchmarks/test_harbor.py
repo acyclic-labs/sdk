@@ -43,7 +43,8 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.binary = self.root / "acyclic"
-        self.binary.write_bytes(b"immutable fixture executable")
+        self.binary.write_text("#!/usr/bin/python3\nimport json, sys\n"
+                               + test_contracts.CONTRACTS_COMMAND)
         self.original = self.binary.read_bytes()
         self.kwargs = dict(logs_dir=self.root / "logs", model_name="openai/fixture",
             graphcoder_binary=str(self.binary), graphcoder_sha256=hashlib.sha256(self.original).hexdigest(),
@@ -168,7 +169,9 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
                                   ("graphcoder", "graphcoder 1.2.3\nacyclic 1.2.3")):
             with self.subTest(filename=filename, version=version):
                 binary = self.root / filename
-                contents = ("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(version) + "\n").encode()
+                contents = ("#!/usr/bin/python3\nimport json, sys\n"
+                            + test_contracts.CONTRACTS_COMMAND
+                            + f"print({version!r})\n").encode()
                 binary.write_bytes(contents)
                 agent = GraphCoder(**{**self.kwargs, "graphcoder_binary": str(binary),
                     "graphcoder_sha256": hashlib.sha256(contents).hexdigest()})

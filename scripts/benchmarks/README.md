@@ -118,7 +118,7 @@ Responses as the fallback. Thus `/anthropic`, `/google`, `/deepseek/v1` and
 `/fireworks/v1` select Anthropic, Gemini, Chat and Chat respectively. Plain HTTP
 proxy endpoints are supported on loopback hosts (`localhost`, `127.0.0.1`,
 or `[::1]`); other proxy hosts require HTTPS. No credentials enter the task.
-Native token counters come from the Rust catalog's `token_counters.json`:
+Native token counters come from the verified artifact via `graphcoder contracts --json`:
 Anthropic, Gemini and Responses use their own count endpoints; Chat has none.
 For catalogs without a counter, Harbor supplies `--no-compaction` to both
 doctor and execution. This selects the harness's existing disabled-compaction

@@ -15,6 +15,7 @@ from pathlib import Path
 from .contracts import Artifact, arm, arm_arguments, run_command
 from .feature_eval import decide, jobs, score, trials
 from .plan import feature_plan, manifest
+from .test_contracts import CONTRACTS_COMMAND
 
 REGISTRY = json.loads((Path(__file__).resolve().parent / "features.json").read_text())
 
@@ -22,7 +23,7 @@ REGISTRY = json.loads((Path(__file__).resolve().parent / "features.json").read_t
 # fewer input tokens; --no-compaction solves only even-numbered tasks.
 AGENT = """#!/usr/bin/python3
 import json, sys
-argv = sys.argv[1:]
+""" + CONTRACTS_COMMAND + """argv = sys.argv[1:]
 usage = argv[argv.index("--usage-jsonl") + 1]
 prompt = argv[-1].removeprefix("--prompt=")
 off = "--no-compaction" in argv

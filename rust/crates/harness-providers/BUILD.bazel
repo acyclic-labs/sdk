@@ -417,7 +417,6 @@ rust_test(
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:scripts/benchmarks/contracts.py",
-        "//rust/crates/harness-provider-core:src/token_counters.json",
         "//rust/crates/harness-providers:tree/tests/scenarios",
     ],
     args = [

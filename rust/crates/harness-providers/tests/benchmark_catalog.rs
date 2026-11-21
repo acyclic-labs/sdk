@@ -7,18 +7,15 @@ use std::{collections::BTreeMap, process::Command};
 /// Python importing the benchmark generator's `contracts` module from the source tree.
 fn generator() -> Command {
     let module = acyclic_test_support::source_path("scripts/benchmarks/contracts.py");
-    // The generator reads the stock token counters from the same tree.
-    let counters = acyclic_test_support::source_path(
-        "rust/crates/harness-provider-core/src/token_counters.json",
-    );
-    assert!(
-        counters.is_file(),
-        "the benchmark generator reads {counters:?}"
-    );
     let mut command = Command::new(if cfg!(windows) { "python" } else { "python3" });
     command
         .env("PYTHONPATH", module.parent().expect("module directory"))
-        .env("PYTHONDONTWRITEBYTECODE", "1");
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env(
+            "BENCHMARK_COUNTERS",
+            serde_json::to_string(&acyclic_harness_providers::catalog::token_counters())
+                .expect("serializable counters"),
+        );
     command
 }
 
@@ -29,8 +26,11 @@ fn mixed_benchmark_providers_resolve_independently_and_reject_invalid_worker()
         .args([
             "-c",
             r#"
+import functools
 import json
+import os
 from contracts import catalog
+catalog = functools.partial(catalog, counters=json.loads(os.environ["BENCHMARK_COUNTERS"]))
 workers = [
     dict(model_name=provider + '/shared', base_url='http://127.0.0.1:9' + path,
          context_tokens=200, output_tokens=20, adapter=adapter)
@@ -97,8 +97,11 @@ fn generated_benchmark_catalog_adapters_and_negative_controls()
         .args([
             "-c",
             r#"
+import functools
 import json
+import os
 from contracts import catalog
+catalog = functools.partial(catalog, counters=json.loads(os.environ["BENCHMARK_COUNTERS"]))
 cases = [
     ('anthropic/claude-haiku-5-5', '/anthropic'),
     ('gemini/gemini-3.8-flash', '/google'),

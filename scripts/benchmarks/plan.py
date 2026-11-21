@@ -91,7 +91,8 @@ def paired_plan(stage: str, dataset: dict, artifact: Artifact, binary_path: str,
     tasks, task_configs = selected_tasks(stage, dataset)
     if re.fullmatch(r"\d+\.\d+\.\d+", codex_version) is None:
         raise ValueError("pin the exact Codex CLI release")
-    catalog(model, base_url, context_tokens, output_tokens)
+    catalog(model, base_url, context_tokens, output_tokens,
+                        counters=artifact.token_counters())
     if model.count("/") != 1:
         raise ValueError("pinned Codex comparator truncates nested model names")
     graphcoder = _graphcoder(artifact, binary_path, model, base_url, context_tokens,
@@ -138,7 +139,8 @@ def feature_plan(stage: str, dataset: dict, artifact: Artifact, binary_path: str
     """GraphCoder against itself with one feature on or off: the same tasks,
     model, artifact, endpoint and budgets. The arm is the only difference."""
     tasks, task_configs = selected_tasks(stage, dataset)
-    providers = catalog(model, base_url, context_tokens, output_tokens)
+    providers = catalog(model, base_url, context_tokens, output_tokens,
+                        counters=artifact.token_counters())
     # A counterless catalog always runs with --no-compaction (the adapter's
     # policy), so the effective arm includes it.
     implied = {"--no-compaction"} if any(

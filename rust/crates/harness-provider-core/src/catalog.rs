@@ -4,6 +4,19 @@ use std::collections::BTreeMap;
 
 include!(concat!(env!("OUT_DIR"), "/token_counters.rs"));
 
+/// The native counting endpoints by adapter dialect.
+pub fn token_counters() -> BTreeMap<&'static str, Option<TokenCounterSpec>> {
+    [
+        ("anthropic", Adapter::Anthropic),
+        ("chat", Adapter::Chat),
+        ("gemini", Adapter::Gemini),
+        ("responses", Adapter::Responses),
+    ]
+    .into_iter()
+    .map(|(name, adapter)| (name, token_counter(adapter)))
+    .collect()
+}
+
 /// The model a catalog without a `default_model` selects.
 pub const DEFAULT_MODEL: &str = "openai/gpt-6.1-sol";
 

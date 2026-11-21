@@ -17,6 +17,15 @@ from .bootstrap import verified_uv
 from .plan import STAGES, inventory, manifest, paired_plan
 
 
+# Stand-in for the artifact command, shared by offline Python tests.
+CONTRACTS_COMMAND = """if sys.argv[1:] == ["contracts", "--json"]:
+    print(json.dumps({"chat": None, "responses": {
+        "path": "fixture/count", "adapter": "responses",
+        "response_field": "input_tokens", "framing_tokens": 0}}))
+    sys.exit(0)
+"""
+
+
 class BenchmarkContracts(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="predictor-contracts-")
@@ -24,7 +33,7 @@ class BenchmarkContracts(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.binary = self.root / "uploaded ' build artifact"
         # Stand-in process records the actual OS argv/env, without a model.
-        self.binary.write_text("#!/usr/bin/python3\nimport json,os,sys\n"
+        self.binary.write_text("#!/usr/bin/python3\nimport json,os,sys\n" + CONTRACTS_COMMAND +
                                "print(json.dumps({'argv':sys.argv[1:],'env':dict(os.environ)}))\n"
                                "sys.exit(int(os.environ.get('FIXTURE_EXIT','0')))\n")
         self.binary.chmod(0o755)
@@ -53,6 +62,10 @@ class BenchmarkContracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Artifact(self.artifact.contents, self.sha, field)
 
+    def test_contract_query_uses_verified_bytes(self):
+        self.binary.write_bytes(b"replaced after verification")
+        self.assertEqual(self.artifact.token_counters()["responses"]["path"], "fixture/count")
+
     def test_uploaded_identity_precedes_executable_admission(self):
         # Capture the installed OS executable, rather than inventing tool bytes.
         source = shutil.which("true")
@@ -79,11 +92,12 @@ class BenchmarkContracts(unittest.TestCase):
         for endpoint in ("https://name:password@example.test/v1", "https://example.test/?token=x",
                          "https://example.test/#secret", "file:///etc/passwd", "http:///v1"):
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
-                catalog("openai/fixture", endpoint, 100, 10)
+                catalog("openai/fixture", endpoint, 100, 10, counters={})
         for context, output in ((0, 1), (10, 11), (True, 1), (10, 0)):
             with self.assertRaises(ValueError):
-                catalog("openai/fixture", "http://localhost/v1", context, output)
-        self.assertEqual(catalog("openai/fixture", "http://localhost/v1", 100, 10)
+                catalog("openai/fixture", "http://localhost/v1", context, output, counters={})
+        self.assertEqual(catalog("openai/fixture", "http://localhost/v1", 100, 10,
+                                 counters=self.artifact.token_counters())
                          ["openai"]["authentication"], "optional")
 
     def test_conflicting_provider_or_duplicate_model_cannot_replace_an_endpoint(self):
@@ -92,7 +106,8 @@ class BenchmarkContracts(unittest.TestCase):
         for changed in ({"model_name": "openai/worker", "base_url": "http://127.0.0.1:9/other"},
                         {"model_name": "openai/worker", "adapter": "chat"}, {}):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
-                catalog(**root, providers=[{**root, **changed}])
+                catalog(**root, providers=[{**root, **changed}],
+                        counters=self.artifact.token_counters())
 
     def test_bootstrap_rejects_unpinned_bytes_before_archive_parsing(self):
         with patch("scripts.benchmarks.bootstrap.zipfile.ZipFile",
@@ -101,9 +116,10 @@ class BenchmarkContracts(unittest.TestCase):
                 verified_uv(b"untrusted replacement; not a zip archive")
 
     def test_all_stages_pair_identical_pinned_tasks_without_execution(self):
-        # Unexpected calls turn a dry plan into a test failure, including auth
-        # subprocesses, remote git discovery or starting the runner.
-        with patch("subprocess.run", side_effect=AssertionError("offline plan executed a process")):
+        # Only the in-process fixture may supply counters during the dry plan.
+        counters = self.artifact.token_counters()
+        with (patch.object(Artifact, "token_counters", return_value=counters),
+              patch("subprocess.run", side_effect=AssertionError("offline plan executed a process"))):
             for stage, (label, count, selected) in STAGES.items():
                 result = self.plan(stage, self.dataset(label, count))
                 self.assertEqual(len(result["task_names"]), selected)
