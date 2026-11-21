@@ -57,19 +57,28 @@ fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
             started_tx,
             release_rx,
         ));
+        let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+        let driver = tokio::spawn(async move {
+            while let Some(boundary) = boundaries.recv().await {
+                boundary.release();
+            }
+        });
         let mut flushing = tokio::spawn({
+            let schedule = schedule.clone();
             let provider = provider.clone();
-            async move { provider.await_flushed(1).await }
+            async move { schedule.scope(provider.await_flushed(1)).await }
         });
         journal_started(started_rx, &mut flushing).await?;
-        deferring_durability(provider.commit(keyed_commit("after-device", 0)?)).await?;
+        for sequence in 0..4 {
+            deferring_durability(provider.commit(keyed_commit("after-device", sequence)?)).await?;
+        }
         let late_cut = provider
             .inner
             .journal
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .appended;
-        assert_eq!(late_cut, 2);
+        assert_eq!(late_cut, 5);
         release_tx.send(())?;
         flushing.await??;
         assert_eq!(
@@ -100,13 +109,28 @@ fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
             .completion(2, LocalDurability::FullFlush)
             .is_some()
         );
-        provider.await_flushed(2).await?;
+        let completions = schedule
+            .scope(futures::future::join_all(
+                (2..=late_cut).map(|sequence| provider.await_flushed(sequence)),
+            ))
+            .await;
+        for completion in completions {
+            completion?;
+        }
+        schedule.drained().await;
+        driver.abort();
+        let flushes = schedule
+            .durable_writes()
+            .iter()
+            .filter(|operation| operation.operation == "file:sync_data")
+            .count();
+        assert_eq!(flushes, 2, "five appends covered by two flush batches");
         assert_eq!(
             provider
                 .watermarks(StreamPath::new("after-device")?)
                 .await?
                 .durable,
-            1
+            4
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })
