@@ -2,15 +2,14 @@
 use super::*;
 use crate::addressing::ActorReference;
 use acyclic_stream::CommitCondition;
-use std::sync::Arc;
 
 /// Keep host-owned actors outside a guest boundary while ordinary deliveries
 /// cross it. Both use the same runtime and publication contract. The host is
 /// the authority for subscription selection, scheduling and admission fences;
 /// the guest receives only deliveries the host explicitly routes to it.
 pub struct HostedHandler<F> {
-    host: Arc<dyn Handler>,
-    guest: Arc<dyn Handler>,
+    host: acyclic_stream::ProviderOwner<dyn Handler>,
+    guest: acyclic_stream::ProviderOwner<dyn Handler>,
     host_owned: F,
 }
 
@@ -19,7 +18,11 @@ where
     F: Fn(&ActorReference) -> bool + acyclic_stream::ProviderPlatform,
 {
     /// `host_owned` is host configuration, never a guest-supplied designation.
-    pub fn new(host: Arc<dyn Handler>, guest: Arc<dyn Handler>, host_owned: F) -> Self {
+    pub fn new(
+        host: acyclic_stream::ProviderOwner<dyn Handler>,
+        guest: acyclic_stream::ProviderOwner<dyn Handler>,
+        host_owned: F,
+    ) -> Self {
         Self {
             host,
             guest,
