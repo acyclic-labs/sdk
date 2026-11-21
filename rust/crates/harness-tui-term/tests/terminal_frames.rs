@@ -503,106 +503,60 @@ fn real_terminal_frame_cost() -> io::Result<()> {
 
     #[cfg(windows)]
     if std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT").is_none() {
-        // Ordinary test processes have no console. The existing host owns the
-        // ConPTY and re-enters this exact test with its original report path.
-        let hosted = || -> io::Result<()> {
-            let owner = tempfile::tempdir()?;
-            let scripts = owner.path().join("scripts");
-            std::fs::create_dir(&scripts)?;
-            let script = scripts.join("test-terminal-signals.ps1");
-            std::fs::write(
-                &script,
-                include_str!("../../../../scripts/test-terminal-signals.ps1"),
-            )?;
-            // Windows ships this host; PowerShell 7 is an optional install.
-            // Resolve the inbox executable independently of the caller's PATH.
-            let system = std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?;
-            let powershell = std::path::Path::new(&system)
-                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-            let status = std::process::Command::new(powershell)
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                ])
-                .arg(script)
-                .arg("-Binary")
-                .arg(std::env::current_exe()?)
-                .arg("-FrameRegions")
-                .status()?;
-            if !status.success() {
-                return Err(io::Error::other(format!("ConPTY host exited: {status}")));
-            }
-            Ok(())
-        };
-        return hosted().map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --test main -E 'test(=terminal_frames::real_terminal_frame_cost)'"
-                ),
-            )
-        });
+        // Ordinary test processes have no console. A process tree's child is
+        // attached to the runtime's one pseudoconsole, so this exact test
+        // re-enters there, with a report path of its own.
+        let owner = tempfile::tempdir()?;
+        let report = owner.path().join("frames.txt");
+        let mut child = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
+        child
+            .args([
+                "--exact",
+                "terminal_frames::real_terminal_frame_cost",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TERMINAL_REGION_REPORT", &report);
+        let output = acyclic_native_runtime::process_output(
+            &mut child,
+            acyclic_native_runtime::CaptureSchedule::Unbounded,
+            1 << 20,
+        )?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "the console child failed: {output:?}"
+            )));
+        }
+        print!("{}", std::fs::read_to_string(&report)?);
+        return Ok(());
     }
 
     const FRAMES: usize = 2;
     let mut report = String::new();
     with_real_terminal(|output| {
+        // The old per-command path's failure of this same oracle is
+        // `native_region_cost`'s negative control, on the region scene.
         for size in [Size::new(120, 40), Size::new(240, 70)] {
-            let viewport = TerminalOptions {
-                viewport: Viewport::Fixed(Rect::new(0, 0, size.width, size.height)),
-            };
-            for per_command in [true, false] {
-                let calls = Rc::default();
-                let bytes = Rc::default();
-                let device = Calls(&mut *output, Rc::clone(&calls), Rc::clone(&bytes));
-                let mut old = None;
-                let mut new = None;
-                if per_command {
-                    let mut terminal =
-                        Terminal::with_options(CrosstermBackend::new(device), viewport.clone())?;
-                    terminal.draw(scrolled(0))?;
-                    old = Some(terminal);
-                } else {
-                    let mut terminal = FrameTerminal::new(device, size)?;
-                    terminal.draw(size, scrolled(0))?;
-                    new = Some(terminal);
-                }
-                calls.set(0);
-                let before = device_io();
-                for offset in 1..=FRAMES {
-                    if let Some(terminal) = old.as_mut() {
-                        terminal.draw(scrolled(offset * usize::from(size.height)))?;
-                    }
-                    if let Some(terminal) = new.as_mut() {
-                        terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
-                    }
-                }
-                let writes = device_io().writes - before.writes;
-                if per_command {
-                    let calls = calls.get();
-                    assert!(
-                        std::panic::catch_unwind(|| {
-                            regions::one_native_submission(calls, writes, FRAMES, false);
-                        })
-                        .is_err(),
-                        "the old per-command path must fail the native submission oracle"
-                    );
-                } else {
-                    regions::one_native_submission(calls.get(), writes, FRAMES, false);
-                }
-                writeln!(
+            let calls = Rc::default();
+            let bytes = Rc::default();
+            let device = Calls(&mut *output, Rc::clone(&calls), Rc::clone(&bytes));
+            let mut terminal = FrameTerminal::new(device, size)?;
+            terminal.draw(size, scrolled(0))?;
+            calls.set(0);
+            let before = device_io();
+            for offset in 1..=FRAMES {
+                terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
+            }
+            let writes = device_io().writes - before.writes;
+            regions::one_native_submission(calls.get(), writes, FRAMES, false);
+            writeln!(
                 report,
-                "{} {}x{} per_command={per_command} frames={FRAMES} submissions={} writes={writes}",
+                "{} {}x{} frames={FRAMES} submissions={} writes={writes}",
                 std::env::consts::OS,
                 size.width,
                 size.height,
                 calls.get()
             )
             .unwrap();
-            }
         }
         regions::native_region_cost(output, &mut report)?;
         regions::publish_report(&report)

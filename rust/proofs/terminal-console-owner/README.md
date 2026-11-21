@@ -2,18 +2,13 @@
 
 `terminal_frames::real_terminal_frame_cost` must run its real frame and region syscall oracles
 through the ordinary test entry even when its Windows parent has no console.
-That parent invokes the existing `scripts/test-terminal-signals.ps1` host. The
-host creates the ConPTY, re-enters the same test executable and exact test name,
-requires its original report and successful exit, and retires its native process
-and output owners. The report path distinguishes that native child from its
-parent; it does not bypass any measurement.
-
-The host script is embedded and materialized below one owned temporary root.
-This keeps the script available when the compiled test moves to another machine.
-There is one ConPTY implementation. Product work is unchanged. Test preparation
-adds one temporary root, one scripts directory, one script write/copy and one
-PowerShell host launch. The existing host provides the native child, process
-wait and output retirement. No polling or timeout extension is introduced.
+That parent re-enters the same test executable and exact test name as a
+native process tree, whose child the runtime attaches to its one pseudoconsole
+(`native-runtime`'s `windows_create/console.rs`). It requires the child's
+report and successful exit; the tree retires the native process and output
+owners. The report path distinguishes that native child from its parent; it
+does not bypass any measurement. Test preparation adds one temporary root and
+one process tree. No polling or timeout extension is introduced.
 
 The Git-generated `original-entry.patch` restores the test source exactly to
 `179c3069c37cb1fa8f06ae2bbe72f65325075730`. The retained `consoleless.patch`

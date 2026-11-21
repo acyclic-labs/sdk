@@ -198,7 +198,6 @@ rust_test(
     ],
     compile_data = [
         "tests/profiles.json",
-        "//:scripts/test-terminal-signals.ps1",
     ],
     edition = "2024",
     version = "0.2.0",
