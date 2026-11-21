@@ -1499,7 +1499,6 @@ ${platformSources.map(([platform, sources]) =>
     if (requiredEntry(scriptEnv, p.id).length) {
       scriptEnvironment.push(platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`]))));
     }
-    if (manifest) scriptEnvironment.push(q({ SOURCE_MANIFEST: `$(execpath ${manifest})` }));
     if (graph) scriptEnvironment.push(q({ TARGET: WASM_TRIPLE }));
     rules.push(["cargo_build_script", [
       ["name", q(`build_script${suffix}`)],
